@@ -46,6 +46,19 @@ res = assemble_jacobian(flat; u = u, p = p)   # one-shot: J, pattern, entries…
 
 `∂f/∂p`: pass `wrt = :parameters` to any of the above.
 
+Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
+loading one activates the SciMLBase package extension):
+
+```julia
+using OrdinaryDiffEqRosenbrock
+
+prob = odeproblem(file, (0.0, 3600.0))   # ODEFunction(f!; jac, jac_prototype)
+sol = solve(prob, Rodas5P())
+```
+
+(`ode_components(file)` returns the same pieces — `f!`, `jac!`,
+`jac_prototype`, `u0`, `p`, `var_map` — with no solver dependency.)
+
 ## Specification
 
 The `"jacobians"` block format, the per-operator derivative semantics
@@ -103,9 +116,10 @@ EarthSciAST implementation and is gated by the same goldens.
       without region-membership `ifelse` guards).
 - [ ] Contracted-index bands (regrid joins, `conn[]`-table gathers),
       `interp.bilinear`, forcing-buffer columns, `tgrad`.
-- [ ] Public expansion seam in EarthSciAST (replaces the two internals
-      `_component_template_reg` / `_expand_model_refs!` used today) and
-      `ODEFunction(f!; jac, jac_prototype)` wiring in its SimulateExt.
+- [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
+      ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
+      wiring (`odefunction` / `odeproblem` via the SciMLBase package
+      extension; `ode_components` is the solver-free half).
 - [ ] Python binding first (replacing `earthsci-ast-py`'s dense SymPy
       `symbolic_jacobian`), then Rust (diffsol wants an analytic sparse J).
 

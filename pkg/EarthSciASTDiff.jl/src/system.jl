@@ -15,30 +15,21 @@ struct SysView
     index_sets::Dict{String,Any}
 end
 
-"""
-    expanded_model(file::EsmFile, model_name) -> Model
-
-The selected model with Option-B `apply_expression_template` references
-expanded — the same step `build_evaluator` performs before compiling.
-
-!!! note
-    Uses two EarthSciAST internals (`_component_template_reg`,
-    `_expand_model_refs!`); a public expansion seam in EarthSciAST is the
-    planned replacement (tracked in README §Roadmap).
-"""
-function expanded_model(file::EarthSciAST.EsmFile, model_name)
-    model = deepcopy(file.models[String(model_name)])
-    reg = EarthSciAST._component_template_reg(file, String(model_name))
-    reg === nothing || EarthSciAST._expand_model_refs!(model, reg)
-    return model
-end
+# `expanded_model` is EarthSciAST's public template-expansion seam
+# (EarthSciAST ≥ 0.9.1): the typed model with Option-B
+# `apply_expression_template` references expanded — the same step
+# `build_evaluator` performs before compiling. Imported (not redefined) so
+# `EarthSciASTDiff.expanded_model === EarthSciAST.expanded_model` and the two
+# packages' exports never collide; re-exported from this module for
+# convenience.
+import EarthSciAST: expanded_model
 
 """
     sysview(file::EsmFile, model_name) -> SysView
     sysview(flat::FlattenedSystem)     -> SysView
 """
 function sysview(file::EarthSciAST.EsmFile, model_name)
-    model = expanded_model(file, model_name)
+    model = expanded_model(file, model_name === nothing ? nothing : String(model_name))
     SysView(Dict{String,Any}(String(k) => v for (k, v) in model.variables),
             model.equations,
             Dict{String,Any}(String(k) => v for (k, v) in file.index_sets))

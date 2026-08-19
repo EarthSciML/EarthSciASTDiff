@@ -21,4 +21,5 @@ end
     include("roundtrip_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")
+    include("ode_test.jl")
 end

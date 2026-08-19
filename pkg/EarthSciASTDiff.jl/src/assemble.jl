@@ -47,7 +47,7 @@ function jacobian_pattern(input; wrt::Symbol = :states, model_name = nothing,
                           build_kwargs = NamedTuple())
     sv, src = _sv_src(input, model_name)
     entries = jacobian_bands(sv; wrt = wrt)
-    _, _, p0, _, vm0 = build_evaluator(src; build_kwargs...)
+    _, _, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)
     colslot, ncol, colnames = _colmap(vm0, p0, wrt)
     n = length(vm0)
     I = Int[]; J = Int[]
@@ -64,6 +64,13 @@ end
 _sv_src(file::EarthSciAST.EsmFile, model_name) =
     (sysview(file, model_name === nothing ? _only_model(file) : model_name), file)
 _sv_src(flat::EarthSciAST.FlattenedSystem, ::Any) = (sysview(flat), flat)
+
+# Build the ordinary RHS evaluator for the SAME model `_sv_src` selected: an
+# `EsmFile` threads `model_name` through `build_evaluator`'s own selection
+# (so multi-model documents work), a `FlattenedSystem` has no model to name.
+_build_eval(src::EarthSciAST.EsmFile, model_name; kw...) =
+    build_evaluator(src; model_name = model_name === nothing ? nothing : String(model_name), kw...)
+_build_eval(src, model_name; kw...) = build_evaluator(src; kw...)
 
 function _only_model(file::EarthSciAST.EsmFile)
     length(file.models) == 1 ||
@@ -115,7 +122,7 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     doc, _ = _evaluation_document(sv, entries)
     fJ!, u0j, pj, _, vmj = build_evaluator(doc; model_name = "JacobianEval",
                                            build_kwargs...)
-    _, u00, p0, _, vm0 = build_evaluator(src; build_kwargs...)
+    _, u00, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)
     n = length(u00)
     colslot, ncol, colnames = _colmap(vm0, p0, wrt)
 
@@ -173,7 +180,7 @@ function assemble_jacobian(input; wrt::Symbol = :states, u = nothing, p = nothin
                            build_kwargs = NamedTuple())
     jac = prepare_jacobian(input; wrt = wrt, model_name = model_name,
                            build_kwargs = build_kwargs)
-    _, u00, p0, _, _ = build_evaluator(_sv_src(input, model_name)[2]; build_kwargs...)
+    _, u00, p0, _, _ = _build_eval(_sv_src(input, model_name)[2], model_name; build_kwargs...)
     uu = u === nothing ? u00 : u
     J = copy(jac.prototype)
     jac(J, uu, p === nothing ? p0 : p, t)

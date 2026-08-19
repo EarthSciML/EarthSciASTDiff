@@ -23,6 +23,9 @@ Layered API, lowest to highest:
                                      per-cell block LU is the first implementation)
   - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`
   - [`assemble_jacobian`](@ref)    — one-shot: values + pattern at a point
+  - [`odeproblem`](@ref)           — `SciMLBase.ODEProblem` with the analytical
+                                     sparse Jacobian attached (needs SciMLBase
+                                     loaded; see also [`ode_components`](@ref))
 
 Differentiation runs on the *expanded, lowered* expression tree — the same
 tree `EarthSciAST.build_evaluator` compiles — so the derivative and the RHS
@@ -45,6 +48,7 @@ export Site, dscalar,
        SysView, sysview, expanded_model,
        jacobian_document, parse_jacobian_block, stable_json,
        jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
+       ode_components, odefunction, odeproblem,
        detect_structure, jac_prototype,
        FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill
 
@@ -58,5 +62,6 @@ include("emit.jl")           # "jacobians" document block: emit / parse / golden
 include("assemble.jl")       # numeric assembly + prepared evaluator
 include("structure.jl")      # structure detection + jac_prototype
 include("factorization.jl")  # factorization-info interface + block-diagonal plan
+include("ode.jl")            # solver-free ODE pieces + SciMLBase ext dispatchers
 
 end # module
