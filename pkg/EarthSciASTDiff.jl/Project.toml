@@ -1,0 +1,23 @@
+name = "EarthSciASTDiff"
+uuid = "8f0c9a34-6c1e-4f7b-9d2a-3e5b7c1d9f42"
+version = "0.1.0"
+authors = ["EarthSciML Authors and Contributors"]
+
+[deps]
+EarthSciAST = "c7bf5e87-b31b-4281-bdce-ffb8a46ec87c"
+JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[compat]
+EarthSciAST = "0.9"
+JSON3 = "1"
+OrderedCollections = "1"
+julia = "1.10"
+
+[extras]
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["ForwardDiff", "Test"]

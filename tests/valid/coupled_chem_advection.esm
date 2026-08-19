@@ -1,0 +1,627 @@
+{
+ "esm": "0.8.0",
+ "metadata": {
+  "name": "MinimalChemAdvectionSmall",
+  "description": "O3-NO-NO2 chemistry with advection over a lon-lat grid and external meteorology",
+  "authors": [
+   "Chris Tessum"
+  ],
+  "created": "2026-06-30T00:00:00Z"
+ },
+ "index_sets": {
+  "lon": {
+   "kind": "interval",
+   "size": 6
+  },
+  "lat": {
+   "kind": "interval",
+   "size": 4
+  }
+ },
+ "reaction_systems": {
+  "SimpleOzone": {
+   "reference": {
+    "notes": "Minimal O3-NOx photochemical cycle"
+   },
+   "species": {
+    "O3": {
+     "units": "mol/mol",
+     "default": 4e-08,
+     "description": "Ozone"
+    },
+    "NO": {
+     "units": "mol/mol",
+     "default": 1e-10,
+     "description": "Nitric oxide"
+    },
+    "NO2": {
+     "units": "mol/mol",
+     "default": 1e-09,
+     "description": "Nitrogen dioxide"
+    }
+   },
+   "parameters": {
+    "T": {
+     "units": "K",
+     "default": 298.15,
+     "description": "Temperature"
+    },
+    "M": {
+     "units": "molec/cm^3",
+     "default": 2.46e+19,
+     "description": "Air number density"
+    },
+    "jNO2": {
+     "units": "1/s",
+     "default": 0.005,
+     "description": "NO2 photolysis rate"
+    }
+   },
+   "reactions": [
+    {
+     "id": "R1",
+     "name": "NO_O3",
+     "substrates": [
+      {
+       "species": "NO",
+       "stoichiometry": 1
+      },
+      {
+       "species": "O3",
+       "stoichiometry": 1
+      }
+     ],
+     "products": [
+      {
+       "species": "NO2",
+       "stoichiometry": 1
+      }
+     ],
+     "rate": {
+      "op": "*",
+      "args": [
+       1.8e-12,
+       {
+        "op": "exp",
+        "args": [
+         {
+          "op": "/",
+          "args": [
+           -1370,
+           "T"
+          ]
+         }
+        ]
+       },
+       "M"
+      ]
+     }
+    },
+    {
+     "id": "R2",
+     "name": "NO2_photolysis",
+     "substrates": [
+      {
+       "species": "NO2",
+       "stoichiometry": 1
+      }
+     ],
+     "products": [
+      {
+       "species": "NO",
+       "stoichiometry": 1
+      },
+      {
+       "species": "O3",
+       "stoichiometry": 1
+      }
+     ],
+     "rate": "jNO2"
+    }
+   ]
+  }
+ },
+ "models": {
+  "Advection": {
+   "reference": {
+    "notes": "First-order advection of each transported field over the lon-lat grid"
+   },
+   "variables": {
+    "u_wind": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 3.0
+    },
+    "v_wind": {
+     "type": "parameter",
+     "units": "m/s",
+     "default": 3.0
+    },
+    "dx": {
+     "type": "parameter",
+     "units": "m",
+     "default": 27750.0,
+     "description": "Eastward grid spacing"
+    },
+    "dy": {
+     "type": "parameter",
+     "units": "m",
+     "default": 27750.0,
+     "description": "Northward grid spacing"
+    }
+   },
+   "expression_templates": {
+    "central_grad_lon_zero_grad_bc": {
+     "params": [
+      "f"
+     ],
+     "match": {
+      "op": "grad",
+      "args": [
+       "f"
+      ],
+      "dim": "lon"
+     },
+     "body": {
+      "op": "makearray",
+      "regions": [
+       [
+        [
+         2,
+         5
+        ],
+        [
+         1,
+         4
+        ]
+       ],
+       [
+        [
+         1,
+         1
+        ],
+        [
+         1,
+         4
+        ]
+       ],
+       [
+        [
+         6,
+         6
+        ],
+        [
+         1,
+         4
+        ]
+       ]
+      ],
+      "values": [
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "i",
+         "j"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "i": [
+          2,
+          5
+         ],
+         "j": {
+          "from": "lat"
+         }
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              {
+               "op": "+",
+               "args": [
+                "i",
+                1
+               ]
+              },
+              "j"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              {
+               "op": "-",
+               "args": [
+                "i",
+                1
+               ]
+              },
+              "j"
+             ]
+            }
+           ]
+          },
+          {
+           "op": "*",
+           "args": [
+            2,
+            "dx"
+           ]
+          }
+         ]
+        }
+       },
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "j"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "j": {
+          "from": "lat"
+         }
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              2,
+              "j"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              1,
+              "j"
+             ]
+            }
+           ]
+          },
+          "dx"
+         ]
+        }
+       },
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "j"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "j": {
+          "from": "lat"
+         }
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              6,
+              "j"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              5,
+              "j"
+             ]
+            }
+           ]
+          },
+          "dx"
+         ]
+        }
+       }
+      ],
+      "args": []
+     }
+    },
+    "central_grad_lat_zero_grad_bc": {
+     "params": [
+      "f"
+     ],
+     "match": {
+      "op": "grad",
+      "args": [
+       "f"
+      ],
+      "dim": "lat"
+     },
+     "body": {
+      "op": "makearray",
+      "regions": [
+       [
+        [
+         1,
+         6
+        ],
+        [
+         2,
+         3
+        ]
+       ],
+       [
+        [
+         1,
+         6
+        ],
+        [
+         1,
+         1
+        ]
+       ],
+       [
+        [
+         1,
+         6
+        ],
+        [
+         91,
+         91
+        ]
+       ]
+      ],
+      "values": [
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "i",
+         "j"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "i": {
+          "from": "lon"
+         },
+         "j": [
+          2,
+          3
+         ]
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              {
+               "op": "+",
+               "args": [
+                "j",
+                1
+               ]
+              }
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              {
+               "op": "-",
+               "args": [
+                "j",
+                1
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "op": "*",
+           "args": [
+            2,
+            "dy"
+           ]
+          }
+         ]
+        }
+       },
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "i"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "i": {
+          "from": "lon"
+         }
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              2
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              1
+             ]
+            }
+           ]
+          },
+          "dy"
+         ]
+        }
+       },
+       {
+        "op": "aggregate",
+        "output_idx": [
+         "i"
+        ],
+        "args": [
+         "f"
+        ],
+        "ranges": {
+         "i": {
+          "from": "lon"
+         }
+        },
+        "expr": {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              4
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "f",
+              "i",
+              3
+             ]
+            }
+           ]
+          },
+          "dy"
+         ]
+        }
+       }
+      ],
+      "args": []
+     }
+    }
+   },
+   "equations": [
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "_var"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "u_wind"
+          ]
+         },
+         {
+          "op": "grad",
+          "args": [
+           "_var"
+          ],
+          "dim": "lon"
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         {
+          "op": "-",
+          "args": [
+           "v_wind"
+          ]
+         },
+         {
+          "op": "grad",
+          "args": [
+           "_var"
+          ],
+          "dim": "lat"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "ic",
+      "args": [
+       "_var"
+      ]
+     },
+     "rhs": 1e-09
+    }
+   ]
+  }
+ },
+ "coupling": [
+  {
+   "type": "operator_compose",
+   "systems": [
+    "SimpleOzone",
+    "Advection"
+   ],
+   "lifting": "pointwise"
+  }
+ ],
+ "domain": {
+  "temporal": {
+   "start": "2024-05-01T00:00:00Z",
+   "end": "2024-05-03T00:00:00Z"
+  },
+  "element_type": "Float32"
+ }
+}
