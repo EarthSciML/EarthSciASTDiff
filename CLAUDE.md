@@ -29,6 +29,10 @@ holds shared fixtures + goldens that all future bindings must match.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `scalar_rules.jl` — per-op derivative table; MUST match spec §3 row-for-row
+- `simplify_branches.jl` — `ifelse`-aware simplification (equal-branch
+  collapse, same-condition path pruning); `_simp` = the coefficient simplifier
+- `cse.jl`          — hash-consed repeated-subtree extraction into zero-param
+  `expression_templates` (`cse_templates` / `expand_templates`, spec §4.1)
 - `bands.jl`        — array-level band calculus (aggregate/makearray)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
 - `emit.jl`         — "jacobians" block, goldens writer, derived eval model

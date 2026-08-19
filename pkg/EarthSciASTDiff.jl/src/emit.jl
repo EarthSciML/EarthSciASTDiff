@@ -61,37 +61,64 @@ function parse_band(d::AbstractDict)::JacEntry
 end
 
 """
-    jacobian_document(file::EsmFile, model_name; wrt = :states) -> Dict
-    jacobian_document(flat::FlattenedSystem; wrt = :states, name = "Flattened") -> Dict
+    jacobian_document(file::EsmFile, model_name; wrt = :states,
+                      cse = true, cse_min_nodes = 12) -> Dict
+    jacobian_document(flat::FlattenedSystem; wrt = :states, name = "Flattened",
+                      cse = true, cse_min_nodes = 12) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
 (esm-jacobian-spec.md §4): per model, the differentiation axis, the band
 entries, the detected structure class, and — when a factorization plan
 exists for that structure — the serialized plan.
+
+With `cse = true` (default), repeated coefficient subtrees of at least
+`cse_min_nodes` AST nodes are hoisted into zero-parameter
+`expression_templates` carried inside the block ([`cse_templates`](@ref)),
+and the emitted coefficients reference them via `apply_expression_template`
+— the size control for limiter-heavy schemes. [`parse_jacobian_block`](@ref)
+expands the references back, so the round-trip is exact either way.
 """
-function jacobian_document(file::EarthSciAST.EsmFile, model_name; wrt::Symbol = :states)
+function jacobian_document(file::EarthSciAST.EsmFile, model_name; wrt::Symbol = :states,
+                           cse::Bool = true, cse_min_nodes::Int = 12)
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
-    _attach_jacobians!(doc, sv, String(model_name); wrt = wrt)
+    _attach_jacobians!(doc, sv, String(model_name); wrt = wrt,
+                       cse = cse, cse_min_nodes = cse_min_nodes)
     return doc
 end
 
 function jacobian_document(flat::EarthSciAST.FlattenedSystem;
-                           wrt::Symbol = :states, name::AbstractString = "Flattened")
+                           wrt::Symbol = :states, name::AbstractString = "Flattened",
+                           cse::Bool = true, cse_min_nodes::Int = 12)
     sv = sysview(flat)
     doc = _base_document(sv, String(name))
-    _attach_jacobians!(doc, sv, String(name); wrt = wrt)
+    _attach_jacobians!(doc, sv, String(name); wrt = wrt,
+                       cse = cse, cse_min_nodes = cse_min_nodes)
     return doc
 end
 
-function _attach_jacobians!(doc, sv::SysView, model_name::String; wrt::Symbol)
+function _attach_jacobians!(doc, sv::SysView, model_name::String; wrt::Symbol,
+                            cse::Bool = true, cse_min_nodes::Int = 12)
     entries = jacobian_bands(sv; wrt = wrt)
     structure = detect_structure(entries, sv)
+    ser_entries = entries
+    templates = OrderedDict{String,ASTExpr}()
+    if cse
+        coefs = ASTExpr[en.band.coef for en in entries]
+        templates, rewritten = cse_templates(coefs; min_nodes = cse_min_nodes)
+        isempty(templates) || (ser_entries = JacEntry[
+            JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
+                                      en.band.cidx, rewritten[k]))
+            for (k, en) in enumerate(entries)])
+    end
     block = OrderedDict{String,Any}(
         "wrt"       => String(wrt),
-        "entries"   => Any[serialize_band(en) for en in entries],
+        "entries"   => Any[serialize_band(en) for en in ser_entries],
         "structure" => String(structure),
     )
+    isempty(templates) || (block["expression_templates"] = OrderedDict{String,Any}(
+        name => OrderedDict{String,Any}("params" => Any[], "body" => _ser_expr(body))
+        for (name, body) in templates))
     plan = plan_factorization(entries, sv; structure = structure)
     plan === nothing || (block["factorization"] = serialize_plan(plan))
     jb = get!(doc, "jacobians", OrderedDict{String,Any}())
@@ -103,10 +130,23 @@ end
     parse_jacobian_block(block) -> (wrt::Symbol, entries::Vector{JacEntry})
 
 Inverse of the block emission (round-trip surface for conformance tests).
+When the block carries `expression_templates` (CSE'd emission), every
+`apply_expression_template` reference in the parsed coefficients is expanded
+back to its body, so the returned entries are always closed expressions.
 """
 function parse_jacobian_block(block::AbstractDict)
     wrt = Symbol(block["wrt"])
     entries = JacEntry[parse_band(d) for d in block["entries"]]
+    if haskey(block, "expression_templates")
+        reg = Dict{String,ASTExpr}(
+            String(name) => parse_expression(t["body"])
+            for (name, t) in block["expression_templates"])
+        entries = JacEntry[
+            JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
+                                      ASTExpr[expand_templates(c, reg) for c in en.band.cidx],
+                                      expand_templates(en.band.coef, reg)))
+            for en in entries]
+    end
     return wrt, entries
 end
 

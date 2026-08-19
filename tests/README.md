@@ -12,6 +12,10 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   - `coupled_chem_advection.esm` — reaction system ⊕ advection through
     `operator_compose` + pointwise lift (differentiates the *flattened*
     system)
+  - `minmod_adv.esm` — minmod-TVD periodic advection (N = 16), a
+    self-contained serialization of the EarthSciDiscretizations
+    `advection_1d_periodic_minmod_tvd` problem — the limiter-family
+    regression target for coefficient-size control (spec §4.1 templates)
 - `goldens/` — `<fixture>.bands.json`: the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

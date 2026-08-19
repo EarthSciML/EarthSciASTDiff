@@ -140,7 +140,11 @@ row)/∂(col)`:
 - `col_idx` — `col`'s index expressions, one per dimension of `col`, over the
   `row_idx` names; `[]` for a scalar `col`.
 - `coef` — a scalar Expression over the `row_idx` names, the model's
-  variables and parameters, and `t`.
+  variables and parameters, and `t`. Literals MUST be in the wire-canonical
+  form of the ESM conformance rules (CONFORMANCE_SPEC §5.5.3.1: an integral,
+  Int64-representable float literal is an integer literal) — producers whose
+  in-memory simplification folds mixed int/float constants must normalize
+  before emission, or parse round-trips and cross-binding goldens diverge.
 
 **Meaning.** For every index point `r` in `rows`,
 
@@ -159,6 +163,45 @@ a matrix type; the pattern itself is always recoverable from the entries.
 **Round-trip.** The block is derived data: producers MUST be able to
 regenerate it from the document, and `Expand(document)` conformance (§9.6.4)
 is unaffected by its presence.
+
+### 4.1 Shared coefficient fragments: `expression_templates`
+
+Limiter-heavy schemes (minmod, superbee, PPM) produce coefficient
+expressions whose subtrees repeat heavily across entries. A block MAY carry
+an `expression_templates` field factoring them out:
+
+```json
+"jacobians": {
+  "<ModelName>": {
+    "wrt": "states",
+    "expression_templates": {
+      "jt1": { "params": [], "body": { "op": "...", "args": ["..."] } }
+    },
+    "entries": [ { "coef": {"op": "apply_expression_template",
+                            "args": [], "name": "jt1"}, "...": "..." } ]
+  }
+}
+```
+
+Each entry is a **zero-parameter, match-less** template in the sense of
+esm-spec §9.6 (`params` MUST be `[]`; no `match` field): a fixed named
+fragment whose expansion is pure syntactic substitution of `body` for the
+`apply_expression_template` reference. Free index names in a `body` (entry
+`row_idx` names) re-bind at the reference site — extraction is exact subtree
+factoring, not hygienic abstraction.
+
+- References may appear in entry `coef` (and, in principle, `col_idx`)
+  expressions and inside other template bodies. The reference graph MUST be
+  acyclic (it is, by construction, when templates are extracted by strict
+  subtree containment).
+- Consumers MUST expand all references before evaluating a coefficient; a
+  reference to a name absent from the block's `expression_templates` is an
+  error.
+- The field is an emission-size optimization only: a block with templates
+  and its fully-expanded form denote the same Jacobian, and producers MAY
+  emit either. Deterministic producers SHOULD extract greedily
+  largest-first with deterministic naming (`jt1`, `jt2`, … in extraction
+  order) so byte-comparison goldens are stable.
 
 ## 5. Conformance
 

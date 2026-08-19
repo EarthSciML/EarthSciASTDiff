@@ -1,0 +1,1398 @@
+{
+    "index_sets": {
+        "x": {
+            "kind": "interval",
+            "size": 16
+        }
+    },
+    "esm": "0.8.0",
+    "models": {
+        "AdvectionMinmodTVD": {
+            "variables": {
+                "c": {
+                    "units": "m/s",
+                    "default": 1,
+                    "type": "parameter",
+                    "description": "Constant transport speed (non-negative; +x upwind convention)."
+                },
+                "x0": {
+                    "units": "m",
+                    "default": 0,
+                    "type": "parameter",
+                    "description": "Left domain edge a = 0 (unit interval): the grid's x0 free name (grids/cartesian_uniform_1d/grid.esm consumer-supplied geometry contract)."
+                },
+                "u": {
+                    "units": "1",
+                    "shape": [
+                        "x"
+                    ],
+                    "type": "state",
+                    "description": "Advected tracer field over the x index set."
+                },
+                "dx": {
+                    "units": "m",
+                    "expression": {
+                        "args": [
+                            1,
+                            16
+                        ],
+                        "op": "/"
+                    },
+                    "type": "observed",
+                    "description": "Grid spacing (b - a)/N = 1/N: the grid's dx free name, resolved inside the rewrite rule's expanded body at evaluation. N is the document-scoped metaparameter, substituted as an integer literal at load (esm-spec 9.7.6), so loader-API rebinding for the convergence sweep keeps dx consistent."
+                }
+            },
+            "equations": [
+                {
+                    "rhs": {
+                        "ranges": {
+                            "i": {
+                                "from": "x"
+                            }
+                        },
+                        "args": [
+                        ],
+                        "output_idx": [
+                            "i"
+                        ],
+                        "op": "aggregate",
+                        "expr": {
+                            "args": [
+                                0,
+                                {
+                                    "args": [
+                                        1,
+                                        {
+                                            "args": [
+                                                4,
+                                                {
+                                                    "args": [
+                                                        {
+                                                            "args": [
+                                                                {
+                                                                    "args": [
+                                                                        {
+                                                                            "args": [
+                                                                                "i",
+                                                                                0.5
+                                                                            ],
+                                                                            "op": "-"
+                                                                        },
+                                                                        {
+                                                                            "args": [
+                                                                                1,
+                                                                                16
+                                                                            ],
+                                                                            "op": "/"
+                                                                        }
+                                                                    ],
+                                                                    "op": "*"
+                                                                },
+                                                                0.5
+                                                            ],
+                                                            "op": "-"
+                                                        }
+                                                    ],
+                                                    "op": "abs"
+                                                }
+                                            ],
+                                            "op": "*"
+                                        }
+                                    ],
+                                    "op": "-"
+                                }
+                            ],
+                            "op": "max"
+                        }
+                    },
+                    "lhs": {
+                        "args": [
+                            "u"
+                        ],
+                        "op": "ic"
+                    }
+                },
+                {
+                    "rhs": {
+                        "args": [
+                            {
+                                "args": [
+                                    "c"
+                                ],
+                                "op": "-"
+                            },
+                            {
+                                "values": [
+                                    {
+                                        "ranges": {
+                                            "i": [
+                                                3,
+                                                15
+                                            ]
+                                        },
+                                        "args": [
+                                            "u"
+                                        ],
+                                        "output_idx": [
+                                            "i"
+                                        ],
+                                        "op": "aggregate",
+                                        "expr": {
+                                            "args": [
+                                                {
+                                                    "args": [
+                                                        {
+                                                            "args": [
+                                                                {
+                                                                    "args": [
+                                                                        "u",
+                                                                        "i"
+                                                                    ],
+                                                                    "op": "index"
+                                                                },
+                                                                {
+                                                                    "args": [
+                                                                        0.5,
+                                                                        {
+                                                                            "args": [
+                                                                                {
+                                                                                    "args": [
+                                                                                        0,
+                                                                                        {
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                },
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "+"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                }
+                                                                                            ],
+                                                                                            "op": "min"
+                                                                                        }
+                                                                                    ],
+                                                                                    "op": "max"
+                                                                                },
+                                                                                {
+                                                                                    "args": [
+                                                                                        0,
+                                                                                        {
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                },
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "+"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                }
+                                                                                            ],
+                                                                                            "op": "max"
+                                                                                        }
+                                                                                    ],
+                                                                                    "op": "min"
+                                                                                }
+                                                                            ],
+                                                                            "op": "+"
+                                                                        }
+                                                                    ],
+                                                                    "op": "*"
+                                                                }
+                                                            ],
+                                                            "op": "+"
+                                                        },
+                                                        {
+                                                            "args": [
+                                                                {
+                                                                    "args": [
+                                                                        "u",
+                                                                        {
+                                                                            "args": [
+                                                                                "i",
+                                                                                1
+                                                                            ],
+                                                                            "op": "-"
+                                                                        }
+                                                                    ],
+                                                                    "op": "index"
+                                                                },
+                                                                {
+                                                                    "args": [
+                                                                        0.5,
+                                                                        {
+                                                                            "args": [
+                                                                                {
+                                                                                    "args": [
+                                                                                        0,
+                                                                                        {
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        2
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                },
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                }
+                                                                                            ],
+                                                                                            "op": "min"
+                                                                                        }
+                                                                                    ],
+                                                                                    "op": "max"
+                                                                                },
+                                                                                {
+                                                                                    "args": [
+                                                                                        0,
+                                                                                        {
+                                                                                            "args": [
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        2
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                },
+                                                                                                {
+                                                                                                    "args": [
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                "i"
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        },
+                                                                                                        {
+                                                                                                            "args": [
+                                                                                                                "u",
+                                                                                                                {
+                                                                                                                    "args": [
+                                                                                                                        "i",
+                                                                                                                        1
+                                                                                                                    ],
+                                                                                                                    "op": "-"
+                                                                                                                }
+                                                                                                            ],
+                                                                                                            "op": "index"
+                                                                                                        }
+                                                                                                    ],
+                                                                                                    "op": "-"
+                                                                                                }
+                                                                                            ],
+                                                                                            "op": "max"
+                                                                                        }
+                                                                                    ],
+                                                                                    "op": "min"
+                                                                                }
+                                                                            ],
+                                                                            "op": "+"
+                                                                        }
+                                                                    ],
+                                                                    "op": "*"
+                                                                }
+                                                            ],
+                                                            "op": "+"
+                                                        }
+                                                    ],
+                                                    "op": "-"
+                                                },
+                                                "dx"
+                                            ],
+                                            "op": "/"
+                                        }
+                                    },
+                                    {
+                                        "args": [
+                                            {
+                                                "args": [
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    1
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    },
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    16
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    }
+                                                ],
+                                                "op": "-"
+                                            },
+                                            "dx"
+                                        ],
+                                        "op": "/"
+                                    },
+                                    {
+                                        "args": [
+                                            {
+                                                "args": [
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    2
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            3
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            3
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    },
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    1
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            2
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    }
+                                                ],
+                                                "op": "-"
+                                            },
+                                            "dx"
+                                        ],
+                                        "op": "/"
+                                    },
+                                    {
+                                        "args": [
+                                            {
+                                                "args": [
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    16
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            1
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    },
+                                                    {
+                                                        "args": [
+                                                            {
+                                                                "args": [
+                                                                    "u",
+                                                                    {
+                                                                        "args": [
+                                                                            16,
+                                                                            1
+                                                                        ],
+                                                                        "op": "-"
+                                                                    }
+                                                                ],
+                                                                "op": "index"
+                                                            },
+                                                            {
+                                                                "args": [
+                                                                    0.5,
+                                                                    {
+                                                                        "args": [
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    2
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "min"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "max"
+                                                                            },
+                                                                            {
+                                                                                "args": [
+                                                                                    0,
+                                                                                    {
+                                                                                        "args": [
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    2
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            },
+                                                                                            {
+                                                                                                "args": [
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            16
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "args": [
+                                                                                                            "u",
+                                                                                                            {
+                                                                                                                "args": [
+                                                                                                                    16,
+                                                                                                                    1
+                                                                                                                ],
+                                                                                                                "op": "-"
+                                                                                                            }
+                                                                                                        ],
+                                                                                                        "op": "index"
+                                                                                                    }
+                                                                                                ],
+                                                                                                "op": "-"
+                                                                                            }
+                                                                                        ],
+                                                                                        "op": "max"
+                                                                                    }
+                                                                                ],
+                                                                                "op": "min"
+                                                                            }
+                                                                        ],
+                                                                        "op": "+"
+                                                                    }
+                                                                ],
+                                                                "op": "*"
+                                                            }
+                                                        ],
+                                                        "op": "+"
+                                                    }
+                                                ],
+                                                "op": "-"
+                                            },
+                                            "dx"
+                                        ],
+                                        "op": "/"
+                                    }
+                                ],
+                                "args": [
+                                ],
+                                "op": "makearray",
+                                "regions": [
+                                    [
+                                        [
+                                            3,
+                                            15
+                                        ]
+                                    ],
+                                    [
+                                        [
+                                            1,
+                                            1
+                                        ]
+                                    ],
+                                    [
+                                        [
+                                            2,
+                                            2
+                                        ]
+                                    ],
+                                    [
+                                        [
+                                            16,
+                                            16
+                                        ]
+                                    ]
+                                ]
+                            }
+                        ],
+                        "op": "*"
+                    },
+                    "lhs": {
+                        "args": [
+                            "u"
+                        ],
+                        "op": "D",
+                        "wrt": "t"
+                    }
+                }
+            ],
+            "tests": [
+                {
+                    "time_span": {
+                        "start": 0,
+                        "end": 0.5
+                    },
+                    "id": "tvd_monotone",
+                    "assertions": [
+                        {
+                            "expected": 0.25,
+                            "time": 0,
+                            "reduce": "mean",
+                            "variable": "u",
+                            "tolerance": {
+                                "abs": 1.0e-9
+                            }
+                        },
+                        {
+                            "expected": 0.25,
+                            "time": 0.5,
+                            "reduce": "mean",
+                            "variable": "u",
+                            "tolerance": {
+                                "abs": 1.0e-9
+                            }
+                        },
+                        {
+                            "expected": 0.87,
+                            "time": 0.5,
+                            "reduce": "max",
+                            "variable": "u",
+                            "tolerance": {
+                                "abs": 0.12
+                            }
+                        },
+                        {
+                            "expected": 0.035,
+                            "time": 0.5,
+                            "reduce": "min",
+                            "variable": "u",
+                            "tolerance": {
+                                "abs": 0.065
+                            }
+                        }
+                    ],
+                    "description": "Monotonicity / TVD gate: the tent u0(x) = max(0, 1 - 4|x - 1/2|) (max 1, min 0, mean 1/4) advected at c=1 to t=0.5. Assert (all STATE reductions, the sim-expressible form of the TVD claim): mean = 1/4 to machine precision at t=0 and t=0.5 (exact conservation of the flux-difference form); max(u) <= the no-overshoot bound at t=0.5 (a dispersive scheme would exceed 1); min(u) >= the no-undershoot bound at t=0.5 (a non-TVD scheme undershoots below 0). Bands de-risked in numpy at N=64."
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "name": "advection_1d_periodic_minmod_tvd",
+        "references": [
+            {
+                "citation": "LeVeque, R. J. (2002). Finite Volume Methods for Hyperbolic Problems. Cambridge University Press. Chapter 6 (TVD / total-variation-diminishing methods)."
+            },
+            {
+                "doi": "10.1016/0021-9991(83)90136-5",
+                "citation": "Harten, A. (1983). High resolution schemes for hyperbolic conservation laws. J. Comput. Phys. 49(3):357-393 (TVD property)."
+            }
+        ],
+        "tags": [
+            "esd:problem",
+            "grid:cartesian_uniform_1d",
+            "equation:advection",
+            "monotonicity"
+        ],
+        "license": "MIT",
+        "description": "Monotonicity / TVD driver for grids/cartesian_uniform_1d/rules/flux_limiter_minmod_D_periodic (minmod flux limiter (second-order TVD)) on the periodic unit interval [0,1], c = 1. A piecewise-linear tent profile u0(x) = max(0, 1 - 4|x - 1/2|) (peak 1 at x=1/2, min 0, mean 1/4; zero at the domain edges so the periodic wrap carries no seam) is advected to t=0.5. A TVD / monotonicity-preserving scheme develops NO new extrema (total variation non-increasing): it neither overshoots above the initial maximum (max stays under ~0.99, whereas a dispersive/non-TVD scheme would exceed 1) nor undershoots below the initial minimum (min stays >= -0.03; a non-TVD central scheme undershoots to about -0.04 on this profile), and the flux-difference form conserves the mean EXACTLY (1/4 to machine precision). Because the assertion evaluator cannot evaluate a state-dependent observed at assertion time, the gate drives the STATE and asserts REDUCTIONS of the state directly (max/min bounds + mean conservation), never an observed of the operator output — the sim-expressible form of the monotonicity claim. De-risked in numpy at N=64, t=0.5: this scheme's max/min/mean sit inside the asserted bands with comfortable margin. The grid geometry contract is fulfilled for [0,1] (x0 = 0, dx = 1/N); the tent ic is spelled inline from literals and N (build-time cellwise evaluation is scope-free). Companion MMS accuracy driver: problems/advection_1d_periodic_minmod.esm."
+    }
+}

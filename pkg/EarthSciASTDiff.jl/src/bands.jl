@@ -90,7 +90,7 @@ function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[]):
     out = Band[]
     if isempty(shape_u)
         for s in sorted_sites(rhs, v)
-            coef = simplify(dscalar(rhs, s))
+            coef = _simp(dscalar(rhs, s))
             iszero_lit(coef) && continue
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             push!(out, Band(Tuple{Int,Int}[], Union{String,Int}[], cidx, coef))
@@ -104,7 +104,7 @@ end
 # Emit one band per site of a scalar-valued expression broadcast over `rows`.
 function _scalar_bands!(out, e::ASTExpr, v::String, rows, ridx, scale)
     for s in sorted_sites(e, v)
-        coef = simplify(mul(dscalar(e, s), scale...))
+        coef = _simp(mul(dscalar(e, s), scale...))
         iszero_lit(coef) && continue
         cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
         push!(out, Band(collect(Tuple{Int,Int}, rows),
@@ -194,7 +194,7 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     end
     body = e.expr_body
     for s in sorted_sites(body, v)
-        coef = simplify(mul(dscalar(body, s), scale...))
+        coef = _simp(mul(dscalar(body, s), scale...))
         iszero_lit(coef) && continue
         s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
             "whole-array reference to `$v` inside an aggregate body"))
@@ -286,6 +286,6 @@ function normalize_band(b::Band)::Band
     end
     isempty(subst) && return b
     return Band(b.rows, ridx,
-                ASTExpr[simplify(substitute(c, subst)) for c in b.cidx],
-                simplify(substitute(b.coef, subst)))
+                ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
+                _simp(substitute(b.coef, subst)))
 end

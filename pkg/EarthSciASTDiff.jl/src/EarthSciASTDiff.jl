@@ -15,6 +15,8 @@ language binding that can evaluate ESM expressions can evaluate the Jacobian.
 Layered API, lowest to highest:
 
   - [`dscalar`](@ref)              — derivative of one scalar expression w.r.t. a site
+  - [`simplify_branches`](@ref)    — `ifelse`-aware simplification (swell control);
+                                     [`cse_templates`](@ref) is the emission-side half
   - [`jacobian_bands`](@ref)       — all bands of a model / flattened system
   - [`jacobian_document`](@ref)    — original document + serialized `"jacobians"` block
   - [`jacobian_pattern`](@ref)     — structural sparsity pattern (`SparseMatrixCSC{Bool}`)
@@ -43,16 +45,19 @@ using SparseArrays
 using OrderedCollections: OrderedDict
 using JSON3
 
-export Site, dscalar,
+export Site, dscalar, simplify_branches,
        Band, JacEntry, bands, jacobian_bands,
        SysView, sysview, expanded_model,
        jacobian_document, parse_jacobian_block, stable_json,
+       cse_templates, expand_templates,
        jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
        ode_components, odefunction, odeproblem,
        detect_structure, jac_prototype,
        FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill
 
 include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
+include("simplify_branches.jl") # ifelse-aware simplification (swell control)
+include("cse.jl")            # hash-consed template extraction (swell control)
 include("scalar_rules.jl")   # dscalar + closed-function derivative table
 include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus

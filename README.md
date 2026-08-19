@@ -109,9 +109,13 @@ EarthSciAST implementation and is gated by the same goldens.
 
 ## Roadmap
 
-- [ ] Coefficient-size control for limiter-heavy schemes (PPM): `ifelse`
-      simplification, hash-consed emission / template-based CSE, symbolic
-      reverse mode per equation body.
+- [x] Coefficient-size control, stage 1: branch-aware simplification
+      (`simplify_branches` — equal-branch collapse, same-condition pruning)
+      in the band calculus, plus hash-consed template CSE at emission
+      (`cse_templates` → zero-param `expression_templates` in the block,
+      spec §4.1).
+- [ ] Coefficient-size control, stage 2 (PPM-scale): symbolic reverse mode
+      per equation body / CSE inside the evaluation model.
 - [ ] Static region clipping for `index(makearray…)` reads (exact patterns
       without region-membership `ifelse` guards).
 - [ ] Contracted-index bands (regrid joins, `conn[]`-table gathers),
