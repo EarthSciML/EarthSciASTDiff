@@ -47,7 +47,7 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
         fv = free_variables(rhs)
         for v in targets
             v in fv || continue                     # structural occurrence gate
-            for b in bands(rhs, v, ctx; shape_u = shape_u)
+            for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))
                 push!(entries, JacEntry(u, v, normalize_band(b)))
             end
         end

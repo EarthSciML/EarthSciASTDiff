@@ -45,6 +45,15 @@ Consequences (normative):
 - The pattern is a superset of any local (single-point) pattern. Producers
   MUST NOT emit a pattern derived from numeric probing at a point.
 
+**Region exactness.** Reads of region-structured arrays
+(`index(makearray…)`, directly or through an observed field) lower to
+region-membership conditionals whose conditions are affine in the entry's
+row indices with literal bounds. Such conditions are statically decidable:
+producers SHOULD split entries at the conditions' breakpoints and decide
+them exactly, so region structure appears as entry `rows` boundaries — never
+as `ifelse` guards inside `coef`, and never as branch-union padding in the
+pattern. Only genuinely value-dependent branches (limiters) remain unioned.
+
 ## 3. Derivative semantics (per-operator, normative)
 
 `d[e, s]` below is the derivative of expression `e` with respect to a

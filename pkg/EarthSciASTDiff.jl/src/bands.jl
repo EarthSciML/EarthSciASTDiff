@@ -101,14 +101,18 @@ function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[]):
     return out
 end
 
-# Emit one band per site of a scalar-valued expression broadcast over `rows`.
+# Emit one band per site of a scalar-valued expression broadcast over `rows`,
+# statically clipping decidable region guards first (clip.jl) so membership
+# `ifelse` never reaches the coefficients and the pattern is per-subrange
+# exact.
 function _scalar_bands!(out, e::ASTExpr, v::String, rows, ridx, scale)
-    for s in sorted_sites(e, v)
-        coef = _simp(mul(dscalar(e, s), scale...))
-        iszero_lit(coef) && continue
-        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-        push!(out, Band(collect(Tuple{Int,Int}, rows),
-                        collect(Union{String,Int}, ridx), cidx, coef))
+    for (rows2, body) in clip_regions(e, ridx, rows)
+        for s in sorted_sites(body, v)
+            coef = _simp(mul(dscalar(body, s), scale...))
+            iszero_lit(coef) && continue
+            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+            push!(out, Band(rows2, collect(Union{String,Int}, ridx), cidx, coef))
+        end
     end
 end
 
@@ -193,13 +197,15 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
         push!(rows, haskey(ranges, n) ? _range_of(ranges[n], ctx) : (1, shape_u[k]))
     end
     body = e.expr_body
-    for s in sorted_sites(body, v)
-        coef = _simp(mul(dscalar(body, s), scale...))
-        iszero_lit(coef) && continue
-        s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
-            "whole-array reference to `$v` inside an aggregate body"))
-        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-        push!(out, Band(rows, Union{String,Int}[oidx...], cidx, coef))
+    for (rows2, body2) in clip_regions(body, oidx, rows)
+        for s in sorted_sites(body2, v)
+            coef = _simp(mul(dscalar(body2, s), scale...))
+            iszero_lit(coef) && continue
+            s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
+                "whole-array reference to `$v` inside an aggregate body"))
+            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+            push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+        end
     end
 end
 
@@ -213,14 +219,25 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             # A full-rank aggregate value names every region dim explicitly
             # (singleton dims included); a reduced-rank value covers only the
             # non-singleton dims.
-            sub_shape = (val isa OpExpr && val.op == "aggregate" &&
-                         length(val.output_idx) == length(rows)) ?
+            val_fullrank = val isa OpExpr && val.op == "aggregate" &&
+                           length(val.output_idx) == length(rows)
+            sub_shape = val_fullrank ?
                 [hi - lo + 1 for (lo, hi) in rows] :
                 [rows[k][2] - rows[k][1] + 1 for k in nonsing]
             _bands_array!(sub, val, v, ctx, sub_shape, scale)
             # The value's bands are in the value's OWN index values (an
-            # aggregate ranging i ∈ [rlo, rhi] fills region positions
-            # lo..lo+(rhi−rlo)); shift each dim by (lo − rlo), pin singletons.
+            # aggregate ranging i ∈ [olo, ohi] fills region positions
+            # lo..lo+(ohi−olo)); shift each dim by (lo − origin), where the
+            # ORIGIN is the value range's start — NOT the band's own row
+            # start, which for a region-clipped sub-band (clip.jl) sits past
+            # the origin. Singletons are pinned.
+            origins = if val isa OpExpr && val.op == "aggregate"
+                vr = val.ranges === nothing ? Dict{String,Any}() : val.ranges
+                Int[haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
+                    for n in val.output_idx]
+            else
+                ones(Int, length(nonsing))   # identity/broadcast bands are 1-based
+            end
             for b in sub
                 ridx = Union{String,Int}[]; subst = Dict{String,ASTExpr}()
                 rows2 = Tuple{Int,Int}[]
@@ -229,7 +246,8 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
                 for (k, (lo, hi)) in enumerate(rows)
                     if fullrank || hi > lo
                         kk += 1
-                        r = b.ridx[kk]; rlo, rhi = b.rows[kk]; shift = lo - rlo
+                        r = b.ridx[kk]; rlo, rhi = b.rows[kk]
+                        shift = lo - origins[kk]
                         if r isa String
                             push!(ridx, r)
                             shift != 0 && (subst[r] = add(VarExpr(r), lit(-shift)))

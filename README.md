@@ -116,8 +116,11 @@ EarthSciAST implementation and is gated by the same goldens.
       spec §4.1).
 - [ ] Coefficient-size control, stage 2 (PPM-scale): symbolic reverse mode
       per equation body / CSE inside the evaluation model.
-- [ ] Static region clipping for `index(makearray…)` reads (exact patterns
-      without region-membership `ifelse` guards).
+- [x] Static region clipping for `index(makearray…)` reads (`clip.jl`):
+      decidable membership guards are decided exactly by splitting band row
+      ranges at their affine breakpoints (equal-coefficient sub-bands
+      re-merge), so region structure never reaches the coefficients or
+      pads the pattern; state-dependent (limiter) branches remain unioned.
 - [ ] Contracted-index bands (regrid joins, `conn[]`-table gathers),
       `interp.bilinear`, forcing-buffer columns, `tgrad`.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,

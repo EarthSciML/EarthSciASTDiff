@@ -61,6 +61,7 @@ include("cse.jl")            # hash-consed template extraction (swell control)
 include("scalar_rules.jl")   # dscalar + closed-function derivative table
 include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus
+include("clip.jl")           # static region clipping + band re-merging
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("jacobian.jl")       # jacobian_bands driver
 include("emit.jl")           # "jacobians" document block: emit / parse / goldens

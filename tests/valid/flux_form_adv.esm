@@ -1,0 +1,61 @@
+{
+    "esm": "0.8.0",
+    "metadata": {
+        "name": "flux_form_adv",
+        "description": "Flux-form upwind advection with an inflow face: an OBSERVED edge-flux field F defined by a makearray (constant inflow flux on edge 1, interior upwind flux c*u[e-1] on edges 2..9), read per cell as F[i] and F[i+1]. The per-cell reads of a makearray-defined array are the `index(makearray...)` lowering path (region-membership ifelse), so this is the regression fixture for STATIC REGION CLIPPING: the Jacobian bands must split at the region boundaries with guard-free coefficients (interior +-c/dx sub/diagonal bands; the inflow face carries no state coupling through F[1]) and the structural pattern must be exact."
+    },
+    "index_sets": {
+        "x":  { "kind": "interval", "size": 8 },
+        "xe": { "kind": "interval", "size": 9 }
+    },
+    "models": {
+        "FluxFormAdv": {
+            "variables": {
+                "u":   { "type": "state", "shape": ["x"], "default": 0.5 },
+                "uin": { "type": "parameter", "default": 1.0 },
+                "c":   { "type": "parameter", "default": 0.7 },
+                "dx":  { "type": "parameter", "default": 0.125 },
+                "F": {
+                    "type": "observed",
+                    "shape": ["xe"],
+                    "expression": {
+                        "op": "makearray", "args": [],
+                        "regions": [ [[1, 9]], [[2, 9]], [[1, 1]] ],
+                        "values": [
+                            0.0,
+                            {
+                                "op": "aggregate", "args": [],
+                                "output_idx": ["e"],
+                                "ranges": { "e": [2, 9] },
+                                "expr": { "op": "*", "args": [
+                                    "c",
+                                    { "op": "index", "args": [
+                                        "u", { "op": "-", "args": ["e", 1] } ] }
+                                ] }
+                            },
+                            { "op": "*", "args": ["c", "uin"] }
+                        ]
+                    }
+                }
+            },
+            "equations": [
+                {
+                    "lhs": { "op": "D", "args": ["u"], "wrt": "t" },
+                    "rhs": {
+                        "op": "aggregate", "args": [],
+                        "output_idx": ["i"],
+                        "ranges": { "i": [1, 8] },
+                        "expr": { "op": "/", "args": [
+                            { "op": "-", "args": [
+                                { "op": "index", "args": ["F", "i"] },
+                                { "op": "index", "args": [
+                                    "F", { "op": "+", "args": ["i", 1] } ] }
+                            ] },
+                            "dx"
+                        ] }
+                    }
+                }
+            ]
+        }
+    }
+}

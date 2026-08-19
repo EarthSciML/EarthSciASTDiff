@@ -16,6 +16,11 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     self-contained serialization of the EarthSciDiscretizations
     `advection_1d_periodic_minmod_tvd` problem — the limiter-family
     regression target for coefficient-size control (spec §4.1 templates)
+  - `flux_form_adv.esm` — flux-form upwind advection with an inflow face:
+    an observed edge-flux field defined by a makearray, read per cell
+    (`F[i]`, `F[i+1]`) — the `index(makearray…)` lowering path; the static
+    region clipping regression target (exact pattern, guard-free
+    coefficients, no ghost entry on the inflow row)
 - `goldens/` — `<fixture>.bands.json`: the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

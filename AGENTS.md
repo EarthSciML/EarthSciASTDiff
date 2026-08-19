@@ -34,6 +34,8 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `cse.jl`          — hash-consed repeated-subtree extraction into zero-param
   `expression_templates` (`cse_templates` / `expand_templates`, spec §4.1)
 - `bands.jl`        — array-level band calculus (aggregate/makearray)
+- `clip.jl`         — static region clipping (affine breakpoint splits, exact
+  guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
 - `emit.jl`         — "jacobians" block, goldens writer, derived eval model
 - `assemble.jl`     — pattern, scatter map, prepared `jac!`

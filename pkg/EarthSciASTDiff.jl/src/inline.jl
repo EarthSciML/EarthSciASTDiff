@@ -106,9 +106,15 @@ function _inline_once(e::ASTExpr, obs)::ASTExpr
                 subst = Dict{String,ASTExpr}(
                     n => _inline_once(e.args[k+1], obs) for (k, n) in enumerate(oidx))
                 return substitute(def.expr_body, subst)
+            elseif def isa OpExpr && def.op == "makearray"
+                # A named flux-style field: same lowering as an anonymous
+                # `index(makearray…)` read (region-membership ifelse, later
+                # clipped exactly by clip.jl where the guards are decidable).
+                return _index_makearray(
+                    def, ASTExpr[_inline_once(x, obs) for x in e.args[2:end]], obs)
             else
                 throw(InlineError(
-                    "index into observed `$(e.args[1].name)` whose definition is not an aggregate"))
+                    "index into observed `$(e.args[1].name)` whose definition is not an aggregate or makearray"))
             end
         end
         return map_children(x -> _inline_once(x, obs), e)
