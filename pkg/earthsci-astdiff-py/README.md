@@ -19,9 +19,11 @@ entries_p = jacobian_bands(file, "MyModel", wrt="parameters")
 text = stable_json([serialize_band(e) for e in entries])
 ```
 
-Scope of this first release: the band calculus (`jacobian_bands`), the §4
-entry serialization (`serialize_band` / `parse_band` / `stable_json`), and
-the structural sparsity pattern (`jacobian_pattern`, plain COO index lists —
-no scipy dependency). Numeric evaluation of the coefficient fields (the
-`prepare_jacobian` analogue over the numpy interpreter) and the emission-side
-template CSE follow.
+Scope: the band calculus (`jacobian_bands`), the §4 entry serialization
+(`serialize_band` / `parse_band` / `stable_json`), the structural sparsity
+pattern (`jacobian_pattern`, plain COO index lists — no scipy dependency),
+and numeric assembly (`assemble_jacobian` → `{(row, col): value}` summed per
+§4 additivity) — a correctness surface evaluated per cell through the
+official numpy-interpreter runtime and gated against the Julia reference's
+value goldens (`tests/goldens/*.jvals.json`, exact key set + 1e-10 relative).
+Production-rate assembly and the emission-side template CSE follow.

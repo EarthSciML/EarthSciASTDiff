@@ -27,6 +27,10 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     under a makearray region, and a `conn[]`-table gather (`u[conn[i,k]]`)
     with a duplicated neighbor so contracted points accumulate — the
     `contracted` entry-field (§4) regression target
+- `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
+  state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
+  numeric assemblies must reproduce the exact (row, col) key set and every
+  value to 1e-10 relative — bit-equality across runtimes is not required.
 - `goldens/` — `<fixture>.bands.json` (all five fixtures): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

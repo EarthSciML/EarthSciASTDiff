@@ -152,9 +152,11 @@ EarthSciAST implementation and is gated by the same goldens.
       reference on every fixture × axis (goldens now cover all five
       fixtures). Includes a faithful port of the reference `simplify`
       (the two packages' own simplifiers order commutative arguments
-      differently). Still to come there: numeric assembly over the numpy
-      interpreter (replacing `earthsci-ast-py`'s dense SymPy
-      `symbolic_jacobian`) and the emission-side template CSE.
+      differently). Numeric assembly is in too (`assemble_jacobian`,
+      per-cell evaluation through the numpy interpreter, gated by
+      Julia-produced VALUE goldens `tests/goldens/*.jvals.json` — exact
+      pattern key set, 1e-10 relative values). Still to come there:
+      production-rate assembly and the emission-side template CSE.
 - [ ] Rust binding (diffsol wants an analytic sparse J).
 
 ## License
