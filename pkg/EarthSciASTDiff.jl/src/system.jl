@@ -22,7 +22,17 @@ end
 # `EarthSciASTDiff.expanded_model === EarthSciAST.expanded_model` and the two
 # packages' exports never collide; re-exported from this module for
 # convenience.
-import EarthSciAST: expanded_model
+#
+# `expand_flattened_refs` is the SAME seam for the other input shape — a
+# coupled document's `FlattenedSystem`, whose surviving references resolve
+# against the flattener's MERGED `template_registry` (esm-spec §9.6.4 rule 7)
+# rather than a per-model `component_templates` entry. `expanded_model` takes
+# an `EsmFile` + model name and cannot serve here; this is EarthSciAST's
+# documented "Expand at your boundary" utility for flattened consumers (the
+# MTK `System`/`PDESystem` constructors call it at their entries for exactly
+# this reason). Not exported: it is EarthSciAST-internal, unlike
+# `expanded_model`.
+import EarthSciAST: expanded_model, expand_flattened_refs
 
 """
     sysview(file::EsmFile, model_name) -> SysView
@@ -36,6 +46,18 @@ function sysview(file::EarthSciAST.EsmFile, model_name)
 end
 
 function sysview(flat::EarthSciAST.FlattenedSystem)
+    # Expand FIRST, for the same reason the `EsmFile` method does. `flatten`
+    # ALWAYS hands its consumers reference-preserving expressions, so without
+    # this the two methods disagree: an `EsmFile` reaches the band calculus
+    # Option-A expanded, a `FlattenedSystem` reaches it with
+    # `apply_expression_template` nodes intact — nodes the calculus has no
+    # rule for and the inliner rejects outright ("definition is not an
+    # aggregate, makearray or const"). Expanding here restores the invariant
+    # this file exists to hold: we differentiate the SAME tree the tree-walk
+    # evaluator compiles, whichever input shape it arrived in. A no-op when no
+    # references survived (empty registry), so single-model and
+    # `ESS_TEMPLATE_REF_DISABLE=1` documents are byte-identical to before.
+    flat = expand_flattened_refs(flat)
     vars = Dict{String,Any}()
     for d in (flat.state_variables, flat.parameters, flat.observed_variables),
         (k, v) in d
