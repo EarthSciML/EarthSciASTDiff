@@ -60,9 +60,64 @@ function sid(ix::StructIndex, e::ASTExpr)::Int
         return id
     end
     # Leaves are immutable, so `===` identity is not a reliable memo key for
-    # them (types.jl); their shell key IS the whole node and costs O(1).
+    # them (types.jl) and every occurrence is re-keyed. Roughly half the nodes
+    # of a lowered RHS are leaves, so they get a direct key instead of a
+    # serialize + JSON round trip. Any INJECTIVE encoding will do — ids are
+    # private to one index — and the `{` an `OpExpr` shell key always starts
+    # with keeps the two spaces apart. `IntExpr(1)` and `NumExpr(1.0)` are
+    # different values (types.jl) and get different keys, as they must.
+    e isa VarExpr && return _intern_key!(ix, "v" * e.name)
+    e isa IntExpr && return _intern_key!(ix, "i" * string(e.value))
+    e isa NumExpr && return _intern_key!(ix, "n" * string(e.value))
     return _intern_key!(ix, stable_json(EarthSciAST.serialize_expression(e)))
 end
 
 _intern_key!(ix::StructIndex, k::String)::Int =
     get!(ix.ids, k, length(ix.ids) + 1)
+
+# ── the cheap half: a structural hash used as a NEGATIVE filter ──────────────
+#
+# `sid` is exact, but it still pays a (shallow) serialization per distinct
+# node, and the band calculus asks "are these two subtrees equal?" once per
+# node — where the answer is almost always NO. A hash that equal trees are
+# GUARANTEED to share turns that common case into one `UInt` compare and
+# leaves `sid` to adjudicate the rare match. Measured on the ReSEACT whole
+# system at 6×6×8, interning inside `simplify_branches` was 36% of
+# `jacobian_bands` after the Θ(n·depth) passes were fixed; nearly all of it
+# is this negative case.
+#
+# The hash covers the operator and the children only — NOT the non-expression
+# fields (`name`, `value`, `output_idx`, `ranges`, …) — so unequal trees may
+# collide. That is sound BY CONSTRUCTION here and nowhere else: a mismatch
+# proves inequality, a match proves nothing and must be confirmed with
+# [`sid`](@ref). Never use it as an identity.
+
+"""
+    StructHash()
+
+Identity-memoized structural hash. See [`shash`](@ref).
+"""
+struct StructHash
+    memo::IdDict{OpExpr,UInt}    # 0 is "absent"
+end
+StructHash() = StructHash(IdDict{OpExpr,UInt}())
+
+"""
+    shash(hx::StructHash, e::ASTExpr) -> UInt
+
+Hash of `e`'s operator/child structure. `skey(a) == skey(b)` implies
+`shash(hx, a) == shash(hx, b)`; the converse does NOT hold. O(1) per node,
+memoized on node identity.
+"""
+function shash(hx::StructHash, e::ASTExpr)::UInt
+    e isa VarExpr && return hash(e.name, 0x9e3779b97f4a7c11 % UInt)
+    e isa IntExpr && return hash(e.value, 0xc2b2ae3d27d4eb4f % UInt)
+    e isa NumExpr && return hash(e.value, 0x165667b19e3779f9 % UInt)
+    cached = get(hx.memo, e, UInt(0))
+    cached == 0 || return cached
+    h = Ref(hash(e.op, 0x27d4eb2f165667c5 % UInt))
+    map_children(c -> (h[] = hash(shash(hx, c), h[]); c), e)
+    h[] == 0 && (h[] = one(UInt))          # keep 0 as the absent sentinel
+    hx.memo[e] = h[]
+    return h[]
+end

@@ -36,45 +36,37 @@ meets. Doing it with [`skey`](@ref) — a full re-serialization of the subtree
 — makes the pass Θ(n·depth): each of the `k` levels of an `index(makearray…)`
 region chain re-serializes the whole chain below it. On a flattened document
 that chain has one level per grid cell, so the pass does not finish. The
-comparisons therefore go through a [`StructIndex`](@ref) (hashcons.jl):
-bottom-up interning keys a node from its own shell plus its children's ids,
-Θ(n) for the tree and O(1) per compare, and the id memo is keyed on node
-identity so the identity-preserving rewrites below re-key nothing they did
-not change. Same equality relation as `skey`, so the pass is unchanged.
+comparisons therefore go through hashcons.jl: a [`shash`](@ref) mismatch —
+O(1) per node — settles the common case where the two differ, and only a
+match pays for the exact answer from [`StructIndex`](@ref), whose bottom-up
+interning keys a node from its own shell plus its children's ids (Θ(n) for
+the tree, O(1) per compare) and memoizes on node identity, so the
+identity-preserving rewrites below re-key nothing they did not change. Same
+equality relation as `skey`, so the pass is unchanged.
 
 The second Θ(n·depth) term is `_assume`, which re-descends a branch looking
-for a condition that is usually not there at all. A one-pass census of how
-many `ifelse` nodes carry each condition (`_count_conditions!`) decides that
-in O(1) at the branch, so the chain costs Θ(n) instead of Θ(n·k); see `_sbr`.
+for a condition that is usually not there at all. A running count of the
+conditions the bottom-up pass has already built decides that in O(1) at the
+branch, so a `k`-level chain costs Θ(n) instead of Θ(n·k); see `_sbr`.
 """
-function simplify_branches(e::ASTExpr)::ASTExpr
-    cx = _SbrCtx()
-    _count_conditions!(cx, e)
-    return _sbr(e, cx)
-end
+simplify_branches(e::ASTExpr)::ASTExpr = _sbr(e, _SbrCtx())
 
 struct _SbrCtx
     ix::StructIndex
-    counts::Dict{Int,Int}     # condition id → how many `ifelse` nodes carry it
+    hx::StructHash
+    seen::Dict{UInt,Int}   # condition hash → surviving `ifelse` nodes already built
 end
-_SbrCtx() = _SbrCtx(StructIndex(), Dict{Int,Int}())
+_SbrCtx() = _SbrCtx(StructIndex(), StructHash(), Dict{UInt,Int}())
 
 _skc(e::ASTExpr, cx::_SbrCtx) = sid(cx.ix, e)
+_note!(cx::_SbrCtx, h::UInt) = (cx.seen[h] = get(cx.seen, h, 0) + 1)
 
-# One pass over the INPUT tree recording, per condition, how many `ifelse`
-# nodes test it. See `_sbr` for what the count buys; `foreach_subexpr_once`
-# both keeps the pass linear on a shared-subtree DAG and keeps the count
-# SOUND for that use (a count of 1 means one such node exists anywhere, so
-# no second one can be nested under it, however many parents reach it).
-function _count_conditions!(cx::_SbrCtx, e::ASTExpr)
-    EarthSciAST.foreach_subexpr_once(e) do x
-        if x isa OpExpr && x.op == "ifelse" && length(x.args) == 3
-            k = _skc(x.args[1], cx)
-            cx.counts[k] = get(cx.counts, k, 0) + 1
-        end
-    end
-    return cx
-end
+# Structural equality, filtered. Identity settles the shared case, the
+# structural hash settles the (overwhelmingly common) unequal case in one
+# `UInt` compare, and only a hash match pays for interning. Exact — `shash`
+# is a filter, never the answer (hashcons.jl).
+_same(x::ASTExpr, y::ASTExpr, cx::_SbrCtx) =
+    x === y || (shash(cx.hx, x) == shash(cx.hx, y) && _skc(x, cx) == _skc(y, cx))
 
 function _sbr(e::ASTExpr, cx::_SbrCtx)::ASTExpr
     e isa OpExpr || return e
@@ -84,36 +76,41 @@ function _sbr(e::ASTExpr, cx::_SbrCtx)::ASTExpr
     if c isa NumExpr || c isa IntExpr
         return iszero_lit(c) ? b : a
     end
-    ck = _skc(c, cx)
+    hck = shash(cx.hx, c)
     # SAME-CONDITION PRUNING, SKIPPED WHEN THERE IS NOTHING TO PRUNE. `_assume`
-    # re-descends a whole branch hunting for a nested test of this condition.
-    # A `k`-deep `ifelse` chain therefore costs a full sub-chain walk at every
-    # level — Θ(n·k) — and `index(makearray…)` lowering (inline.jl) builds
-    # exactly that chain with ONE LEVEL PER REGION, i.e. one per grid cell on
-    # a flattened document. The condition census says when the descent cannot
-    # find anything: a condition carried by a single `ifelse` in the whole
-    # input has no nested twin, and rewriting only ever DELETES `ifelse`
-    # nodes, so a count of 1 on the input is still 1 here. Result identical,
-    # the walk skipped. `2` is the "not in the census, assume shared" default.
-    if get(cx.counts, _skc(e.args[1], cx), 2) == 1
+    # re-descends a whole branch hunting for a nested test of THIS condition,
+    # so a `k`-deep `ifelse` chain costs a full sub-chain walk at every level —
+    # Θ(n·k) — and `index(makearray…)` lowering (inline.jl) builds exactly that
+    # chain with ONE LEVEL PER REGION, i.e. one per grid cell on a flattened
+    # document. `cx.seen` says when the descent cannot find anything: the pass
+    # is bottom-up, so every `ifelse` surviving into either branch has already
+    # been built and counted here, and a condition with no count has no nested
+    # twin to collapse — `_assume` would have returned the branch unchanged
+    # (its rewrite goes through the identity-preserving `map_children`).
+    # Counting by `shash` rather than by id keeps the census O(1) per node; a
+    # collision can only put us back on the walk we would always have taken.
+    if get(cx.seen, hck, 0) == 0
         a2, b2 = a, b
     else
-        a2 = _assume(a, ck, true, cx)
-        b2 = _assume(b, ck, false, cx)
+        ck = _skc(c, cx)
+        a2 = _assume(a, hck, ck, true, cx)
+        b2 = _assume(b, hck, ck, false, cx)
     end
-    _skc(a2, cx) == _skc(b2, cx) && return a2
-    (a2 === a && b2 === b) ? e2 : op("ifelse", c, a2, b2)
+    _same(a2, b2, cx) && return a2
+    _note!(cx, hck)                    # this `ifelse` survives into the result
+    return (a2 === a && b2 === b) ? e2 : op("ifelse", c, a2, b2)
 end
 
-# Rewrite `e` under the assumption that the condition with id `ck` has the
-# truth value `val`: every `ifelse` on that same condition collapses to the
-# corresponding branch.
-function _assume(e::ASTExpr, ck::Int, val::Bool, cx::_SbrCtx)::ASTExpr
+# Rewrite `e` under the assumption that the condition identified by
+# (`hck`, `ck`) has the truth value `val`: every `ifelse` on that same
+# condition collapses to the corresponding branch. `hck` filters, `ck` decides.
+function _assume(e::ASTExpr, hck::UInt, ck::Int, val::Bool, cx::_SbrCtx)::ASTExpr
     e isa OpExpr || return e
-    if e.op == "ifelse" && length(e.args) == 3 && _skc(e.args[1], cx) == ck
-        return _assume(e.args[val ? 2 : 3], ck, val, cx)
+    if e.op == "ifelse" && length(e.args) == 3 &&
+       shash(cx.hx, e.args[1]) == hck && _skc(e.args[1], cx) == ck
+        return _assume(e.args[val ? 2 : 3], hck, ck, val, cx)
     end
-    return map_children(x -> _assume(x, ck, val, cx), e)
+    return map_children(x -> _assume(x, hck, ck, val, cx), e)
 end
 
 # Wire-canonical literal normalization. On parse, EarthSciAST turns an
