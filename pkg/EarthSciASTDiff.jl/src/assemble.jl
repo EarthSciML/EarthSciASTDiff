@@ -114,6 +114,7 @@ of) `jac.prototype`. Fields of note: `prototype::SparseMatrixCSC{Float64}`,
 """
 struct JacobianEvaluator{F,P}
     fJ!::F                        # derived-model RHS (fills band fields into duj)
+    oop::Bool                     # true when `fJ!` is `f(u, p, t) -> du`
     uj::Vector{Float64}           # derived-model state buffer
     duj::Vector{Float64}
     umap::Vector{Int}             # uj[umap[i]] = u[i]
@@ -177,7 +178,18 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
         push!(scatter, (slot, pos))
     end
     structure = detect_structure(entries, sv)
-    return JacobianEvaluator(fJ!, zeros(length(u0j)), zeros(length(u0j)), umap,
+    # WHICH FORM did `build_evaluator` hand back? The derived band model goes
+    # through the ORDINARY builder, so it comes back in whichever form
+    # `build_kwargs` asked for: the default in-place `f!(du, u, p, t)`, or the
+    # out-of-place `f(u, p, t) -> du` that `form = :oop` produces. The
+    # out-of-place form is not an optional nicety here — it is the only form
+    # that traces (an in-place `f!` captures host scratch per node), so a
+    # consumer compiling the Jacobian alongside a traced RHS builds BOTH that
+    # way. Probed once, by method applicability, rather than by reaching into
+    # the builder's return types.
+    oop = !applicable(fJ!, zeros(1), zeros(1), pj, 0.0) &&
+          applicable(fJ!, zeros(1), pj, 0.0)
+    return JacobianEvaluator(fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
                              pj, scatter, proto, pattern, entries,
                              first.(sort(collect(vm0), by = last)), colnames,
                              structure, wrt)
@@ -188,10 +200,12 @@ function (jac::JacobianEvaluator)(J::SparseMatrixCSC, u::AbstractVector, p, t::R
     for (i, s) in enumerate(jac.umap)
         jac.uj[s] = u[i]
     end
-    jac.fJ!(jac.duj, jac.uj, p === nothing ? jac.p_default : p, t)
+    pp = p === nothing ? jac.p_default : p
+    duj = jac.oop ? jac.fJ!(jac.uj, pp, t) :
+                    (jac.fJ!(jac.duj, jac.uj, pp, t); jac.duj)
     fill!(J.nzval, 0.0)
     for (slot, pos) in jac.scatter
-        J.nzval[pos] += jac.duj[slot]
+        J.nzval[pos] += duj[slot]
     end
     return J
 end

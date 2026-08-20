@@ -68,10 +68,29 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs)::ASTExpr
         end
         v = if val isa OpExpr && val.op == "aggregate"
             oidx = [String(x) for x in val.output_idx]
-            length(oidx) == length(sub_idx) || throw(InlineError(
-                "makearray value rank $(length(oidx)) ≠ region free rank $(length(sub_idx))"))
+            # TWO legal value shapes, the same pair `_bands_makearray!`
+            # distinguishes with `val_fullrank` (bands.jl): a FULL-RANK
+            # aggregate names every region dim, singleton dims included; a
+            # REDUCED-RANK one names only the non-singleton dims. Bind each
+            # output index to the read index of the dim it actually names. Only
+            # the reduced-rank shape was accepted here, so a full-rank value
+            # over a region with a pinned dim — the shape a 3-D field's
+            # boundary face takes — was rejected outright.
+            #
+            # Inherited, and NOT changed here: the binding assumes the value
+            # aggregate's own range for a dim STARTS where the region does, so
+            # no origin shift is applied. `_bands_makearray!` does apply one
+            # (`shift = lo - origins[kk]`). No fixture in this suite exercises
+            # a shifted value range on this path, so the two are consistent
+            # only where the shift is zero.
+            tgt = length(oidx) == length(idx)     ? idx :
+                  length(oidx) == length(sub_idx) ? sub_idx :
+                  throw(InlineError(
+                      "makearray value rank $(length(oidx)) matches neither the " *
+                      "region rank $(length(idx)) nor the region free rank " *
+                      "$(length(sub_idx))"))
             substitute(val.expr_body,
-                       Dict{String,ASTExpr}(n => sub_idx[k] for (k, n) in enumerate(oidx)))
+                       Dict{String,ASTExpr}(n => tgt[k] for (k, n) in enumerate(oidx)))
         elseif val isa VarExpr || (val isa OpExpr && val.op in ("makearray", "index"))
             _inline_once(op("index", val, sub_idx...), obs)
         else

@@ -109,3 +109,130 @@ function _observed_defs(sv::SysView)
         String(n) => var.expression for (n, var) in sv.variables
         if var.type == EarthSciAST.ObservedVariable && var.expression !== nothing)
 end
+
+# ── inline pruning: which observed the calculus must descend into ─────────────
+#
+# WHY. The chain rule only has to descend into an algebraic intermediate whose
+# VALUE can move when a differentiation target moves. An observed that
+# transitively references none of the targets is, at every point of the state
+# space, a CONSTANT with respect to them: its derivative is identically zero,
+# not merely small. Such a subtree therefore contributes nothing to any band
+# and may be left un-inlined — kept as an opaque `v` / `index(v, …)` read.
+#
+# This is exact, not an approximation, and it is not a change of value either:
+# `_base_document` (emit.jl) serializes EVERY variable of the view, observed
+# definitions included, so a coefficient that still names such an observed is
+# evaluated by the ordinary tree-walk from the SAME definition it would have
+# been inlined from.
+#
+# WHAT IT BUYS. Inlining is the step that demands the differentiator understand
+# every array construct on the way down (rank-reducing spatial-join gathers,
+# regrid overlap templates, connectivity tables). Constant-w.r.t.-target
+# subtrees carry exactly those constructs — emissions regridding, geometry,
+# static maps — and the calculus never needed them. Pruning them is what lets a
+# coupled document be differentiated at all, and it also removes them from the
+# expression swell.
+#
+# WHY IT IS CONDITIONED ON `wrt`, AND MUST BE. The pruned set is computed from
+# the ACTUAL target set, never hard-coded to states. The two axes genuinely
+# disagree: an emissions field is state-independent (`∂E/∂u ≡ 0`) but is a
+# perfectly ordinary function of its parameters, so pruning it for
+# `wrt = :parameters` would silently return a WRONG (zero) parameter Jacobian —
+# precisely the failure mode the adjoint needs `∂f/∂p` for. Same code, two
+# different seeds; the seed is what makes each case right.
+#
+# `wrt = :time` is deliberately NOT pruned (see `jacobian_bands`): time enters
+# an expression both by the explicit `t` site AND implicitly, through
+# externally-provided time-varying data, so a free-variable seed of `{"t"}` is
+# not a sound over-approximation of time-dependence.
+
+# An expression whose true dependencies `free_variables` CANNOT see. A
+# surviving `apply_expression_template` node keeps its body in the registry and
+# exposes only its bindings, so its body's free references are invisible
+# (EarthSciAST `expression_graph` guards the same way, graph.jl:320). `sysview`
+# expands references at both entries, so this should never fire; it is here so
+# that if an unexpanded reference ever does reach the calculus, the observed is
+# treated as target-DEPENDENT (kept, hence inlined, hence loudly rejected by
+# the inliner) rather than silently pruned to zero.
+function _opaque_deps(e::ASTExpr)::Bool
+    found = false
+    EarthSciAST.foreach_subexpr(e) do x
+        found |= x isa OpExpr && x.op == "apply_expression_template"
+    end
+    return found
+end
+
+# Names occurring in an index-ARGUMENT position — `args[2:end]` of an `index`
+# node, i.e. a subscript rather than a value. `args[1]` (the indexed object) is
+# an ordinary value position and is walked normally.
+function _index_arg_names!(acc::Set{String}, e::ASTExpr)
+    e isa OpExpr || return acc
+    if e.op == "index"
+        _index_arg_names!(acc, e.args[1])
+        for k in 2:length(e.args)
+            union!(acc, free_variables(e.args[k]))   # everything under a subscript
+        end
+        return acc
+    end
+    map_children(c -> (_index_arg_names!(acc, c); c), e)
+    return acc
+end
+
+"""
+    inlinable_observed(obs, equations, targets) -> Dict{String,ASTExpr}
+
+The subset of the observed definitions `obs` that the band calculus actually
+has to inline. Two independent reasons to keep one, unioned to a joint
+fixpoint:
+
+ 1. **It can move with a target.** Reflexive-transitive closure over the
+    observed→observed reference graph, seeded from the observed that name a
+    `targets` member directly. Everything outside this closure is a constant
+    with respect to every target, so its derivative is identically zero and
+    inlining it could not have produced a band. See the rationale above for
+    why the seed must track `wrt`.
+
+ 2. **A column index needs its value at build time.** A band's `cidx` is
+    evaluated ONCE per row cell during assembly (`_eval_cidx`, assemble.jl),
+    with only the row/contracted index names bound — so an observed reached
+    through a subscript (`u[conn[i,k]]`, a connectivity table) must be a
+    closed `index(const, …)` gather by then, and is inlined however
+    target-independent it is. Dropping this clause is not a wrong VALUE, it is
+    a build-time failure to evaluate the column, which is why it is a separate
+    clause and not folded into (1).
+
+Inlining a body splices it in at its use site, so a body kept for either
+reason can expose fresh subscript occurrences: the scan is iterated to a
+fixpoint over the equations plus the currently-kept bodies.
+"""
+function inlinable_observed(obs::Dict{String,ASTExpr}, equations,
+                            targets::AbstractSet{String})::Dict{String,ASTExpr}
+    fvs = Dict{String,Set{String}}(n => free_variables(e) for (n, e) in obs)
+    readers = Dict{String,Vector{String}}()      # name → observed that read it
+    work = String[]
+    for (n, fv) in fvs
+        (isdisjoint(fv, targets) && !_opaque_deps(obs[n])) || push!(work, n)
+        for m in fv
+            haskey(obs, m) && push!(get!(readers, m, String[]), n)
+        end
+    end
+    keep = Set{String}(work)
+    while !isempty(work)                          # (1): closure over the READERS
+        for n in get(readers, pop!(work), ())     # of a target-dependent name
+            n in keep || (push!(keep, n); push!(work, n))
+        end
+    end
+    while true                                    # (2): fixpoint over the BODIES
+        acc = Set{String}()                       # kept so far — the other
+        for eq in equations                       # direction; a subscripted name
+            _index_arg_names!(acc, eq.rhs)        # does NOT pull in its readers,
+        end                                       # only what its own body needs
+        for n in keep
+            _index_arg_names!(acc, obs[n])
+        end
+        fresh = String[n for n in acc if haskey(obs, n) && !(n in keep)]
+        isempty(fresh) && break
+        union!(keep, fresh)
+    end
+    return Dict{String,ASTExpr}(n => obs[n] for n in keep)
+end
