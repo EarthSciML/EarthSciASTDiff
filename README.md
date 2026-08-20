@@ -76,6 +76,7 @@ Mirrors EarthSciAST to make room for future language bindings:
 esm-jacobian-spec.md         draft spec (block format + derivative semantics)
 pkg/
   EarthSciASTDiff.jl/        Julia implementation (reference)
+  earthsci-astdiff-py/       Python binding (band calculus + §4 serialization)
 tests/
   valid/                     shared fixture models
   goldens/                   band-list goldens (deterministic JSON)
@@ -145,8 +146,16 @@ EarthSciAST implementation and is gated by the same goldens.
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package
       extension; `ode_components` is the solver-free half).
-- [ ] Python binding first (replacing `earthsci-ast-py`'s dense SymPy
-      `symbolic_jacobian`), then Rust (diffsol wants an analytic sparse J).
+- [x] Python binding, band-calculus half (`pkg/earthsci-astdiff-py`):
+      the §3 rule table, observed inlining, static clipping, contracted
+      bands, and the §4 serialization — byte-identical to the Julia
+      reference on every fixture × axis (goldens now cover all five
+      fixtures). Includes a faithful port of the reference `simplify`
+      (the two packages' own simplifiers order commutative arguments
+      differently). Still to come there: numeric assembly over the numpy
+      interpreter (replacing `earthsci-ast-py`'s dense SymPy
+      `symbolic_jacobian`) and the emission-side template CSE.
+- [ ] Rust binding (diffsol wants an analytic sparse J).
 
 ## License
 

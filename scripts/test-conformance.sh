@@ -10,7 +10,8 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "=== Julia (reference) ==="
 julia --project="$ROOT/pkg/EarthSciASTDiff.jl" -e 'using Pkg; Pkg.test()'
 
-# echo "=== Python ==="   # cd "$ROOT/pkg/earthsci-astdiff-py" && python3 -m pytest tests/ -v
+echo "=== Python ==="
+(cd "$ROOT/pkg/earthsci-astdiff-py" && python3 -m pytest tests/ -q)
 # echo "=== Rust ==="     # cd "$ROOT/pkg/earthsci-astdiff-rs" && cargo test
 # echo "=== Go ==="       # cd "$ROOT/pkg/earthsci-astdiff-go" && go test ./...
 # echo "=== TS ==="       # cd "$ROOT/pkg/earthsci-astdiff-ts" && npm test

@@ -27,7 +27,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     under a makearray region, and a `conn[]`-table gather (`u[conn[i,k]]`)
     with a duplicated neighbor so contracted points accumulate — the
     `contracted` entry-field (§4) regression target
-- `goldens/` — `<fixture>.bands.json`: the `entries` list of the `"jacobians"`
+- `goldens/` — `<fixture>.bands.json` (all five fixtures): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate
   with `scripts/regenerate-goldens.jl` after an INTENDED rule or format

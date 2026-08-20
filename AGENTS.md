@@ -27,6 +27,14 @@ that will merge into EarthSciAST's `esm-spec.md`). Layout mirrors EarthSciAST:
 `pkg/` holds language implementations (Julia is the reference), `tests/`
 holds shared fixtures + goldens that all future bindings must match.
 
+Python binding (`pkg/earthsci-astdiff-py/src/earthsci_astdiff/`): a module-
+for-module mirror of the Julia source map below, plus `simplify_port.py` — a
+faithful port of the Julia reference's `EarthSciAST.simplify` (the bindings'
+own simplifiers differ in commutative-argument handling, and the goldens pin
+the Julia behavior; never switch the band calculus back to
+`earthsci_ast.expression.simplify`). Tests import `earthsci_ast` from a
+sibling EarthSciAST checkout when it is not installed (see tests/conftest.py).
+
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `scalar_rules.jl` — per-op derivative table; MUST match spec §3 row-for-row
 - `simplify_branches.jl` — `ifelse`-aware simplification (equal-branch
