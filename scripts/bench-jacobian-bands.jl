@@ -165,7 +165,10 @@ function main(args)
         if a == "--synthetic";           synth = true; i += 1
         elseif a == "--k";               ks = parse.(Int, split(args[i+1], ",")); i += 2
         elseif a == "--esm";             esm = args[i+1]; i += 2
-        elseif a == "--metaparameters";  push!(mps, Dict{String,Any}(JSON3.read(args[i+1], Dict{String,Any}))); i += 2
+        elseif a == "--metaparameters"   # metaparameters are integers by spec
+            push!(mps, Dict{String,Int}(String(k) => Int(v)
+                                        for (k, v) in JSON3.read(args[i+1], Dict{String,Any})))
+            i += 2
         elseif a == "--include";         push!(incl, args[i+1]); i += 2
         elseif a == "--select";          select = args[i+1]; i += 2
         elseif a == "--wrt";             wrt = Symbol(args[i+1]); i += 2
@@ -173,7 +176,7 @@ function main(args)
         end
     end
     synth && run_synthetic(ks)
-    esm === nothing || run_document(esm, isempty(mps) ? [Dict{String,Any}()] : mps,
+    esm === nothing || run_document(esm, isempty(mps) ? [Dict{String,Int}()] : mps,
                                     incl, select, wrt)
     (synth || esm !== nothing) ||
         error("nothing to do: pass --synthetic and/or --esm PATH")
