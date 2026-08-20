@@ -112,9 +112,16 @@ function _inline_once(e::ASTExpr, obs)::ASTExpr
                 # clipped exactly by clip.jl where the guards are decidable).
                 return _index_makearray(
                     def, ASTExpr[_inline_once(x, obs) for x in e.args[2:end]], obs)
+            elseif def isa OpExpr && def.op == "const"
+                # A literal connectivity/weight table (`conn[i,k]`): keep the
+                # gather, inline the table itself so downstream consumers
+                # (site column evaluation, the derived evaluation model) see
+                # a closed `index(const, …)` form.
+                return op("index", def,
+                          ASTExpr[_inline_once(x, obs) for x in e.args[2:end]]...)
             else
                 throw(InlineError(
-                    "index into observed `$(e.args[1].name)` whose definition is not an aggregate or makearray"))
+                    "index into observed `$(e.args[1].name)` whose definition is not an aggregate, makearray or const"))
             end
         end
         return map_children(x -> _inline_once(x, obs), e)

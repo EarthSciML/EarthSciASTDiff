@@ -72,3 +72,57 @@ end
     @test SciMLBase.successful_retcode(sol) && SciMLBase.successful_retcode(ref)
     @test sol.u[end] ≈ ref.u[end] rtol = 1e-6
 end
+
+@testset "tgrad: analytical ∂f/∂t (wrt = :time)" begin
+    # Non-autonomous model: D(w) = sin(t)·w + c·t (∂/∂t = cos(t)·w + c),
+    # D(v) = 2 v w (autonomous row → 0).
+    doc = Dict{String,Any}("esm" => "0.8.0",
+        "metadata" => Dict{String,Any}("name" => "TGrad"),
+        "models" => Dict{String,Any}("M" => Dict{String,Any}(
+            "variables" => Dict{String,Any}(
+                "w" => Dict{String,Any}("type" => "state", "default" => 0.8),
+                "v" => Dict{String,Any}("type" => "state", "default" => 1.1),
+                "c" => Dict{String,Any}("type" => "parameter", "default" => 3.0)),
+            "equations" => Any[
+                Dict{String,Any}(
+                    "lhs" => Dict{String,Any}("op" => "D", "args" => Any["w"], "wrt" => "t"),
+                    "rhs" => Dict{String,Any}("op" => "+", "args" => Any[
+                        Dict{String,Any}("op" => "*", "args" => Any[
+                            Dict{String,Any}("op" => "sin", "args" => Any["t"]), "w"]),
+                        Dict{String,Any}("op" => "*", "args" => Any["c", "t"])])),
+                Dict{String,Any}(
+                    "lhs" => Dict{String,Any}("op" => "D", "args" => Any["v"], "wrt" => "t"),
+                    "rhs" => Dict{String,Any}("op" => "*",
+                                              "args" => Any[2.0, "v", "w"]))])))
+    file = EarthSciAST.load(doc)
+    entries = jacobian_bands(sysview(file, "M"); wrt = :time)
+    @test length(entries) == 1 && entries[1].v == "t"
+
+    c = ode_components(file)
+    τ = 0.7
+    u = copy(c.u0)
+    dT = similar(u)
+    c.tgrad!(dT, u, c.p, τ)
+    iw = c.var_map["w"]; iv = c.var_map["v"]
+    @test dT[iw] ≈ cos(τ) * u[iw] + 3.0 rtol = 1e-12
+    @test dT[iv] == 0.0
+    # against a central finite difference in t through the tree-walk RHS
+    h = 1e-6
+    dup = similar(u); dum = similar(u)
+    c.f!(dup, u, c.p, τ + h); c.f!(dum, u, c.p, τ - h)
+    @test dT ≈ (dup .- dum) ./ 2h rtol = 1e-8
+    # one-shot surface carries the same values as an n×1 matrix
+    res = assemble_jacobian(file; wrt = :time, u = u, t = τ)
+    @test res.colnames == ["t"] && size(res.J, 2) == 1
+    @test Vector(res.J[:, 1]) ≈ dT rtol = 1e-12
+    # SciMLBase wiring exposes it
+    f = odefunction(file)
+    dT2 = similar(u); f.tgrad(dT2, u, c.p, τ)
+    @test dT2 ≈ dT
+
+    # an autonomous system gets the zero fill
+    ca = ode_components(fixture("bd_chem.esm"))
+    dTa = fill(NaN, length(ca.u0))
+    ca.tgrad!(dTa, ca.u0, ca.p, 0.3)
+    @test all(dTa .== 0.0)
+end

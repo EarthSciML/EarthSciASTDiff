@@ -8,7 +8,7 @@
 
 """
     ode_components(input; model_name = nothing, build_kwargs = NamedTuple())
-        -> (f!, jac!, jac_prototype, u0, p, var_map, jacobian)
+        -> (f!, jac!, jac_prototype, tgrad!, u0, p, var_map, jacobian)
 
 Everything a stiff ODE solver needs, with no solver dependency:
 
@@ -17,6 +17,10 @@ Everything a stiff ODE solver needs, with no solver dependency:
     the nonzeros of a matrix shaped like `jac_prototype` in place.
   - `jac_prototype::SparseMatrixCSC{Float64}` — the fixed structural
     (point-independent) pattern with stored zeros, ready to hand to a solver.
+  - `tgrad!` — the analytical time gradient, `tgrad!(dT, u, p, t)` filling
+    `∂f/∂t` in place (`wrt = :time` through the same band calculus). For a
+    system whose RHS never reads `t` this is a zero fill with no second
+    evaluator built.
   - `u0`, `p` — the document's initial state and parameter values.
   - `var_map` — state-element name → index in `u`.
   - `jacobian::JacobianEvaluator` — the underlying prepared evaluator
@@ -33,8 +37,26 @@ function ode_components(input; model_name = nothing, build_kwargs = NamedTuple()
     jac = prepare_jacobian(input; wrt = :states, model_name = model_name,
                            build_kwargs = build_kwargs)
     jac! = (J, u, p, t) -> jac(J, u, p, t)
+    # Time gradient: an autonomous RHS (no structural `t` occurrence) gets a
+    # zero fill instead of a second compiled evaluator.
+    tgrad! = if isempty(jacobian_bands(_sv_src(input, model_name)[1]; wrt = :time))
+        (dT, u, p, t) -> fill!(dT, 0.0)
+    else
+        tg = prepare_jacobian(input; wrt = :time, model_name = model_name,
+                              build_kwargs = build_kwargs)
+        Tbuf = copy(tg.prototype)
+        (dT, u, p, t) -> begin
+            tg(Tbuf, u, p, t)
+            fill!(dT, 0.0)
+            rows = rowvals(Tbuf); vals = nonzeros(Tbuf)
+            for k in eachindex(rows)
+                dT[rows[k]] += vals[k]        # single `t` column
+            end
+            dT
+        end
+    end
     return (f! = f!, jac! = jac!, jac_prototype = copy(jac.prototype),
-            u0 = u0, p = p0, var_map = vm, jacobian = jac)
+            tgrad! = tgrad!, u0 = u0, p = p0, var_map = vm, jacobian = jac)
 end
 
 const _SCIML_HINT = "requires the SciMLBase glue: load SciMLBase (any \

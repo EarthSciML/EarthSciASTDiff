@@ -1,0 +1,314 @@
+{
+ "esm": "0.8.0",
+ "metadata": {
+  "name": "ContractedOps",
+  "description": "Contracted-index (reduce +) aggregates: a dense gathered matvec column u[j], a contraction-independent column whose coefficient is a symbolic sum, and a row+contracted affine stencil u[i+k] under a makearray region. Canonical fixture for contracted-index Jacobian bands. Plus a conn[]-table gather u[conn[i,k]] with a duplicated neighbor (row 3) so contracted points accumulate."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 6
+  },
+  "two": {
+   "kind": "interval",
+   "size": 2
+  }
+ },
+ "models": {
+  "ContractedOps": {
+   "variables": {
+    "u": {
+     "type": "state",
+     "shape": [
+      "x"
+     ],
+     "default": 0.4
+    },
+    "y": {
+     "type": "state",
+     "shape": [
+      "x"
+     ],
+     "default": 0.1
+    },
+    "q": {
+     "type": "state",
+     "shape": [
+      "x"
+     ],
+     "default": 0.2
+    },
+    "z": {
+     "type": "state",
+     "shape": [
+      "x"
+     ],
+     "default": 0.3
+    },
+    "conn": {
+     "type": "observed",
+     "shape": [
+      "x",
+      "two"
+     ],
+     "expression": {
+      "op": "const",
+      "args": [],
+      "value": [
+       [
+        2,
+        6
+       ],
+       [
+        1,
+        3
+       ],
+       [
+        5,
+        5
+       ],
+       [
+        2,
+        4
+       ],
+       [
+        6,
+        1
+       ],
+       [
+        3,
+        4
+       ]
+      ]
+     }
+    }
+   },
+   "equations": [
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "u"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "*",
+      "args": [
+       -0.05,
+       "u"
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "y"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "aggregate",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "reduce": "+",
+      "ranges": {
+       "i": [
+        1,
+        6
+       ],
+       "j": [
+        1,
+        6
+       ]
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        {
+         "op": "/",
+         "args": [
+          {
+           "op": "+",
+           "args": [
+            "i",
+            {
+             "op": "*",
+             "args": [
+              2,
+              "j"
+             ]
+            }
+           ]
+          },
+          10
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "u",
+          "j"
+         ]
+        },
+        {
+         "op": "exp",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            0.1,
+            {
+             "op": "index",
+             "args": [
+              "u",
+              "i"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "q"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "makearray",
+      "args": [],
+      "regions": [
+       [
+        [
+         1,
+         6
+        ]
+       ],
+       [
+        [
+         1,
+         4
+        ]
+       ]
+      ],
+      "values": [
+       0.0,
+       {
+        "op": "aggregate",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "reduce": "+",
+        "ranges": {
+         "i": [
+          1,
+          4
+         ],
+         "k": [
+          1,
+          2
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          {
+           "op": "/",
+           "args": [
+            "k",
+            3
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "u",
+            {
+             "op": "+",
+             "args": [
+              "i",
+              "k"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "z"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "aggregate",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "reduce": "+",
+      "ranges": {
+       "i": [
+        1,
+        6
+       ],
+       "k": [
+        1,
+        2
+       ]
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        {
+         "op": "+",
+         "args": [
+          0.3,
+          {
+           "op": "*",
+           "args": [
+            0.1,
+            "k"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "u",
+          {
+           "op": "index",
+           "args": [
+            "conn",
+            "i",
+            "k"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}

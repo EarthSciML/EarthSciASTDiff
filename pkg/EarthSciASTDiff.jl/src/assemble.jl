@@ -3,6 +3,24 @@
 
 _cellname(v::String, cell) = isempty(cell) ? v : "$(v)[$(join(cell, ","))]"
 
+# Column-index evaluation. `evaluate_expr` covers the scalar core; a literal
+# `index(const, …)` gather (a `conn[]` connectivity table) is folded here
+# first, because the tree-walk's inline-const branch is a build-time resolve,
+# not a runtime read.
+function _fold_const_gathers(e::ASTExpr, bind::Dict{String,Float64})::ASTExpr
+    e isa OpExpr || return e
+    if e.op == "index" && e.args[1] isa OpExpr && (e.args[1]::OpExpr).op == "const"
+        v = (e.args[1]::OpExpr).value
+        for x in e.args[2:end]
+            v = v[_eval_cidx(x, bind)]
+        end
+        return v isa Integer ? IntExpr(Int64(v)) : NumExpr(Float64(v))
+    end
+    return map_children(x -> _fold_const_gathers(x, bind), e)
+end
+_eval_cidx(c::ASTExpr, bind::Dict{String,Float64})::Int =
+    Int(round(evaluate_expr(_fold_const_gathers(c, bind), bind)))
+
 # Enumerate every (band, row cell) → (row name, col name) pair. Column index
 # expressions are evaluated per cell ONCE here (build-time, not solve-time).
 function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
@@ -12,21 +30,30 @@ function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
         b = en.band
         rowcells = isempty(b.rows) ? [Int[]] :
             [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
-        for cell in rowcells
+        ccells = isempty(b.contracted) ? [Int[]] :
+            [collect(c) for c in
+             Iterators.product(((lo:hi) for (_, lo, hi) in b.contracted)...)]
+        for cell in rowcells, cc in ccells
             bind = Dict{String,Float64}(
                 r => Float64(cell[k2]) for (k2, r) in enumerate(b.ridx) if r isa String)
-            cidx = [Int(round(evaluate_expr(c, bind))) for c in b.cidx]
+            for (k2, (n, _, _)) in enumerate(b.contracted)
+                bind[n] = Float64(cc[k2])
+            end
+            cidx = [_eval_cidx(c, bind) for c in b.cidx]
             push!(pairs, (k, _cellname(en.u, cell), _cellname(en.v, cidx),
-                          _cellname("J_$k", cell)))
+                          _cellname("J_$k", vcat(cell, cc))))
         end
     end
     return pairs
 end
 
 # Column slot lookup: state columns index the state vector; parameter columns
-# index the scalar-parameter order of the RHS `p` NamedTuple.
+# index the scalar-parameter order of the RHS `p` NamedTuple; time is the
+# single column `t`.
 function _colmap(vm0, p0, wrt::Symbol)
-    if wrt == :states
+    if wrt == :time
+        return name -> name == "t" ? 1 : 0, 1, ["t"]
+    elseif wrt == :states
         return name -> get(vm0, name, 0), length(vm0),
                first.(sort(collect(vm0), by = last))
     else

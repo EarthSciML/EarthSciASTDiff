@@ -17,13 +17,15 @@ import SciMLBase
 
 function _odefunction(input; model_name = nothing, build_kwargs = NamedTuple())
     c = ode_components(input; model_name = model_name, build_kwargs = build_kwargs)
-    return SciMLBase.ODEFunction(c.f!; jac = c.jac!, jac_prototype = c.jac_prototype)
+    return SciMLBase.ODEFunction(c.f!; jac = c.jac!, jac_prototype = c.jac_prototype,
+                                 tgrad = c.tgrad!)
 end
 
 function _odeproblem(input, tspan; u0 = nothing, p = nothing,
                      model_name = nothing, build_kwargs = NamedTuple())
     c = ode_components(input; model_name = model_name, build_kwargs = build_kwargs)
-    f = SciMLBase.ODEFunction(c.f!; jac = c.jac!, jac_prototype = c.jac_prototype)
+    f = SciMLBase.ODEFunction(c.f!; jac = c.jac!, jac_prototype = c.jac_prototype,
+                              tgrad = c.tgrad!)
     return SciMLBase.ODEProblem(f, u0 === nothing ? c.u0 : u0,
                                 (Float64(tspan[1]), Float64(tspan[2])),
                                 p === nothing ? c.p : p)

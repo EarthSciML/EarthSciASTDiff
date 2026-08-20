@@ -128,8 +128,19 @@ EarthSciAST implementation and is gated by the same goldens.
       ranges at their affine breakpoints (equal-coefficient sub-bands
       re-merge), so region structure never reaches the coefficients or
       pads the pattern; state-dependent (limiter) branches remain unioned.
-- [ ] Contracted-index bands (regrid joins, `conn[]`-table gathers),
-      `interp.bilinear`, forcing-buffer columns, `tgrad`.
+- [x] Contracted-index bands: `reduce: "+"` aggregates over gathered
+      columns (`u[j]`, `u[i+k]`, `u[conn[i,k]]` const tables) emit entries
+      with free `contracted` column dimensions (accumulating at assembly);
+      contraction-independent columns emit ordinary entries with a
+      symbolic-sum coefficient. Filtered aggregates and non-`"+"` semirings
+      still fail loudly.
+- [x] `interp.bilinear` derivative (two clamped-weight partials, per-cell
+      slope constants precomputed into nested segment `ifelse`, spec §3.4)
+      and `tgrad` (`wrt = :time` through the same band calculus;
+      `ode_components`/`odefunction` attach the analytical `tgrad!`, with a
+      zero fill for autonomous systems).
+- [ ] Forcing-buffer columns (∂f/∂(streamed forcing values), the EarthSciIO
+      coupling) — needs the streaming-forcing representation to settle.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package

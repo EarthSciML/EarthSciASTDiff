@@ -21,6 +21,12 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     (`F[i]`, `F[i+1]`) — the `index(makearray…)` lowering path; the static
     region clipping regression target (exact pattern, guard-free
     coefficients, no ghost entry on the inflow row)
+  - `contracted_ops.esm` — contracted-index (`reduce: "+"`) aggregates: a
+    dense gathered matvec column (`u[j]`), a contraction-independent column
+    (symbolic-sum coefficient), a row+contracted affine stencil (`u[i+k]`)
+    under a makearray region, and a `conn[]`-table gather (`u[conn[i,k]]`)
+    with a duplicated neighbor so contracted points accumulate — the
+    `contracted` entry-field (§4) regression target
 - `goldens/` — `<fixture>.bands.json`: the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

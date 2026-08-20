@@ -235,7 +235,7 @@ earlier band's position), so emission stays deterministic.
 """
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
-    key(b) = (b.ridx, [skey(c) for c in b.cidx], skey(b.coef))
+    key(b) = (b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted)
     ks = [key(b) for b in bs]
     out = collect(Band, bs)
     alive = trues(length(out))
@@ -262,7 +262,8 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
                 (ok && d != 0) || continue
                 lo = min(ra[d][1], rb[d][1]); hi = max(ra[d][2], rb[d][2])
                 rows = copy(ra); rows[d] = (lo, hi)
-                out[a] = Band(rows, out[a].ridx, out[a].cidx, out[a].coef)
+                out[a] = Band(rows, out[a].ridx, out[a].cidx, out[a].coef,
+                              out[a].contracted)
                 alive[b] = false
                 changed = true
             end

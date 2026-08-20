@@ -61,10 +61,18 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
     isempty(templates) && return nothing
     tnames = collect(keys(templates))
 
-    # Per entry: row-index name → (lo, hi) box, from the band.
-    boxof = [Dict{String,Tuple{Int,Int}}(
-                 String(r) => en.band.rows[k]
-                 for (k, r) in enumerate(en.band.ridx) if r isa String)
+    # Per entry: index name → (lo, hi) box — row dims plus any free
+    # contracted column dims (their names are just as free in the
+    # coefficient, and the derived J_k field binds them the same way).
+    boxof = [begin
+                 d = Dict{String,Tuple{Int,Int}}(
+                     String(r) => en.band.rows[k]
+                     for (k, r) in enumerate(en.band.ridx) if r isa String)
+                 for (n, lo, hi) in en.band.contracted
+                     d[n] = (lo, hi)
+                 end
+                 d
+             end
              for en in entries]
     namesk = [Set{String}(keys(b)) for b in boxof]
     allnames = isempty(namesk) ? Set{String}() : union(namesk...)

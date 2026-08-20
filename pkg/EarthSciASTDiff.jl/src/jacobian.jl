@@ -20,7 +20,10 @@ end
 
 Differentiate every differential equation of the system with respect to every
 state (`wrt = :states`) or every parameter (`wrt = :parameters`) that
-structurally occurs in its (observed-inlined) RHS.
+structurally occurs in its (observed-inlined) RHS — or with respect to time
+itself (`wrt = :time`, the single scalar site `t`; `datetime.*` reads are
+piecewise-constant and differentiate to 0, `interp.linear`/`interp.bilinear`
+of `t` to the active-segment slope).
 
 The pattern implied by the result is GLOBAL: `ifelse`/`min`/`max` branches
 are unioned, so it is valid at every point and is a superset of any local
@@ -32,11 +35,15 @@ jacobian_bands(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands(sysview(flat); kw...)
 
 function jacobian_bands(sv::SysView; wrt::Symbol = :states)
-    wrt in (:states, :parameters) ||
-        throw(ArgumentError("wrt must be :states or :parameters, got $wrt"))
+    wrt in (:states, :parameters, :time) ||
+        throw(ArgumentError("wrt must be :states, :parameters or :time, got $wrt"))
     ctx = _ctx(sv)
-    want = wrt == :states ? EarthSciAST.StateVariable : EarthSciAST.ParameterVariable
-    targets = sort!([String(n) for (n, var) in sv.variables if var.type == want])
+    targets = if wrt == :time
+        ["t"]
+    else
+        want = wrt == :states ? EarthSciAST.StateVariable : EarthSciAST.ParameterVariable
+        sort!([String(n) for (n, var) in sv.variables if var.type == want])
+    end
     obs = _observed_defs(sv)
     entries = JacEntry[]
     for eq in sv.equations

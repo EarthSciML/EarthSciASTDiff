@@ -3,7 +3,7 @@
 # the review surface.
 using EarthSciAST, EarthSciASTDiff
 root = normpath(joinpath(@__DIR__, ".."))
-for name in ("bd_chem", "adv_interior")
+for name in ("bd_chem", "adv_interior", "contracted_ops")
     file = EarthSciAST.load(joinpath(root, "tests", "valid", "$name.esm"))
     entries = jacobian_bands(file, first(keys(file.models)))
     text = stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries])

@@ -14,17 +14,28 @@ One structured block of `∂(rhs of the equation for u)/∂v`:
     dimension of `v`, in terms of the row index names. Empty for scalar `v`.
   - `coef::ASTExpr` — scalar ESM coefficient expression in terms of the row
     index names (plus parameters and other states).
+  - `contracted::Vector{Tuple{String,Int,Int}}` — free CONTRACTED column
+    dimensions `(name, lo, hi)`: when non-empty the band denotes, for every
+    row cell AND every value of the contracted names over their inclusive
+    ranges, an entry `J[row, cidx(row, contracted…)] += coef(row,
+    contracted…)` — entries meeting at one column ACCUMULATE (this is how a
+    `reduce: "+"` aggregate's sum over a gathered column materializes).
+    Empty for ordinary bands.
 
 The band is the symbolic, portable analogue of the tree-walk's `_AccDesc`
 state-read descriptors: `cidx` of the form `row ± const` is an affine stencil
-offset, `cidx == ridx` is a diagonal (per-cell) coupling.
+offset, `cidx == ridx` is a diagonal (per-cell) coupling, and a `cidx`
+referencing a contracted name is an indirect/contracted gather
+(source–receptor matrices, regrid joins, `conn[]`-table stencils).
 """
 struct Band
     rows::Vector{Tuple{Int,Int}}
     ridx::Vector{Union{String,Int}}
     cidx::Vector{ASTExpr}
     coef::ASTExpr
+    contracted::Vector{Tuple{String,Int,Int}}
 end
+Band(rows, ridx, cidx, coef) = Band(rows, ridx, cidx, coef, Tuple{String,Int,Int}[])
 
 "Differentiation context: index-set sizes, array-variable shapes, parameter names."
 struct Ctx
@@ -185,13 +196,15 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     oidx = [String(x) for x in e.output_idx if x isa AbstractString]
     length(oidx) == length(e.output_idx) || throw(BandError(
         "singleton `1` output_idx entries not supported yet"))
+    e.filter === nothing || throw(BandError(
+        "filtered aggregates not supported (the filter gate would be dropped " *
+        "from the derivative)"))
     ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
-    contracted = setdiff(collect(keys(ranges)), oidx)
-    isempty(contracted) || throw(BandError(
-        "contracted (reduced) indices $(contracted) not supported yet " *
-        "(planned: band with a free contracted column dimension)"))
+    cnames = sort!([String(n) for n in keys(ranges) if !(String(n) in oidx)])
     e.reduce === nothing || e.reduce == "+" || throw(BandError(
         "reduce=`$(e.reduce)` (non-smooth semiring reductions have no bands)"))
+    crange = Tuple{String,Int,Int}[
+        (n, _range_of(ranges[n], ctx)...) for n in cnames]
     rows = Tuple{Int,Int}[]
     for (k, n) in enumerate(oidx)
         push!(rows, haskey(ranges, n) ? _range_of(ranges[n], ctx) : (1, shape_u[k]))
@@ -199,12 +212,35 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     body = e.expr_body
     for (rows2, body2) in clip_regions(body, oidx, rows)
         for s in sorted_sites(body2, v)
-            coef = _simp(mul(dscalar(body2, s), scale...))
-            iszero_lit(coef) && continue
+            d = dscalar(body2, s)
             s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
                 "whole-array reference to `$v` inside an aggregate body"))
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+            if isempty(crange)
+                coef = _simp(mul(d, scale...))
+                iszero_lit(coef) && continue
+                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+            elseif !any(n -> any(c -> n in free_variables(c), cidx),
+                        first.(crange))
+                # The column is independent of every contracted index: a
+                # plain band whose coefficient is the (scalar) `reduce: "+"`
+                # of the site derivative over the contraction.
+                red = OpExpr("aggregate", ASTExpr[];
+                             output_idx = Any[], reduce = "+", expr_body = d,
+                             ranges = Dict{String,Any}(
+                                 n => Any[lo, hi] for (n, lo, hi) in crange))
+                coef = _simp(mul(red, scale...))
+                iszero_lit(coef) && continue
+                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+            else
+                # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
+                # with free contracted column dimensions; entries landing on
+                # one column accumulate at assembly.
+                coef = _simp(mul(d, scale...))
+                iszero_lit(coef) && continue
+                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef,
+                                crange))
+            end
         end
     end
 end
@@ -262,7 +298,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
                 coef = isempty(subst) ? b.coef : substitute(b.coef, subst)
                 cidx = isempty(subst) ? b.cidx :
                        ASTExpr[substitute(c, subst) for c in b.cidx]
-                push!(out, Band(rows2, ridx, cidx, coef))
+                push!(out, Band(rows2, ridx, cidx, coef, b.contracted))
             end
         else
             # Scalar value broadcast over the region.
@@ -302,8 +338,12 @@ function normalize_band(b::Band)::Band
             push!(ridx, r)
         end
     end
+    contracted = Tuple{String,Int,Int}[]
+    for (n, lo, hi) in b.contracted           # a one-value contraction pins too
+        lo == hi ? (subst[n] = lit(lo)) : push!(contracted, (n, lo, hi))
+    end
     isempty(subst) && return b
     return Band(b.rows, ridx,
                 ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
-                _simp(substitute(b.coef, subst)))
+                _simp(substitute(b.coef, subst)), contracted)
 end

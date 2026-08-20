@@ -136,6 +136,48 @@ function _const_vector(e::ASTExpr)
     return Float64[Float64(x) for x in v]
 end
 
+# The numeric matrix of a literal 2-D `const` table node (`value[i][j]` →
+# `T[i, j]`), or nothing.
+function _const_matrix(e::ASTExpr)
+    e isa OpExpr && e.op == "const" || return nothing
+    v = e.value
+    v isa AbstractVector || return nothing
+    rows = Vector{Vector{Float64}}()
+    for r in v
+        (r isa AbstractVector && all(x -> x isa Real, r)) || return nothing
+        push!(rows, Float64[Float64(x) for x in r])
+    end
+    (isempty(rows) || any(length(r) != length(rows[1]) for r in rows)) &&
+        return nothing
+    return permutedims(reduce(hcat, rows))
+end
+
+# ∂(bilinear blend)/∂(the axis of `xv`), as a nested segment `ifelse`:
+# outer chain locates the x-cell `i` (flat-zero outside `xv` — the clamp
+# makes the blend constant in x there); each leaf is an inner chain over the
+# y-cells blending the two x-slope rows with the CLAMPED y-weight
+# (`(y − y_j)/Δy_j` per cell, the edge rows outside `yv`). The knot
+# convention matches spec §9.2 step 2 (a query exactly on an interior knot
+# selects the cell whose weight is 0). ∂/∂y is this function on the
+# transposed table with the axes and query expressions swapped.
+function _bilinear_partial(T::Matrix{Float64}, xv::Vector{Float64},
+                           yv::Vector{Float64}, xe::ASTExpr, ye::ASTExpr)::ASTExpr
+    nx, ny = length(xv), length(yv)
+    out = lit(0)                              # x ≥ axis_x[nx]: flat in x
+    for i in (nx-1):-1:1
+        sl(j) = (T[i+1, j] - T[i, j]) / (xv[i+1] - xv[i])
+        leaf = lit(sl(ny))                    # y ≥ axis_y[ny]: top edge row
+        for j in (ny-1):-1:1
+            wy = op("/", add(ye, lit(-yv[j])), lit(yv[j+1] - yv[j]))
+            e = add(lit(sl(j)), mul(wy, add(lit(sl(j + 1)), neg(lit(sl(j))))))
+            leaf = op("ifelse", op("<", ye, lit(yv[j+1])), e, leaf)
+        end
+        leaf = op("ifelse", op("<", ye, lit(yv[1])), lit(sl(1)), leaf)  # bottom edge
+        out = op("ifelse", op("<", xe, lit(xv[i+1])), leaf, out)
+    end
+    return op("ifelse", op("<", xe, lit(xv[1])), lit(0), out)
+end
+
 # Closed-function derivative table (esm-spec §9.2: exactly 12 names, all
 # decided here — an unknown name is a spec violation, not a fallthrough).
 function dfn(e::OpExpr, s::Site)::ASTExpr
@@ -167,12 +209,28 @@ function dfn(e::OpExpr, s::Site)::ASTExpr
         slope = op("ifelse", op("<", x, lit(xv[1])), lit(0), slope)  # flat below
         return mul(slope, dx)
     elseif name == "interp.bilinear"
-        # interp.bilinear(xs, ys, table, x, y): two partial slopes, same
-        # searchsorted pattern per axis. Deferred; fail loudly rather than
-        # return a silent wrong derivative.
-        throw(DerivativeRuleError(
-            "interp.bilinear derivative not yet implemented (two-slope " *
-            "analogue of interp.linear; see esm-jacobian-spec.md §3.4)"))
+        # interp.bilinear(table, axis_x, axis_y, x, y) — spec §9.2: row-major
+        # literal table (`table[i][j]` at `(axis_x[i], axis_y[j])`), per-axis
+        # clamp (extrapolate-flat). On cell (i, j), ∂/∂x is the x-slope of
+        # the y-blend — constant in x, linear in the CLAMPED y-weight — and
+        # symmetrically for ∂/∂y. Each partial is a nested segment `ifelse`
+        # over the partial's own axis whose leaves are inner chains over the
+        # other axis (esm-jacobian-spec.md §3.4); constants precomputed here.
+        table, ax, ay, x, y = a[1], a[2], a[3], a[4], a[5]
+        dx = dscalar(x, s); dy = dscalar(y, s)
+        iszero_lit(dx) && iszero_lit(dy) && return lit(0)
+        T = _const_matrix(table); xv = _const_vector(ax); yv = _const_vector(ay)
+        (T === nothing || xv === nothing || yv === nothing) && throw(DerivativeRuleError(
+            "interp.bilinear table/axes must be literal `const` arrays " *
+            "(spec §9.2 interp_table_not_const)"))
+        nx, ny = length(xv), length(yv)
+        (size(T) == (nx, ny) && nx >= 2 && ny >= 2) || throw(DerivativeRuleError(
+            "interp.bilinear table/axis shape mismatch or < 2 knots"))
+        terms = ASTExpr[]
+        iszero_lit(dx) || push!(terms, mul(_bilinear_partial(T, xv, yv, x, y), dx))
+        iszero_lit(dy) ||
+            push!(terms, mul(_bilinear_partial(permutedims(T), yv, xv, y, x), dy))
+        return add(terms...)
     else
         throw(DerivativeRuleError("unknown closed function `$name`"))
     end

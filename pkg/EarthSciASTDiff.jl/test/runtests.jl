@@ -20,6 +20,7 @@ end
     include("cse_test.jl")
     include("clip_test.jl")
     include("eval_cse_test.jl")
+    include("contracted_test.jl")
     include("oracle_test.jl")
     include("roundtrip_test.jl")
     include("structure_test.jl")

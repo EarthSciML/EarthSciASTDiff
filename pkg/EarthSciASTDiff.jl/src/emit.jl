@@ -39,7 +39,7 @@ _ser_expr(e::ASTExpr) = EarthSciAST.serialize_expression(e)
 
 function serialize_band(en::JacEntry)
     b = en.band
-    OrderedDict{String,Any}(
+    d = OrderedDict{String,Any}(
         "row"     => en.u,
         "col"     => en.v,
         "rows"    => Any[Any[lo, hi] for (lo, hi) in b.rows],
@@ -47,6 +47,9 @@ function serialize_band(en::JacEntry)
         "col_idx" => Any[_ser_expr(c) for c in b.cidx],
         "coef"    => _ser_expr(b.coef),
     )
+    isempty(b.contracted) ||
+        (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
+    return d
 end
 
 function parse_band(d::AbstractDict)::JacEntry
@@ -56,6 +59,10 @@ function parse_band(d::AbstractDict)::JacEntry
                           for x in d["row_idx"]],
         ASTExpr[parse_expression(c) for c in d["col_idx"]],
         parse_expression(d["coef"]),
+        haskey(d, "contracted") ?
+            Tuple{String,Int,Int}[(String(c[1]), Int(c[2]), Int(c[3]))
+                                  for c in d["contracted"]] :
+            Tuple{String,Int,Int}[],
     )
     return JacEntry(String(d["row"]), String(d["col"]), band)
 end
@@ -108,7 +115,8 @@ function _attach_jacobians!(doc, sv::SysView, model_name::String; wrt::Symbol,
         templates, rewritten = cse_templates(coefs; min_nodes = cse_min_nodes)
         isempty(templates) || (ser_entries = JacEntry[
             JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
-                                      en.band.cidx, rewritten[k]))
+                                      en.band.cidx, rewritten[k],
+                                      en.band.contracted))
             for (k, en) in enumerate(entries)])
     end
     block = OrderedDict{String,Any}(
@@ -144,7 +152,8 @@ function parse_jacobian_block(block::AbstractDict)
         entries = JacEntry[
             JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
                                       ASTExpr[expand_templates(c, reg) for c in en.band.cidx],
-                                      expand_templates(en.band.coef, reg)))
+                                      expand_templates(en.band.coef, reg),
+                                      en.band.contracted))
             for en in entries]
     end
     return wrt, entries
@@ -189,6 +198,19 @@ function _base_document(sv::SysView, name::String)
         "models" => OrderedDict{String,Any}(name => m))
 end
 
+# A literal-size axis index set of the derived document (shared with the
+# hoisted-observed axes: same `jcax<size>` convention, reused when present).
+function _axis_name!(doc, sz::Int)
+    isets = doc["index_sets"]
+    nm = "jcax$(sz)"
+    while haskey(isets, nm) && get(isets[nm], "size", nothing) != sz
+        nm *= "x"
+    end
+    haskey(isets, nm) ||
+        (isets[nm] = OrderedDict{String,Any}("kind" => "interval", "size" => sz))
+    return nm
+end
+
 # Derived model: original system + one state per band whose RHS is the band's
 # coefficient field. With `cse = true`, repeated coefficient subtrees are
 # first hoisted into observed variables of the document
@@ -216,28 +238,41 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
         shape_u = get(ctx.shapes, en.u, Int[])
-        if isempty(shape_u)
+        cr = b.contracted
+        if isempty(shape_u) && isempty(cr)
             m["variables"][nm] = OrderedDict{String,Any}("type" => "state", "default" => 0.0)
             rhs = _ser_expr(coefs[k])
         else
+            # The band field spans the row dims PLUS any free contracted
+            # column dims — the scatter reads one slot per (row, contracted)
+            # cell and ACCUMULATES into the column each cell gathers.
+            ushape = isempty(shape_u) ? Any[] : Any[x for x in sv.variables[en.u].shape]
             m["variables"][nm] = OrderedDict{String,Any}(
                 "type" => "state", "default" => 0.0,
-                "shape" => sv.variables[en.u].shape)
+                "shape" => vcat(ushape, Any[_axis_name!(doc, hi) for (_, _, hi) in cr]))
             free = [(k2, r) for (k2, r) in enumerate(b.ridx) if r isa String]
-            val = if isempty(free)
+            aggnames = Any[Any[r for (_, r) in free]..., Any[n for (n, _, _) in cr]...]
+            val = if isempty(aggnames)
                 _ser_expr(coefs[k])
             else
+                rngs = OrderedDict{String,Any}(
+                    r => Any[b.rows[k2][1], b.rows[k2][2]] for (k2, r) in free)
+                for (n, lo, hi) in cr
+                    rngs[n] = Any[lo, hi]
+                end
                 OrderedDict{String,Any}(
                     "op" => "aggregate", "args" => Any[],
-                    "output_idx" => Any[r for (_, r) in free],
-                    "ranges" => OrderedDict{String,Any}(
-                        r => Any[b.rows[k2][1], b.rows[k2][2]] for (k2, r) in free),
+                    "output_idx" => aggnames,
+                    "ranges" => rngs,
                     "expr" => _ser_expr(coefs[k]))
             end
             rhs = OrderedDict{String,Any}(
                 "op" => "makearray", "args" => Any[],
-                "regions" => Any[Any[Any[1, n] for n in shape_u],
-                                 Any[Any[lo, hi] for (lo, hi) in b.rows]],
+                "regions" => Any[
+                    vcat(Any[Any[1, n] for n in shape_u],
+                         Any[Any[1, hi] for (_, _, hi) in cr]),
+                    vcat(Any[Any[lo, hi] for (lo, hi) in b.rows],
+                         Any[Any[lo, hi] for (_, lo, hi) in cr])],
                 "values" => Any[0.0, val])
         end
         push!(m["equations"], OrderedDict{String,Any}(

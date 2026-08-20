@@ -99,7 +99,7 @@ encountering one MUST fail (diagnostic `underivable_operator`), never emit 0.
 | `datetime.*` | `0` (piecewise-constant by the registry's a.e.-zero contract) |
 | `interp.searchsorted` | `0` (integer-valued) |
 | `interp.linear(table, axis, x)` | `slope · d[x]`, where `slope` is the active segment's slope `(table[k+1] − table[k]) / (axis[k+1] − axis[k])` for `axis[k] ≤ x < axis[k+1]`, and **0 outside the axis** (extrapolate-flat, §9.2). Since `table`/`axis` MUST be literal `const` arrays (§9.2 `interp_table_not_const`), the producer precomputes the per-segment slopes and emits a nested segment `ifelse` (`ifelse(x < axis[k+1], sₖ, …)`, flat-zero guards at both ends) — scalar-evaluable, no dynamic table gather, only existing operators. |
-| `interp.bilinear` | the two-axis analogue (one slope per axis); RESERVED until fixtures pin it |
+| `interp.bilinear(table, axis_x, axis_y, x, y)` | `∂B/∂x · d[x] + ∂B/∂y · d[y]`. On cell `(i, j)` (located per §9.2's clamp + largest-knot-below convention), `∂B/∂x = sxᵢⱼ + wy · (sxᵢ,ⱼ₊₁ − sxᵢⱼ)` where `sxᵢⱼ = (table[i+1][j] − table[i][j]) / (axis_x[i+1] − axis_x[i])` and `wy` is the **clamped** y-weight; symmetrically for `∂B/∂y`. Outside `axis_x` the blend is constant in `x`, so `∂B/∂x = 0` there (and symmetrically for `y`), while the *other* partial persists at the clamped edge row/column. Since the table and axes MUST be literal `const` arrays, the producer precomputes the per-cell slope constants and emits each partial as a nested segment `ifelse` over the partial's own axis whose leaves are inner segment chains over the other axis (edge rows as the clamp leaves) — scalar-evaluable, no dynamic table gather, only existing operators. A query exactly on an interior knot selects the cell whose weight is 0, matching §9.2 step 2. |
 
 ### 3.5 Array operators
 
@@ -110,9 +110,18 @@ earlier ones, so a band from an overwritten sub-region MUST NOT be emitted
 (equivalently: emission may lower a per-cell read of a `makearray` to nested
 region-membership `ifelse`, folded first-region-outward).
 
-Reserved (producers MUST fail rather than guess): contracted (reduced)
-`aggregate` indices, non-`"+"` semiring reductions, `argmin`/`argmax`,
-singleton `1` output indices, `reshape`/`transpose`/`concat` operands.
+Contracted (reduced) `aggregate` indices with `reduce: "+"` (explicit or
+the default) differentiate per site of the aggregate body: a site whose
+column indices are independent of every contracted name yields an ordinary
+band whose `coef` is the scalar `reduce: "+"` of the site derivative over
+the contraction; a site whose column indices reference a contracted name (a
+gathered column) yields a band with `contracted` dimensions (§4), whose
+points accumulate. Filtered aggregates and relational joins are NOT
+differentiated — producers MUST fail rather than drop the gate.
+
+Reserved (producers MUST fail rather than guess): non-`"+"` semiring
+reductions, filtered aggregates, `argmin`/`argmax`, singleton `1` output
+indices, `reshape`/`transpose`/`concat` operands.
 
 ## 4. The `"jacobians"` top-level block
 
@@ -154,14 +163,28 @@ row)/∂(col)`:
   Int64-representable float literal is an integer literal) — producers whose
   in-memory simplification folds mixed int/float constants must normalize
   before emission, or parse round-trips and cross-binding goldens diverge.
+- `contracted` (optional) — free CONTRACTED column dimensions, each a
+  `[name, lo, hi]` triple (string name, inclusive integer bounds). The names
+  are local to the entry (disjoint from its `row_idx` names) and may appear
+  in `col_idx` and `coef`. Produced by differentiating through a
+  `reduce: "+"` aggregate whose gathered column depends on a contracted
+  index (`u[j]`, `u[i+k]`, a `conn[]`-table gather): the sum over the
+  contraction materializes as accumulation over the contracted points.
+  Absent or `[]` for ordinary entries. When a contracted site's column does
+  NOT depend on any contracted index, producers SHOULD instead emit an
+  ordinary entry whose `coef` is a scalar `reduce: "+"` aggregate over the
+  contraction — keeping the entry count independent of the contraction
+  extent.
 
-**Meaning.** For every index point `r` in `rows`,
+**Meaning.** For every index point `r` in `rows` AND every point `c` of the
+`contracted` box (the empty product when absent),
 
 ```
-J[ row[r], col[col_idx(r)] ] += coef(r)
+J[ row[r], col[col_idx(r, c)] ] += coef(r, c)
 ```
 
-Entries are additive: multiple entries may target the same (row, col) pair.
+Entries are additive: multiple entries — and multiple contracted points of
+ONE entry — may target the same (row, col) pair.
 A `col_idx(r)` that falls outside `col`'s declared extent contributes nothing
 (it denotes a boundary/ghost read that is not a state column).
 
