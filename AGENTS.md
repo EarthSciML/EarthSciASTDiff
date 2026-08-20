@@ -37,6 +37,9 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `clip.jl`         — static region clipping (affine breakpoint splits, exact
   guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
+- `eval_cse.jl`     — evaluation-model CSE (`hoist_observed`): repeated
+  coefficient subtrees become observed-array buffers of the derived eval
+  model (compile-time / per-call duplicate-work control)
 - `emit.jl`         — "jacobians" block, goldens writer, derived eval model
 - `assemble.jl`     — pattern, scatter map, prepared `jac!`
 - `structure.jl`    — structure classification from column-index expressions

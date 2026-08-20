@@ -190,32 +190,49 @@ function _base_document(sv::SysView, name::String)
 end
 
 # Derived model: original system + one state per band whose RHS is the band's
-# coefficient field. Returns (document, band-state names).
-function _evaluation_document(sv::SysView, entries::Vector{JacEntry})
+# coefficient field. With `cse = true`, repeated coefficient subtrees are
+# first hoisted into observed variables of the document
+# ([`hoist_observed`](@ref)) so the tree-walk's factored array-observed
+# buffers evaluate them once per cell per RHS call — the compile-time and
+# duplicate-work control for limiter-heavy (PPM-scale) coefficients.
+# Returns (document, band-state names).
+function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
+                              cse::Bool = true, cse_min_nodes::Int = 12)
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
+    h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
+    coefs = h === nothing ? ASTExpr[en.band.coef for en in entries] : h.coefs
+    if h !== nothing
+        for (nm, sz) in h.axes
+            doc["index_sets"][nm] =
+                OrderedDict{String,Any}("kind" => "interval", "size" => sz)
+        end
+        for (nm, vd) in h.obs
+            m["variables"][nm] = vd
+        end
+    end
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
         shape_u = get(ctx.shapes, en.u, Int[])
         if isempty(shape_u)
             m["variables"][nm] = OrderedDict{String,Any}("type" => "state", "default" => 0.0)
-            rhs = _ser_expr(b.coef)
+            rhs = _ser_expr(coefs[k])
         else
             m["variables"][nm] = OrderedDict{String,Any}(
                 "type" => "state", "default" => 0.0,
                 "shape" => sv.variables[en.u].shape)
             free = [(k2, r) for (k2, r) in enumerate(b.ridx) if r isa String]
             val = if isempty(free)
-                _ser_expr(b.coef)
+                _ser_expr(coefs[k])
             else
                 OrderedDict{String,Any}(
                     "op" => "aggregate", "args" => Any[],
                     "output_idx" => Any[r for (_, r) in free],
                     "ranges" => OrderedDict{String,Any}(
                         r => Any[b.rows[k2][1], b.rows[k2][2]] for (k2, r) in free),
-                    "expr" => _ser_expr(b.coef))
+                    "expr" => _ser_expr(coefs[k]))
             end
             rhs = OrderedDict{String,Any}(
                 "op" => "makearray", "args" => Any[],

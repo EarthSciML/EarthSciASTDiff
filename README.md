@@ -114,8 +114,15 @@ EarthSciAST implementation and is gated by the same goldens.
       in the band calculus, plus hash-consed template CSE at emission
       (`cse_templates` → zero-param `expression_templates` in the block,
       spec §4.1).
-- [ ] Coefficient-size control, stage 2 (PPM-scale): symbolic reverse mode
-      per equation body / CSE inside the evaluation model.
+- [x] Coefficient-size control, stage 2 (PPM-scale): CSE inside the
+      evaluation model (`hoist_observed` — repeated coefficient subtrees
+      become factored observed-array buffers of the derived document,
+      evaluated once per cell per RHS call). PPM: derived document 4×
+      smaller, `jac!` 8× faster per call (beating ForwardDiff through the
+      RHS by an order of magnitude); values bit-identical to the plain
+      path. Symbolic reverse mode turned out unnecessary at this scale —
+      the remaining `prepare_jacobian` cost is tree-walk kernel JIT, i.e.
+      the dedicated compiled `jac!` kernel already noted in Design notes.
 - [x] Static region clipping for `index(makearray…)` reads (`clip.jl`):
       decidable membership guards are decided exactly by splitting band row
       ranges at their affine breakpoints (equal-coefficient sub-bands

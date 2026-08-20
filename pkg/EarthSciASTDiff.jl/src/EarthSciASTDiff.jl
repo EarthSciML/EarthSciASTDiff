@@ -16,7 +16,9 @@ Layered API, lowest to highest:
 
   - [`dscalar`](@ref)              — derivative of one scalar expression w.r.t. a site
   - [`simplify_branches`](@ref)    — `ifelse`-aware simplification (swell control);
-                                     [`cse_templates`](@ref) is the emission-side half
+                                     [`cse_templates`](@ref) (emitted block) and
+                                     [`hoist_observed`](@ref) (evaluation model)
+                                     are the two CSE halves
   - [`jacobian_bands`](@ref)       — all bands of a model / flattened system
   - [`jacobian_document`](@ref)    — original document + serialized `"jacobians"` block
   - [`jacobian_pattern`](@ref)     — structural sparsity pattern (`SparseMatrixCSC{Bool}`)
@@ -49,7 +51,7 @@ export Site, dscalar, simplify_branches,
        Band, JacEntry, bands, jacobian_bands,
        SysView, sysview, expanded_model,
        jacobian_document, parse_jacobian_block, stable_json,
-       cse_templates, expand_templates,
+       cse_templates, expand_templates, hoist_observed,
        jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
        ode_components, odefunction, odeproblem,
        detect_structure, jac_prototype,
@@ -64,6 +66,7 @@ include("bands.jl")          # Band + the array-level band calculus
 include("clip.jl")           # static region clipping + band re-merging
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("jacobian.jl")       # jacobian_bands driver
+include("eval_cse.jl")       # evaluation-model CSE (hoisted observed buffers)
 include("emit.jl")           # "jacobians" document block: emit / parse / goldens
 include("assemble.jl")       # numeric assembly + prepared evaluator
 include("structure.jl")      # structure detection + jac_prototype

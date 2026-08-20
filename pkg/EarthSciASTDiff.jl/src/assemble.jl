@@ -116,10 +116,12 @@ for models that need build-time bindings.
     jac(J, u, p, t)              # fills J in place; stored zeros stay
 """
 function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
-                          build_kwargs = NamedTuple())
+                          build_kwargs = NamedTuple(),
+                          eval_cse::Bool = true, eval_cse_min_nodes::Int = 12)
     sv, src = _sv_src(input, model_name)
     entries = jacobian_bands(sv; wrt = wrt)
-    doc, _ = _evaluation_document(sv, entries)
+    doc, _ = _evaluation_document(sv, entries; cse = eval_cse,
+                                  cse_min_nodes = eval_cse_min_nodes)
     fJ!, u0j, pj, _, vmj = build_evaluator(doc; model_name = "JacobianEval",
                                            build_kwargs...)
     _, u00, p0, _, vm0 = _build_eval(src, model_name; build_kwargs...)

@@ -19,6 +19,7 @@ end
     include("scalar_rules_test.jl")
     include("cse_test.jl")
     include("clip_test.jl")
+    include("eval_cse_test.jl")
     include("oracle_test.jl")
     include("roundtrip_test.jl")
     include("structure_test.jl")
