@@ -58,6 +58,7 @@ export Site, dscalar, simplify_branches,
        FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill
 
 include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
+include("hashcons.jl")       # structural interning (size-independent equality)
 include("simplify_branches.jl") # ifelse-aware simplification (swell control)
 include("cse.jl")            # hash-consed template extraction (swell control)
 include("scalar_rules.jl")   # dscalar + closed-function derivative table

@@ -34,9 +34,22 @@ defining expression), β-reduce `index`-of-`aggregate`, and lower
 """
 function inline_observed(e::ASTExpr, obs::Dict{String,ASTExpr})::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
+    # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
+    # "did this pass change anything?", and `skey(e2) == skey(e)` answers it
+    # by serializing the whole tree TWICE PER PASS — on a flattened document
+    # that tree is the post-inlining RHS of one equation, the largest object
+    # in the calculus (ReSEACT at 6×6×8: 4×10⁵ nodes per equation), and the
+    # serialization is redone from scratch every pass. Two cheaper tests in
+    # order, same relation: `_inline_once` routes untouched nodes through the
+    # identity-preserving `map_children`, so at the fixpoint it returns the
+    # SAME object — a pointer compare; and otherwise interning
+    # ([`sid`](@ref)) re-keys only the subtrees the pass rebuilt, because the
+    # index's memo is carried across passes.
+    ix = StructIndex()
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs)
-        skey(e2) == skey(e) && return e2
+        e2 === e && return e2
+        sid(ix, e2) == sid(ix, e) && return e2
         e = e2
     end
     throw(InlineError("no fixpoint after $MAX_INLINE_PASSES passes (cyclic observed?)"))

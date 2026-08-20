@@ -232,40 +232,62 @@ Coalesce bands that are identical in `ridx`, `cidx`, and `coef` (structural
 keys) and whose `rows` boxes are adjacent along exactly one dimension.
 Iterated to a fixpoint; band order is preserved (a merge keeps the
 earlier band's position), so emission stays deterministic.
+
+SCALING. Only bands that already agree on (`ridx`, `cidx`, `coef`,
+`contracted`) can ever merge, but the sweep compared EVERY pair to discover
+that — Θ(b²) key comparisons per sweep and Θ(b³) to the fixpoint, each
+comparison walking strings as long as the coefficients are big. Bucketing by
+key first costs one key per band and makes the search Θ(Σ bₖ²) over the
+buckets. The merges themselves are unchanged: a cross-bucket pair could
+never have merged. Buckets are searched in ascending original index and the
+survivors are read out in original order, so the emitted band order cannot
+see the bucket iteration order.
+
+(The key stays `skey`. It is taken ONCE per band and never compared
+elementwise afterwards, which is the one regime where a whole-subtree
+serialization beats interning it node by node.)
 """
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
     key(b) = (b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted)
-    ks = [key(b) for b in bs]
+    buckets = Dict{Any,Vector{Int}}()
+    for (i, b) in enumerate(bs)
+        push!(get!(buckets, key(b), Int[]), i)
+    end
     out = collect(Band, bs)
     alive = trues(length(out))
-    changed = true
-    while changed
-        changed = false
-        for a in 1:length(out)
-            alive[a] || continue
-            for b in (a+1):length(out)
-                alive[b] || continue
-                ks[a] == ks[b] || continue
-                ra, rb = out[a].rows, out[b].rows
-                length(ra) == length(rb) || continue
-                d = 0; ok = true
-                for k in eachindex(ra)
-                    if ra[k] == rb[k]
-                        continue
-                    elseif d == 0 && (ra[k][2] + 1 == rb[k][1] || rb[k][2] + 1 == ra[k][1])
-                        d = k
-                    else
-                        ok = false; break
+    for idxs in values(buckets)
+        length(idxs) < 2 && continue
+        changed = true
+        while changed
+            changed = false
+            for ai in eachindex(idxs)
+                a = idxs[ai]
+                alive[a] || continue
+                for bi in (ai+1):length(idxs)
+                    b = idxs[bi]
+                    alive[b] || continue
+                    ra, rb = out[a].rows, out[b].rows
+                    length(ra) == length(rb) || continue
+                    d = 0; ok = true
+                    for k in eachindex(ra)
+                        if ra[k] == rb[k]
+                            continue
+                        elseif d == 0 &&
+                               (ra[k][2] + 1 == rb[k][1] || rb[k][2] + 1 == ra[k][1])
+                            d = k
+                        else
+                            ok = false; break
+                        end
                     end
+                    (ok && d != 0) || continue
+                    lo = min(ra[d][1], rb[d][1]); hi = max(ra[d][2], rb[d][2])
+                    rows = copy(ra); rows[d] = (lo, hi)
+                    out[a] = Band(rows, out[a].ridx, out[a].cidx, out[a].coef,
+                                  out[a].contracted)
+                    alive[b] = false
+                    changed = true
                 end
-                (ok && d != 0) || continue
-                lo = min(ra[d][1], rb[d][1]); hi = max(ra[d][2], rb[d][2])
-                rows = copy(ra); rows[d] = (lo, hi)
-                out[a] = Band(rows, out[a].ridx, out[a].cidx, out[a].coef,
-                              out[a].contracted)
-                alive[b] = false
-                changed = true
             end
         end
     end
