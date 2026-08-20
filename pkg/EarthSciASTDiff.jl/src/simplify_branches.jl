@@ -34,8 +34,8 @@ STRUCTURAL EQUALITY, AND ITS COST. Conditions and branches are compared by
 structure, and the pass asks for that comparison at every `ifelse` node it
 meets. Doing it with [`skey`](@ref) — a full re-serialization of the subtree
 — makes the pass Θ(n·depth): each of the `k` levels of an `index(makearray…)`
-region chain re-serializes the whole chain below it. On a flattened document
-that chain has one level per grid cell, so the pass does not finish. The
+region chain re-serializes the whole chain below it, and the product rule
+replicates such chains along a path. The
 comparisons therefore go through hashcons.jl: a [`shash`](@ref) mismatch —
 O(1) per node — settles the common case where the two differ, and only a
 match pays for the exact answer from [`StructIndex`](@ref), whose bottom-up
@@ -81,8 +81,9 @@ function _sbr(e::ASTExpr, cx::_SbrCtx)::ASTExpr
     # re-descends a whole branch hunting for a nested test of THIS condition,
     # so a `k`-deep `ifelse` chain costs a full sub-chain walk at every level —
     # Θ(n·k) — and `index(makearray…)` lowering (inline.jl) builds exactly that
-    # chain with ONE LEVEL PER REGION, i.e. one per grid cell on a flattened
-    # document. `cx.seen` says when the descent cannot find anything: the pass
+    # chain, one level per `makearray` REGION (a stencil scheme's interior plus
+    # each boundary face), with the product rule replicating it. `cx.seen` says
+    # when the descent cannot find anything: the pass
     # is bottom-up, so every `ifelse` surviving into either branch has already
     # been built and counted here, and a condition with no count has no nested
     # twin to collapse — `_assume` would have returned the branch unchanged

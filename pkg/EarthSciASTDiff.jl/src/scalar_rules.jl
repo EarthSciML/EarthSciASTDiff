@@ -52,10 +52,10 @@ dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
 # `occurs`, expr_helpers.jl). The short-circuit below asks "does the site
 # occur under here?" at every node on the way down, and the answer is a
 # property of the node alone — so without a shared memo the scan re-walks
-# each node's whole subtree once per ancestor, Θ(n·depth). On a flattened
-# document, where one D-equation's RHS holds the operator stencil of every
-# grid cell, that quadratic is the difference between seconds and never.
-# Memoized it is Θ(n) per site, and the derivative walk itself is Θ(n).
+# each node's whole subtree once per ancestor, Θ(n·depth). On the 4×10⁵-node
+# RHS a lowered transport operator produces, that quadratic was half of
+# `jacobian_bands`' entire runtime (measured). Memoized it is Θ(n) per site,
+# and the derivative walk itself is Θ(n).
 function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
     is_site(e, s) && return lit(1)
     e isa OpExpr || return lit(0)          # literal, or a different variable

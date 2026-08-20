@@ -69,8 +69,8 @@ Is `e` the node the site denotes? Canonical-key equality, reached only
 through a cheap structural prefilter.
 
 SCALING. `ckey` serializes the whole node, and `occurs`/`dscalar` ask this
-question once per node per site — on a flattened document that is millions
-of serializations of subtrees whose variable does not even match. The
+question once per node per site — on a coupled document that is millions of
+serializations of subtrees whose variable does not even match. The
 prefilter decides the answer from the node's own kind, variable name and
 subscript arity, which are all O(1) reads, and can only reach `ckey` for a
 node that reads the SAME variable at the SAME arity. It never changes the
@@ -112,8 +112,8 @@ SCALING. Occurrence of a fixed site in a fixed node is a property of that
 node alone, so it is memoizable — and it MUST be, because the one caller
 that matters ([`dscalar`](@ref)) asks it at every node on its way down. With
 a per-call scan that is Θ(Σ_v |subtree(v)|) = Θ(n·depth): quadratic on the
-deep trees `flatten` produces for a real grid, and the reason the whole
-ReSEACT system never finished. Threading ONE memo through a whole `dscalar`
+deep trees an operator's lowered stencil produces, and half of the whole
+ReSEACT system's `jacobian_bands` time. Threading ONE memo through a whole `dscalar`
 call decides each node once, Θ(n) per site. Passing a fresh memo is exactly
 the old behavior, only cached within the one scan.
 """

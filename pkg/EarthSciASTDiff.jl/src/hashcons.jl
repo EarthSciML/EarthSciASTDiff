@@ -5,11 +5,12 @@
 # the FULL subtree. That is fine once, but every pass that asks the question
 # at each node of a tree then pays O(|subtree|) per node — Θ(n·depth) on the
 # tree, quadratic on the deep `ifelse` chains that `index(makearray…)`
-# lowering (inline.jl) and the product rule build. A flattened Earth-system
-# document is exactly where that bites: `flatten` materializes an operator's
-# stencil PER CELL, so one D-equation's RHS grows linearly with the grid
-# (ReSEACT at 6×6×8: 420k nodes per equation, 5.0M over the system), and a
-# Θ(n·depth) pass over it does not finish.
+# lowering (inline.jl) and the product rule build. A coupled Earth-system
+# document is exactly where that bites: lowering one 3-D flux-divergence
+# operator produces a very large expression, and the coupled RHS of a single
+# state carries it (MEASURED on ReSEACT: 4.2×10⁵ nodes per D-equation,
+# 5.0×10⁶ over the system, and a genuine TREE — the path count and the
+# distinct-node count agree to 1.0x, so there is no sharing to lean on).
 #
 # WHAT IT DOES. Bottom-up interning: each structurally distinct subtree gets
 # an integer id, so equality is an `Int` compare. A node's table key is its
@@ -81,10 +82,10 @@ _intern_key!(ix::StructIndex, k::String)::Int =
 # node, and the band calculus asks "are these two subtrees equal?" once per
 # node — where the answer is almost always NO. A hash that equal trees are
 # GUARANTEED to share turns that common case into one `UInt` compare and
-# leaves `sid` to adjudicate the rare match. Measured on the ReSEACT whole
-# system at 6×6×8, interning inside `simplify_branches` was 36% of
-# `jacobian_bands` after the Θ(n·depth) passes were fixed; nearly all of it
-# is this negative case.
+# leaves `sid` to adjudicate the rare match. Measured by sampling the ReSEACT
+# whole system, interning inside `simplify_branches` was 36% of
+# `jacobian_bands` once the Θ(n·depth) passes were fixed; nearly all of it is
+# this negative case.
 #
 # The hash covers the operator and the children only — NOT the non-expression
 # fields (`name`, `value`, `output_idx`, `ranges`, …) — so unequal trees may
