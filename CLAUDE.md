@@ -35,6 +35,12 @@ the Julia behavior; never switch the band calculus back to
 `earthsci_ast.expression.simplify`). Tests import `earthsci_ast` from a
 sibling EarthSciAST checkout when it is not installed (see tests/conftest.py).
 
+Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
+`earthsci-ast` dependency is a sibling-checkout path dep in Cargo.toml.
+Two Rust-specific parity traps are already handled — Julia `fld` is floor
+division (NOT `div_euclid`, which differs for negative divisors), and
+`simplify_port.rs` carries the same Julia-simplify port as Python.
+
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `scalar_rules.jl` — per-op derivative table; MUST match spec §3 row-for-row
 - `simplify_branches.jl` — `ifelse`-aware simplification (equal-branch

@@ -77,6 +77,7 @@ esm-jacobian-spec.md         draft spec (block format + derivative semantics)
 pkg/
   EarthSciASTDiff.jl/        Julia implementation (reference)
   earthsci-astdiff-py/       Python binding (band calculus + §4 serialization)
+  earthsci-astdiff-rs/       Rust binding (same scope, golden-gated)
 tests/
   valid/                     shared fixture models
   goldens/                   band-list goldens (deterministic JSON)
@@ -160,7 +161,11 @@ EarthSciAST implementation and is gated by the same goldens.
       factorization plan, byte-identical to the reference's blocks
       (`*.block.json` goldens). Still to come there: production-rate
       assembly.
-- [ ] Rust binding (diffsol wants an analytic sparse J).
+- [x] Rust binding (`pkg/earthsci-astdiff-rs`), same scope as Python:
+      band calculus, block emission (template CSE + structure + block-LU
+      plan), and numeric assembly — all three golden gates pass
+      byte-for-byte / at tolerance on every fixture. Still to come: the
+      diffsol solver integration (production-rate `jac!` over the bands).
 
 ## License
 

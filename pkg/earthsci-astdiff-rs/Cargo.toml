@@ -1,0 +1,13 @@
+[package]
+name = "earthsci-astdiff"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST"
+
+[dependencies]
+# Sibling-checkout path dependency (the cross-repo conformance layout, like
+# the Python binding's tests/conftest.py fallback). Point at a released
+# earthsci-ast once one is published.
+earthsci-ast = { path = "../../../EarthSciAST/pkg/earthsci-ast-rs" }
+serde_json = "1"
