@@ -1,0 +1,1 @@
+{"entries":[{"coef":{"args":[{"args":["c"],"op":"-"},"dx"],"op":"/"},"col":"u","col_idx":[{"args":[{"args":["i",1],"op":"+"},1],"op":"-"}],"row":"u","row_idx":["i"],"rows":[[1,8]]},{"coef":{"args":["c","dx"],"op":"/"},"col":"u","col_idx":[{"args":["i",1],"op":"-"}],"row":"u","row_idx":["i"],"rows":[[2,8]]}],"structure":"general","wrt":"states"}

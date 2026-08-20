@@ -26,4 +26,8 @@ and numeric assembly (`assemble_jacobian` → `{(row, col): value}` summed per
 §4 additivity) — a correctness surface evaluated per cell through the
 official numpy-interpreter runtime and gated against the Julia reference's
 value goldens (`tests/goldens/*.jvals.json`, exact key set + 1e-10 relative).
-Production-rate assembly and the emission-side template CSE follow.
+The emission side is in as well: `jacobian_block` / `parse_jacobian_block`
+with the §4.1 template CSE (`cse_templates` / `expand_templates`) and the
+structure classification — byte-identical to the reference's emitted blocks
+(`tests/goldens/*.block.json`, `factorization` key excepted: that plan is
+not ported yet). Production-rate assembly and the factorization plans follow.

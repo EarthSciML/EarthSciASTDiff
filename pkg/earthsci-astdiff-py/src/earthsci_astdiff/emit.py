@@ -100,3 +100,62 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states"):
     entries = jacobian_bands(sv, wrt=wrt)
     pairs = sorted({(r, c) for _, r, c in scatter_pairs(sv, entries)})
     return pairs, entries
+
+
+def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
+                   cse: bool = True, cse_min_nodes: int = 12) -> dict:
+    """The §4 `jacobians` block for one model: entries (template-CSE'd by
+    default), the structure classification, and the block-local
+    `expression_templates`. NOTE: the Julia reference additionally attaches a
+    `factorization` plan when one exists for the detected structure — not
+    ported yet, so block goldens are compared with that key stripped."""
+    from .bands import Band
+    from .cse import cse_templates
+    from .structure import detect_structure
+    from .system import SysView, sysview
+
+    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    entries = jacobian_bands(sv, wrt=wrt)
+    structure = detect_structure(entries, sv)
+    ser_entries = entries
+    templates: dict = {}
+    if cse:
+        templates, rewritten = cse_templates(
+            [en.band.coef for en in entries], min_nodes=cse_min_nodes)
+        if templates:
+            ser_entries = [JacEntry(en.u, en.v,
+                                    Band(en.band.rows, en.band.ridx,
+                                         en.band.cidx, rewritten[k],
+                                         en.band.contracted))
+                           for k, en in enumerate(entries)]
+    block: dict = {
+        "wrt": wrt,
+        "entries": [serialize_band(en) for en in ser_entries],
+        "structure": structure,
+    }
+    if templates:
+        block["expression_templates"] = {
+            n: {"params": [], "body": ser_expr(b)}
+            for n, b in templates.items()}
+    return block
+
+
+def parse_jacobian_block(block: dict):
+    """Inverse of the block emission: expands `apply_expression_template`
+    references back, so the returned entries are always closed."""
+    from .bands import Band
+    from .cse import expand_templates
+
+    wrt = block["wrt"]
+    entries = [parse_band(d) for d in block["entries"]]
+    if "expression_templates" in block:
+        reg = {str(n): parse_expression(t["body"])
+               for n, t in block["expression_templates"].items()}
+        entries = [JacEntry(en.u, en.v,
+                            Band(en.band.rows, en.band.ridx,
+                                 [expand_templates(c, reg)
+                                  for c in en.band.cidx],
+                                 expand_templates(en.band.coef, reg),
+                                 en.band.contracted))
+                   for en in entries]
+    return wrt, entries
