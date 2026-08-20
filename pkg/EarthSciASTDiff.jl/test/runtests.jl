@@ -22,6 +22,7 @@ end
     include("eval_cse_test.jl")
     include("contracted_test.jl")
     include("oracle_test.jl")
+    include("prune_test.jl")
     include("roundtrip_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")

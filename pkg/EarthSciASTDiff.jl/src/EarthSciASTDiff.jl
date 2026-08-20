@@ -49,7 +49,7 @@ using JSON3
 
 export Site, dscalar, simplify_branches,
        Band, JacEntry, bands, jacobian_bands,
-       SysView, sysview, expanded_model,
+       SysView, sysview, expanded_model, inlinable_observed,
        jacobian_document, parse_jacobian_block, stable_json,
        cse_templates, expand_templates, hoist_observed,
        jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,

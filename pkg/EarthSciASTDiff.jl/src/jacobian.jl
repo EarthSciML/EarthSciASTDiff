@@ -45,6 +45,15 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
         sort!([String(n) for (n, var) in sv.variables if var.type == want])
     end
     obs = _observed_defs(sv)
+    # Only the observed that can actually move with a target are inlined; the
+    # rest have an identically-zero derivative and stay opaque reads that the
+    # derived evaluation model resolves from their own definitions. Exact, and
+    # seeded from THIS `wrt`'s targets — see `inlinable_observed`
+    # (system.jl) for why the state and parameter axes must not share a seed.
+    # `wrt = :time` is excluded: time also enters implicitly, through
+    # externally-provided time-varying data, so `{"t"}` is not a sound
+    # over-approximation of the set of time-dependent names.
+    wrt == :time || (obs = inlinable_observed(obs, sv.equations, Set{String}(targets)))
     entries = JacEntry[]
     for eq in sv.equations
         u = lhs_state(eq)
