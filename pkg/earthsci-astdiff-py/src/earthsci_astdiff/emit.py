@@ -106,9 +106,8 @@ def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
                    cse: bool = True, cse_min_nodes: int = 12) -> dict:
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default), the structure classification, and the block-local
-    `expression_templates`. NOTE: the Julia reference additionally attaches a
-    `factorization` plan when one exists for the detected structure — not
-    ported yet, so block goldens are compared with that key stripped."""
+    `expression_templates`, plus the `factorization` plan where one exists
+    for the detected structure (per-cell block LU with Markowitz ordering)."""
     from .bands import Band
     from .cse import cse_templates
     from .structure import detect_structure
@@ -137,6 +136,11 @@ def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
         block["expression_templates"] = {
             n: {"params": [], "body": ser_expr(b)}
             for n, b in templates.items()}
+    from .factorization import plan_factorization, serialize_plan
+
+    plan = plan_factorization(entries, sv, structure=structure)
+    if plan is not None:
+        block["factorization"] = serialize_plan(plan)
     return block
 
 

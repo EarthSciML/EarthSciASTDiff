@@ -1,6 +1,5 @@
 """Block emission against the Julia reference's block goldens
-(tests/goldens/*.block.json): byte-identical after stripping the
-`factorization` key (that plan is not ported yet)."""
+(tests/goldens/*.block.json): byte-identical, factorization plan included."""
 import json
 
 import earthsci_ast as ea
@@ -16,7 +15,6 @@ NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
 @pytest.mark.parametrize("name", NAMES)
 def test_block_golden(name, valid_dir, golden_dir):
     g = json.loads((golden_dir / f"{name}.block.json").read_text())
-    g.pop("factorization", None)
     file = ea.load(str(valid_dir / f"{name}.esm"))
     block = jacobian_block(file, next(iter(file.models)))
     assert stable_json(block) == stable_json(g)

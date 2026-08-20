@@ -29,8 +29,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     `contracted` entry-field (§4) regression target
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
-  `factorization` plan where one exists); bindings without the factorization
-  port compare byte-exactly with that key stripped.
+  `factorization` plan where one exists); bindings compare byte-exactly.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   numeric assemblies must reproduce the exact (row, col) key set and every

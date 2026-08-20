@@ -27,7 +27,7 @@ and numeric assembly (`assemble_jacobian` → `{(row, col): value}` summed per
 official numpy-interpreter runtime and gated against the Julia reference's
 value goldens (`tests/goldens/*.jvals.json`, exact key set + 1e-10 relative).
 The emission side is in as well: `jacobian_block` / `parse_jacobian_block`
-with the §4.1 template CSE (`cse_templates` / `expand_templates`) and the
-structure classification — byte-identical to the reference's emitted blocks
-(`tests/goldens/*.block.json`, `factorization` key excepted: that plan is
-not ported yet). Production-rate assembly and the factorization plans follow.
+with the §4.1 template CSE (`cse_templates` / `expand_templates`), the
+structure classification, and the factorization plans (per-cell block LU,
+Markowitz ordering + fill-in) — byte-identical to the reference's emitted
+blocks (`tests/goldens/*.block.json`). Production-rate assembly follows.

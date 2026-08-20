@@ -156,10 +156,10 @@ EarthSciAST implementation and is gated by the same goldens.
       per-cell evaluation through the numpy interpreter, gated by
       Julia-produced VALUE goldens `tests/goldens/*.jvals.json` — exact
       pattern key set, 1e-10 relative values), as is the emission side —
-      `jacobian_block` with §4.1 template CSE, byte-identical to the
-      reference's blocks (`*.block.json` goldens, `factorization` key
-      excepted). Still to come there: production-rate assembly and the
-      factorization plans.
+      `jacobian_block` with §4.1 template CSE and the block-LU
+      factorization plan, byte-identical to the reference's blocks
+      (`*.block.json` goldens). Still to come there: production-rate
+      assembly.
 - [ ] Rust binding (diffsol wants an analytic sparse J).
 
 ## License
