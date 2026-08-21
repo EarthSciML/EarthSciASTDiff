@@ -55,14 +55,26 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     # over-approximation of the set of time-dependent names.
     wrt == :time || (obs = inlinable_observed(obs, sv.equations, Set{String}(targets)))
     entries = JacEntry[]
+    # The structural occurrence gate, driven from the EQUATION rather than
+    # from the target list: scanning `targets` per equation is O(|equations| ×
+    # |targets|) even when each RHS names a handful of them. `targets` is one
+    # entry per state VARIABLE, so this is invisible on a document whose
+    # states stay array-valued (ReSEACT: 13 either way) and quadratic on one
+    # lowered to scalar cells, where a variable is a cell — a cost driven by
+    # the flattening style rather than by how coupled the system is.
+    # Intersecting the RHS's own free variables with the target SET is
+    # O(|free variables|). Order is unchanged: `targets` is sorted by name, so
+    # re-sorting the hits by name reproduces the same per-equation order, and
+    # the `entries` order is what downstream pattern/scatter construction
+    # (assemble.jl) reads.
+    tset = Set{String}(targets)
     for eq in sv.equations
         u = lhs_state(eq)
         u === nothing && continue
         shape_u = get(ctx.shapes, u, Int[])
         rhs = inline_observed(eq.rhs, obs)
-        fv = free_variables(rhs)
-        for v in targets
-            v in fv || continue                     # structural occurrence gate
+        hits = sort!(String[v for v in free_variables(rhs) if v in tset])
+        for v in hits
             for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))
                 push!(entries, JacEntry(u, v, normalize_band(b)))
             end

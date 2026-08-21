@@ -11,6 +11,11 @@ julia --project=pkg/EarthSciASTDiff.jl -e 'using Pkg; Pkg.test()'
 
 # Regenerate band goldens after an INTENDED rule/format change
 julia --project=pkg/EarthSciASTDiff.jl scripts/regenerate-goldens.jl
+
+# Scaling ladder for the symbolic step. `--synthetic` needs no document and
+# prints a fitted d log t / d log n per primitive; anything above ~1.2 there
+# is a pass that will not finish on a document flattened over a real grid.
+julia --project=pkg/EarthSciASTDiff.jl scripts/bench-jacobian-bands.jl --synthetic
 ```
 
 NOTE for agents on the shared UIUC cluster: `Pkg.test()` resolving a fresh env
@@ -42,6 +47,10 @@ division (NOT `div_euclid`, which differs for negative divisors), and
 `simplify_port.rs` carries the same Julia-simplify port as Python.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
+- `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree
+  equality at O(1) per compare. Use it, NOT `skey`, wherever a pass compares
+  structures once per node — `skey` re-serializes the whole subtree, which
+  makes such a pass Θ(n·depth) on a flattened document
 - `scalar_rules.jl` — per-op derivative table; MUST match spec §3 row-for-row
 - `simplify_branches.jl` — `ifelse`-aware simplification (equal-branch
   collapse, same-condition path pruning); `_simp` = the coefficient simplifier

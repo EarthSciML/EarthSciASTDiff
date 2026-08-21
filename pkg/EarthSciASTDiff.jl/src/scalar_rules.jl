@@ -46,12 +46,22 @@ differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
 semiring aggregates in scalar position, unknown closed functions).
 """
-function dscalar(e::ASTExpr, s::Site)::ASTExpr
+dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
+
+# `occ` is the occurrence memo threaded through ONE derivative scan (see
+# `occurs`, expr_helpers.jl). The short-circuit below asks "does the site
+# occur under here?" at every node on the way down, and the answer is a
+# property of the node alone — so without a shared memo the scan re-walks
+# each node's whole subtree once per ancestor, Θ(n·depth). On the 4×10⁵-node
+# RHS a lowered transport operator produces, that quadratic was half of
+# `jacobian_bands`' entire runtime (measured). Memoized it is Θ(n) per site,
+# and the derivative walk itself is Θ(n).
+function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
     is_site(e, s) && return lit(1)
     e isa OpExpr || return lit(0)          # literal, or a different variable
-    occurs(e, s) || return lit(0)          # structural short-circuit
+    occurs(e, s, occ) || return lit(0)     # structural short-circuit
     o = e.op; a = e.args
-    d(x) = dscalar(x, s)
+    d(x) = dscalar(x, s, occ)
     if o == "+"
         return add((d(x) for x in a)...)
     elseif o == "-"
@@ -114,7 +124,7 @@ function dscalar(e::ASTExpr, s::Site)::ASTExpr
     elseif o in ZERO_DERIV_OPS
         return lit(0)
     elseif o == "fn"
-        return dfn(e, s)
+        return dfn(e, s, occ)
     elseif o == "index"
         # A site-bearing `index` that is not itself the site: index of a
         # non-variable array expression, or index expressions that depend on
@@ -180,7 +190,9 @@ end
 
 # Closed-function derivative table (esm-spec §9.2: exactly 12 names, all
 # decided here — an unknown name is a spec violation, not a fallthrough).
-function dfn(e::OpExpr, s::Site)::ASTExpr
+dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr,Bool}())
+
+function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
     name = e.name
     a = e.args
     if startswith(name, "datetime.") || name == "interp.searchsorted"
@@ -193,7 +205,7 @@ function dfn(e::OpExpr, s::Site)::ASTExpr
         # emitted as a nested segment `ifelse` over slopes precomputed here
         # (esm-jacobian-spec.md §3.4).
         table, axis, x = a[1], a[2], a[3]
-        dx = dscalar(x, s); iszero_lit(dx) && return lit(0)
+        dx = dscalar(x, s, occ); iszero_lit(dx) && return lit(0)
         yv = _const_vector(table); xv = _const_vector(axis)
         (yv === nothing || xv === nothing) && throw(DerivativeRuleError(
             "interp.linear table/axis must be literal `const` arrays " *
@@ -217,7 +229,7 @@ function dfn(e::OpExpr, s::Site)::ASTExpr
         # over the partial's own axis whose leaves are inner chains over the
         # other axis (esm-jacobian-spec.md §3.4); constants precomputed here.
         table, ax, ay, x, y = a[1], a[2], a[3], a[4], a[5]
-        dx = dscalar(x, s); dy = dscalar(y, s)
+        dx = dscalar(x, s, occ); dy = dscalar(y, s, occ)
         iszero_lit(dx) && iszero_lit(dy) && return lit(0)
         T = _const_matrix(table); xv = _const_vector(ax); yv = _const_vector(ay)
         (T === nothing || xv === nothing || yv === nothing) && throw(DerivativeRuleError(
