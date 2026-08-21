@@ -114,12 +114,12 @@ end
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(ev, Site(VarExpr("x")))
     # End-to-end through a model, against the AD oracle: both states feed
     # the same lookup, so the Jacobian row carries BOTH partials.
-    doc = Dict{String,Any}("esm" => "0.8.0",
+    doc = Dict{String,Any}("esm" => "1.0.0",
         "metadata" => Dict{String,Any}("name" => "BilinearSlope"),
         "models" => Dict{String,Any}("M" => Dict{String,Any}(
             "variables" => Dict{String,Any}(
-                "w" => Dict{String,Any}("type" => "state", "default" => 0.4),
-                "v" => Dict{String,Any}("type" => "state", "default" => 7.0)),
+                "w" => Dict{String,Any}("type" => "unknown", "default" => 0.4),
+                "v" => Dict{String,Any}("type" => "unknown", "default" => 7.0)),
             "equations" => Any[Dict{String,Any}(
                 "lhs" => Dict{String,Any}("op" => "D", "args" => Any["w"], "wrt" => "t"),
                 "rhs" => Dict{String,Any}("op" => "fn", "name" => "interp.bilinear",
@@ -158,11 +158,11 @@ end
                 name = "interp.linear")
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(ev, Site(VarExpr("x")))
     # End-to-end through a model, against the AD oracle.
-    doc = Dict{String,Any}("esm" => "0.8.0",
+    doc = Dict{String,Any}("esm" => "1.0.0",
         "metadata" => Dict{String,Any}("name" => "InterpSlope"),
         "models" => Dict{String,Any}("M" => Dict{String,Any}(
             "variables" => Dict{String,Any}(
-                "w" => Dict{String,Any}("type" => "state", "default" => 0.4)),
+                "w" => Dict{String,Any}("type" => "unknown", "default" => 0.4)),
             "equations" => Any[Dict{String,Any}(
                 "lhs" => Dict{String,Any}("op" => "D", "args" => Any["w"], "wrt" => "t"),
                 "rhs" => Dict{String,Any}("op" => "fn", "name" => "interp.linear",

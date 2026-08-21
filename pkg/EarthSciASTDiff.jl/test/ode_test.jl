@@ -76,12 +76,12 @@ end
 @testset "tgrad: analytical ∂f/∂t (wrt = :time)" begin
     # Non-autonomous model: D(w) = sin(t)·w + c·t (∂/∂t = cos(t)·w + c),
     # D(v) = 2 v w (autonomous row → 0).
-    doc = Dict{String,Any}("esm" => "0.8.0",
+    doc = Dict{String,Any}("esm" => "1.0.0",
         "metadata" => Dict{String,Any}("name" => "TGrad"),
         "models" => Dict{String,Any}("M" => Dict{String,Any}(
             "variables" => Dict{String,Any}(
-                "w" => Dict{String,Any}("type" => "state", "default" => 0.8),
-                "v" => Dict{String,Any}("type" => "state", "default" => 1.1),
+                "w" => Dict{String,Any}("type" => "unknown", "default" => 0.8),
+                "v" => Dict{String,Any}("type" => "unknown", "default" => 1.1),
                 "c" => Dict{String,Any}("type" => "parameter", "default" => 3.0)),
             "equations" => Any[
                 Dict{String,Any}(

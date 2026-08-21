@@ -62,13 +62,13 @@ using EarthSciASTDiff: Band, skey
 end
 
 @testset "contracted-index guards" begin
-    mk(rhs) = EarthSciAST.load(Dict{String,Any}("esm" => "0.8.0",
+    mk(rhs) = EarthSciAST.load(Dict{String,Any}("esm" => "1.0.0",
         "metadata" => Dict{String,Any}("name" => "G"),
         "index_sets" => Dict{String,Any}(
             "x" => Dict{String,Any}("kind" => "interval", "size" => 3)),
         "models" => Dict{String,Any}("G" => Dict{String,Any}(
             "variables" => Dict{String,Any}(
-                "u" => Dict{String,Any}("type" => "state", "shape" => Any["x"],
+                "u" => Dict{String,Any}("type" => "unknown", "shape" => Any["x"],
                                         "default" => 0.5)),
             "equations" => Any[Dict{String,Any}(
                 "lhs" => Dict{String,Any}("op" => "D", "args" => Any["u"], "wrt" => "t"),

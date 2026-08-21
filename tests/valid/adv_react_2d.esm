@@ -1,16 +1,16 @@
 {
-  "esm": "0.8.0",
+  "esm": "1.0.0",
   "metadata": {"name": "AdvReact2D", "description": "prototype fixture: centered lon advection (zero-grad faces) + nonlinear pointwise chemistry on a 5x3 grid"},
   "index_sets": {"lon": {"kind": "interval", "size": 5}, "lat": {"kind": "interval", "size": 3}},
   "models": {
     "AdvReact": {
       "variables": {
-        "c": {"type": "state", "shape": ["lon", "lat"], "default": 0.5},
-        "d": {"type": "state", "shape": ["lon", "lat"], "default": 0.2},
+        "c": {"type": "unknown", "shape": ["lon", "lat"], "default": 0.5},
+        "d": {"type": "unknown", "shape": ["lon", "lat"], "default": 0.2},
         "dx": {"type": "parameter", "default": 2.5},
         "k":  {"type": "parameter", "default": 0.7},
         "s":  {"type": "parameter", "default": 0.1},
-        "e":  {"type": "state", "default": 1.0}
+        "e":  {"type": "unknown", "default": 1.0}
       },
       "equations": [
         {

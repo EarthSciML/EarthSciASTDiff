@@ -29,16 +29,18 @@ using JSON3
             "expr" => O("op" => "+", "args" => Any[
                 O("op" => "-", "args" => Any[_u("i", "j")]),
                 O("op" => "index", "args" => Any["F", "i", "j"])]))
-    doc = O("esm" => "0.8.0",
+    doc = O("esm" => "1.0.0",
             "metadata" => O("name" => "PinnedFace"),
             "index_sets" => O("x" => O("kind" => "interval", "size" => 3),
                               "y" => O("kind" => "interval", "size" => 2)),
             "models" => O("PinnedFace" => O(
                 "variables" => O(
-                    "u" => O("type" => "state", "shape" => Any["x", "y"], "default" => 0.5),
-                    "F" => O("type" => "observed", "shape" => Any["x", "y"],
-                             "expression" => Fdef)),
+                    "u" => O("type" => "unknown", "shape" => Any["x", "y"], "default" => 0.5),
+                    # esm 1.0.0: an observed is an unknown DEFINED by a
+                    # bare-variable-LHS equation; `variable.expression` is gone.
+                    "F" => O("type" => "unknown", "shape" => Any["x", "y"])),
                 "equations" => Any[
+                    O("lhs" => "F", "rhs" => Fdef),
                     O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
                       "rhs" => rhs)])))
 

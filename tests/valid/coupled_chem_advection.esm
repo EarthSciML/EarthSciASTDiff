@@ -1,5 +1,5 @@
 {
- "esm": "0.8.0",
+ "esm": "1.0.0",
  "metadata": {
   "name": "MinimalChemAdvectionSmall",
   "description": "O3-NO-NO2 chemistry with advection over a lon-lat grid and external meteorology",

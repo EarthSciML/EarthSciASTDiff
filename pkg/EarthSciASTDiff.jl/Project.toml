@@ -16,7 +16,7 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 EarthSciASTDiffSciMLBaseExt = "SciMLBase"
 
 [compat]
-EarthSciAST = "0.9.1"
+EarthSciAST = "0.1"
 JSON3 = "1"
 OrderedCollections = "1"
 SciMLBase = "2"

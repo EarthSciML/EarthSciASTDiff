@@ -149,11 +149,16 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
         for n in live)
 
     obs = OrderedDict{String,Any}()
+    # esm 1.0.0 moved a definition out of the variable and into the model's
+    # equations, so a hoisted observed now comes back in TWO pieces: the
+    # declaration in `obs` and its defining RHS in `obs_eqs`, which the caller
+    # (emit.jl) pushes onto the document's `equations`. Same order as `obs`.
+    obs_eqs = Pair{String,Any}[]
     for n in live
         body = _deref(templates[n], readmap)
         if isempty(S[n])
-            obs[n] = OrderedDict{String,Any}(
-                "type" => "observed", "expression" => _ser_expr(body))
+            obs[n] = OrderedDict{String,Any}("type" => "unknown")
+            push!(obs_eqs, n => _ser_expr(body))
             continue
         end
         exts = [maximum(b[j][2] for b in boxes[n]) for j in eachindex(S[n])]
@@ -169,12 +174,12 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
                 "expr" => _ser_expr(body)))
         end
         obs[n] = OrderedDict{String,Any}(
-            "type" => "observed",
-            "shape" => Any[axis_for(e) for e in exts],
-            "expression" => OrderedDict{String,Any}(
-                "op" => "makearray", "args" => Any[],
-                "regions" => regions, "values" => values))
+            "type" => "unknown",
+            "shape" => Any[axis_for(e) for e in exts])
+        push!(obs_eqs, n => OrderedDict{String,Any}(
+            "op" => "makearray", "args" => Any[],
+            "regions" => regions, "values" => values))
     end
-    return (obs = obs, axes = axes,
+    return (obs = obs, obs_eqs = obs_eqs, axes = axes,
             coefs = ASTExpr[_deref(e, readmap) for e in rewritten])
 end

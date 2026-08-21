@@ -41,8 +41,9 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     targets = if wrt == :time
         ["t"]
     else
-        want = wrt == :states ? EarthSciAST.StateVariable : EarthSciAST.ParameterVariable
-        sort!([String(n) for (n, var) in sv.variables if var.type == want])
+        wrt == :states ? view_states(sv) :
+            sort!([String(n) for (n, var) in sv.variables
+                   if var.type == EarthSciAST.ParameterVariable])
     end
     obs = _observed_defs(sv)
     # Only the observed that can actually move with a target are inlined; the

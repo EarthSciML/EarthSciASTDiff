@@ -103,11 +103,58 @@ function lhs_state(eq)
     return nothing
 end
 
+"""
+    lhs_definition(eq) -> Union{String,Nothing}
+
+The variable an equation DEFINES by a bare-variable LHS (`y ~ f(...)`), or
+`nothing`. The 1.0.0 counterpart of [`lhs_state`](@ref): esm 1.0.0 removed the
+`observed` declared type and the `variable.expression` field, and an observed
+unknown is now exactly an unknown some equation names bare on the left
+(esm-spec 6.3.1).
+"""
+lhs_definition(eq) = eq.lhs isa VarExpr ? eq.lhs.name : nothing
+
 # Observed-variable definitions of a view, for inlining.
+#
+# The 0.x form of this read `variables[n].expression` for every
+# `ObservedVariable`. Both are gone in esm 1.0.0 -- `StateVariable` and
+# `ObservedVariable` were removed from the enum with no deprecation path, and a
+# definition moved out of the variable into the model's `equations`. So the same
+# set is now derived: a bare-variable LHS naming an unknown that no D(.) equation
+# also targets. An unknown a `D` equation DOES target is an ODE state, and a
+# bare-LHS equation on it would be a constraint on the state rather than a
+# definition of it -- hence the exclusion, which mirrors
+# `EarthSciAST.observed_definitions`. First definition wins, as there.
 function _observed_defs(sv::SysView)
-    Dict{String,ASTExpr}(
-        String(n) => var.expression for (n, var) in sv.variables
-        if var.type == EarthSciAST.ObservedVariable && var.expression !== nothing)
+    states = Set{String}()
+    for eq in sv.equations
+        n = lhs_state(eq); n === nothing || push!(states, String(n))
+    end
+    defs = Dict{String,ASTExpr}()
+    for eq in sv.equations
+        n = lhs_definition(eq); n === nothing && continue
+        n = String(n)
+        n in states && continue
+        var = get(sv.variables, n, nothing)
+        (var !== nothing && var.type == EarthSciAST.UnknownVariable) || continue
+        haskey(defs, n) || (defs[n] = eq.rhs)
+    end
+    return defs
+end
+
+"""
+    view_states(sv::SysView) -> Vector{String}
+
+The unknowns occupying a solver slot: every unknown MINUS the observed ones.
+The 1.0.0 replacement for `var.type == StateVariable`, and deliberately the
+complement rather than the `D(.)`-targeted set, so an unknown constrained only
+implicitly (an algebraic unknown) still counts as a slot instead of vanishing
+-- which is what the 0.x declared type `state` meant.
+"""
+function view_states(sv::SysView)
+    obs = keys(_observed_defs(sv))
+    return sort!(String[String(n) for (n, var) in sv.variables
+                        if var.type == EarthSciAST.UnknownVariable && !(String(n) in obs)])
 end
 
 # ── inline pruning: which observed the calculus must descend into ─────────────
