@@ -28,9 +28,12 @@ _sv() = EarthSciASTDiff.SysView(Dict{String,Any}(), [], Dict{String,Any}())
     nm = first(keys(h.obs))
     @test startswith(nm, "Jcse")
     vd = h.obs[nm]
-    @test vd["type"] == "observed" && length(vd["shape"]) == 1
+    @test vd["type"] == "unknown" && length(vd["shape"]) == 1
     @test collect(values(h.axes)) == [8]              # extent = max hi over boxes
-    regs = vd["expression"]["regions"]
+    # esm 1.0.0: the hoisted definition comes back in `obs_eqs`, not in the
+    # variable -- `variable.expression` no longer exists.
+    @test length(h.obs_eqs) == 1 && first(h.obs_eqs).first == nm
+    regs = first(h.obs_eqs).second["regions"]
     @test regs[1] == Any[Any[1, 8]]                   # zero default over the axis
     @test Any[Any[2, 8]] in regs && Any[Any[1, 7]] in regs
     # both rewritten coefficients read the observed at the row index

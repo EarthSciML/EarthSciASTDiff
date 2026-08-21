@@ -5,7 +5,7 @@
             "size": 16
         }
     },
-    "esm": "0.8.0",
+    "esm": "1.0.0",
     "models": {
         "AdvectionMinmodTVD": {
             "variables": {
@@ -26,19 +26,12 @@
                     "shape": [
                         "x"
                     ],
-                    "type": "state",
+                    "type": "unknown",
                     "description": "Advected tracer field over the x index set."
                 },
                 "dx": {
                     "units": "m",
-                    "expression": {
-                        "args": [
-                            1,
-                            16
-                        ],
-                        "op": "/"
-                    },
-                    "type": "observed",
+                    "type": "unknown",
                     "description": "Grid spacing (b - a)/N = 1/N: the grid's dx free name, resolved inside the rewrite rule's expanded body at evaluation. N is the document-scoped metaparameter, substituted as an integer literal at load (esm-spec 9.7.6), so loader-API rebinding for the convergence sweep keeps dx consistent."
                 }
             },
@@ -50,8 +43,7 @@
                                 "from": "x"
                             }
                         },
-                        "args": [
-                        ],
+                        "args": [],
                         "output_idx": [
                             "i"
                         ],
@@ -1283,8 +1275,7 @@
                                         "op": "/"
                                     }
                                 ],
-                                "args": [
-                                ],
+                                "args": [],
                                 "op": "makearray",
                                 "regions": [
                                     [
@@ -1323,6 +1314,16 @@
                         "op": "D",
                         "wrt": "t"
                     }
+                },
+                {
+                    "lhs": "dx",
+                    "rhs": {
+                        "args": [
+                            1,
+                            16
+                        ],
+                        "op": "/"
+                    }
                 }
             ],
             "tests": [
@@ -1339,7 +1340,7 @@
                             "reduce": "mean",
                             "variable": "u",
                             "tolerance": {
-                                "abs": 1.0e-9
+                                "abs": 1e-09
                             }
                         },
                         {
@@ -1348,7 +1349,7 @@
                             "reduce": "mean",
                             "variable": "u",
                             "tolerance": {
-                                "abs": 1.0e-9
+                                "abs": 1e-09
                             }
                         },
                         {

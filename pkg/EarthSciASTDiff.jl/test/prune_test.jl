@@ -28,16 +28,17 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
         "src"])
     rhs = O("op" => "aggregate", "args" => Any[], "output_idx" => Any["i"],
             "ranges" => O("i" => Any[1, 4]), "expr" => body)
-    doc = O("esm" => "0.8.0",
+    doc = O("esm" => "1.0.0",
             "metadata" => O("name" => "PruneProbe"),
             "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
             "models" => O("PruneProbe" => O(
                 "variables" => O(
-                    "u" => O("type" => "state", "shape" => Any["x"], "default" => 0.5),
+                    "u" => O("type" => "unknown", "shape" => Any["x"], "default" => 0.5),
                     "k" => O("type" => "parameter", "default" => K),
-                    "src" => O("type" => "observed",
-                               "expression" => O("op" => "*", "args" => Any["k", 2]))),
+                    # esm 1.0.0: definition moves from the variable to an equation
+                    "src" => O("type" => "unknown")),
                 "equations" => Any[
+                    O("lhs" => "src", "rhs" => O("op" => "*", "args" => Any["k", 2])),
                     O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
                       "rhs" => rhs)])))
 

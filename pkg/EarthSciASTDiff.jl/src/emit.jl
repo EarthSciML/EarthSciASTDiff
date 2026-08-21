@@ -176,12 +176,16 @@ function _base_document(sv::SysView, name::String)
                                 "equations" => Any[])
     for n in sort!(collect(keys(sv.variables)))
         var = sv.variables[n]
+        # esm 1.0.0 has TWO declared types. `state` / `observed` are gone, and
+        # the distinction they carried is now made by the equations: see
+        # `view_states` / `_observed_defs` (system.jl). Nothing is lost here
+        # because an observed's definition is ALREADY an equation of `sv` and the
+        # loop below copies every equation verbatim -- in 0.x it lived in the
+        # variable and had to be serialized twice.
         d = OrderedDict{String,Any}("type" =>
-            var.type == EarthSciAST.StateVariable     ? "state" :
-            var.type == EarthSciAST.ParameterVariable ? "parameter" : "observed")
+            var.type == EarthSciAST.ParameterVariable ? "parameter" : "unknown")
         var.shape === nothing || isempty(var.shape) || (d["shape"] = var.shape)
         var.default === nothing || (d["default"] = var.default)
-        var.expression === nothing || (d["expression"] = _ser_expr(var.expression))
         m["variables"][n] = d
     end
     for eq in sv.equations
@@ -192,7 +196,7 @@ function _base_document(sv::SysView, name::String)
         String(n) => OrderedDict{String,Any}("kind" => "interval", "size" => s.size)
         for (n, s) in sv.index_sets if s.size !== nothing)
     return OrderedDict{String,Any}(
-        "esm" => "0.8.0",
+        "esm" => "1.0.0",
         "metadata" => OrderedDict{String,Any}("name" => name),
         "index_sets" => isets,
         "models" => OrderedDict{String,Any}(name => m))
@@ -233,6 +237,14 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
         for (nm, vd) in h.obs
             m["variables"][nm] = vd
         end
+        # 1.0.0: a hoisted observed is an unknown plus a bare-LHS equation. The
+        # equations go in BEFORE the J_k derivative equations below, matching the
+        # declaration order the corpus migration produced -- ordering is not
+        # semantically load-bearing, but a stable one keeps diffs readable.
+        for (nm, rhs) in h.obs_eqs
+            push!(m["equations"],
+                  OrderedDict{String,Any}("lhs" => nm, "rhs" => rhs))
+        end
     end
     names = String[]
     for (k, en) in enumerate(entries)
@@ -240,7 +252,9 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
         shape_u = get(ctx.shapes, en.u, Int[])
         cr = b.contracted
         if isempty(shape_u) && isempty(cr)
-            m["variables"][nm] = OrderedDict{String,Any}("type" => "state", "default" => 0.0)
+            # an unknown that a D(.) equation targets IS an ODE state in 1.0.0;
+            # the equation is pushed a few lines below.
+            m["variables"][nm] = OrderedDict{String,Any}("type" => "unknown", "default" => 0.0)
             rhs = _ser_expr(coefs[k])
         else
             # The band field spans the row dims PLUS any free contracted
@@ -248,7 +262,7 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
             # cell and ACCUMULATES into the column each cell gathers.
             ushape = isempty(shape_u) ? Any[] : Any[x for x in sv.variables[en.u].shape]
             m["variables"][nm] = OrderedDict{String,Any}(
-                "type" => "state", "default" => 0.0,
+                "type" => "unknown", "default" => 0.0,
                 "shape" => vcat(ushape, Any[_axis_name!(doc, hi) for (_, _, hi) in cr]))
             free = [(k2, r) for (k2, r) in enumerate(b.ridx) if r isa String]
             aggnames = Any[Any[r for (_, r) in free]..., Any[n for (n, _, _) in cr]...]

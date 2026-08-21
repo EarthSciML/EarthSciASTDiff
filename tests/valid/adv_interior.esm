@@ -1,11 +1,11 @@
 {
-  "esm": "0.8.0",
+  "esm": "1.0.0",
   "metadata": {"name": "AdvInterior", "description": "Interior-only centered advection (faces held at a constant source, no state reads at faces): every band is an affine offset, so the structure classifies as banded."},
   "index_sets": {"x": {"kind": "interval", "size": 8}},
   "models": {
     "Adv": {
       "variables": {
-        "u": {"type": "state", "shape": ["x"], "default": 0.3},
+        "u": {"type": "unknown", "shape": ["x"], "default": 0.3},
         "c": {"type": "parameter", "default": 1.5},
         "dx": {"type": "parameter", "default": 0.25}
       },
