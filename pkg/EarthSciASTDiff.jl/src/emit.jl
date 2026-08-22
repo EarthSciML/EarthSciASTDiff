@@ -57,8 +57,8 @@ function parse_band(d::AbstractDict)::JacEntry
         Tuple{Int,Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
         Union{String,Int}[x isa AbstractString ? String(x) : Int(x)
                           for x in d["row_idx"]],
-        ASTExpr[parse_expression(c) for c in d["col_idx"]],
-        parse_expression(d["coef"]),
+        ASTExpr[expression_from_json(c) for c in d["col_idx"]],
+        expression_from_json(d["coef"]),
         haskey(d, "contracted") ?
             Tuple{String,Int,Int}[(String(c[1]), Int(c[2]), Int(c[3]))
                                   for c in d["contracted"]] :
@@ -147,7 +147,7 @@ function parse_jacobian_block(block::AbstractDict)
     entries = JacEntry[parse_band(d) for d in block["entries"]]
     if haskey(block, "expression_templates")
         reg = Dict{String,ASTExpr}(
-            String(name) => parse_expression(t["body"])
+            String(name) => expression_from_json(t["body"])
             for (name, t) in block["expression_templates"])
         entries = JacEntry[
             JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,

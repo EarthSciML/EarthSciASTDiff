@@ -54,7 +54,7 @@ end
     # round-trip (the PPM regression that motivated `_canon_lits`).
     folded = _simp(OpExpr("+", ASTExpr[IntExpr(2), NumExpr(0.5), NumExpr(0.5)]))
     @test folded isa IntExpr && folded.value == 3
-    rt = EarthSciAST.parse_expression(EarthSciAST.serialize_expression(folded))
+    rt = EarthSciAST.expression_from_json(EarthSciAST.serialize_expression(folded))
     @test skey(rt) == skey(folded)
     # non-integral floats stay floats
     half = _simp(OpExpr("*", ASTExpr[NumExpr(0.5), IntExpr(3)]))
@@ -62,7 +62,7 @@ end
     # normalization reaches nested positions
     nested = _simp(OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[
         VarExpr("x"), OpExpr("*", ASTExpr[IntExpr(4), NumExpr(0.5)])])]))
-    @test skey(EarthSciAST.parse_expression(
+    @test skey(EarthSciAST.expression_from_json(
         EarthSciAST.serialize_expression(nested))) == skey(nested)
 end
 

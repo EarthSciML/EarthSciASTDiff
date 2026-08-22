@@ -3,7 +3,7 @@
 # rules and the runtime can never drift apart. Test points avoid kinks; the
 # kink policy itself (which branch at a tie) is pinned separately.
 
-ex(d) = EarthSciAST.parse_expression(d)
+ex(d) = EarthSciAST.expression_from_json(d)
 
 function numderiv(expr, x; h = 1e-6)
     f(v) = evaluate_expr(expr, Dict("x" => v))

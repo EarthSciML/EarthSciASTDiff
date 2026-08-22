@@ -42,7 +42,7 @@ module EarthSciASTDiff
 
 using EarthSciAST
 using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, IndexSetRef,
-                   canonical_json, simplify, map_children, parse_expression
+                   canonical_json, simplify, map_children, expression_from_json
 using SparseArrays
 using OrderedCollections: OrderedDict
 using JSON3
