@@ -45,7 +45,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
     mktempdir() do d
         path = joinpath(d, "prune_probe.esm")
         open(io -> JSON3.write(io, doc), path, "w")
-        file = EarthSciAST.load(path)
+        file = EarthSciAST.load_path(path)
         sv = sysview(file, "PruneProbe")
         obs = _observed_defs(sv)
         @test haskey(obs, "src")

@@ -132,7 +132,7 @@ end
                 ), Dict{String,Any}(
                 "lhs" => Dict{String,Any}("op" => "D", "args" => Any["v"], "wrt" => "t"),
                 "rhs" => 0.0)])))
-    file = EarthSciAST.load(doc)
+    file = EarthSciAST.load_document(doc)
     f!, u0, p, _, _ = build_evaluator(file)
     for u in ([0.4, 7.0], [-1.0, 45.0])   # interior cell + double clamp
         res = assemble_jacobian(file; u = u, p = p)
@@ -170,7 +170,7 @@ end
                         Dict{String,Any}("op"=>"const","args"=>Any[],"value"=>[0.0,10.0,12.0]),
                         Dict{String,Any}("op"=>"const","args"=>Any[],"value"=>[0.0,1.0,2.0]),
                         "w"]))])))
-    file = EarthSciAST.load(doc)
+    file = EarthSciAST.load_document(doc)
     f!, u0, p, _, _ = build_evaluator(file)
     for (x, slope) in ((0.4, 10.0), (1.6, 2.0), (2.5, 0.0))
         res = assemble_jacobian(file; u = [x], p = p)

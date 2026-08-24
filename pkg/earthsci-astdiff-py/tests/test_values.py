@@ -37,7 +37,7 @@ def _cells_to_arrays(u: dict):
 @pytest.mark.parametrize("name", NAMES)
 def test_values_golden(name, golden_dir, valid_dir):
     g = json.loads((golden_dir / f"{name}.jvals.json").read_text())
-    file = ea.load(str(valid_dir / f"{name}.esm"))
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
     got = assemble_jacobian(file, next(iter(file.models)),
                             states=_cells_to_arrays(g["u"]),
                             params=g["params"], t=g["t"])

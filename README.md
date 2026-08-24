@@ -30,7 +30,7 @@ machine precision.
 ```julia
 using EarthSciAST, EarthSciASTDiff
 
-file = EarthSciAST.load("model.esm")
+file = EarthSciAST.load_path("model.esm")
 
 jac = prepare_jacobian(file)             # differentiate + compile, once
 J = jac_prototype(jac)                   # SparseMatrixCSC on the fixed pattern

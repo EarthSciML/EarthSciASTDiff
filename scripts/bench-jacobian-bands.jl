@@ -132,7 +132,7 @@ function load_system(esm, mp, incl, select)
     for f in incl
         Base.include(Main, f)
     end
-    file = EA.load(esm; metaparameters = mp)
+    file = EA.load_path(esm; metaparameters = mp)
     flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(EA.flatten(file)))
     select === nothing && return flat
     return Base.invokelatest(Main.eval, :(let flat = $flat; $(Meta.parse(select)); end))

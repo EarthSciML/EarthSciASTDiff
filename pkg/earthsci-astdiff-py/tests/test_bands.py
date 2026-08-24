@@ -9,7 +9,7 @@ from earthsci_astdiff.expr_helpers import ser_expr
 
 
 def test_flux_form_guard_free(valid_dir):
-    file = ea.load(str(valid_dir / "flux_form_adv.esm"))
+    file = ea.load_path(str(valid_dir / "flux_form_adv.esm"))
     entries = jacobian_bands(file, "FluxFormAdv")
     for en in entries:
         assert "ifelse" not in stable_json(ser_expr(en.band.coef))
@@ -21,7 +21,7 @@ def test_flux_form_guard_free(valid_dir):
 
 
 def test_contracted_shapes(valid_dir):
-    file = ea.load(str(valid_dir / "contracted_ops.esm"))
+    file = ea.load_path(str(valid_dir / "contracted_ops.esm"))
     entries = jacobian_bands(file, "ContractedOps")
     yu = [e for e in entries if e.u == "y" and e.v == "u"]
     gath = [e for e in yu if e.band.contracted]
@@ -49,13 +49,13 @@ def test_guards(valid_dir):
                         "reduce": "min",
                         "ranges": {"i": [1, 3], "j": [1, 3]},
                         "expr": {"op": "index", "args": ["u", "j"]}}}]}}}
-    file = ea.load(doc)
+    file = ea.load_document(doc)
     with pytest.raises(BandError):
         jacobian_bands(file, "G")
 
 
 def test_wrt_parameters_and_time(valid_dir):
-    file = ea.load(str(valid_dir / "flux_form_adv.esm"))
+    file = ea.load_path(str(valid_dir / "flux_form_adv.esm"))
     entries = jacobian_bands(file, "FluxFormAdv", wrt="parameters")
     assert {e.v for e in entries} <= {"uin", "c", "dx"}
     pairs, _ = jacobian_pattern(file, "FluxFormAdv", wrt="parameters")

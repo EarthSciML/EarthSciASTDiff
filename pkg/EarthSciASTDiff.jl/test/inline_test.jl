@@ -47,7 +47,7 @@ using JSON3
     mktempdir() do d
         path = joinpath(d, "pinned_face.esm")
         open(io -> JSON3.write(io, doc), path, "w")
-        file = EarthSciAST.load(path)
+        file = EarthSciAST.load_path(path)
         f!, u0, p, _, _ = build_evaluator(file)
         u = [0.3, 0.7, 1.1, 1.9, 2.3, 2.9][1:length(u0)]
 

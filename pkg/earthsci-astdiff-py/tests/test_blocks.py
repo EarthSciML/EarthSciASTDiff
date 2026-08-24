@@ -15,14 +15,14 @@ NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
 @pytest.mark.parametrize("name", NAMES)
 def test_block_golden(name, valid_dir, golden_dir):
     g = json.loads((golden_dir / f"{name}.block.json").read_text())
-    file = ea.load(str(valid_dir / f"{name}.esm"))
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
     block = jacobian_block(file, next(iter(file.models)))
     assert stable_json(block) == stable_json(g)
 
 
 @pytest.mark.parametrize("name", NAMES)
 def test_block_roundtrip(name, valid_dir):
-    file = ea.load(str(valid_dir / f"{name}.esm"))
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
     mname = next(iter(file.models))
     block = jacobian_block(file, mname)
     wrt, back = parse_jacobian_block(block)

@@ -94,7 +94,7 @@ end
                     "lhs" => Dict{String,Any}("op" => "D", "args" => Any["v"], "wrt" => "t"),
                     "rhs" => Dict{String,Any}("op" => "*",
                                               "args" => Any[2.0, "v", "w"]))])))
-    file = EarthSciAST.load(doc)
+    file = EarthSciAST.load_document(doc)
     entries = jacobian_bands(sysview(file, "M"); wrt = :time)
     @test length(entries) == 1 && entries[1].v == "t"
 

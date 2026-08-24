@@ -7,7 +7,7 @@ using SparseArrays
 using LinearAlgebra
 
 const FIXTURES = joinpath(@__DIR__, "fixtures")
-fixture(name) = EarthSciAST.load(joinpath(FIXTURES, name))
+fixture(name) = EarthSciAST.load_path(joinpath(FIXTURES, name))
 
 # ForwardDiff oracle: dense Jacobian of the tree-walk RHS w.r.t. states.
 function ad_jacobian(f!, u, p, t)

@@ -13,7 +13,7 @@ byte-identical deterministic JSON).
 import earthsci_ast
 from earthsci_astdiff import jacobian_bands, serialize_band, stable_json
 
-file = earthsci_ast.load("model.esm")
+file = earthsci_ast.load_path("model.esm")
 entries = jacobian_bands(file, "MyModel")            # ∂f/∂u as Band entries
 entries_p = jacobian_bands(file, "MyModel", wrt="parameters")
 text = stable_json([serialize_band(e) for e in entries])

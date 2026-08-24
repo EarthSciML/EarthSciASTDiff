@@ -11,7 +11,7 @@ GOLDEN_NAMES = ("bd_chem", "adv_interior", "contracted_ops",
 
 @pytest.mark.parametrize("name", GOLDEN_NAMES)
 def test_band_golden(name, valid_dir, golden_dir):
-    file = ea.load(str(valid_dir / f"{name}.esm"))
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
     entries = jacobian_bands(file, next(iter(file.models)))
     text = stable_json([serialize_band(e) for e in entries])
     assert text == (golden_dir / f"{name}.bands.json").read_text()
@@ -22,7 +22,7 @@ def test_band_roundtrip(name, valid_dir):
     from earthsci_astdiff import parse_band
     from earthsci_astdiff.expr_helpers import skey
 
-    file = ea.load(str(valid_dir / f"{name}.esm"))
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
     entries = jacobian_bands(file, next(iter(file.models)))
     for en in entries:
         back = parse_band(serialize_band(en))
