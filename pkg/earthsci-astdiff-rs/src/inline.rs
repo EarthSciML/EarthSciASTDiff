@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use earthsci_ast::substitute::substitute;
-use earthsci_ast::types::{Expr, ExpressionNode};
+use earthsci_ast::substitute;
+use earthsci_ast::{Expr, ExpressionNode};
 
 use crate::helpers::{map_expr_children, op, skey};
 

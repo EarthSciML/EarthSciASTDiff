@@ -1,7 +1,7 @@
 //! Branch-aware simplification + wire-canonical literals (the reference's
 //! simplify_branches.jl). `simp` is THE coefficient simplifier.
 
-use earthsci_ast::types::Expr;
+use earthsci_ast::Expr;
 
 use crate::helpers::{is_zero, map_expr_children, op, skey};
 use crate::simplify_port::simplify_jl;

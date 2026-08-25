@@ -1,7 +1,7 @@
 //! Scalar derivative rules — one rule per evaluable-core operator, matching
 //! esm-jacobian-spec.md §3 row-for-row (goldens pin the table).
 
-use earthsci_ast::types::{Expr, ExpressionNode};
+use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
 use crate::helpers::{add, is_site, is_zero, mul, neg, occurs, op, Site};

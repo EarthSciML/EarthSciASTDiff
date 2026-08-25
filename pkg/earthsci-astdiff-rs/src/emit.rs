@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use earthsci_ast::types::{Expr, ExpressionNode};
+use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::{json, Value};
 
 use crate::bands::Band;
@@ -322,7 +322,7 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
 
 // ── the block ────────────────────────────────────────────────────────────────
 
-pub fn jacobian_block(file: &earthsci_ast::types::EsmFile,
+pub fn jacobian_block(file: &earthsci_ast::EsmFile,
                       model_name: Option<&str>, wrt: Wrt,
                       cse: bool, cse_min_nodes: usize)
                       -> Result<Value, crate::bands::BandError> {

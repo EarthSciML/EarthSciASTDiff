@@ -1,7 +1,7 @@
 //! Model-level driver (the reference's jacobian.jl).
 
-use earthsci_ast::expression::free_variables;
-use earthsci_ast::types::{EsmFile, VariableType};
+use earthsci_ast::free_variables;
+use earthsci_ast::{EsmFile, VariableType};
 
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError};
 use crate::inline::inline_observed;

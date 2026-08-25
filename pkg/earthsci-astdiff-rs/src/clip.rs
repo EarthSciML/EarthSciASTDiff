@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use earthsci_ast::types::Expr;
+use earthsci_ast::Expr;
 
 use crate::helpers::{map_expr_children, op};
 

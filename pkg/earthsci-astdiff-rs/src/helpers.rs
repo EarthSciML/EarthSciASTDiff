@@ -1,8 +1,8 @@
 //! Expression constructors, structural keys, and the differentiation site
 //! (mirror of the reference's expr_helpers).
 
-use earthsci_ast::canonicalize::canonical_json;
-use earthsci_ast::types::{Expr, ExpressionNode};
+use earthsci_ast::canonical_json;
+use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
 pub fn op(o: &str, args: Vec<Expr>) -> Expr {
@@ -141,7 +141,7 @@ pub fn occurs(e: &Expr, s: &Site) -> bool {
 }
 
 pub fn occurs_var(e: &Expr, v: &str) -> bool {
-    earthsci_ast::expression::free_variables(e).contains(v)
+    earthsci_ast::free_variables(e).contains(v)
 }
 
 /// Rebuild an operator node with mapped children (Expr-level wrapper).
