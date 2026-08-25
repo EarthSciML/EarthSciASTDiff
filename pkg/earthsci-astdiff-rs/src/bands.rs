@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use earthsci_ast::expression::free_variables;
-use earthsci_ast::substitute::substitute;
-use earthsci_ast::types::{Expr, ExpressionNode, RangeSpec};
+use earthsci_ast::extension::types::RangeSpec;
+use earthsci_ast::free_variables;
+use earthsci_ast::substitute;
+use earthsci_ast::{Expr, ExpressionNode};
 
 use crate::branches::{canon_lits, simp};
 use crate::clip::{clip_regions, RIdx};

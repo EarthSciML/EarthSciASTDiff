@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use earthsci_ast::types::{EsmFile, Equation, Expr, IndexSet, Model,
-                          ModelVariable, VariableType};
+use earthsci_ast::extension::types::IndexSet;
+use earthsci_ast::{Equation, EsmFile, Expr, Model, ModelVariable, VariableType};
 
 use crate::bands::{BandError, Ctx};
 

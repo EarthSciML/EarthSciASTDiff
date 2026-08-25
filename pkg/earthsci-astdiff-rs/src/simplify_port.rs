@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use earthsci_ast::expression::evaluate;
-use earthsci_ast::types::{Expr, ExpressionNode};
+use earthsci_ast::evaluate;
+use earthsci_ast::{Expr, ExpressionNode};
 
 use crate::helpers::map_expr_children;
 

@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use earthsci_ast::expression::evaluate;
-use earthsci_ast::substitute::substitute;
-use earthsci_ast::types::{EsmFile, Expr};
+use earthsci_ast::evaluate;
+use earthsci_ast::substitute;
+use earthsci_ast::{EsmFile, Expr};
 use serde_json::Value;
 
 use crate::bands::BandError;

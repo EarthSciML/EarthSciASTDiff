@@ -16,9 +16,9 @@ fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn load(name: &str) -> earthsci_ast::types::EsmFile {
+fn load(name: &str) -> earthsci_ast::EsmFile {
     let path = root().join("tests/valid").join(format!("{name}.esm"));
-    earthsci_ast::parse::load_path(&path).expect("fixture loads")
+    earthsci_ast::load_path(&path).expect("fixture loads")
 }
 
 const NAMES: [&str; 5] = ["bd_chem", "adv_interior", "contracted_ops",
