@@ -28,4 +28,5 @@ end
     include("structure_test.jl")
     include("factorization_test.jl")
     include("ode_test.jl")
+    include("source_layout_test.jl")
 end
