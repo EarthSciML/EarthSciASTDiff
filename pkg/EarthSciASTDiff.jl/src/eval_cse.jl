@@ -167,7 +167,7 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
         for b in boxes[n]
             push!(regions, Any[Any[lo, hi] for (lo, hi) in b])
             push!(values, OrderedDict{String,Any}(
-                "op" => "aggregate", "args" => Any[],
+                "op" => "faq", "args" => Any[],
                 "output_idx" => Any[S[n]...],
                 "ranges" => OrderedDict{String,Any}(
                     x => Any[b[j][1], b[j][2]] for (j, x) in enumerate(S[n])),

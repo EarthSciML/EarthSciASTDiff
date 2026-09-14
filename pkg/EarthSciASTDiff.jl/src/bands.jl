@@ -19,7 +19,7 @@ One structured block of `∂(rhs of the equation for u)/∂v`:
     row cell AND every value of the contracted names over their inclusive
     ranges, an entry `J[row, cidx(row, contracted…)] += coef(row,
     contracted…)` — entries meeting at one column ACCUMULATE (this is how a
-    `reduce: "+"` aggregate's sum over a gathered column materializes).
+    `reduce: "+"` faq node's sum over a gathered column materializes).
     Empty for ordinary bands.
 
 The band is the symbolic, portable analogue of the tree-walk's `_AccDesc`
@@ -84,7 +84,12 @@ end
 function is_array_expr(e::ASTExpr, ctx::Ctx)::Bool
     e isa VarExpr && return is_array(ctx, e.name)
     e isa OpExpr || return false
-    e.op in ("aggregate", "makearray", "arrayop", "broadcast",
+    # `arrayop` is deliberately absent: it was REMOVED at esm 0.8.0 and is not
+    # a deprecated alias, so EarthSciAST's parser rejects it by name
+    # (`[E_REMOVED_OP]`) and no tree reaching here can carry it. `faq` is the
+    # unified query node, spelled `aggregate` before esm 1.1.0 and normalized
+    # to `faq` at the wire boundary (docs/content/rfcs/faq-node-rename.md).
+    e.op in ("faq", "makearray", "broadcast",
              "reshape", "transpose", "concat") && return true
     e.op == "index" && return false
     return any(x -> is_array_expr(x, ctx), e.args)
@@ -154,7 +159,7 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
         sc  = [x for x in e.args if !is_array_expr(x, ctx)]
         length(arr) == 1 || throw(BandError(
             "elementwise product of $(length(arr)) array-valued factors at array " *
-            "level; wrap in an aggregate"))
+            "level; wrap in a faq node"))
         any(x -> occurs_var(x, v), sc) && throw(BandError(
             "scalar factor depends on `$v` in an array-level product"))
         _bands_array!(out, arr[1], v, ctx, shape_u, vcat(scale, sc))
@@ -165,8 +170,8 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
                       vcat(scale, [op("/", lit(1), e.args[2])]))
     elseif o == "makearray"
         _bands_makearray!(out, e, v, ctx, scale)
-    elseif o == "aggregate"
-        _bands_aggregate!(out, e, v, ctx, shape_u, scale)
+    elseif o == "faq"
+        _bands_faq!(out, e, v, ctx, shape_u, scale)
     elseif o == "index"
         # A scalar read of some array in an array-level position: a broadcast.
         names = ["_r$k" for k in 1:length(shape_u)]
@@ -174,11 +179,11 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
     else
         if is_array_expr(e, ctx)
             # Generic elementwise op over whole arrays (exp(c), c^2, ifelse):
-            # push the index inward, then recurse as an aggregate.
+            # push the index inward, then recurse as a faq node.
             names = ["_r$k" for k in 1:length(shape_u)]
             idx = ASTExpr[VarExpr(n) for n in names]
             body = _push_index(e, idx, ctx)
-            agg = OpExpr("aggregate", ASTExpr[];
+            agg = OpExpr("faq", ASTExpr[];
                          output_idx = Any[names...], expr_body = body,
                          ranges = Dict{String,Any}(
                              n => Any[1, shape_u[k]] for (k, n) in enumerate(names)))
@@ -192,12 +197,12 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
     return out
 end
 
-function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
+function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     oidx = [String(x) for x in e.output_idx if x isa AbstractString]
     length(oidx) == length(e.output_idx) || throw(BandError(
         "singleton `1` output_idx entries not supported yet"))
     e.filter === nothing || throw(BandError(
-        "filtered aggregates not supported (the filter gate would be dropped " *
+        "filtered faq nodes not supported (the filter gate would be dropped " *
         "from the derivative)"))
     ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
     cnames = sort!([String(n) for n in keys(ranges) if !(String(n) in oidx)])
@@ -214,7 +219,7 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
         for s in sorted_sites(body2, v)
             d = dscalar(body2, s)
             s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
-                "whole-array reference to `$v` inside an aggregate body"))
+                "whole-array reference to `$v` inside a faq body"))
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             if isempty(crange)
                 coef = _simp(mul(d, scale...))
@@ -225,7 +230,7 @@ function _bands_aggregate!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                 # The column is independent of every contracted index: a
                 # plain band whose coefficient is the (scalar) `reduce: "+"`
                 # of the site derivative over the contraction.
-                red = OpExpr("aggregate", ASTExpr[];
+                red = OpExpr("faq", ASTExpr[];
                              output_idx = Any[], reduce = "+", expr_body = d,
                              ranges = Dict{String,Any}(
                                  n => Any[lo, hi] for (n, lo, hi) in crange))
@@ -252,22 +257,22 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
         nonsing = [k for (k, (lo, hi)) in enumerate(rows) if hi > lo]
         if is_array_expr(val, ctx)
             sub = Band[]
-            # A full-rank aggregate value names every region dim explicitly
+            # A full-rank faq value names every region dim explicitly
             # (singleton dims included); a reduced-rank value covers only the
             # non-singleton dims.
-            val_fullrank = val isa OpExpr && val.op == "aggregate" &&
+            val_fullrank = val isa OpExpr && val.op == "faq" &&
                            length(val.output_idx) == length(rows)
             sub_shape = val_fullrank ?
                 [hi - lo + 1 for (lo, hi) in rows] :
                 [rows[k][2] - rows[k][1] + 1 for k in nonsing]
             _bands_array!(sub, val, v, ctx, sub_shape, scale)
             # The value's bands are in the value's OWN index values (an
-            # aggregate ranging i ∈ [olo, ohi] fills region positions
+            # faq node ranging i ∈ [olo, ohi] fills region positions
             # lo..lo+(ohi−olo)); shift each dim by (lo − origin), where the
             # ORIGIN is the value range's start — NOT the band's own row
             # start, which for a region-clipped sub-band (clip.jl) sits past
             # the origin. Singletons are pinned.
-            origins = if val isa OpExpr && val.op == "aggregate"
+            origins = if val isa OpExpr && val.op == "faq"
                 vr = val.ranges === nothing ? Dict{String,Any}() : val.ranges
                 Int[haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
                     for n in val.output_idx]
@@ -313,7 +318,7 @@ function _push_index(e::ASTExpr, idx::Vector{ASTExpr}, ctx::Ctx)::ASTExpr
     if e isa VarExpr
         return is_array(ctx, e.name) ? op("index", e, idx...) : e
     elseif e isa OpExpr
-        e.op in ("aggregate", "makearray", "index") &&
+        e.op in ("faq", "makearray", "index") &&
             throw(BandError("cannot push an index into `$(e.op)` " *
                             "nested under an elementwise op"))
         return map_children(x -> _push_index(x, idx, ctx), e)
@@ -326,7 +331,7 @@ end
 
 Pin any free row index whose range is a single cell (a periodic wrap region,
 a one-cell boundary face) to that constant, substituting it through `cidx`
-and `coef`. Keeps emitted coefficient aggregates rank-consistent.
+and `coef`. Keeps emitted coefficient faq nodes rank-consistent.
 """
 function normalize_band(b::Band)::Band
     subst = Dict{String,ASTExpr}(); ridx = Union{String,Int}[]

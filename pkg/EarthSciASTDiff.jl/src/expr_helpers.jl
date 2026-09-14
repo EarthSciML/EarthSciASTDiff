@@ -28,7 +28,7 @@ neg(x) = iszero_lit(x) ? lit(0) : op("-", x)
 ckey(e::ASTExpr) = canonical_json(e)
 
 # Full-structure key for ANY expression (fixpoint checks over trees that may
-# contain aggregate/makearray). Key order is made deterministic by
+# contain faq/makearray). Key order is made deterministic by
 # `stable_json` (emit.jl), so equal trees always produce equal keys.
 skey(e::ASTExpr) = stable_json(EarthSciAST.serialize_expression(e))
 

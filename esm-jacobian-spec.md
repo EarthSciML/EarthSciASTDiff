@@ -103,24 +103,24 @@ encountering one MUST fail (diagnostic `underivable_operator`), never emit 0.
 
 ### 3.5 Array operators
 
-Derivatives of `aggregate` / `makearray` / elementwise-over-array expressions
+Derivatives of `faq` / `makearray` / elementwise-over-array expressions
 are not expressed as rewritten array expressions; they are expressed as
 **bands** (§4). `makearray` overlap follows §4.3.2: later regions overwrite
 earlier ones, so a band from an overwritten sub-region MUST NOT be emitted
 (equivalently: emission may lower a per-cell read of a `makearray` to nested
 region-membership `ifelse`, folded first-region-outward).
 
-Contracted (reduced) `aggregate` indices with `reduce: "+"` (explicit or
-the default) differentiate per site of the aggregate body: a site whose
+Contracted (reduced) `faq` indices with `reduce: "+"` (explicit or
+the default) differentiate per site of the faq body: a site whose
 column indices are independent of every contracted name yields an ordinary
 band whose `coef` is the scalar `reduce: "+"` of the site derivative over
 the contraction; a site whose column indices reference a contracted name (a
 gathered column) yields a band with `contracted` dimensions (§4), whose
-points accumulate. Filtered aggregates and relational joins are NOT
+points accumulate. Filtered faq nodes and relational joins are NOT
 differentiated — producers MUST fail rather than drop the gate.
 
 Reserved (producers MUST fail rather than guess): non-`"+"` semiring
-reductions, filtered aggregates, `argmin`/`argmax`, singleton `1` output
+reductions, filtered faq nodes, `argmin`/`argmax`, singleton `1` output
 indices, `reshape`/`transpose`/`concat` operands.
 
 ## 4. The `"jacobians"` top-level block
@@ -167,12 +167,12 @@ row)/∂(col)`:
   `[name, lo, hi]` triple (string name, inclusive integer bounds). The names
   are local to the entry (disjoint from its `row_idx` names) and may appear
   in `col_idx` and `coef`. Produced by differentiating through a
-  `reduce: "+"` aggregate whose gathered column depends on a contracted
+  `reduce: "+"` faq node whose gathered column depends on a contracted
   index (`u[j]`, `u[i+k]`, a `conn[]`-table gather): the sum over the
   contraction materializes as accumulation over the contracted points.
   Absent or `[]` for ordinary entries. When a contracted site's column does
   NOT depend on any contracted index, producers SHOULD instead emit an
-  ordinary entry whose `coef` is a scalar `reduce: "+"` aggregate over the
+  ordinary entry whose `coef` is a scalar `reduce: "+"` faq node over the
   contraction — keeping the entry count independent of the contraction
   extent.
 

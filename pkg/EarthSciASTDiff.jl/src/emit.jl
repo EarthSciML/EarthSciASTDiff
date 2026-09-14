@@ -131,6 +131,28 @@ function _attach_jacobians!(doc, sv::SysView, model_name::String; wrt::Symbol,
     plan === nothing || (block["factorization"] = serialize_plan(plan))
     jb = get!(doc, "jacobians", OrderedDict{String,Any}())
     jb[model_name] = block
+    _raise_faq_floor!(doc)
+    return doc
+end
+
+"""
+    _raise_faq_floor!(doc) -> doc
+
+Raise a document's declared `esm` version to the 1.1.0 floor when it is older.
+The band coefficients emitted above may contain `faq` nodes, which arrive at
+esm 1.1.0; a source model that legally declared 1.0.0 would otherwise end up
+spelling a 1.1.0 construct under a version that forbids it, and the loader
+would reject the result. This is EarthSciAST's own emit-side rule
+(`docs/content/rfcs/faq-node-rename.md` §5.5).
+"""
+function _raise_faq_floor!(doc)
+    v = get(doc, "esm", nothing)
+    v isa AbstractString || return doc
+    parts = split(v, '.')
+    length(parts) >= 2 || return doc
+    maj = tryparse(Int, parts[1]); min = tryparse(Int, parts[2])
+    (maj === nothing || min === nothing) && return doc
+    (maj, min) < (1, 1) && (doc["esm"] = "1.1.0")
     return doc
 end
 
@@ -165,7 +187,7 @@ end
 # evaluator code): emit a derived single-model document in which each band's
 # coefficient field is a STATE `J_k` whose RHS is the band field —
 #
-#   D(J_k) = makearray( zero default, band region ← aggregate(coef) )
+#   D(J_k) = makearray( zero default, band region ← faq(coef) )
 #
 # and run it through the unmodified `EarthSciAST.build_evaluator`; one RHS
 # call then leaves every band value in `du`. A dedicated compiled `jac!`
@@ -196,7 +218,10 @@ function _base_document(sv::SysView, name::String)
         String(n) => OrderedDict{String,Any}("kind" => "interval", "size" => s.size)
         for (n, s) in sv.index_sets if s.size !== nothing)
     return OrderedDict{String,Any}(
-        "esm" => "1.0.0",
+        # 1.1.0, not 1.0.0: every document this file builds may carry `faq`
+        # coefficient nodes, and `faq` arrives at esm 1.1.0. Declaring 1.0.0
+        # makes the document unloadable (`[E_FAQ_VERSION_TOO_OLD]`).
+        "esm" => "1.1.0",
         "metadata" => OrderedDict{String,Any}("name" => name),
         "index_sets" => isets,
         "models" => OrderedDict{String,Any}(name => m))
@@ -275,7 +300,7 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
                     rngs[n] = Any[lo, hi]
                 end
                 OrderedDict{String,Any}(
-                    "op" => "aggregate", "args" => Any[],
+                    "op" => "faq", "args" => Any[],
                     "output_idx" => aggnames,
                     "ranges" => rngs,
                     "expr" => _ser_expr(coefs[k]))

@@ -21,7 +21,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     (`F[i]`, `F[i+1]`) — the `index(makearray…)` lowering path; the static
     region clipping regression target (exact pattern, guard-free
     coefficients, no ghost entry on the inflow row)
-  - `contracted_ops.esm` — contracted-index (`reduce: "+"`) aggregates: a
+  - `contracted_ops.esm` — contracted-index (`reduce: "+"`) faq nodes: a
     dense gathered matvec column (`u[j]`), a contraction-independent column
     (symbolic-sum coefficient), a row+contracted affine stencil (`u[i+k]`)
     under a makearray region, and a `conn[]`-table gather (`u[conn[i,k]]`)
