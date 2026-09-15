@@ -52,7 +52,7 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
     # Option-A expanded, a `FlattenedSystem` reaches it with
     # `apply_expression_template` nodes intact — nodes the calculus has no
     # rule for and the inliner rejects outright ("definition is not an
-    # aggregate, makearray or const"). Expanding here restores the invariant
+    # faq, makearray or const"). Expanding here restores the invariant
     # this file exists to hold: we differentiate the SAME tree the tree-walk
     # evaluator compiles, whichever input shape it arrived in. A no-op when no
     # references survived (empty registry), so single-model and
@@ -87,13 +87,21 @@ end
     lhs_state(eq) -> Union{String,Nothing}
 
 The state variable an equation integrates, accepting both the plain `D(u)`
-LHS and the pointwise-lifted `aggregate{ expr: D(index(u, i, j)) }` form the
+LHS and the pointwise-lifted `faq{ expr: D(index(u, i, j)) }` form the
 flatten pipeline produces. `nothing` for `ic`/observed/other equations.
+
+The `faq` (Functional Aggregate Query) node was spelled `aggregate` before esm
+1.1.0. Only the current spelling is matched here: every document reaches this
+package through EarthSciAST's load pipeline, which rewrites the deprecated
+alias to `faq` at the wire boundary and warns once per document
+(`docs/content/rfcs/faq-node-rename.md`). Matching the old spelling instead
+silently classifies every array state equation as non-differential, which is
+exactly how this was missed for four days.
 """
 function lhs_state(eq)
     l = eq.lhs
     l isa OpExpr || return nothing
-    if l.op == "aggregate" && l.expr_body isa OpExpr && l.expr_body.op == "D"
+    if l.op == "faq" && l.expr_body isa OpExpr && l.expr_body.op == "D"
         a = l.expr_body.args[1]
         a isa OpExpr && a.op == "index" && a.args[1] isa VarExpr &&
             return a.args[1].name

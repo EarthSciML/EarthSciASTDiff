@@ -12,7 +12,7 @@
 # and expansion is pure syntactic substitution — so
 # [`expand_templates`](@ref) reproduces the original trees exactly.
 #
-# Free index names inside a hoisted fragment (band row indices, aggregate
+# Free index names inside a hoisted fragment (band row indices, faq
 # output indices) stay free in the template body and re-bind at the
 # reference site after expansion — deliberate capture, since extraction is
 # exact subtree factoring, not hygienic abstraction.

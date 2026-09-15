@@ -1,8 +1,8 @@
 {
- "esm": "1.0.0",
+ "esm": "1.1.0",
  "metadata": {
   "name": "ContractedOps",
-  "description": "Contracted-index (reduce +) aggregates: a dense gathered matvec column u[j], a contraction-independent column whose coefficient is a symbolic sum, and a row+contracted affine stencil u[i+k] under a makearray region. Canonical fixture for contracted-index Jacobian bands. Plus a conn[]-table gather u[conn[i,k]] with a duplicated neighbor (row 3) so contracted points accumulate."
+  "description": "Contracted-index (reduce +) faq nodes: a dense gathered matvec column u[j], a contraction-independent column whose coefficient is a symbolic sum, and a row+contracted affine stencil u[i+k] under a makearray region. Canonical fixture for contracted-index Jacobian bands. Plus a conn[]-table gather u[conn[i,k]] with a duplicated neighbor (row 3) so contracted points accumulate."
  },
  "index_sets": {
   "x": {
@@ -79,7 +79,7 @@
       "wrt": "t"
      },
      "rhs": {
-      "op": "aggregate",
+      "op": "faq",
       "args": [],
       "output_idx": [
        "i"
@@ -174,7 +174,7 @@
       "values": [
        0.0,
        {
-        "op": "aggregate",
+        "op": "faq",
         "args": [],
         "output_idx": [
          "i"
@@ -228,7 +228,7 @@
       "wrt": "t"
      },
      "rhs": {
-      "op": "aggregate",
+      "op": "faq",
       "args": [],
       "output_idx": [
        "i"

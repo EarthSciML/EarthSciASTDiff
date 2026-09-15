@@ -16,6 +16,7 @@ function ad_jacobian(f!, u, p, t)
 end
 
 @testset "EarthSciASTDiff" begin
+    include("faq_tag_test.jl")
     include("scalar_rules_test.jl")
     include("cse_test.jl")
     include("clip_test.jl")

@@ -1,8 +1,8 @@
-# Contracted-index bands: `reduce: "+"` aggregates whose ranges bind more
+# Contracted-index bands: `reduce: "+"` faq nodes whose ranges bind more
 # names than output_idx. Three site classes, all in contracted_ops.esm:
 #   * a gathered column (`u[j]`, j contracted)      → Band with `contracted`
 #   * a column independent of the contraction        → plain band, coefficient
-#     wrapped in a scalar `reduce: "+"` aggregate
+#     wrapped in a scalar `reduce: "+"` faq node
 #   * a mixed affine gather (`u[i+k]`, k contracted) → Band with `contracted`,
 #     reached through a makearray region value
 
@@ -22,7 +22,7 @@ using EarthSciASTDiff: Band, skey
     diag = [en for en in yu if isempty(en.band.contracted)]
     @test length(diag) == 1
     @test skey(diag[1].band.cidx[1]) == skey(VarExpr("i"))
-    @test occursin("\"aggregate\"", skey(diag[1].band.coef))
+    @test occursin("\"faq\"", skey(diag[1].band.coef))
     @test occursin("\"reduce\":\"+\"", skey(diag[1].band.coef))
 
     qu = [en for en in entries if en.u == "q" && en.v == "u"]
@@ -62,7 +62,7 @@ using EarthSciASTDiff: Band, skey
 end
 
 @testset "contracted-index guards" begin
-    mk(rhs) = EarthSciAST.load_document(Dict{String,Any}("esm" => "1.0.0",
+    mk(rhs) = EarthSciAST.load_document(Dict{String,Any}("esm" => "1.1.0",
         "metadata" => Dict{String,Any}("name" => "G"),
         "index_sets" => Dict{String,Any}(
             "x" => Dict{String,Any}("kind" => "interval", "size" => 3)),
@@ -73,7 +73,7 @@ end
             "equations" => Any[Dict{String,Any}(
                 "lhs" => Dict{String,Any}("op" => "D", "args" => Any["u"], "wrt" => "t"),
                 "rhs" => rhs)]))))
-    agg(; kw...) = Dict{String,Any}("op" => "aggregate", "args" => Any[],
+    agg(; kw...) = Dict{String,Any}("op" => "faq", "args" => Any[],
         "output_idx" => Any["i"],
         "ranges" => Dict{String,Any}("i" => Any[1, 3], "j" => Any[1, 3]),
         "expr" => Dict{String,Any}("op" => "index", "args" => Any["u", "j"]),

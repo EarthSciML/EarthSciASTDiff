@@ -1,7 +1,7 @@
 # Inliner coverage for `index(makearray …)` value shapes (inline.jl
 # `_index_makearray`).
 #
-# A makearray region's VALUE may be a full-rank aggregate — one naming every
+# A makearray region's VALUE may be a full-rank faq node — one naming every
 # region dim, singleton dims included — or a reduced-rank one naming only the
 # non-singleton dims. `_bands_makearray!` has always distinguished the two
 # (`val_fullrank`); the inliner accepted only the reduced-rank shape, so a
@@ -14,22 +14,22 @@
 
 using JSON3
 
-@testset "inline: full-rank aggregate value over a pinned makearray region" begin
+@testset "inline: full-rank faq value over a pinned makearray region" begin
     O(kv...) = Dict{String,Any}(kv...)
     _u(i, j) = O("op" => "index", "args" => Any["u", i, j])
     # F = makearray( 0 over [1,3]x[1,2] ; 2*u[i,j] over the PINNED row i=2 )
-    face = O("op" => "aggregate", "args" => Any[], "output_idx" => Any["i", "j"],
+    face = O("op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
              "ranges" => O("i" => Any[2, 2], "j" => Any[1, 2]),
              "expr" => O("op" => "*", "args" => Any[2.0, _u("i", "j")]))
     Fdef = O("op" => "makearray", "args" => Any[],
              "regions" => Any[Any[Any[1, 3], Any[1, 2]], Any[Any[2, 2], Any[1, 2]]],
              "values" => Any[0.0, face])
-    rhs = O("op" => "aggregate", "args" => Any[], "output_idx" => Any["i", "j"],
+    rhs = O("op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
             "ranges" => O("i" => Any[1, 3], "j" => Any[1, 2]),
             "expr" => O("op" => "+", "args" => Any[
                 O("op" => "-", "args" => Any[_u("i", "j")]),
                 O("op" => "index", "args" => Any["F", "i", "j"])]))
-    doc = O("esm" => "1.0.0",
+    doc = O("esm" => "1.1.0",
             "metadata" => O("name" => "PinnedFace"),
             "index_sets" => O("x" => O("kind" => "interval", "size" => 3),
                               "y" => O("kind" => "interval", "size" => 2)),

@@ -130,11 +130,11 @@ EarthSciAST implementation and is gated by the same goldens.
       ranges at their affine breakpoints (equal-coefficient sub-bands
       re-merge), so region structure never reaches the coefficients or
       pads the pattern; state-dependent (limiter) branches remain unioned.
-- [x] Contracted-index bands: `reduce: "+"` aggregates over gathered
+- [x] Contracted-index bands: `reduce: "+"` faq nodes over gathered
       columns (`u[j]`, `u[i+k]`, `u[conn[i,k]]` const tables) emit entries
       with free `contracted` column dimensions (accumulating at assembly);
       contraction-independent columns emit ordinary entries with a
-      symbolic-sum coefficient. Filtered aggregates and non-`"+"` semirings
+      symbolic-sum coefficient. Filtered faq nodes and non-`"+"` semirings
       still fail loudly.
 - [x] `interp.bilinear` derivative (two clamped-weight partials, per-cell
       slope constants precomputed into nested segment `ifelse`, spec §3.4)

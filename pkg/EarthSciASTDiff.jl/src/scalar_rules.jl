@@ -44,7 +44,7 @@ Derivative of the scalar expression `e` with respect to site `s`, as a new
 ESM expression. Structural rules only; a subtree in which `s` does not occur
 differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
-semiring aggregates in scalar position, unknown closed functions).
+semiring `faq` nodes in scalar position, unknown closed functions).
 """
 dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
 

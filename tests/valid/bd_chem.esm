@@ -1,5 +1,5 @@
 {
-  "esm": "1.0.0",
+  "esm": "1.1.0",
   "metadata": {"name": "BlockDiagChem", "description": "Pure per-cell nonlinear chemistry on a 4-cell column: the Jacobian is block-diagonal (4 blocks of 3 species)."},
   "index_sets": {"z": {"kind": "interval", "size": 4}},
   "models": {
@@ -14,19 +14,19 @@
       },
       "equations": [
         {"lhs": {"op": "D", "args": ["A"], "wrt": "t"},
-         "rhs": {"op": "aggregate", "output_idx": ["i"], "args": ["A", "B", "C"],
+         "rhs": {"op": "faq", "output_idx": ["i"], "args": ["A", "B", "C"],
                  "ranges": {"i": {"from": "z"}},
                  "expr": {"op": "+", "args": [
                    {"op": "*", "args": [-1, "k1", {"op": "index", "args": ["A", "i"]}]},
                    {"op": "*", "args": ["k3", {"op": "index", "args": ["B", "i"]}, {"op": "index", "args": ["C", "i"]}]}]}}},
         {"lhs": {"op": "D", "args": ["B"], "wrt": "t"},
-         "rhs": {"op": "aggregate", "output_idx": ["i"], "args": ["A", "B"],
+         "rhs": {"op": "faq", "output_idx": ["i"], "args": ["A", "B"],
                  "ranges": {"i": {"from": "z"}},
                  "expr": {"op": "+", "args": [
                    {"op": "*", "args": ["k1", {"op": "index", "args": ["A", "i"]}]},
                    {"op": "*", "args": [-1, "k2", {"op": "index", "args": ["B", "i"]}, {"op": "index", "args": ["B", "i"]}]}]}}},
         {"lhs": {"op": "D", "args": ["C"], "wrt": "t"},
-         "rhs": {"op": "aggregate", "output_idx": ["i"], "args": ["B"],
+         "rhs": {"op": "faq", "output_idx": ["i"], "args": ["B"],
                  "ranges": {"i": {"from": "z"}},
                  "expr": {"op": "*", "args": ["k2", {"op": "index", "args": ["B", "i"]}, {"op": "index", "args": ["B", "i"]}]}}}
       ]

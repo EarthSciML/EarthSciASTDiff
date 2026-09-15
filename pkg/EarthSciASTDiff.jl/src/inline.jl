@@ -5,7 +5,7 @@
 # constructs stand between the flattened RHS and that form:
 #
 #   1. OBSERVED variables (algebraic intermediates). Scalar observed inline by
-#      plain substitution; an array observed defined by an `aggregate` inlines
+#      plain substitution; an array observed defined by a `faq` node inlines
 #      at each read site by β-reduction (`index(F, e…)` → F's body with output
 #      indices := e).
 #   2. `index(makearray(…), i, j)` — the form the pointwise lift produces when
@@ -28,7 +28,7 @@ Base.showerror(io::IO, e::InlineError) = print(io, "InlineError: ", e.msg)
     inline_observed(e, obs::Dict{String,ASTExpr}) -> ASTExpr
 
 Inline every observed-variable read in `e` (`obs` maps observed name →
-defining expression), β-reduce `index`-of-`aggregate`, and lower
+defining expression), β-reduce `index`-of-`faq`, and lower
 `index`-of-`makearray` to region `ifelse`. Fixpoint-iterated; throws
 [`InlineError`](@ref) on non-convergence (cyclic observed definitions).
 """
@@ -79,11 +79,11 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs)::ASTExpr
             push!(conds, op("<=", idx[k], hi))
             _region_bound(r[2]) > _region_bound(r[1]) && push!(sub_idx, idx[k])
         end
-        v = if val isa OpExpr && val.op == "aggregate"
+        v = if val isa OpExpr && val.op == "faq"
             oidx = [String(x) for x in val.output_idx]
             # TWO legal value shapes, the same pair `_bands_makearray!`
             # distinguishes with `val_fullrank` (bands.jl): a FULL-RANK
-            # aggregate names every region dim, singleton dims included; a
+            # faq node names every region dim, singleton dims included; a
             # REDUCED-RANK one names only the non-singleton dims. Bind each
             # output index to the read index of the dim it actually names. Only
             # the reduced-rank shape was accepted here, so a full-rank value
@@ -91,7 +91,7 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs)::ASTExpr
             # boundary face takes — was rejected outright.
             #
             # Inherited, and NOT changed here: the binding assumes the value
-            # aggregate's own range for a dim STARTS where the region does, so
+            # faq node's own range for a dim STARTS where the region does, so
             # no origin shift is applied. `_bands_makearray!` does apply one
             # (`shift = lo - origins[kk]`). No fixture in this suite exercises
             # a shifted value range on this path, so the two are consistent
@@ -122,7 +122,7 @@ function _inline_once(e::ASTExpr, obs)::ASTExpr
         if e.op == "index" && e.args[1] isa OpExpr && e.args[1].op == "makearray"
             return _index_makearray(e.args[1],
                                     ASTExpr[_inline_once(x, obs) for x in e.args[2:end]], obs)
-        elseif e.op == "index" && e.args[1] isa OpExpr && e.args[1].op == "aggregate"
+        elseif e.op == "index" && e.args[1] isa OpExpr && e.args[1].op == "faq"
             def = e.args[1]
             oidx = [String(x) for x in def.output_idx]
             subst = Dict{String,ASTExpr}(
@@ -131,7 +131,7 @@ function _inline_once(e::ASTExpr, obs)::ASTExpr
         end
         if e.op == "index" && e.args[1] isa VarExpr && haskey(obs, e.args[1].name)
             def = obs[e.args[1].name]
-            if def isa OpExpr && def.op == "aggregate"
+            if def isa OpExpr && def.op == "faq"
                 oidx = [String(x) for x in def.output_idx]
                 length(oidx) == length(e.args) - 1 || throw(InlineError(
                     "index arity $(length(e.args)-1) ≠ rank $(length(oidx)) of observed `$(e.args[1].name)`"))
@@ -153,7 +153,7 @@ function _inline_once(e::ASTExpr, obs)::ASTExpr
                           ASTExpr[_inline_once(x, obs) for x in e.args[2:end]]...)
             else
                 throw(InlineError(
-                    "index into observed `$(e.args[1].name)` whose definition is not an aggregate, makearray or const"))
+                    "index into observed `$(e.args[1].name)` whose definition is not a faq, makearray or const"))
             end
         end
         return map_children(x -> _inline_once(x, obs), e)

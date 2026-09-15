@@ -26,9 +26,9 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
     body = O("op" => "+", "args" => Any[
         O("op" => "-", "args" => Any[O("op" => "*", "args" => Any["src", _idx("u", "i")])]),
         "src"])
-    rhs = O("op" => "aggregate", "args" => Any[], "output_idx" => Any["i"],
+    rhs = O("op" => "faq", "args" => Any[], "output_idx" => Any["i"],
             "ranges" => O("i" => Any[1, 4]), "expr" => body)
-    doc = O("esm" => "1.0.0",
+    doc = O("esm" => "1.1.0",
             "metadata" => O("name" => "PruneProbe"),
             "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
             "models" => O("PruneProbe" => O(

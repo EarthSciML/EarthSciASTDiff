@@ -1,5 +1,5 @@
 {
- "esm": "1.0.0",
+ "esm": "1.1.0",
  "metadata": {
   "name": "MinimalChemAdvectionSmall",
   "description": "O3-NO-NO2 chemistry with advection over a lon-lat grid and external meteorology",
@@ -198,7 +198,7 @@
       ],
       "values": [
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "i",
          "j"
@@ -262,7 +262,7 @@
         }
        },
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "j"
         ],
@@ -303,7 +303,7 @@
         }
        },
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "j"
         ],
@@ -394,7 +394,7 @@
       ],
       "values": [
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "i",
          "j"
@@ -458,7 +458,7 @@
         }
        },
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "i"
         ],
@@ -499,7 +499,7 @@
         }
        },
        {
-        "op": "aggregate",
+        "op": "faq",
         "output_idx": [
          "i"
         ],

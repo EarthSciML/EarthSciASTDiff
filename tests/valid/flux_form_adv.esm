@@ -1,5 +1,5 @@
 {
-    "esm": "1.0.0",
+    "esm": "1.1.0",
     "metadata": {
         "name": "flux_form_adv",
         "description": "Flux-form upwind advection with an inflow face: an OBSERVED edge-flux field F defined by a makearray (constant inflow flux on edge 1, interior upwind flux c*u[e-1] on edges 2..9), read per cell as F[i] and F[i+1]. The per-cell reads of a makearray-defined array are the `index(makearray...)` lowering path (region-membership ifelse), so this is the regression fixture for STATIC REGION CLIPPING: the Jacobian bands must split at the region boundaries with guard-free coefficients (interior +-c/dx sub/diagonal bands; the inflow face carries no state coupling through F[1]) and the structural pattern must be exact."
@@ -53,7 +53,7 @@
                         "wrt": "t"
                     },
                     "rhs": {
-                        "op": "aggregate",
+                        "op": "faq",
                         "args": [],
                         "output_idx": [
                             "i"
@@ -125,7 +125,7 @@
                         "values": [
                             0.0,
                             {
-                                "op": "aggregate",
+                                "op": "faq",
                                 "args": [],
                                 "output_idx": [
                                     "e"
