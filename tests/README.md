@@ -44,7 +44,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   band field → storage position for `lane_blocks`, `lane_sparse_blocks`,
   `column_banded` and `csr`, one per layout the fixture's structure admits
   (the list lives in `scripts/regenerate-goldens.jl`). Julia and Rust
-  compare byte-exactly.
+  compare byte-exactly; Python does not port scatter plans yet.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   numeric assemblies must reproduce the exact (row, col) key set and every

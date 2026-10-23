@@ -204,7 +204,8 @@ struct JacobianEvaluator{F,P}
     umap::Vector{Int}             # uj[umap[i]] = u[i]
     p_default::P
     scatter::Vector{Tuple{Int,Int}}  # (slot in duj, position in nzval)
-    fields::Vector{Vector{Int}}      # band k, field cell (column-major) → slot in duj
+    field_shapes::Vector{Vector{Int}} # band k → field shape (scatter plans)
+    slots::Dict{String,Int}          # derived-model name → slot in duj
     prototype::SparseMatrixCSC{Float64,Int}
     pattern::SparseMatrixCSC{Bool,Int}
     entries::Vector{JacEntry}
@@ -285,12 +286,10 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
         push!(scatter, (slot, pos))
     end
     structure = detect_structure(entries, sv)
-    # Band-field slot table, for scatter plans (scatter.jl): field `J_k` spans
-    # the row shape plus the contracted extents, every cell a derived state.
+    # Field shapes and the derived name → slot map, for scatter plans
+    # (scatter.jl): `bind_plan` resolves only the field cells a plan reads.
     ctx = _ctx(sv)
-    fields = [vec([_slot(vmj, _cellname("J_$k", Tuple(c)), "band")
-                   for c in CartesianIndices(Tuple(_field_shape(en, ctx)))])
-              for (k, en) in enumerate(entries)]
+    field_shapes = [_field_shape(en, ctx) for en in entries]
     # WHICH FORM did `build_evaluator` hand back? The derived band model goes
     # through the ORDINARY builder, so it comes back in whichever form
     # `build_kwargs` asked for: the default in-place `f!(du, u, p, t)`, or the
@@ -303,7 +302,8 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     oop = !applicable(fJ!, zeros(1), zeros(1), pj, 0.0) &&
           applicable(fJ!, zeros(1), pj, 0.0)
     return JacobianEvaluator(fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
-                             pj, scatter, fields, proto, pattern, entries,
+                             pj, scatter, field_shapes,
+                             convert(Dict{String,Int}, vmj), proto, pattern, entries,
                              first.(sort(collect(vm0), by = last)), colnames,
                              structure, wrt)
 end

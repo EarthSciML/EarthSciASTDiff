@@ -339,7 +339,15 @@ the state Jacobian only), `states` (`[{name, shape}]` in canonical order),
 `bands` (`[{u, v, shape}]`: row variable, column variable and field shape
 per entry, in entry order), and `items` (layout-specific tuples, in
 accumulation order). A consumer MUST refuse a plan whose `states` or `bands`
-differ from those of the evaluator it binds to.
+differ from those of the evaluator it binds to (field shapes compared
+dimension by dimension, not by cell count). Equal `states` and `bands` do
+not make a plan correct — two stencils with the same variables have the same
+field shapes — so binding MUST also decode every contribution against the
+evaluator's own bands: each contribution that reads a band point MUST land on
+the (row, column) cell that point differentiates, no point may be read
+twice or given a position if it is a ghost read, and every non-ghost point
+MUST be read. Contributions that read a field cell outside its band's region
+read zero and are allowed.
 
 Accumulation is `+=` in `items` order into an output zeroed first: several
 bands may land on one element (§4 additivity). Items are sorted by output
@@ -358,7 +366,9 @@ index `ℓ` of the lane domain, and padding lanes stay zero.
 | `csr` | `rowptr`, `colind` | `[k, f, p]` | `p` (the nonzero index), reading field `k` cell `f` |
 
 - `lane_blocks` / `lane_sparse_blocks` require a `block_diagonal` structure
-  with every state on one cell shape. `block_vars` is the §6 plan's
+  with every state on one cell shape, and no band with contracted dimensions
+  (a lane reads one field cell, so a contracted band's other points would
+  be dropped). `block_vars` is the §6 plan's
   `block_vars` (Markowitz order) followed by any state no band touches,
   sorted; `n = len(block_vars)`. `lu_pattern` is the §6 `lu_pattern` made
   0-based, plus a diagonal `[i, i]` for each appended state, sorted; fill

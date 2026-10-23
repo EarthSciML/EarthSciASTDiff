@@ -17,7 +17,7 @@ use crate::bands::{BandError, Ctx};
 use crate::clip::RIdx;
 use crate::emit::{block_diagonal_lu, detect_structure, offset_class, BlockLu};
 use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
-use crate::numeric::{eval_cidx, product_first_fastest};
+use crate::numeric::{eval_cidx, foreach_point};
 use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 
 type R<T> = Result<T, BandError>;
@@ -303,7 +303,7 @@ impl ScatterPlan {
 
     /// `(band k, field cell, output position)` per contribution, in
     /// accumulation order: plan order, lanes innermost.
-    pub fn contributions(&self, l: usize) -> Vec<(usize, usize, usize)> {
+    fn contributions(&self, l: usize) -> Vec<(usize, usize, usize)> {
         let nl = self.lanes();
         match &self.kind {
             PlanKind::LaneBlocks { items, .. } | PlanKind::LaneSparseBlocks { items, .. } =>
@@ -317,28 +317,94 @@ impl ScatterPlan {
         }
     }
 
-    /// Scatter band fields (`fields[k][cell]`, see [`crate::band_fields`])
-    /// into `out` at lane capacity `l`: zeroed, then `+=` in plan order.
-    pub fn scatter(&self, fields: &[Vec<f64>], l: usize, out: &mut [f64]) -> R<()> {
-        if fields.len() != self.bands.len()
-            || fields.iter().zip(&self.bands).any(|(f, b)| f.len() != ncells(&b.2))
+    /// Check this plan against a model's own band list and precompute its
+    /// scatter at lane capacity `l` (spec §8: a plan is never applied
+    /// unchecked). The plan's `states` and `bands` must equal the model's,
+    /// and every contribution is decoded against the model's bands: each must
+    /// land on the (row, column) cell its band point differentiates, and every
+    /// band point with a column must be covered exactly once — so a plan from
+    /// another document, build or stencil is refused.
+    pub fn bind(&self, file: &EsmFile, model_name: Option<&str>, l: usize)
+                -> R<BoundScatter> {
+        let sv = sysview(file, model_name)?;
+        let ctx = ctx_of(&sv)?;
+        let obs = observed_defs(&sv)?;
+        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+        self.bind_entries(&sv, &entries, l)
+    }
+
+    /// [`ScatterPlan::bind`] against an already computed band list.
+    pub fn bind_entries(&self, sv: &SysView, entries: &[JacEntry], l: usize)
+                        -> R<BoundScatter> {
+        let berr = |msg: String| -> R<BoundScatter> {
+            Err(BandError(format!("bind: {msg}")))
+        };
+        let ctx = ctx_of(sv)?;
+        let obs = observed_defs(sv)?;
+        let states: Vec<(String, Vec<i64>)> = view_states(sv, &obs).into_iter()
+            .map(|u| { let s = ctx.shapes.get(&u).cloned().unwrap_or_default(); (u, s) })
+            .collect();
+        if states != self.states {
+            return berr("the plan's states are not this model's".into());
+        }
+        if entries.len() != self.bands.len()
+            || entries.iter().zip(&self.bands).any(|(en, (u, v, s))|
+                &en.u != u || &en.v != v || &field_shape(en, &ctx) != s)
         {
-            return Err(BandError("scatter: band fields do not match the plan's bands".into()));
+            return berr(format!(
+                "the plan was built from a different band list than this model ({} vs \
+                 {} bands, or a band's variables or field shape differ)",
+                self.bands.len(), entries.len()));
         }
-        if l < self.lanes() {
-            return Err(BandError(format!(
-                "scatter: lane capacity {l} < {} lanes", self.lanes())));
+        let nl = self.lanes();
+        if l < nl {
+            return berr(format!("lane capacity {l} < {nl} lanes"));
         }
-        if out.len() != self.out_len(l) {
-            return Err(BandError(format!(
-                "scatter: output has length {}; the plan needs {}", out.len(),
-                self.out_len(l))));
+        // The model's own points: (band k, field cell) → (row, col) cell
+        // names, or None for a ghost read (a value with no storage position).
+        let vshape: HashMap<&String, &Vec<i64>> = states.iter().map(|(u, s)| (u, s)).collect();
+        let mut want: HashMap<(usize, usize), Option<(String, String)>> = HashMap::new();
+        for (k, en) in entries.iter().enumerate() {
+            let sh = &self.bands[k].2;
+            let vs = vshape[&en.v];
+            foreach_point(&en.band, &mut |cell, cc, _, cidx| {
+                let full: Vec<i64> = cell.iter().chain(cc).copied().collect();
+                let ghost = cidx.iter().zip(vs.iter()).any(|(c, n)| *c < 1 || c > n);
+                want.insert((k, flat(&full, sh)), if ghost { None } else {
+                    Some((cellname(&en.u, cell), cellname(&en.v, cidx)))
+                });
+                Ok(())
+            })?;
         }
-        out.iter_mut().for_each(|x| *x = 0.0);
-        for (k, f, pos) in self.contributions(l) {
-            out[pos] += fields[k][f];
+        let targets = self.targets(l);
+        let pairs = self.contributions(l);
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        for &(k, f, pos) in &pairs {
+            let Some(t) = want.get(&(k, f)) else { continue };  // outside the region: zero
+            let Some(t) = t else {
+                return berr(format!("band {} field cell {f} is a ghost read; the plan \
+                                     gives it a storage position", k + 1));
+            };
+            if targets[pos].as_ref() != Some(t) {
+                return berr(format!("band {} field cell {f} is {} ← {} here; the plan \
+                                     puts it at {:?}", k + 1, t.0, t.1, targets[pos]));
+            }
+            if !seen.insert((k, f)) {
+                return berr(format!("band {} field cell {f} is scattered twice", k + 1));
+            }
         }
-        Ok(())
+        let mut dropped: Vec<_> = want.iter()
+            .filter(|(kf, t)| t.is_some() && !seen.contains(kf)).collect();
+        dropped.sort();
+        if let Some(((k, f), Some((r, c)))) = dropped.first() {
+            return berr(format!("the plan drops band {} field cell {f} ({r} ← {c})", k + 1));
+        }
+        Ok(BoundScatter {
+            lanes: l,
+            len: self.out_len(l),
+            field_lens: self.bands.iter().map(|b| ncells(&b.2)).collect(),
+            pairs,
+        })
     }
 
     /// The (row, column) state-cell names each output position holds at lane
@@ -396,9 +462,7 @@ impl ScatterPlan {
                 }
             }
             PlanKind::Csr { rowptr, colind, .. } => {
-                let names: Vec<String> = self.states.iter().flat_map(|(u, s)| {
-                    (0..ncells(s)).map(move |f| cellname(u, &unflat(f, s)))
-                }).collect();
+                let names = state_cells(&self.states);
                 for r in 0..rowptr.len() - 1 {
                     for q in rowptr[r]..rowptr[r + 1] {
                         out[q] = Some((names[r].clone(), names[colind[q]].clone()));
@@ -408,6 +472,47 @@ impl ScatterPlan {
         }
         out
     }
+}
+
+/// A [`ScatterPlan`] checked against one model at a lane capacity (see
+/// [`ScatterPlan::bind`]), its gather precomputed: fill with
+/// [`BoundScatter::scatter`]. Plain data, `Send + Sync`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundScatter {
+    pub lanes: usize,
+    /// Output length.
+    pub len: usize,
+    field_lens: Vec<usize>,
+    /// (band k, field cell, output position), in accumulation order.
+    pairs: Vec<(usize, usize, usize)>,
+}
+
+impl BoundScatter {
+    /// Scatter band fields (`fields[k][cell]`, see [`crate::band_fields`])
+    /// into `out`: zeroed, then `+=` in plan order.
+    pub fn scatter(&self, fields: &[Vec<f64>], out: &mut [f64]) -> R<()> {
+        if fields.len() != self.field_lens.len()
+            || fields.iter().zip(&self.field_lens).any(|(f, n)| f.len() != *n)
+        {
+            return Err(BandError("scatter: band fields do not match the plan's bands".into()));
+        }
+        if out.len() != self.len {
+            return Err(BandError(format!(
+                "scatter: output has length {}; the plan needs {}", out.len(), self.len)));
+        }
+        out.iter_mut().for_each(|x| *x = 0.0);
+        for &(k, f, pos) in &self.pairs {
+            out[pos] += fields[k][f];
+        }
+        Ok(())
+    }
+}
+
+/// Every state cell name, in canonical order (the rows of a `Csr` plan).
+fn state_cells(states: &[(String, Vec<i64>)]) -> Vec<String> {
+    states.iter().flat_map(|(u, s)| {
+        (0..ncells(s)).map(move |f| cellname(u, &unflat(f, s)))
+    }).collect()
 }
 
 fn lane_cells(layout: &Layout, states: &[(String, Vec<i64>)]) -> R<Vec<i64>> {
@@ -428,6 +533,14 @@ fn lane_cells(layout: &Layout, states: &[(String, Vec<i64>)]) -> R<Vec<i64>> {
 
 fn block_order(layout: &Layout, entries: &[JacEntry], ctx: &Ctx,
                states: &[(String, Vec<i64>)]) -> R<(BlockLu, Vec<String>)> {
+    // A lane template reads one field cell per lane; a contracted band's
+    // field has a cell per contracted point too, which it would drop.
+    for (k, en) in entries.iter().enumerate() {
+        if !en.band.contracted.is_empty() {
+            return err(layout, format!("band {} ({} ← {}) has contracted dimensions",
+                                       k + 1, en.u, en.v));
+        }
+    }
     let st = detect_structure(entries, ctx);
     if st != "block_diagonal" {
         return err(layout, format!(
@@ -524,29 +637,16 @@ fn csr(entries: &[JacEntry], states: &[(String, Vec<i64>)],
     for (k, en) in entries.iter().enumerate() {
         let b = &en.band;
         let vshape = shape[&en.v];
-        let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
-        for cell in product_first_fastest(&b.rows) {
-            for cc in product_first_fastest(&cranges) {
-                let mut bind: HashMap<String, f64> = HashMap::new();
-                for (k2, r) in b.ridx.iter().enumerate() {
-                    if let RIdx::Name(nm) = r {
-                        bind.insert(nm.clone(), cell[k2] as f64);
-                    }
-                }
-                for (k2, (nm, _, _)) in b.contracted.iter().enumerate() {
-                    bind.insert(nm.clone(), cc[k2] as f64);
-                }
-                let cidx: Vec<i64> = b.cidx.iter().map(|c| eval_cidx(c, &bind))
-                    .collect::<Result<_, _>>()?;
-                if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
-                    continue;                 // ghost read: no column
-                }
-                let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
-                pts.push((base[&en.u] + flat(&cell, shape[&en.u]),
-                          base[&en.v] + flat(&cidx, vshape),
-                          k, flat(&full, &bands[k].2)));
+        foreach_point(b, &mut |cell, cc, _, cidx| {
+            if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
+                return Ok(());                // ghost read: no column
             }
-        }
+            let full: Vec<i64> = cell.iter().chain(cc).copied().collect();
+            pts.push((base[&en.u] + flat(cell, shape[&en.u]),
+                      base[&en.v] + flat(cidx, vshape),
+                      k, flat(&full, &bands[k].2)));
+            Ok(())
+        })?;
     }
     let nz: Vec<(usize, usize)> = pts.iter().map(|p| (p.0, p.1))
         .collect::<std::collections::BTreeSet<_>>().into_iter().collect();

@@ -99,6 +99,33 @@ end
     @test refuses(() -> bind_plan(jac, scatter_plan(bd, LaneBlocks()); lanes = 2))
     @test refuses(() -> bind_plan(prepare_jacobian(bd; wrt = :parameters),
                                   scatter_plan(bd, Csr())))
+    # a contracted band whose column is its row cell is :block_diagonal, but a
+    # lane template reads one field cell per lane — it would drop k = 2..hi
+    bde = jacobian_bands(sv; wrt = :states)
+    b1 = bde[1].band
+    con = [JacEntry(bde[1].u, bde[1].v,
+                    Band(b1.rows, b1.ridx, b1.cidx, b1.coef, [("kk", 1, 3)]));
+           bde[2:end]]
+    @test refuses(() -> scatter_plan(con, sv, LaneBlocks()))
+    @test refuses(() -> scatter_plan(con, sv, LaneSparseBlocks()))
+    # same variables and field shapes, mirrored stencil (u[i-1] ↔ u[i+1]):
+    # the band list check alone passes; decoding the contributions does not
+    asv = sysview(adv, "Adv")
+    ae = jacobian_bands(asv; wrt = :states)
+    sw(en, o) = JacEntry(en.u, en.v,
+                         Band(en.band.rows, en.band.ridx, o.band.cidx, en.band.coef))
+    mirrored = [sw(ae[1], ae[2]), sw(ae[2], ae[1])]
+    ajac = prepare_jacobian(adv)
+    for layout in (Csr(), ColumnBanded("x"))
+        bind_plan(ajac, scatter_plan(ae, asv, layout))           # the real one binds
+        @test refuses(() -> bind_plan(ajac, scatter_plan(mirrored, asv, layout)))
+    end
+    # a plan whose state cells repeat: refused with the intended message
+    p0 = scatter_plan(bd, Csr())
+    dup = EarthSciASTDiff.CsrPlan([p0.states; p0.states], p0.bands, p0.rowptr,
+                                  p0.colind, p0.items)
+    msg = try bind_plan(jac, dup); "" catch e; sprint(showerror, e) end
+    @test occursin("not this evaluator's (duplicate state cells)", msg)
     b = bind_plan(jac, scatter_plan(bd, Csr()))
     @test_throws DimensionMismatch jac_into!(zeros(b.len + 1), jac, b,
                                              ones(12), nothing, 0.0)

@@ -177,6 +177,12 @@ function _lane_cells(layout, states::_States)
 end
 
 function _block_order(layout, entries, sv, states)
+    # A lane template reads one field cell per lane; a contracted band's
+    # field has a cell per contracted point too, which it would drop.
+    for (k, en) in enumerate(entries)
+        isempty(en.band.contracted) || _plan_error(layout,
+            "band $k ($(en.u) ← $(en.v)) has contracted dimensions")
+    end
     st = detect_structure(entries, sv)
     st == :block_diagonal || _plan_error(layout,
         "needs a :block_diagonal Jacobian (per-cell coupling only); this one is :$st")
@@ -371,37 +377,82 @@ struct BoundScatter{P<:ScatterPlan}
     pairs::Vector{Tuple{Int,Int}}      # (derived-model du slot, 1-based output position)
 end
 
+# Every state cell name, in canonical order (the rows of a `Csr` plan).
+function _state_cells(states::_States)
+    names = String[]
+    for (u, s) in states
+        isempty(s) ? push!(names, u) :
+            append!(names, [_cellname(u, Tuple(c)) for c in CartesianIndices(Tuple(s))])
+    end
+    return names
+end
+
+_bind_error(msg) = throw(ArgumentError("bind_plan: " * msg))
+
 """
     bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing) -> BoundScatter
 
 Check `plan` against `jac` and precompute its gather. Binding is strict: the
-plan's band list (row var, column var, field shape per band) must equal the
-evaluator's, and its canonical state cells must be exactly the evaluator's
-state names — a plan from another build or another document is refused,
-never silently misapplied. `lanes` is the lane capacity `L` of a lane or
-column layout (default: exactly the lane count; padding lanes stay zero).
+plan's band list (row var, column var, field shape per band) and canonical
+state cells must equal the evaluator's, and every contribution is decoded
+against the evaluator's own bands — each must land on the (row, column) cell
+its band point differentiates, and every band point with a column must be
+covered exactly once. A plan from another build, another document or another
+stencil is refused, never silently misapplied. `lanes` is the lane capacity
+`L` of a lane or column layout (default: exactly the lane count; padding
+lanes stay zero).
 """
 function bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing)
     jac.wrt == :states || throw(ArgumentError(
         "scatter plans cover wrt = :states; this evaluator is wrt = :$(jac.wrt)"))
     (length(plan.bands) == length(jac.entries) &&
-     all(en.u == u && en.v == v && length(jac.fields[k]) == _ncells(s)
+     all(en.u == u && en.v == v && jac.field_shapes[k] == s
          for (k, (en, (u, v, s))) in enumerate(zip(jac.entries, plan.bands)))) ||
-        throw(ArgumentError("bind_plan: the plan was built from a different band " *
-            "list than this evaluator ($(length(plan.bands)) vs $(length(jac.entries)) " *
-            "bands, or a band's variables or field shape differ)"))
-    names = String[]
-    for (u, s) in plan.states
-        isempty(s) ? push!(names, u) :
-            append!(names, [_cellname(u, Tuple(c)) for c in CartesianIndices(Tuple(s))])
+        _bind_error("the plan was built from a different band list than this " *
+            "evaluator ($(length(plan.bands)) vs $(length(jac.entries)) bands, or a " *
+            "band's variables or field shape differ)")
+    names = _state_cells(plan.states)
+    if !(length(names) == length(jac.rownames) && allunique(names) &&
+         Set(names) == Set(jac.rownames))
+        extra = setdiff(union(names, jac.rownames), intersect(names, jac.rownames))
+        _bind_error("the plan's states are not this evaluator's" *
+            (isempty(extra) ? " (duplicate state cells)" : " (e.g. `$(first(extra))`)"))
     end
-    Set(names) == Set(jac.rownames) && length(names) == length(jac.rownames) ||
-        throw(ArgumentError("bind_plan: the plan's states are not this evaluator's " *
-            "(e.g. `$(first(setdiff(union(names, jac.rownames), intersect(names, jac.rownames))))`)"))
     nl = _nlanes(plan)
     L = lanes === nothing ? nl : Int(lanes)
-    L >= nl || throw(ArgumentError("bind_plan: lane capacity $L < $nl lanes"))
-    pairs = [(jac.fields[k+1][f+1], pos + 1) for (k, f, pos) in _contributions(plan, L)]
+    L >= nl || _bind_error("lane capacity $L < $nl lanes")
+    # The evaluator's own points: (band k, field cell) → (row, col) cell
+    # names, or `nothing` for a ghost read (a value with no storage position).
+    vshape = Dict(plan.states)
+    want = Dict{Tuple{Int,Int},Union{Nothing,Tuple{String,String}}}()
+    for (k, en) in enumerate(jac.entries)
+        sh = jac.field_shapes[k]; vs = vshape[en.v]
+        _foreach_point(en.band) do cell, cc, cidx
+            want[(k - 1, _flat(vcat(cell, cc), sh))] =
+                all(1 <= c <= n for (c, n) in zip(cidx, vs)) ?
+                    (_cellname(en.u, cell), _cellname(en.v, cidx)) : nothing
+        end
+    end
+    targets = scatter_targets(plan; lanes = L)
+    seen = Set{Tuple{Int,Int}}()
+    pairs = Tuple{Int,Int}[]           # (derived-model du slot, 1-based output position)
+    for (k, f, pos) in _contributions(plan, L)
+        if haskey(want, (k, f))
+            t = want[(k, f)]
+            t === nothing && _bind_error("band $(k + 1) field cell $f is a ghost " *
+                "read; the plan gives it a storage position")
+            t == targets[pos+1] || _bind_error("band $(k + 1) field cell $f is " *
+                "$(t[1]) ← $(t[2]) here; the plan puts it at $(something(targets[pos+1], "padding"))")
+            (k, f) in seen && _bind_error("band $(k + 1) field cell $f is scattered twice")
+            push!(seen, (k, f))
+        end                            # else: outside the band's region, so zero
+        c = Tuple(CartesianIndices(Tuple(plan.bands[k+1][3]))[f+1])
+        push!(pairs, (_slot(jac.slots, _cellname("J_$(k + 1)", c), "band"), pos + 1))
+    end
+    for (kf, t) in want
+        t === nothing || kf in seen || _bind_error("the plan drops band $(kf[1] + 1) " *
+            "field cell $(kf[2]) ($(t[1]) ← $(t[2]))")
+    end
     return BoundScatter(plan, L, _outlen(plan, L), pairs)
 end
 
@@ -470,11 +521,7 @@ function _targets!(out, p::ColumnBandedPlan, L)
     end
 end
 function _targets!(out, p::CsrPlan, _)
-    names = String[]
-    for (u, s) in p.states
-        isempty(s) ? push!(names, u) :
-            append!(names, [_cellname(u, Tuple(c)) for c in CartesianIndices(Tuple(s))])
-    end
+    names = _state_cells(p.states)
     for r in 1:(length(p.rowptr)-1), q in (p.rowptr[r]+1):p.rowptr[r+1]
         out[q] = (names[r], names[p.colind[q]+1])
     end

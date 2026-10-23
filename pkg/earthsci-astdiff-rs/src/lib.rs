@@ -27,6 +27,6 @@ pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{jacobian_bands, JacEntry, Wrt};
 pub use numeric::{assemble_jacobian, band_fields};
-pub use scatter::{Layout, PlanKind, ScatterPlan};
+pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};
 pub use rules::{dscalar, DerivativeRuleError};
 pub use system::{ctx_of, sysview, SysView};

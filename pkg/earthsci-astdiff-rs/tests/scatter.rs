@@ -51,8 +51,9 @@ fn scattered_values_match_the_oracle() {
         let plan = ScatterPlan::from_file(&file, None, &layout).unwrap();
         let nl = plan.lanes();
         for l in [nl, nl + 3] {
-            let mut out = vec![f64::NAN; plan.out_len(l)];
-            plan.scatter(&fields, l, &mut out).unwrap();
+            let bound = plan.bind(&file, None, l).unwrap();
+            let mut out = vec![f64::NAN; bound.len];
+            bound.scatter(&fields, &mut out).unwrap();
             let targets = plan.targets(l);
             let mut covered = std::collections::HashSet::new();
             for (pos, t) in targets.iter().enumerate() {
@@ -91,13 +92,37 @@ fn refusals() {
     // columns that are not states
     let pe = jacobian_bands(&file, None, Wrt::Parameters).unwrap();
     assert!(ScatterPlan::build(&sv, &pe, &Layout::Csr).is_err());
-    // scatter-time checks: short capacity, wrong output length, wrong fields
+    // a contracted band whose column is its row cell is block-diagonal, but a
+    // lane template reads one field cell per lane: it would drop k = 2..hi
+    let mut con = jacobian_bands(&file, None, Wrt::States).unwrap();
+    con[0].band.contracted = vec![("kk".into(), 1, 3)];
+    assert!(ScatterPlan::build(&sv, &con, &Layout::LaneBlocks).is_err());
+    assert!(ScatterPlan::build(&sv, &con, &Layout::LaneSparseBlocks).is_err());
+    // binding: a plan from another document, a short capacity
+    let adv = load("adv_interior");
+    let other = ScatterPlan::from_file(&adv, None, &Layout::Csr).unwrap();
+    assert!(other.bind(&file, None, 1).is_err());
     let plan = ScatterPlan::from_file(&file, None, &Layout::LaneBlocks).unwrap();
+    assert!(plan.bind(&file, None, 2).is_err());
+    // same variables and field shapes, mirrored stencil (u[i-1] ↔ u[i+1]):
+    // the band list check alone passes; decoding the contributions does not
+    let asv = sysview(&adv, None).unwrap();
+    let ae = jacobian_bands(&adv, None, Wrt::States).unwrap();
+    let mut mirrored = ae.clone();
+    mirrored[0].band.cidx = ae[1].band.cidx.clone();
+    mirrored[1].band.cidx = ae[0].band.cidx.clone();
+    for layout in [Layout::Csr, cb("x")] {
+        let real = ScatterPlan::build(&asv, &ae, &layout).unwrap();
+        assert!(real.bind_entries(&asv, &ae, real.lanes()).is_ok());
+        let bad = ScatterPlan::build(&asv, &mirrored, &layout).unwrap();
+        assert!(bad.bind_entries(&asv, &ae, bad.lanes()).is_err(), "{layout:?}");
+    }
+    // scatter-time checks: wrong output length, wrong fields
     let (env, _) = jvals_env("bd_chem");
     let fields = band_fields(&file, None, &env).unwrap();
-    assert!(plan.scatter(&fields, 2, &mut vec![0.0; plan.out_len(2)]).is_err());
-    assert!(plan.scatter(&fields, 4, &mut vec![0.0; plan.out_len(4) + 1]).is_err());
-    assert!(plan.scatter(&fields[1..], 4, &mut vec![0.0; plan.out_len(4)]).is_err());
+    let b = plan.bind(&file, None, 4).unwrap();
+    assert!(b.scatter(&fields, &mut vec![0.0; b.len + 1]).is_err());
+    assert!(b.scatter(&fields[1..], &mut vec![0.0; b.len]).is_err());
 }
 
 #[test]
@@ -118,4 +143,5 @@ fn plans_are_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<ScatterPlan>();
     assert_send_sync::<Layout>();
+    assert_send_sync::<earthsci_astdiff::BoundScatter>();
 }
