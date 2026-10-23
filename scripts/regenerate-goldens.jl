@@ -20,4 +20,11 @@ for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minm
     bpath = joinpath(root, "tests", "goldens", "$name.block.json")
     write(bpath, stable_json(block))
     println("wrote ", bpath)
+    # the derived evaluation document prepare_jacobian compiles: source
+    # derivatives zeroed, hoisted observed, one band field per entry
+    sv = sysview(file, mname)
+    evdoc, _ = EarthSciASTDiff._evaluation_document(sv, jacobian_bands(sv))
+    epath = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
+    write(epath, stable_json(evdoc))
+    println("wrote ", epath)
 end

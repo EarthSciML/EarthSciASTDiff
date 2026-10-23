@@ -240,8 +240,44 @@ function _axis_name!(doc, sz::Int)
     return nm
 end
 
-# Derived model: original system + one state per band whose RHS is the band's
-# coefficient field. With `cse = true`, repeated coefficient subtrees are
+# Trim the source's ODE right-hand side out of the evaluation model: every
+# `D(u)` equation of the source becomes `D(u) = 0` (a zero `makearray` over
+# the state's shape for an array state), in place of the first one and with
+# any further ones dropped. The states keep their solver slots — `jac!`
+# copies `u` into them exactly as before — so the observed definitions and
+# band fields read them unchanged, but each call no longer recomputes `f`.
+#
+# Why zero derivatives rather than turning the states into parameters: an
+# array parameter is a build-time `param_arrays` buffer, and EarthSciAST
+# treats observed that read ONLY parameters as constant and caches them, so
+# writing a new `u` into the buffer in place leaves those values stale
+# (minmod_adv's limiters, off by up to 16.0 at a second point) unless an
+# internal epoch hook is called on every write.
+function _zero_source_derivatives!(m, sv::SysView, ctx)
+    done = Set{String}()
+    eqs = Any[]
+    for (eq, ser) in zip(sv.equations, m["equations"])
+        u = lhs_state(eq)
+        if u === nothing
+            push!(eqs, ser)
+        elseif !(u in done)
+            push!(done, u)
+            shape = get(ctx.shapes, u, Int[])
+            rhs = isempty(shape) ? 0.0 : OrderedDict{String,Any}(
+                "op" => "makearray", "args" => Any[],
+                "regions" => Any[Any[Any[1, n] for n in shape]],
+                "values" => Any[0.0])
+            push!(eqs, OrderedDict{String,Any}(
+                "lhs" => OrderedDict{String,Any}("op" => "D", "args" => Any[u], "wrt" => "t"),
+                "rhs" => rhs))
+        end
+    end
+    m["equations"] = eqs
+    return m
+end
+
+# Derived model: the source's observed definitions with its state derivatives
+# zeroed, plus one state per band whose RHS is the band's coefficient field. With `cse = true`, repeated coefficient subtrees are
 # first hoisted into observed variables of the document
 # ([`hoist_observed`](@ref)) so the tree-walk's factored array-observed
 # buffers evaluate them once per cell per RHS call — the compile-time and
@@ -252,6 +288,7 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
+    _zero_source_derivatives!(m, sv, ctx)
     h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
     coefs = h === nothing ? ASTExpr[en.band.coef for en in entries] : h.coefs
     if h !== nothing
