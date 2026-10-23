@@ -69,11 +69,12 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     # the `entries` order is what downstream pattern/scatter construction
     # (assemble.jl) reads.
     tset = Set{String}(targets)
+    obs_names = Ref{Union{Nothing,Set{String}}}(nothing)
     for eq in sv.equations
         u = lhs_state(eq)
         u === nothing && continue
         shape_u = get(ctx.shapes, u, Int[])
-        rhs = inline_observed(eq.rhs, obs)
+        rhs = inline_observed(eq.rhs, obs; obs_names = obs_names)
         hits = sort!(String[v for v in free_variables(rhs) if v in tset])
         for v in hits
             for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))

@@ -11,7 +11,8 @@ from earthsci_ast.substitute import substitute
 
 from .clip import clip_regions
 from .expr_helpers import Site, add, ckey, is_zero, mul, neg, op, region_bound, skey
-from .scalar_rules import dscalar
+from .inline import all_names, binders
+from .scalar_rules import dscalar, plain_sum, reduction
 from .simplify_branches import canon_lits, simp
 from .simplify_port import simplify_jl as simplify
 
@@ -40,15 +41,21 @@ class BandError(Exception):
     pass
 
 
+def _set_size(name: str, ctx: Ctx) -> int:
+    if name not in ctx.index_sets:
+        raise BandError(f"range over undeclared index set `{name}`")
+    return ctx.index_sets[name]
+
+
 def _range_of(r, ctx: Ctx) -> tuple[int, int]:
     if isinstance(r, dict):
-        return (1, ctx.index_sets[str(r["from"])])
+        return (1, _set_size(str(r["from"]), ctx))
     if isinstance(r, (list, tuple)):
         return (region_bound(r[0]), region_bound(r[-1]))
     # typed IndexSetRef-like object with a `from`/`from_` attribute
     frm = getattr(r, "from_", None) or getattr(r, "from_set", None)
     if frm is not None:
-        return (1, ctx.index_sets[str(frm)])
+        return (1, _set_size(str(frm), ctx))
     raise BandError(f"unsupported range spec {r!r}")
 
 
@@ -75,6 +82,93 @@ def sorted_sites(e: Expr, v: str) -> list[Site]:
     return [d[k] for k in sorted(d)]
 
 
+_AMBIGUOUS = object()
+
+
+def _nested_sums(e: Expr, v: str, outer) -> dict:
+    """For each site of ``v`` under a nested scalar faq sum, the indices the
+    sums ENCLOSING it bind (bands.jl ``_nested_sums``): site key → {name →
+    range spec, or ``_AMBIGUOUS`` for a name also bound by ``outer``, bound
+    twice on the way down, or over different ranges at different
+    occurrences}. Position-aware: a sum elsewhere in the body does not
+    affect a site outside it."""
+    acc: dict = {}
+    _nested_walk(acc, e, v, set(outer), [])
+    return acc
+
+
+def _nested_walk(acc: dict, e: Expr, v: str, outer: set, stack: list) -> None:
+    if (isinstance(e, str) and e == v) or (
+            isinstance(e, ExprNode) and e.op == "index" and e.args[0] == v):
+        if not stack:
+            return
+        d = acc.setdefault(Site.of(e).key, {})
+        seen: set = set()
+        for n, r in stack:
+            amb = n in outer or n in seen or (n in d and d[n] != r)
+            d[n] = _AMBIGUOUS if amb else r
+            seen.add(n)
+        return
+    if not isinstance(e, ExprNode):
+        return
+    pushed = 0
+    if e.op == "faq" and not (e.output_idx or []) and e.ranges:
+        for n, r in e.ranges.items():
+            stack.append((str(n), r))
+            pushed += 1
+    map_children(e, lambda x: (_nested_walk(acc, x, v, outer, stack), x)[1])
+    del stack[len(stack) - pushed:]
+
+
+def _subst_free(e: Expr, m: dict) -> Expr:
+    """Substitution that does not descend into a faq for the names it binds."""
+    if isinstance(e, str):
+        return m.get(e, e)
+    if not isinstance(e, ExprNode):
+        return e
+    if e.op == "faq":
+        bound = binders(e)
+        if any(n in m for n in bound):
+            m = {k: v for k, v in m.items() if k not in bound}
+            if not m:
+                return e
+    return map_children(e, lambda x: _subst_free(x, m))
+
+
+def _lift_nested(nested: dict, s: Site, body: Expr, cidx: list, coef: Expr,
+                 ctx: Ctx, outer, taken: list):
+    """A site under a nested sum whose column reads the sum's index: that
+    index becomes a CONTRACTED column dimension of the band, renamed apart in
+    ``cidx`` and in the coefficient's free occurrences (bands.jl
+    ``_lift_nested``). ``taken`` is a per-body lazy cache (``[None]``) of the
+    body's names."""
+    d = nested.get(s.key)
+    if not d:
+        return cidx, coef, []
+    read: set[str] = set()
+    for c in cidx:
+        read |= set(free_variables(c))
+    names = sorted(n for n in d if n in read)
+    if not names:
+        return cidx, coef, []
+    if taken[0] is None:
+        taken[0] = all_names(body, set(outer))
+    ren: dict = {}
+    extra = []
+    for n in names:
+        if d[n] is _AMBIGUOUS:
+            raise BandError(
+                f"a column reads `{n}`, which the sums around it bind "
+                "ambiguously (shadowing an enclosing index, or over two "
+                "different ranges)")
+        f = n + "_j"
+        while f in taken[0] or f in ren.values():
+            f += "_j"
+        ren[n] = f
+        extra.append((f, *_range_of(d[n], ctx)))
+    return ([substitute(c, ren) for c in cidx], _subst_free(coef, ren), extra)
+
+
 def is_array_expr(e: Expr, ctx: Ctx) -> bool:
     if isinstance(e, str):
         return is_array(ctx, e)
@@ -97,12 +191,15 @@ def bands(rhs: Expr, v: str, ctx: Ctx, shape_u: list[int] | None = None) -> list
     shape_u = shape_u or []
     out: list[Band] = []
     if not shape_u:
+        nested = _nested_sums(rhs, v, [])
+        taken: list = [None]
         for s in sorted_sites(rhs, v):
-            coef = simp(dscalar(rhs, s))
+            cidx, d, extra = _lift_nested(nested, s, rhs, _site_cidx(s),
+                                          dscalar(rhs, s), ctx, [], taken)
+            coef = simp(d)
             if is_zero(coef):
                 continue
-            cidx = [] if isinstance(s.expr, str) else list(s.expr.args[1:])
-            out.append(Band([], [], cidx, coef))
+            out.append(Band([], [], cidx, coef, extra))
         return out
     _bands_array(out, rhs, v, ctx, shape_u, [1])
     return out
@@ -112,13 +209,18 @@ def _site_cidx(s: Site) -> list:
     return [] if isinstance(s.expr, str) else list(s.expr.args[1:])
 
 
-def _scalar_bands(out, e: Expr, v: str, rows, ridx, scale) -> None:
+def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale) -> None:
+    outer = [r for r in ridx if isinstance(r, str)]
     for rows2, body in clip_regions(e, ridx, rows):
+        nested = _nested_sums(body, v, outer)
+        taken: list = [None]
         for s in sorted_sites(body, v):
-            coef = simp(mul(dscalar(body, s), *scale))
+            cidx, d, extra = _lift_nested(nested, s, body, _site_cidx(s),
+                                          dscalar(body, s), ctx, outer, taken)
+            coef = simp(mul(d, *scale))
             if is_zero(coef):
                 continue
-            out.append(Band(rows2, list(ridx), _site_cidx(s), coef))
+            out.append(Band(rows2, list(ridx), cidx, coef, extra))
 
 
 def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
@@ -163,7 +265,7 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
         _bands_faq(out, e, v, ctx, shape_u, scale)
     elif o == "index":
         names = [f"_r{k + 1}" for k in range(len(shape_u))]
-        _scalar_bands(out, e, v, [(1, n) for n in shape_u], names, scale)
+        _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
     else:
         if is_array_expr(e, ctx):
             names = [f"_r{k + 1}" for k in range(len(shape_u))]
@@ -176,7 +278,7 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
             _bands_array(out, agg, v, ctx, shape_u, scale)
         else:
             names = [f"_r{k + 1}" for k in range(len(shape_u))]
-            _scalar_bands(out, e, v, [(1, n) for n in shape_u], names, scale)
+            _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
 
 
 def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
@@ -188,8 +290,8 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                         "would be dropped from the derivative)")
     ranges = e.ranges or {}
     cnames = sorted(str(n) for n in ranges if str(n) not in oidx)
-    if e.reduce is not None and e.reduce != "+":
-        raise BandError(f"reduce=`{e.reduce}` (non-smooth semiring reductions "
+    if not plain_sum(e):
+        raise BandError(f"{reduction(e)} (non-smooth semiring reductions "
                         "have no bands)")
     crange = [(n, *_range_of(ranges[n], ctx)) for n in cnames]
     rows = []
@@ -197,17 +299,20 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
         rows.append(_range_of(ranges[n], ctx) if n in ranges
                     else (1, shape_u[k]))
     body = e.expr
+    outer = oidx + cnames
     for rows2, body2 in clip_regions(body, oidx, rows):
+        nested = _nested_sums(body2, v, outer)
+        taken: list = [None]
         for s in sorted_sites(body2, v):
-            d = dscalar(body2, s)
             if isinstance(s.expr, str) and is_array(ctx, v):
                 raise BandError(
                     f"whole-array reference to `{v}` inside a faq body")
-            cidx = _site_cidx(s)
+            cidx, d, extra = _lift_nested(nested, s, body2, _site_cidx(s),
+                                          dscalar(body2, s), ctx, outer, taken)
             if not crange:
                 coef = simp(mul(d, *scale))
                 if not is_zero(coef):
-                    out.append(Band(rows2, list(oidx), cidx, coef))
+                    out.append(Band(rows2, list(oidx), cidx, coef, extra))
             elif not any(any(n in free_variables(c) for c in cidx)
                          for n, _, _ in crange):
                 red = ExprNode(op="faq", args=[], output_idx=[],
@@ -215,12 +320,12 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                                ranges={n: [lo, hi] for n, lo, hi in crange})
                 coef = simp(mul(red, *scale))
                 if not is_zero(coef):
-                    out.append(Band(rows2, list(oidx), cidx, coef))
+                    out.append(Band(rows2, list(oidx), cidx, coef, extra))
             else:
                 coef = simp(mul(d, *scale))
                 if not is_zero(coef):
                     out.append(Band(rows2, list(oidx), cidx, coef,
-                                    list(crange)))
+                                    list(crange) + extra))
 
 
 def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
@@ -272,7 +377,7 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
                                                  for c in b.cidx]
                 out.append(Band(rows2, ridx, cidx, coef, b.contracted))
         else:
-            _scalar_bands(out, val, v, rows, [lo for lo, _ in rows], scale)
+            _scalar_bands(out, val, v, ctx, rows, [lo for lo, _ in rows], scale)
 
 
 def _push_index(e: Expr, idx: list, ctx: Ctx) -> Expr:

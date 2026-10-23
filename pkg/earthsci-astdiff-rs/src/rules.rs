@@ -1,6 +1,9 @@
 //! Scalar derivative rules — one rule per evaluable-core operator, matching
 //! esm-jacobian-spec.md §3 row-for-row (goldens pin the table).
 
+use std::collections::{HashMap, HashSet};
+
+use earthsci_ast::free_variables;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
@@ -149,6 +152,8 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
             Ok(dacc)
         }
+        "faq" if n.output_idx.as_ref().map_or(true, |o| o.is_empty()) =>
+            dsum(n, s),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
         "fn" => dfn(n, s),
         "index" => Err(DerivativeRuleError(
@@ -158,6 +163,68 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             "no derivative rule for op `{o}` (rewrite-target ops must be \
              lowered before differentiation)"))),
     }
+}
+
+/// A scalar faq sum Σ_k body (scalar_rules.jl `_dsum`): the sum of the
+/// body's derivatives. Bound indices the site's column does not read are
+/// summed; those it does read (`u[i,k]` under Σ_k) are left FREE, for the
+/// band emitter to turn into contracted column dimensions (bands.rs
+/// `lift_nested`). Filter, join and non-`"+"` reductions have no rule.
+/// Whether faq node `n` reduces by ordinary `+` (scalar_rules.jl
+/// `_plain_sum`): a `semiring` supersedes `reduce`, so a `max_product` node
+/// with no `reduce` is a max, not a sum.
+pub(crate) fn plain_sum(n: &ExpressionNode) -> bool {
+    match &n.semiring {
+        None => n.reduce.as_deref().map_or(true, |r| r == "+"),
+        Some(sr) => sr == "sum_product",
+    }
+}
+
+pub(crate) fn reduction(n: &ExpressionNode) -> String {
+    match &n.semiring {
+        None => format!("reduce=`{}`", n.reduce.as_deref().unwrap_or("+")),
+        Some(sr) => format!("semiring=`{sr}`"),
+    }
+}
+
+fn dsum(n: &ExpressionNode, s: &Site) -> R {
+    if n.filter.is_some() {
+        return Err(DerivativeRuleError(
+            "filtered faq nodes are not differentiated (the filter gate would \
+             be dropped from the derivative)".into()));
+    }
+    if n.join.is_some() {
+        return Err(DerivativeRuleError("joined faq nodes are not differentiated".into()));
+    }
+    if !plain_sum(n) {
+        return Err(DerivativeRuleError(format!(
+            "{} (non-smooth semiring reductions have no rule)", reduction(n))));
+    }
+    let body = n.expr.as_deref()
+        .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;
+    let db = dscalar(body, s)?;
+    if is_zero(&db) {
+        return Ok(Expr::Integer(0));
+    }
+    let empty = HashMap::new();
+    let ranges = n.ranges.as_ref().unwrap_or(&empty);
+    let mut read: HashSet<String> = HashSet::new();
+    if let Expr::Operator(sn) = &s.expr {
+        for x in &sn.args[1..] {
+            read.extend(free_variables(x));
+        }
+    }
+    let summed: HashMap<_, _> = ranges.iter()
+        .filter(|(k, _)| !read.contains(*k))
+        .map(|(k, v)| (k.clone(), v.clone())).collect();
+    if summed.is_empty() && !ranges.is_empty() {
+        return Ok(db);
+    }
+    Ok(Expr::operator(ExpressionNode {
+        expr: Some(Box::new(db)),
+        ranges: if summed.len() == ranges.len() { n.ranges.clone() } else { Some(summed) },
+        ..n.clone()
+    }))
 }
 
 fn const_vector(e: &Expr) -> Option<Vec<f64>> {

@@ -6,7 +6,10 @@ pin the two implementations against each other.
 """
 from __future__ import annotations
 
+from dataclasses import replace
+
 from earthsci_ast.esm_types import Expr, ExprNode
+from earthsci_ast.expression import free_variables
 
 from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
 
@@ -108,6 +111,8 @@ def dscalar(e: Expr, s: Site) -> Expr:
             dacc = op("ifelse", op(cmp, acc, x), dacc, d(x))
             acc = op(o, acc, x)
         return dacc
+    if o == "faq" and not (e.output_idx or []):
+        return _dsum(e, s)
     if o in ZERO_DERIV_OPS:
         return 0
     if o == "fn":
@@ -119,6 +124,51 @@ def dscalar(e: Expr, s: Site) -> Expr:
     raise DerivativeRuleError(
         f"no derivative rule for op `{o}` "
         "(rewrite-target ops must be lowered before differentiation)")
+
+
+def plain_sum(e: ExprNode) -> bool:
+    """Whether faq node ``e`` reduces by ordinary ``+`` (scalar_rules.jl
+    ``_plain_sum``): a ``semiring`` supersedes ``reduce``, so a
+    ``max_product`` node with no ``reduce`` is a max, not a sum."""
+    if e.semiring is None:
+        return e.reduce in (None, "+")
+    return e.semiring == "sum_product"
+
+
+def reduction(e: ExprNode) -> str:
+    return (f"reduce=`{e.reduce}`" if e.semiring is None
+            else f"semiring=`{e.semiring}`")
+
+
+def _dsum(e: ExprNode, s: Site) -> Expr:
+    """A scalar faq sum Σ_k body (scalar_rules.jl ``_dsum``): the sum of the
+    body's derivatives. Bound indices the site's column does not read are
+    summed; those it does read (``u[i,k]`` under Σ_k) are left FREE, for the
+    band emitter to turn into contracted column dimensions (bands.py
+    ``_lift_nested``). Filter, join and non-``"+"`` reductions have no rule."""
+    if e.filter is not None:
+        raise DerivativeRuleError(
+            "filtered faq nodes are not differentiated (the filter gate "
+            "would be dropped from the derivative)")
+    if e.join is not None:
+        raise DerivativeRuleError("joined faq nodes are not differentiated")
+    if not plain_sum(e):
+        raise DerivativeRuleError(
+            f"{reduction(e)} (non-smooth semiring reductions have no rule)")
+    db = dscalar(e.expr, s)
+    if is_zero(db):
+        return 0
+    ranges = e.ranges or {}
+    read: set[str] = set()
+    if isinstance(s.expr, ExprNode):
+        for x in s.expr.args[1:]:
+            read |= set(free_variables(x))
+    summed = {n: r for n, r in ranges.items() if n not in read}
+    if len(summed) == len(ranges):
+        return replace(e, expr=db)
+    if not summed:
+        return db
+    return replace(e, expr=db, ranges=summed)
 
 
 def _const_vector(e: Expr) -> list[float] | None:

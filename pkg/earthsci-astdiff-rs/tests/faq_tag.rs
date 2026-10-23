@@ -50,7 +50,7 @@ fn lifted_lhs_is_an_array_state_equation() {
 #[test]
 fn array_models_differentiate_to_a_non_empty_band_set() {
     for name in ["adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
-                 "adv_react_2d", "bd_chem"] {
+                 "adv_react_2d", "bd_chem", "contracting_observed"] {
         let file = fixture(name);
         let sv = sysview(&file, None).unwrap();
         assert!(!view_states(&sv, &observed_defs(&sv).unwrap()).is_empty(),

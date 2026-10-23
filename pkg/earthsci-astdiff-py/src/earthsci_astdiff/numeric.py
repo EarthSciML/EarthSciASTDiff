@@ -22,6 +22,7 @@ from earthsci_ast.substitute import substitute
 from .emit import _cellname, _eval_cidx, _product
 from .inline import inline_observed
 from .jacobian import _jacobian_bands
+from .scalar_rules import plain_sum, reduction
 from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
 
@@ -84,8 +85,8 @@ def _resolve(e: Expr, env: _Env) -> Expr:
     if e.op == "faq":
         if e.output_idx:
             raise EvalError("array-producing faq in scalar coefficient")
-        if e.reduce not in (None, "+"):
-            raise EvalError(f"reduce=`{e.reduce}` in scalar coefficient")
+        if not plain_sum(e):
+            raise EvalError(f"{reduction(e)} in scalar coefficient")
         names = sorted(str(n) for n in (e.ranges or {}))
         boxes = [range(int(e.ranges[n][0]), int(e.ranges[n][1]) + 1)
                  for n in names]

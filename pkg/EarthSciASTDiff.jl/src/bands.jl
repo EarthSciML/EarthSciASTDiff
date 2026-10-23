@@ -52,14 +52,17 @@ Base.showerror(io::IO, e::BandError) = print(io, "BandError: ", e.msg)
 
 function _range_of(r, ctx::Ctx)::Tuple{Int,Int}
     if r isa IndexSetRef
-        return (1, ctx.index_sets[r.from])
+        return (1, _set_size(r.from, ctx))
     elseif r isa AbstractVector
         return (_region_bound(r[1]), _region_bound(r[end]))
     elseif r isa AbstractDict
-        return (1, ctx.index_sets[String(r["from"])])
+        return (1, _set_size(String(r["from"]), ctx))
     end
     throw(BandError("unsupported range spec $r"))
 end
+
+_set_size(name, ctx::Ctx)::Int = haskey(ctx.index_sets, name) ? ctx.index_sets[name] :
+    throw(BandError("range over undeclared index set `$name`"))
 
 # All distinct sites of `v` inside a scalar body: the bare VarExpr and every
 # `index(v, …)` node, keyed by canonical JSON.
@@ -72,6 +75,101 @@ function sites_of(e::ASTExpr, v::String, acc = Dict{String,Site}())
         map_children(x -> (sites_of(x, v, acc); x), e)
     end
     return acc
+end
+
+# For each site of `v` under a scalar `faq` sum nested in a body (where a
+# contracting observed's sum survives inlining), the indices the sums
+# ENCLOSING that site bind: name → range spec. Position-aware, so a sum
+# elsewhere in the body binding the same name does not affect a site outside
+# it. `:ambiguous` marks a name whose free occurrence in the site's
+# derivative could mean two indices — also bound by the band's own row or
+# contraction indices (`outer`), bound twice on the way down, or bound over
+# different ranges at different occurrences of the site — which
+# `_lift_nested` refuses if the column reads it. The inliner renames apart
+# every such shadowing it produces, so this fires only on a hand-written
+# shadowing sum.
+function _nested_sums(e::ASTExpr, v::String, outer)
+    acc = Dict{String,Dict{String,Any}}()
+    _nested_sums!(acc, e, v, Set{String}(outer), Pair{String,Any}[])
+    return acc
+end
+
+function _nested_sums!(acc, e::ASTExpr, v::String, outer::Set{String}, stack)
+    if (e isa VarExpr && e.name == v) || (e isa OpExpr && e.op == "index" &&
+                                         e.args[1] isa VarExpr && e.args[1].name == v)
+        isempty(stack) && return
+        d = get!(() -> Dict{String,Any}(), acc, Site(e).key)
+        seen = Set{String}()
+        for (n, r) in stack
+            d[n] = n in outer || n in seen || (haskey(d, n) && d[n] != r) ? :ambiguous : r
+            push!(seen, n)
+        end
+        return
+    end
+    e isa OpExpr || return
+    pushed = 0
+    if e.op == "faq" && isempty(something(e.output_idx, Any[])) && e.ranges !== nothing
+        for (n, r) in e.ranges
+            push!(stack, String(n) => r)
+            pushed += 1
+        end
+    end
+    map_children(x -> (_nested_sums!(acc, x, v, outer, stack); x), e)
+    for _ in 1:pushed
+        pop!(stack)
+    end
+    return
+end
+
+# Substitution that does not descend into a faq node for the names it binds.
+function _subst_free(e::ASTExpr, m::Dict{String,ASTExpr})::ASTExpr
+    e isa VarExpr && return get(m, e.name, e)
+    e isa OpExpr || return e
+    if e.op == "faq"
+        bound = _binders(e)
+        if any(n -> haskey(m, n), bound)
+            m = Dict{String,ASTExpr}(k => v for (k, v) in m if !(k in bound))
+            isempty(m) && return e
+        end
+    end
+    return map_children(x -> _subst_free(x, m), e)
+end
+
+# A site under a nested sum whose column reads the sum's index (`u[i,k]` in
+# Σ_k u[i,k]): `dscalar` leaves k free in the derivative (`_dsum`), and here
+# it becomes a CONTRACTED column dimension of the band — entries for every k
+# accumulating on their columns, exactly as for a contracted index of the
+# enclosing faq. It is renamed apart in `cidx` and in the FREE occurrences of
+# the coefficient, because the coefficient may still carry the sum itself
+# (the chain rule through f(Σ_k …)) binding the same name, and assembly
+# substitutes contracted values without regard to binders.
+# `nested` is `_nested_sums` of `body`, and `taken` a lazily filled cache of
+# its names; both are per body, not per site.
+function _lift_nested(nested, s::Site, body::ASTExpr, cidx::Vector{ASTExpr},
+                      coef::ASTExpr, ctx::Ctx, outer, taken)
+    none = Tuple{String,Int,Int}[]
+    d = get(nested, s.key, nothing)
+    d === nothing && return cidx, coef, none
+    read = Set{String}()
+    for c in cidx
+        union!(read, free_variables(c))
+    end
+    names = sort!([n for n in keys(d) if n in read])
+    isempty(names) && return cidx, coef, none
+    taken[] === nothing && (taken[] = _all_names!(Set{String}(String.(outer)), body))
+    ren = Dict{String,ASTExpr}(); extra = Tuple{String,Int,Int}[]
+    for n in names
+        d[n] === :ambiguous && throw(BandError(
+            "a column reads `$n`, which the sums around it bind ambiguously " *
+            "(shadowing an enclosing index, or over two different ranges)"))
+        f = n * "_j"
+        while f in taken[] || any(x -> x.name == f, values(ren))
+            f *= "_j"
+        end
+        ren[n] = VarExpr(f)
+        push!(extra, (f, _range_of(d[n], ctx)...))
+    end
+    return ASTExpr[substitute(c, ren) for c in cidx], _subst_free(coef, ren), extra
 end
 
 "Sites of `v` in `e`, in deterministic (sorted canonical-key) order."
@@ -105,11 +203,15 @@ inlined ([`inline_observed`](@ref)).
 function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[])::Vector{Band}
     out = Band[]
     if isempty(shape_u)
+        nested = _nested_sums(rhs, v, String[])
+        taken = Ref{Union{Nothing,Set{String}}}(nothing)
         for s in sorted_sites(rhs, v)
-            coef = _simp(dscalar(rhs, s))
-            iszero_lit(coef) && continue
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            push!(out, Band(Tuple{Int,Int}[], Union{String,Int}[], cidx, coef))
+            cidx, d, extra = _lift_nested(nested, s, rhs, cidx, dscalar(rhs, s), ctx,
+                                          String[], taken)
+            coef = _simp(d)
+            iszero_lit(coef) && continue
+            push!(out, Band(Tuple{Int,Int}[], Union{String,Int}[], cidx, coef, extra))
         end
         return out
     end
@@ -121,13 +223,18 @@ end
 # statically clipping decidable region guards first (clip.jl) so membership
 # `ifelse` never reaches the coefficients and the pattern is per-subrange
 # exact.
-function _scalar_bands!(out, e::ASTExpr, v::String, rows, ridx, scale)
+function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale)
+    outer = String[r for r in ridx if r isa String]
     for (rows2, body) in clip_regions(e, ridx, rows)
+        nested = _nested_sums(body, v, outer)
+        taken = Ref{Union{Nothing,Set{String}}}(nothing)
         for s in sorted_sites(body, v)
-            coef = _simp(mul(dscalar(body, s), scale...))
-            iszero_lit(coef) && continue
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            push!(out, Band(rows2, collect(Union{String,Int}, ridx), cidx, coef))
+            cidx, d, extra = _lift_nested(nested, s, body, cidx, dscalar(body, s), ctx,
+                                          outer, taken)
+            coef = _simp(mul(d, scale...))
+            iszero_lit(coef) && continue
+            push!(out, Band(rows2, collect(Union{String,Int}, ridx), cidx, coef, extra))
         end
     end
 end
@@ -175,7 +282,7 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
     elseif o == "index"
         # A scalar read of some array in an array-level position: a broadcast.
         names = ["_r$k" for k in 1:length(shape_u)]
-        _scalar_bands!(out, e, v, [(1, n) for n in shape_u], names, scale)
+        _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
     else
         if is_array_expr(e, ctx)
             # Generic elementwise op over whole arrays (exp(c), c^2, ifelse):
@@ -191,7 +298,7 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
         else
             # Scalar expression broadcast over u's shape.
             names = ["_r$k" for k in 1:length(shape_u)]
-            _scalar_bands!(out, e, v, [(1, n) for n in shape_u], names, scale)
+            _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
         end
     end
     return out
@@ -206,8 +313,8 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
         "from the derivative)"))
     ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
     cnames = sort!([String(n) for n in keys(ranges) if !(String(n) in oidx)])
-    e.reduce === nothing || e.reduce == "+" || throw(BandError(
-        "reduce=`$(e.reduce)` (non-smooth semiring reductions have no bands)"))
+    _plain_sum(e) || throw(BandError(
+        "$(_reduction(e)) (non-smooth semiring reductions have no bands)"))
     crange = Tuple{String,Int,Int}[
         (n, _range_of(ranges[n], ctx)...) for n in cnames]
     rows = Tuple{Int,Int}[]
@@ -215,16 +322,20 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
         push!(rows, haskey(ranges, n) ? _range_of(ranges[n], ctx) : (1, shape_u[k]))
     end
     body = e.expr_body
+    outer = vcat(oidx, cnames)
     for (rows2, body2) in clip_regions(body, oidx, rows)
+        nested = _nested_sums(body2, v, outer)
+        taken = Ref{Union{Nothing,Set{String}}}(nothing)
         for s in sorted_sites(body2, v)
-            d = dscalar(body2, s)
             s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
                 "whole-array reference to `$v` inside a faq body"))
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+            cidx, d, extra = _lift_nested(nested, s, body2, cidx, dscalar(body2, s),
+                                          ctx, outer, taken)
             if isempty(crange)
                 coef = _simp(mul(d, scale...))
                 iszero_lit(coef) && continue
-                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef, extra))
             elseif !any(n -> any(c -> n in free_variables(c), cidx),
                         first.(crange))
                 # The column is independent of every contracted index: a
@@ -236,7 +347,7 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                                  n => Any[lo, hi] for (n, lo, hi) in crange))
                 coef = _simp(mul(red, scale...))
                 iszero_lit(coef) && continue
-                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef))
+                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef, extra))
             else
                 # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
                 # with free contracted column dimensions; entries landing on
@@ -244,7 +355,7 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                 coef = _simp(mul(d, scale...))
                 iszero_lit(coef) && continue
                 push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef,
-                                crange))
+                                vcat(crange, extra)))
             end
         end
     end
@@ -307,7 +418,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             end
         else
             # Scalar value broadcast over the region.
-            _scalar_bands!(out, val, v, rows,
+            _scalar_bands!(out, val, v, ctx, rows,
                            Union{String,Int}[lo for (lo, _) in rows], scale)
         end
     end

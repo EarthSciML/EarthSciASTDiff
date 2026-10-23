@@ -9,7 +9,7 @@ from earthsci_astdiff import (jacobian_bands, jacobian_block,
                               parse_jacobian_block, skey, stable_json)
 
 NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv")
+         "minmod_adv", "contracting_observed")
 
 
 @pytest.mark.parametrize("name", NAMES)

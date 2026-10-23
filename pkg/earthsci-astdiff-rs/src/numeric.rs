@@ -87,11 +87,9 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
                 return Err(BandError(
                     "array-producing faq in scalar coefficient".into()));
             }
-            if let Some(red) = &n.reduce {
-                if red != "+" {
-                    return Err(BandError(format!(
-                        "reduce=`{red}` in scalar coefficient")));
-                }
+            if !crate::rules::plain_sum(n) {
+                return Err(BandError(format!(
+                    "{} in scalar coefficient", crate::rules::reduction(n))));
             }
             let empty = HashMap::new();
             let ranges = n.ranges.as_ref().unwrap_or(&empty);
