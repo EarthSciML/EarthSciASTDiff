@@ -97,29 +97,84 @@ def lhs_definition(eq) -> str | None:
     return eq.lhs if isinstance(eq.lhs, str) else None
 
 
+def _indexed_definition(eq) -> tuple[str, Expr | None] | None:
+    """An arrayed-observed definition ``faq{expr: index(y, i…)} ~ f(i…)``
+    (``y[i…] ~ f(i…)`` as documents spell it) rewritten to the whole-array
+    form ``y ~ faq{output_idx: [i…], expr: f(i…)}`` the inliner β-reduces.
+    Mirrors the indexed half of ``earthsci_ast.observed_definitions``.
+    ``None`` when the LHS is not an indexed read of a bare name; ``(y, None)``
+    when it is one whose subscripts are not exactly the output indices (a
+    partial or pinned definition such as ``y[1] ~ …``, not rewritable)."""
+    l = eq.lhs
+    if not isinstance(l, ExprNode):
+        return None
+    faq = None
+    if l.op == "faq":
+        if not (isinstance(l.expr, ExprNode) and l.expr.op == "index"):
+            return None
+        faq, l = l, l.expr
+    if l.op != "index" or not l.args or not isinstance(l.args[0], str):
+        return None
+    name, sub = l.args[0], list(l.args[1:])
+    if (faq is None or [str(x) for x in faq.output_idx] != sub
+            or len(set(sub)) != len(sub)):
+        return name, None
+    return name, ExprNode(op="faq", args=[], output_idx=sub, expr=eq.rhs,
+                          ranges=dict(faq.ranges) if faq.ranges else None)
+
+
+_UNKNOWN_TYPES = ("unknown",
+                  # a FlattenedVariable carries its DERIVED role instead
+                  "state", "observed", "species")
+
+
+def _is_unknown(var) -> bool:
+    return _var_type(var) in _UNKNOWN_TYPES
+
+
 def observed_defs(sv: SysView) -> dict[str, Expr]:
     """Observed definitions, for inlining. esm 1.0.0 removed the ``observed``
     type and ``variable.expression``: an observed is an unknown some equation
-    names bare on the left and that no ``D(·)`` equation also targets (mirrors
-    ``earthsci_ast.classification``). First definition wins."""
+    names on the left — bare, or indexed (an arrayed observed, rewritten by
+    :func:`_indexed_definition`) — and that no ``D(·)`` equation also targets
+    (mirrors ``earthsci_ast.classification``). First definition wins; an
+    arrayed observed defined by more than one equation is rejected."""
     states = {lhs_state(eq) for eq in sv.equations} - {None}
     out: dict[str, Expr] = {}
+    indexed: set[str] = set()
     for eq in sv.equations:
-        n = lhs_definition(eq)
-        if n is None or n in states or n in out:
+        bare = lhs_definition(eq)
+        nd = (bare, eq.rhs) if bare is not None else _indexed_definition(eq)
+        if nd is None:
             continue
+        n, d = nd
         var = sv.variables.get(n)
-        if var is not None and _var_type(var) == "unknown":
-            out[n] = eq.rhs
+        if n in states or var is None or not _is_unknown(var):
+            continue
+        if d is None:
+            raise ValueError(
+                f"arrayed observed `{n}`: defining LHS subscripts must be the "
+                "distinct output indices (partial definitions are not supported)")
+        if n in out:
+            if n in indexed or bare is None:
+                raise ValueError(
+                    f"arrayed observed `{n}` is defined by more than one "
+                    "equation (piecewise definitions are not supported)")
+            continue
+        out[n] = d
+        if bare is None:
+            indexed.add(n)
     return out
 
 
-def view_states(sv: SysView) -> list[str]:
+def view_states(sv: SysView, obs: dict[str, Expr] | None = None) -> list[str]:
     """The unknowns occupying a solver slot: every unknown MINUS the observed
-    ones (the 1.0.0 replacement for the 0.x ``state`` type). Sorted."""
-    obs = observed_defs(sv)
+    ones (the 1.0.0 replacement for the 0.x ``state`` type). Sorted. Pass
+    ``obs`` (:func:`observed_defs`) when the caller already has it."""
+    if obs is None:
+        obs = observed_defs(sv)
     return sorted(str(n) for n, var in sv.variables.items()
-                  if _var_type(var) == "unknown" and str(n) not in obs)
+                  if _is_unknown(var) and str(n) not in obs)
 
 
 def _opaque_deps(e: Expr) -> bool:
@@ -178,14 +233,17 @@ def inlinable_observed(obs: dict[str, Expr], equations,
             if n not in keep:
                 keep.add(n)
                 work.append(n)
-    while True:                                   # (2) subscript fixpoint
-        acc: set[str] = set()
-        for eq in equations:
-            _index_arg_names(acc, eq.rhs)
-        for n in keep:
+    # (2) subscript fixpoint. The equations are scanned once; each pass then
+    # scans only the bodies it just added, since nothing else can change.
+    acc: set[str] = set()
+    for eq in equations:
+        _index_arg_names(acc, eq.rhs)
+    added = set(keep)
+    while True:
+        for n in added:
             _index_arg_names(acc, obs[n])
-        fresh = {n for n in acc if n in obs and n not in keep}
-        if not fresh:
+        added = {n for n in acc if n in obs and n not in keep}
+        if not added:
             break
-        keep |= fresh
+        keep |= added
     return {n: obs[n] for n in keep}

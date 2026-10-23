@@ -366,14 +366,23 @@ fn bands_faq(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
     Ok(())
 }
 
-/// A makearray region's inclusive `[lo, hi]`. Symbolic bounds are folded to
-/// integers at load (esm-spec §9.7.6), so an unfolded one reaching the
-/// calculus is an error rather than something to guess at.
+/// A makearray region's inclusive `[lo, hi]`. Load folds bounds to integers
+/// (esm-spec §9.7.6); a bound still left as a closed expression is evaluated,
+/// as the reference's `_region_bound` does. One that names anything (an
+/// unfolded metaparameter) is an error. (Upstream's `region_bounds` would
+/// cover the integer case but is not exported from `earthsci_ast`.)
 pub fn region_bounds(r: &[RegionBound; 2]) -> R<(i64, i64)> {
-    match (r[0].as_i64(), r[1].as_i64()) {
-        (Some(lo), Some(hi)) => Ok((lo, hi)),
-        _ => Err(BandError("unfolded symbolic makearray region bound".into())),
-    }
+    let one = |b: &RegionBound| -> R<i64> {
+        if let Some(i) = b.as_i64() {
+            return Ok(i);
+        }
+        let RegionBound::Expr(e) = b else { unreachable!("Int is as_i64") };
+        earthsci_ast::evaluate(e, &HashMap::new())
+            .map(|x| x.round() as i64)
+            .map_err(|er| BandError(format!(
+                "unfolded symbolic makearray region bound: {er:?}")))
+    };
+    Ok((one(&r[0])?, one(&r[1])?))
 }
 
 fn bands_makearray(out: &mut Vec<Band>, n: &ExpressionNode, v: &str,

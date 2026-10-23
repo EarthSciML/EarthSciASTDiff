@@ -1,14 +1,14 @@
 //! Model-level driver (the reference's jacobian.jl).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::free_variables;
-use earthsci_ast::{EsmFile, VariableType};
+use earthsci_ast::{EsmFile, Expr, VariableType};
 
-use crate::bands::{bands, merge_bands, normalize_band, Band, BandError};
+use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::inline::inline_observed;
 use crate::system::{ctx_of, inlinable_observed, lhs_state, observed_defs, sysview,
-                    view_states};
+                    view_states, SysView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wrt {
@@ -38,9 +38,18 @@ pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
                       -> Result<Vec<JacEntry>, BandError> {
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
+    let obs = observed_defs(&sv)?;
+    jacobian_bands_view(&sv, &ctx, &obs, wrt)
+}
+
+/// The body of [`jacobian_bands`], for callers (numeric assembly) that
+/// already hold the view, its context and its observed definitions.
+pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
+                                  obs: &HashMap<String, Expr>, wrt: Wrt)
+                                  -> Result<Vec<JacEntry>, BandError> {
     let targets: Vec<String> = match wrt {
         Wrt::Time => vec!["t".to_string()],
-        Wrt::States => view_states(&sv),
+        Wrt::States => view_states(sv, obs),
         Wrt::Parameters => {
             let mut t: Vec<String> = sv.variables.iter()
                 .filter(|(_, v)| v.var_type == VariableType::Parameter)
@@ -53,10 +62,13 @@ pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
     // Inline only the observed that can move with THIS `wrt`'s targets; the
     // rest have an identically-zero derivative and stay opaque reads. Time is
     // not pruned: it also enters implicitly through time-varying data.
-    let mut obs = observed_defs(&sv);
-    if wrt != Wrt::Time {
-        obs = inlinable_observed(&obs, sv.equations, &tset);
-    }
+    let pruned;
+    let obs = if wrt == Wrt::Time {
+        obs
+    } else {
+        pruned = inlinable_observed(obs, sv.equations, &tset);
+        &pruned
+    };
     let mut entries = Vec::new();
     for eq in sv.equations {
         let Some(u) = lhs_state(eq) else { continue };
@@ -71,7 +83,7 @@ pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
             .filter(|v| tset.contains(v)).collect();
         hits.sort();
         for v in &hits {
-            for b in merge_bands(bands(&rhs, v, &ctx, &shape_u)?) {
+            for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
                 entries.push(JacEntry {
                     u: u.clone(),
                     v: v.clone(),

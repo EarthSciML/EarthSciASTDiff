@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::bands::BandError;
 use crate::clip::RIdx;
 use crate::helpers::map_expr_children;
-use crate::jacobian::{jacobian_bands, Wrt};
+use crate::jacobian::{jacobian_bands_view, Wrt};
 use crate::inline::inline_observed;
 use crate::system::{ctx_of, observed_defs, sysview};
 
@@ -230,13 +230,15 @@ fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
 /// contributions summed (§4 additivity, contracted points included).
 pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
                          env: &Env) -> R<BTreeMap<(String, String), f64>> {
-    let entries = jacobian_bands(file, model_name, wrt)?;
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
+    let obs = observed_defs(&sv)?;
+    let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt)?;
     // Pruning leaves target-independent observed as opaque reads in the
     // coefficients; resolve them from their own definitions (what the
-    // reference's derived evaluation model does).
-    let obs = observed_defs(&sv);
+    // reference's derived evaluation model does). This splices in only the
+    // observed a coefficient actually reads — exactly what evaluating it at
+    // a point needs — so it rejects nothing an evaluation could do without.
     let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
     for en in &entries {
         let b = &en.band;

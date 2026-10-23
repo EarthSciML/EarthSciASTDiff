@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use earthsci_ast::{Equation, EsmFile, Expr};
-use earthsci_astdiff::system::{lhs_state, view_states};
+use earthsci_astdiff::system::{lhs_state, observed_defs, view_states};
 use earthsci_astdiff::{jacobian_bands, serialize_band, stable_json, sysview, Wrt};
 use serde_json::{json, Value};
 
@@ -53,7 +53,8 @@ fn array_models_differentiate_to_a_non_empty_band_set() {
                  "adv_react_2d", "bd_chem"] {
         let file = fixture(name);
         let sv = sysview(&file, None).unwrap();
-        assert!(!view_states(&sv).is_empty(), "{name}: no states");
+        assert!(!view_states(&sv, &observed_defs(&sv).unwrap()).is_empty(),
+                "{name}: no states");
         let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
         assert!(!entries.is_empty(), "{name}: EMPTY band list (the silent zero)");
         assert!(entries.iter().any(|e| !e.band.rows.is_empty()),

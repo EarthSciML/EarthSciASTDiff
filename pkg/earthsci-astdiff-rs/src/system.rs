@@ -4,8 +4,8 @@
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
-use earthsci_ast::{free_variables, Equation, EsmFile, Expr, Model, ModelVariable,
-                   VariableType};
+use earthsci_ast::{free_variables, Equation, EsmFile, Expr, ExpressionNode, Model,
+                   ModelVariable, VariableType};
 use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
@@ -115,34 +115,97 @@ pub fn lhs_definition(eq: &Equation) -> Option<&String> {
     }
 }
 
+/// An arrayed-observed definition `faq{expr: index(y, i…)} ~ f(i…)` (`y[i…]
+/// ~ f(i…)` as documents spell it) rewritten to the whole-array form `y ~
+/// faq{output_idx: [i…], expr: f(i…)}` the inliner β-reduces. Mirrors the
+/// indexed half of `EarthSciAST::observed_definitions`. `None` when the LHS
+/// is not an indexed read of a bare name; `Some((y, None))` when it is one
+/// whose subscripts are not exactly the output indices (a partial or pinned
+/// definition such as `y[1] ~ …`, not rewritable).
+fn indexed_definition(eq: &Equation) -> Option<(&String, Option<Expr>)> {
+    let Expr::Operator(l) = &eq.lhs else { return None };
+    let (faq, ix) = if l.op == "faq" {
+        match l.expr.as_deref() {
+            Some(Expr::Operator(ix)) if ix.op == "index" => (Some(l), ix),
+            _ => return None,
+        }
+    } else {
+        (None, l)
+    };
+    if ix.op != "index" {
+        return None;
+    }
+    let Some(Expr::Variable(name)) = ix.args.first() else { return None };
+    let sub: Option<Vec<String>> = ix.args[1..].iter().map(|x| match x {
+        Expr::Variable(n) => Some(n.clone()),
+        _ => None,
+    }).collect();
+    let (Some(faq), Some(sub)) = (faq, sub) else { return Some((name, None)) };
+    let distinct = sub.iter().collect::<HashSet<_>>().len() == sub.len();
+    if faq.output_idx.as_ref() != Some(&sub) || !distinct {
+        return Some((name, None));
+    }
+    Some((name, Some(Expr::operator(ExpressionNode {
+        op: "faq".into(),
+        output_idx: Some(sub),
+        expr: Some(Box::new(eq.rhs.clone())),
+        ranges: faq.ranges.clone(),
+        ..Default::default()
+    }))))
+}
+
 /// Observed-variable definitions, for inlining. esm 1.0.0 removed the
 /// `observed` declared type and `variable.expression`: an observed is an
-/// unknown some equation names bare on the left, and that no `D(·)` equation
-/// also targets (mirrors `EarthSciAST::observed_definitions`). First
-/// definition wins.
-pub fn observed_defs(sv: &SysView) -> HashMap<String, Expr> {
+/// unknown some equation names on the left — bare, or indexed (an arrayed
+/// observed, rewritten by [`indexed_definition`]) — and that no `D(·)`
+/// equation also targets (mirrors `EarthSciAST::observed_definitions`).
+/// First definition wins; an arrayed observed that is defined piecewise or
+/// partially is rejected rather than left to become a solver slot.
+pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
     let states: HashSet<String> = sv.equations.iter()
         .filter_map(lhs_state).collect();
     let mut defs = HashMap::new();
+    let mut indexed: HashSet<String> = HashSet::new();
     for eq in sv.equations {
-        let Some(n) = lhs_definition(eq) else { continue };
-        if states.contains(n) {
-            continue;
-        }
+        let bare = lhs_definition(eq);
+        let (n, d) = match bare {
+            Some(n) => (n, Some(eq.rhs.clone())),
+            None => match indexed_definition(eq) {
+                Some(nd) => nd,
+                None => continue,
+            },
+        };
         let unknown = sv.variables.get(n)
             .is_some_and(|v| v.var_type == VariableType::Unknown);
-        if unknown && !defs.contains_key(n) {
-            defs.insert(n.clone(), eq.rhs.clone());
+        if states.contains(n) || !unknown {
+            continue;
+        }
+        let Some(d) = d else {
+            return Err(BandError(format!(
+                "arrayed observed `{n}`: defining LHS subscripts must be the \
+                 distinct output indices (partial definitions are not \
+                 supported)")));
+        };
+        if defs.contains_key(n) {
+            if indexed.contains(n) || bare.is_none() {
+                return Err(BandError(format!(
+                    "arrayed observed `{n}` is defined by more than one \
+                     equation (piecewise definitions are not supported)")));
+            }
+            continue;
+        }
+        defs.insert(n.clone(), d);
+        if bare.is_none() {
+            indexed.insert(n.clone());
         }
     }
-    defs
+    Ok(defs)
 }
 
 /// The unknowns occupying a solver slot: every unknown MINUS the observed
-/// ones (the 1.0.0 replacement for the 0.x `state` type; an algebraic unknown
-/// still counts as a slot). Sorted.
-pub fn view_states(sv: &SysView) -> Vec<String> {
-    let obs = observed_defs(sv);
+/// ones `obs` ([`observed_defs`]; the 1.0.0 replacement for the 0.x `state`
+/// type; an algebraic unknown still counts as a slot). Sorted.
+pub fn view_states(sv: &SysView, obs: &HashMap<String, Expr>) -> Vec<String> {
     let mut out: Vec<String> = sv.variables.iter()
         .filter(|(n, v)| v.var_type == VariableType::Unknown
                 && !obs.contains_key(*n))
@@ -211,21 +274,24 @@ pub fn inlinable_observed(obs: &HashMap<String, Expr>, equations: &[Equation],
             }
         }
     }
-    loop {                                            // (2) subscript fixpoint
-        let mut acc = HashSet::new();
-        for eq in equations {
-            index_arg_names(&mut acc, &eq.rhs);
-        }
-        for n in &keep {
+    // (2) subscript fixpoint. The equations are scanned once; each pass then
+    // scans only the bodies it just added, since nothing else can change.
+    let mut acc = HashSet::new();
+    for eq in equations {
+        index_arg_names(&mut acc, &eq.rhs);
+    }
+    let mut added: Vec<&str> = keep.iter().copied().collect();
+    loop {
+        for n in &added {
             index_arg_names(&mut acc, &obs[*n]);
         }
-        let fresh: Vec<&str> = acc.iter()
+        added = acc.iter()
             .filter_map(|n| obs.get_key_value(n).map(|(k, _)| k.as_str()))
             .filter(|n| !keep.contains(n)).collect();
-        if fresh.is_empty() {
+        if added.is_empty() {
             break;
         }
-        keep.extend(fresh);
+        keep.extend(added.iter().copied());
     }
     keep.into_iter().map(|n| (n.to_string(), obs[n].clone())).collect()
 }

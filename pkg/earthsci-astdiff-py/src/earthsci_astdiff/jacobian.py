@@ -25,11 +25,16 @@ def jacobian_bands(obj, model_name: str | None = None,
     if wrt not in ("states", "parameters", "time"):
         raise ValueError(f"wrt must be states, parameters or time, got {wrt}")
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    ctx = ctx_of(sv)
+    return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt)
+
+
+def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str) -> list[JacEntry]:
+    # The body of `jacobian_bands`, for callers (numeric assembly) that
+    # already hold the view's context and observed definitions.
     if wrt == "time":
         targets = ["t"]
     elif wrt == "states":
-        targets = view_states(sv)
+        targets = view_states(sv, obs)
     else:
         targets = sorted(str(n) for n, var in sv.variables.items()
                          if _var_type(var) == "parameter")
@@ -37,7 +42,6 @@ def jacobian_bands(obj, model_name: str | None = None,
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
-    obs = observed_defs(sv)
     if wrt != "time":
         obs = inlinable_observed(obs, sv.equations, tset)
     entries: list[JacEntry] = []

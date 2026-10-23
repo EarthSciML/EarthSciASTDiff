@@ -20,8 +20,8 @@ from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.substitute import substitute
 
 from .emit import _cellname, _eval_cidx, _product
-from .jacobian import jacobian_bands
 from .inline import inline_observed
+from .jacobian import _jacobian_bands
 from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
 
@@ -104,10 +104,10 @@ def _as_lit(e: Expr) -> float:
     return float(evaluate(e, {}))
 
 
-def _default_values(sv: SysView, ctx):
+def _default_values(sv: SysView, ctx, obs: dict):
     states: dict = {}
     params: dict = {}
-    slots = set(view_states(sv))
+    slots = set(view_states(sv, obs))
     for n, var in sv.variables.items():
         ty = "state" if str(n) in slots else _var_type(var)
         if ty not in ("state", "parameter"):
@@ -135,19 +135,23 @@ def assemble_jacobian(obj, model_name: str | None = None, wrt: str = "states",
     with contributions to one (row, col) pair SUMMED (§4 additivity, incl.
     contracted-point accumulation). ``states``/``params`` map variable name
     → nested list (1-based cells) or scalar; defaults come from the document."""
+    if wrt not in ("states", "parameters", "time"):
+        raise ValueError(f"wrt must be states, parameters or time, got {wrt}")
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
     ctx = ctx_of(sv)
-    dstates, dparams = _default_values(sv, ctx)
+    obs = observed_defs(sv)
+    dstates, dparams = _default_values(sv, ctx, obs)
     if states:
         dstates.update(states)
     if params:
         dparams.update(params)
     env = _Env(dstates, dparams, t)
-    entries = jacobian_bands(sv, wrt=wrt)
+    entries = _jacobian_bands(sv, ctx, obs, wrt)
     # Pruning leaves target-independent observed as opaque reads in the
     # coefficients; resolve them from their own definitions (what the
-    # reference's derived evaluation model does).
-    obs = observed_defs(sv)
+    # reference's derived evaluation model does). This splices in only the
+    # observed a coefficient actually reads — exactly what evaluating it at
+    # a point needs — so it rejects nothing an evaluation could do without.
     out: dict[tuple[str, str], float] = {}
     for en in entries:
         b = en.band
