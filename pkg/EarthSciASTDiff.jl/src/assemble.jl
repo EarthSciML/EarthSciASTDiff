@@ -21,25 +21,31 @@ end
 _eval_cidx(c::ASTExpr, bind::Dict{String,Float64})::Int =
     Int(round(evaluate_expr(_fold_const_gathers(c, bind), bind)))
 
-# Enumerate every (band, row cell) → (row name, col name) pair. Column index
-# expressions are evaluated per cell ONCE here (build-time, not solve-time).
+# Every point of one band: `f(cell, cc, cidx)` per (row cell, contracted cell),
+# first index fastest, with the column index evaluated there. Column index
+# expressions are evaluated per cell ONCE (build-time, not solve-time).
+function _foreach_point(f, b::Band)
+    rowcells = isempty(b.rows) ? [Int[]] :
+        [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
+    ccells = isempty(b.contracted) ? [Int[]] :
+        [collect(c) for c in
+         Iterators.product(((lo:hi) for (_, lo, hi) in b.contracted)...)]
+    for cell in rowcells, cc in ccells
+        bind = Dict{String,Float64}(
+            r => Float64(cell[k2]) for (k2, r) in enumerate(b.ridx) if r isa String)
+        for (k2, (n, _, _)) in enumerate(b.contracted)
+            bind[n] = Float64(cc[k2])
+        end
+        f(cell, cc, [_eval_cidx(c, bind) for c in b.cidx])
+    end
+    return nothing
+end
+
+# Enumerate every (band, row cell) → (row name, col name) pair.
 function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
-    ctx = _ctx(sv)
     pairs = Vector{Tuple{Int,String,String,String}}()  # (band k, rowname, colname, jname-cell)
     for (k, en) in enumerate(entries)
-        b = en.band
-        rowcells = isempty(b.rows) ? [Int[]] :
-            [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
-        ccells = isempty(b.contracted) ? [Int[]] :
-            [collect(c) for c in
-             Iterators.product(((lo:hi) for (_, lo, hi) in b.contracted)...)]
-        for cell in rowcells, cc in ccells
-            bind = Dict{String,Float64}(
-                r => Float64(cell[k2]) for (k2, r) in enumerate(b.ridx) if r isa String)
-            for (k2, (n, _, _)) in enumerate(b.contracted)
-                bind[n] = Float64(cc[k2])
-            end
-            cidx = [_eval_cidx(c, bind) for c in b.cidx]
+        _foreach_point(en.band) do cell, cc, cidx
             push!(pairs, (k, _cellname(en.u, cell), _cellname(en.v, cidx),
                           _cellname("J_$k", vcat(cell, cc))))
         end
@@ -198,6 +204,7 @@ struct JacobianEvaluator{F,P}
     umap::Vector{Int}             # uj[umap[i]] = u[i]
     p_default::P
     scatter::Vector{Tuple{Int,Int}}  # (slot in duj, position in nzval)
+    fields::Vector{Vector{Int}}      # band k, field cell (column-major) → slot in duj
     prototype::SparseMatrixCSC{Float64,Int}
     pattern::SparseMatrixCSC{Bool,Int}
     entries::Vector{JacEntry}
@@ -278,6 +285,12 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
         push!(scatter, (slot, pos))
     end
     structure = detect_structure(entries, sv)
+    # Band-field slot table, for scatter plans (scatter.jl): field `J_k` spans
+    # the row shape plus the contracted extents, every cell a derived state.
+    ctx = _ctx(sv)
+    fields = [vec([_slot(vmj, _cellname("J_$k", Tuple(c)), "band")
+                   for c in CartesianIndices(Tuple(_field_shape(en, ctx)))])
+              for (k, en) in enumerate(entries)]
     # WHICH FORM did `build_evaluator` hand back? The derived band model goes
     # through the ORDINARY builder, so it comes back in whichever form
     # `build_kwargs` asked for: the default in-place `f!(du, u, p, t)`, or the
@@ -290,19 +303,24 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     oop = !applicable(fJ!, zeros(1), zeros(1), pj, 0.0) &&
           applicable(fJ!, zeros(1), pj, 0.0)
     return JacobianEvaluator(fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
-                             pj, scatter, proto, pattern, entries,
+                             pj, scatter, fields, proto, pattern, entries,
                              first.(sort(collect(vm0), by = last)), colnames,
                              structure, wrt)
 end
 
-function (jac::JacobianEvaluator)(J::SparseMatrixCSC, u::AbstractVector, p, t::Real)
-    @assert size(J) == size(jac.prototype)
+# Evaluate every band field at (u, p, t); returns the derived-model `du`.
+function _eval_fields!(jac::JacobianEvaluator, u::AbstractVector, p, t::Real)
     for (i, s) in enumerate(jac.umap)
         jac.uj[s] = u[i]
     end
     pp = p === nothing ? jac.p_default : p
-    duj = jac.oop ? jac.fJ!(jac.uj, pp, t) :
-                    (jac.fJ!(jac.duj, jac.uj, pp, t); jac.duj)
+    return jac.oop ? jac.fJ!(jac.uj, pp, t) :
+                     (jac.fJ!(jac.duj, jac.uj, pp, t); jac.duj)
+end
+
+function (jac::JacobianEvaluator)(J::SparseMatrixCSC, u::AbstractVector, p, t::Real)
+    @assert size(J) == size(jac.prototype)
+    duj = _eval_fields!(jac, u, p, t)
     fill!(J.nzval, 0.0)
     for (slot, pos) in jac.scatter
         J.nzval[pos] += duj[slot]

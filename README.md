@@ -131,6 +131,13 @@ EarthSciAST implementation and is gated by the same goldens.
       (6–36% less time per `jac!` call on the fixtures, copy-in and scatter
       included; the saving grows with the cost of `f`). Pinned by
       `*.evaldoc.json`.
+- [x] Scatter plans (spec §8): a checked, serializable map from the band
+      fields to a consumer's storage — lane-SoA dense per-cell blocks
+      (Markowitz `block_vars` order), KPP-style sparse lane blocks, per-column
+      bands and CSR. Lane layouts are per-cell templates (O(nnz)); the lane
+      capacity is a bind-time choice. `bind_plan` refuses a plan from another
+      band list or state set, and `jac_into!` fills the layout from a prepared
+      evaluator. Pinned by `*.<layout>.plan.json`, which Rust reproduces.
 - [x] Static region clipping for `index(makearray…)` reads (`clip.jl`):
       decidable membership guards are decided exactly by splitting band row
       ranges at their affine breakpoints (equal-coefficient sub-bands
@@ -174,8 +181,11 @@ EarthSciAST implementation and is gated by the same goldens.
       1.0.0/1.1.0 (the `faq` tag, the unknown/parameter variable model,
       inline pruning) together with Python. Emits the derived evaluation
       document (with `hoist_observed`) byte-identically to Julia
-      (`*.evaldoc.json`). Still to come: production-rate assembly
-      ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4)).
+      (`*.evaldoc.json`) and the scatter plans (`*.plan.json`), with
+      `band_fields` + `ScatterPlan::scatter` checked against the oracle on
+      every fixture. Still to come: compiling the band fields through
+      earthsci-ast-rs and the matrix-free products
+      ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4) W2, W4).
 
 ## License
 

@@ -40,6 +40,11 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state derivative zeroed (`D(u) = 0`), the `hoist_observed` buffers, and one
   band-field state `J_k` per entry. Julia and Rust compare byte-exactly; it is
   the input the Rust production path (#4) compiles.
+- `goldens/` — `<fixture>.<layout>.plan.json`: scatter plans (spec §8) —
+  band field → storage position for `lane_blocks`, `lane_sparse_blocks`,
+  `column_banded` and `csr`, one per layout the fixture's structure admits
+  (the list lives in `scripts/regenerate-goldens.jl`). Julia and Rust
+  compare byte-exactly.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   numeric assemblies must reproduce the exact (row, col) key set and every

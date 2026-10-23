@@ -31,6 +31,7 @@ end
     include("roundtrip_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")
+    include("scatter_test.jl")
     include("ode_test.jl")
     include("source_layout_test.jl")
 end

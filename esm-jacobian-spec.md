@@ -312,3 +312,68 @@ Time gradients (`tgrad`), second derivatives, derivatives with respect to
 forcing buffers / const arrays, contracted-index bands, and
 CSE/`expression_templates`-based coefficient sharing are planned extensions;
 each will be specified with fixtures before implementation is required.
+
+## 8. Scatter plans (conformance artifact)
+
+A **scatter plan** maps the band fields of the derived evaluation document
+(one field `J_k` per entry, emitted with the block's band list) to a
+consumer's own Jacobian storage. It is not part of the `"jacobians"` block —
+a plan is derived from the band list, so any producer can compute it — but
+its serialization is a conformance artifact (`tests/goldens/<fixture>.<layout>.plan.json`),
+byte-identical across bindings, so that the storage map can be checked
+rather than re-derived by each consumer.
+
+**Conventions.** Every index in a plan is 0-based.
+
+- *Band field `k`, cell `f`*: field `J_{k+1}`, whose shape is the row
+  variable's shape followed by each contracted dimension's extent (`1..hi`);
+  `f` is the column-major flat index of a cell of that shape. A field is
+  zero outside its band's region.
+- *Canonical state order*: state names sorted, species-major, each state's
+  cells column-major. A scalar state is one slot.
+- *Ghost reads* — points whose column index falls outside the column
+  variable — have no storage position and appear in no plan.
+
+**Common fields.** `layout` (the tag below), `wrt` (`"states"`; plans cover
+the state Jacobian only), `states` (`[{name, shape}]` in canonical order),
+`bands` (`[{u, v, shape}]`: row variable, column variable and field shape
+per entry, in entry order), and `items` (layout-specific tuples, in
+accumulation order). A consumer MUST refuse a plan whose `states` or `bands`
+differ from those of the evaluator it binds to.
+
+Accumulation is `+=` in `items` order into an output zeroed first: several
+bands may land on one element (§4 additivity). Items are sorted by output
+position, then band, then field cell, so each element's contributions sum
+in band order.
+
+**Layouts.** `L` is the lane capacity, chosen by the consumer at bind time
+(`L ≥` the number of lanes); lane `ℓ` of a lane layout is the cell with flat
+index `ℓ` of the lane domain, and padding lanes stay zero.
+
+| `layout` | Extra fields | `items` | Position of a contribution |
+|---|---|---|---|
+| `lane_blocks` | `cells`, `block_vars` | `[k, o]`, `o = r + n·c` | `o·L + ℓ`, reading field `k` cell `ℓ` |
+| `lane_sparse_blocks` | `cells`, `block_vars`, `lu_pattern` | `[k, q]` | `q·L + ℓ`, reading field `k` cell `ℓ` |
+| `column_banded` | `cells`, `axis`, `axis_dim`, `vars`, `kl`, `ku` | `[k, lev, o]` | `o·L + ℓ`, reading field `k` at row level `lev` of column `ℓ` |
+| `csr` | `rowptr`, `colind` | `[k, f, p]` | `p` (the nonzero index), reading field `k` cell `f` |
+
+- `lane_blocks` / `lane_sparse_blocks` require a `block_diagonal` structure
+  with every state on one cell shape. `block_vars` is the §6 plan's
+  `block_vars` (Markowitz order) followed by any state no band touches,
+  sorted; `n = len(block_vars)`. `lu_pattern` is the §6 `lu_pattern` made
+  0-based, plus a diagonal `[i, i]` for each appended state, sorted; fill
+  positions receive no items and are therefore zero.
+- `column_banded` requires every state to be an array of one shape that
+  contains index set `axis` (dimension `axis_dim`), and every band to couple
+  cells only along `axis`, at a literal offset `d = col − lev`
+  (`structure.jl` `:diag` / `:affine`). Columns (lanes) enumerate the other
+  dimensions column-major. `vars` is the canonical state order, `N` the
+  axis size, `kl`/`ku` the largest sub-/super-diagonal offsets, and
+  `o = (((c·nvar + r)·(kl+ku+1) + (d+kl))·N + lev)`.
+- `csr` applies to every structure. Rows and columns are the canonical state
+  order; `rowptr` has one more entry than there are rows, `colind` is sorted
+  within each row, and duplicate (row, column) pairs are merged.
+
+A producer MUST refuse (not emit) a plan for an empty band list on a model
+with array states, for a band column that is not a state, and for a layout
+whose preconditions above do not hold.

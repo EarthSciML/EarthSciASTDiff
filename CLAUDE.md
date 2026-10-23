@@ -69,6 +69,8 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `assemble.jl`     — pattern, scatter map, prepared `jac!`
 - `structure.jl`    — structure classification from column-index expressions
 - `factorization.jl`— FactorizationPlan interface + block-diagonal LU plan
+- `scatter.jl`     — scatter plans (spec §8): band fields → lane blocks,
+  sparse lane blocks, column bands, CSR; `bind_plan` / `jac_into!`
 - `ode.jl`          — solver-free ODE pieces (`ode_components`) + dispatchers
   into `ext/EarthSciASTDiffSciMLBaseExt.jl` (`odefunction` / `odeproblem`)
 
