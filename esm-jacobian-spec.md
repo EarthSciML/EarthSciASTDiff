@@ -119,6 +119,22 @@ gathered column) yields a band with `contracted` dimensions (§4), whose
 points accumulate. Filtered faq nodes and relational joins are NOT
 differentiated — producers MUST fail rather than drop the gate.
 
+The same holds for a scalar `reduce: "+"` faq node NESTED in a
+differentiated expression (Σ_k g inside f(…)) — the form a read of a
+contracting observed takes. A read `F[e…]` of an observed defined by a faq
+node whose ranges bind indices beyond its `output_idx` MUST inline to a
+scalar faq node over those contracted indices, carrying `reduce` and
+`filter`, with the contracted names renamed apart from every name at the
+reading site before the output indices are substituted. Inlining the bare
+body instead drops the sum, and a faq around the reading site that binds the
+same name captures the leftover index. The nested sum is linear, so its
+derivative is the sum of its body's derivatives: for a site whose column does
+not read a bound index, the coefficient keeps that sum; for a site whose
+column does read one (`u[i,k]` under Σ_k), that index becomes a `contracted`
+dimension of the band (§4), renamed apart from the sum's own bound name,
+since the coefficient may still contain the sum (the chain rule through
+f(Σ_k …)). A filtered or non-`"+"` nested sum is reserved, as above.
+
 Reserved (producers MUST fail rather than guess): non-`"+"` semiring
 reductions, filtered faq nodes, `argmin`/`argmax`, singleton `1` output
 indices, `reshape`/`transpose`/`concat` operands.

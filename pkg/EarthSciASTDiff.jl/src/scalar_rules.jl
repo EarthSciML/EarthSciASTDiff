@@ -44,9 +44,44 @@ Derivative of the scalar expression `e` with respect to site `s`, as a new
 ESM expression. Structural rules only; a subtree in which `s` does not occur
 differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
-semiring `faq` nodes in scalar position, unknown closed functions).
+filtered or semiring `faq` nodes in scalar position, unknown closed
+functions).
 """
 dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
+
+# A scalar `faq` sum Σ_k body — the form a CONTRACTING observed inlines to
+# (inline.jl `_beta_faq`). The sum is linear, so its derivative is the sum of
+# the body's, split by what the site's column reads:
+#   * no bound index (`w` in Σ_k w·u[k]): the same sum over the body
+#     derivative, a closed scalar;
+#   * a bound index (`u[i,k]` in Σ_k u[i,k]): each value of k reads a
+#     DIFFERENT column, so that index is not summed here but left FREE, and
+#     the band emitter turns it into a contracted column dimension (§4,
+#     `_lift_nested` in bands.jl). Bound indices the column does not read
+#     are still summed.
+# A filter, a join or a non-`"+"` reduction has no rule (spec §3.5).
+function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
+    e.filter === nothing || throw(DerivativeRuleError(
+        "filtered faq nodes are not differentiated (the filter gate would " *
+        "be dropped from the derivative)"))
+    e.join === nothing || throw(DerivativeRuleError(
+        "joined faq nodes are not differentiated"))
+    e.reduce === nothing || e.reduce == "+" || throw(DerivativeRuleError(
+        "reduce=`$(e.reduce)` (non-smooth semiring reductions have no rule)"))
+    db = dscalar(e.expr_body, s, occ)
+    iszero_lit(db) && return lit(0)
+    ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
+    read = Set{String}()
+    if s.expr isa OpExpr
+        for x in s.expr.args[2:end]
+            union!(read, free_variables(x))
+        end
+    end
+    summed = Dict{String,Any}(n => r for (n, r) in ranges if !(n in read))
+    length(summed) == length(ranges) && return EarthSciAST.reconstruct(e; expr_body = db)
+    isempty(summed) && return db
+    return EarthSciAST.reconstruct(e; expr_body = db, ranges = summed)
+end
 
 # `occ` is the occurrence memo threaded through ONE derivative scan (see
 # `occurs`, expr_helpers.jl). The short-circuit below asks "does the site
@@ -121,6 +156,8 @@ function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
             acc = op(o, acc, x)
         end
         return dacc
+    elseif o == "faq" && isempty(something(e.output_idx, Any[]))
+        return _dsum(e, s, occ)
     elseif o in ZERO_DERIV_OPS
         return lit(0)
     elseif o == "fn"
