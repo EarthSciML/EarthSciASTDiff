@@ -7,7 +7,8 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
 
 @testset "evaluation document: goldens" begin
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
-    for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv")
+    for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
+                 "contracting_observed")
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
         doc, _ = _evaluation_document(sv, jacobian_bands(sv))
@@ -17,7 +18,7 @@ end
 
 @testset "evaluation document: no source right-hand side survives" begin
     for name in ("bd_chem", "adv_interior", "adv_react_2d", "contracted_ops",
-                 "flux_form_adv", "minmod_adv")
+                 "flux_form_adv", "minmod_adv", "contracting_observed")
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
         states = Set(String(u) for u in (lhs_state(eq) for eq in sv.equations) if u !== nothing)
