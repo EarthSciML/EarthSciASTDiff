@@ -170,7 +170,7 @@ fn is_lit(e: &Expr) -> bool {
     matches!(e, Expr::Integer(_) | Expr::Number(_))
 }
 
-fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
+pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
     match r {
         RIdx::Name(rn) => {
             if matches!(c, Expr::Variable(v) if v == rn) {
@@ -293,7 +293,17 @@ fn nzpairs(m: &[Vec<bool>]) -> Value {
     Value::Array(pairs.into_iter().map(|(i, j)| json!([i, j])).collect())
 }
 
-pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
+/// The per-cell block LU of a block-diagonal band list (factorization.jl's
+/// `BlockDiagonalPlan`): block variables in Markowitz order, the 1-based
+/// ordering, and the permuted pattern and its fill-in LU pattern.
+pub struct BlockLu {
+    pub block_vars: Vec<String>,
+    pub ordering: Vec<usize>,
+    pub pattern: Vec<Vec<bool>>,
+    pub lu: Vec<Vec<bool>>,
+}
+
+pub fn block_diagonal_lu(entries: &[JacEntry]) -> BlockLu {
     let mut vars: Vec<String> = entries.iter()
         .flat_map(|en| [en.u.clone(), en.v.clone()]).collect();
     vars.sort();
@@ -312,12 +322,22 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
     let idx: Vec<usize> = ordering.iter().map(|o| o - 1).collect();
     let pp: Vec<Vec<bool>> = idx.iter()
         .map(|&i| idx.iter().map(|&j| p[i][j]).collect()).collect();
+    BlockLu {
+        block_vars: idx.iter().map(|&i| vars[i].clone()).collect(),
+        ordering,
+        lu: lu_fill(&pp),
+        pattern: pp,
+    }
+}
+
+pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
+    let b = block_diagonal_lu(entries);
     json!({
         "type": "block_diagonal_lu",
-        "block_vars": idx.iter().map(|&i| vars[i].clone()).collect::<Vec<_>>(),
-        "ordering": ordering,
-        "pattern": nzpairs(&pp),
-        "lu_pattern": nzpairs(&lu_fill(&pp)),
+        "block_vars": b.block_vars,
+        "ordering": b.ordering,
+        "pattern": nzpairs(&b.pattern),
+        "lu_pattern": nzpairs(&b.lu),
     })
 }
 
