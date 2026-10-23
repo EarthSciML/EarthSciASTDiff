@@ -126,6 +126,20 @@ def dscalar(e: Expr, s: Site) -> Expr:
         "(rewrite-target ops must be lowered before differentiation)")
 
 
+def plain_sum(e: ExprNode) -> bool:
+    """Whether faq node ``e`` reduces by ordinary ``+`` (scalar_rules.jl
+    ``_plain_sum``): a ``semiring`` supersedes ``reduce``, so a
+    ``max_product`` node with no ``reduce`` is a max, not a sum."""
+    if e.semiring is None:
+        return e.reduce in (None, "+")
+    return e.semiring == "sum_product"
+
+
+def reduction(e: ExprNode) -> str:
+    return (f"reduce=`{e.reduce}`" if e.semiring is None
+            else f"semiring=`{e.semiring}`")
+
+
 def _dsum(e: ExprNode, s: Site) -> Expr:
     """A scalar faq sum Σ_k body (scalar_rules.jl ``_dsum``): the sum of the
     body's derivatives. Bound indices the site's column does not read are
@@ -138,9 +152,9 @@ def _dsum(e: ExprNode, s: Site) -> Expr:
             "would be dropped from the derivative)")
     if e.join is not None:
         raise DerivativeRuleError("joined faq nodes are not differentiated")
-    if e.reduce is not None and e.reduce != "+":
+    if not plain_sum(e):
         raise DerivativeRuleError(
-            f"reduce=`{e.reduce}` (non-smooth semiring reductions have no rule)")
+            f"{reduction(e)} (non-smooth semiring reductions have no rule)")
     db = dscalar(e.expr, s)
     if is_zero(db):
         return 0

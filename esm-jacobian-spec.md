@@ -119,21 +119,31 @@ gathered column) yields a band with `contracted` dimensions (§4), whose
 points accumulate. Filtered faq nodes and relational joins are NOT
 differentiated — producers MUST fail rather than drop the gate.
 
-The same holds for a scalar `reduce: "+"` faq node NESTED in a
+The same holds for a scalar `+`-reducing faq node NESTED in a
 differentiated expression (Σ_k g inside f(…)) — the form a read of a
-contracting observed takes. A read `F[e…]` of an observed defined by a faq
-node whose ranges bind indices beyond its `output_idx` MUST inline to a
-scalar faq node over those contracted indices, carrying `reduce` and
-`filter`, with the contracted names renamed apart from every name at the
-reading site before the output indices are substituted. Inlining the bare
-body instead drops the sum, and a faq around the reading site that binds the
-same name captures the leftover index. The nested sum is linear, so its
-derivative is the sum of its body's derivatives: for a site whose column does
-not read a bound index, the coefficient keeps that sum; for a site whose
-column does read one (`u[i,k]` under Σ_k), that index becomes a `contracted`
-dimension of the band (§4), renamed apart from the sum's own bound name,
-since the coefficient may still contain the sum (the chain rule through
-f(Σ_k …)). A filtered or non-`"+"` nested sum is reserved, as above.
+contracting observed takes. A faq node reduces by `+` when its `semiring` is
+`"sum_product"`, or when it has no `semiring` and its `reduce` is absent or
+`"+"`; a `semiring` supersedes `reduce`. A read `F[e…]` of an observed
+defined by a faq node whose ranges bind indices beyond its `output_idx` MUST
+inline to a scalar faq node over those contracted indices, carrying
+`reduce`, `semiring` and `filter`. Inlining the bare body instead drops the
+sum, and a faq around the reading site that binds the same name captures the
+leftover index. All inlining substitution MUST be capture-avoiding, and no
+nested faq node may bind a name a faq enclosing it already binds: producers
+rename such a binder apart (the reference uses `_c<n>_<name>`, the smallest
+`n` clear of every name in the document, which keeps repeated reads of one
+observed structurally equal). A name a faq around the reading site binds is
+that index, never a read of an observed with the same name. The nested sum
+is linear, so its derivative is the sum of its body's derivatives: for a
+site whose column does not read a bound index, the coefficient keeps that
+sum; for a site whose column does read one (`u[i,k]` under Σ_k), that index
+becomes a `contracted` dimension of the band (§4), renamed apart from the
+sum's own bound name, since the coefficient may still contain the sum (the
+chain rule through f(Σ_k …)). Producers MUST fail when a column reads a name
+the sums around its site bind ambiguously (twice on the way down, over two
+different ranges at different occurrences of the site, or shadowing the
+band's own row or contraction index). A filtered or non-`+` nested sum is
+reserved, as above. Fixture: `contracting_observed.esm`.
 
 Reserved (producers MUST fail rather than guess): non-`"+"` semiring
 reductions, filtered faq nodes, `argmin`/`argmax`, singleton `1` output

@@ -49,6 +49,14 @@ functions).
 """
 dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
 
+# Whether faq node `e` reduces by ordinary `+`. A `semiring` supersedes
+# `reduce` (EarthSciAST: absent ⇒ "sum_product"), so `reduce` alone is not
+# enough: a `max_product` node with no `reduce` is a max, not a sum.
+_plain_sum(e::OpExpr)::Bool = e.semiring === nothing ?
+    (e.reduce === nothing || e.reduce == "+") : e.semiring == "sum_product"
+_reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" :
+    "semiring=`$(e.semiring)`"
+
 # A scalar `faq` sum Σ_k body — the form a CONTRACTING observed inlines to
 # (inline.jl `_beta_faq`). The sum is linear, so its derivative is the sum of
 # the body's, split by what the site's column reads:
@@ -66,8 +74,8 @@ function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         "be dropped from the derivative)"))
     e.join === nothing || throw(DerivativeRuleError(
         "joined faq nodes are not differentiated"))
-    e.reduce === nothing || e.reduce == "+" || throw(DerivativeRuleError(
-        "reduce=`$(e.reduce)` (non-smooth semiring reductions have no rule)"))
+    _plain_sum(e) || throw(DerivativeRuleError(
+        "$(_reduction(e)) (non-smooth semiring reductions have no rule)"))
     db = dscalar(e.expr_body, s, occ)
     iszero_lit(db) && return lit(0)
     ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges

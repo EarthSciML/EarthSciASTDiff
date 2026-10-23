@@ -27,6 +27,11 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     under a makearray region, and a `conn[]`-table gather (`u[conn[i,k]]`)
     with a duplicated neighbor so contracted points accumulate — the
     `contracted` entry-field (§4) regression target
+  - `contracting_observed.esm` — reads of contracting observed (§3.5): an
+    array observed `s[i] = Σ_k u[i,k]²` read under a faq over `(i, k)` that
+    binds the same `k` (the capture case), squared (chain rule through the
+    nested sum), and a scalar observed whose sum is not its root — nested
+    sums renamed apart, column-reading sites as `contracted` dimensions
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
@@ -34,7 +39,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   numeric assemblies must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
-- `goldens/` — `<fixture>.bands.json` (all five fixtures): the `entries` list of the `"jacobians"`
+- `goldens/` — `<fixture>.bands.json` (all six fixtures): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate
   with `scripts/regenerate-goldens.jl` after an INTENDED rule or format

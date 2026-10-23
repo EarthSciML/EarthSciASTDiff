@@ -6,7 +6,7 @@ use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, VariableType};
 
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
-use crate::inline::inline_observed;
+use crate::inline::inline_observed_cached;
 use crate::system::{ctx_of, inlinable_observed, lhs_state, observed_defs, sysview,
                     view_states, SysView};
 
@@ -70,10 +70,11 @@ pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
         &pruned
     };
     let mut entries = Vec::new();
+    let mut obs_names = None;
     for eq in sv.equations {
         let Some(u) = lhs_state(eq) else { continue };
         let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
-        let rhs = inline_observed(&eq.rhs, &obs)
+        let rhs = inline_observed_cached(&eq.rhs, obs, &mut obs_names)
             .map_err(|e| BandError(e.0))?;
         // Structural occurrence gate, driven from the equation: intersect the
         // RHS's free variables with the target set (a per-equation scan of

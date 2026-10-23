@@ -45,12 +45,13 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str) -> list[JacEntry]:
     if wrt != "time":
         obs = inlinable_observed(obs, sv.equations, tset)
     entries: list[JacEntry] = []
+    obs_names: list = [None]
     for eq in sv.equations:
         u = lhs_state(eq)
         if u is None:
             continue
         shape_u = ctx.shapes.get(u, [])
-        rhs = inline_observed(eq.rhs, obs)
+        rhs = inline_observed(eq.rhs, obs, obs_names)
         # Structural occurrence gate, driven from the equation: intersect the
         # RHS's free variables with the target set (sorted = target order).
         for v in sorted(free_variables(rhs) & tset):

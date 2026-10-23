@@ -170,6 +170,23 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
 /// summed; those it does read (`u[i,k]` under Σ_k) are left FREE, for the
 /// band emitter to turn into contracted column dimensions (bands.rs
 /// `lift_nested`). Filter, join and non-`"+"` reductions have no rule.
+/// Whether faq node `n` reduces by ordinary `+` (scalar_rules.jl
+/// `_plain_sum`): a `semiring` supersedes `reduce`, so a `max_product` node
+/// with no `reduce` is a max, not a sum.
+pub(crate) fn plain_sum(n: &ExpressionNode) -> bool {
+    match &n.semiring {
+        None => n.reduce.as_deref().map_or(true, |r| r == "+"),
+        Some(sr) => sr == "sum_product",
+    }
+}
+
+pub(crate) fn reduction(n: &ExpressionNode) -> String {
+    match &n.semiring {
+        None => format!("reduce=`{}`", n.reduce.as_deref().unwrap_or("+")),
+        Some(sr) => format!("semiring=`{sr}`"),
+    }
+}
+
 fn dsum(n: &ExpressionNode, s: &Site) -> R {
     if n.filter.is_some() {
         return Err(DerivativeRuleError(
@@ -179,11 +196,9 @@ fn dsum(n: &ExpressionNode, s: &Site) -> R {
     if n.join.is_some() {
         return Err(DerivativeRuleError("joined faq nodes are not differentiated".into()));
     }
-    if let Some(red) = &n.reduce {
-        if red != "+" {
-            return Err(DerivativeRuleError(format!(
-                "reduce=`{red}` (non-smooth semiring reductions have no rule)")));
-        }
+    if !plain_sum(n) {
+        return Err(DerivativeRuleError(format!(
+            "{} (non-smooth semiring reductions have no rule)", reduction(n))));
     }
     let body = n.expr.as_deref()
         .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;

@@ -7,14 +7,19 @@
 using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
-for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv")
+for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
+             "contracting_observed")
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     f!, u0, p0, _, vm = build_evaluator(file)
     n = length(u0)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:n]
     t = 0.7
-    res = assemble_jacobian(file; u = u, t = t)
+    # The native compiler declines a derived model whose coefficients carry
+    # a sum (`compiler_refused_rule`); the interpreter evaluates them.
+    kw = name in ("contracted_ops", "contracting_observed") ?
+         (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
+    res = assemble_jacobian(file; u = u, t = t, kw...)
     rn, cn = res.rownames, res.colnames
     entries = Any[]
     I, J, V = findnz(res.J)

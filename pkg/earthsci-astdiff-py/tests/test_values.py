@@ -10,7 +10,7 @@ import pytest
 from earthsci_astdiff import assemble_jacobian
 
 NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv")
+         "minmod_adv", "contracting_observed")
 
 
 def _cells_to_arrays(u: dict):

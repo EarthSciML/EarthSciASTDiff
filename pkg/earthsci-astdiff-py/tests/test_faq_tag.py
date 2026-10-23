@@ -27,7 +27,8 @@ def test_lifted_lhs_is_an_array_state_equation():
 
 
 @pytest.mark.parametrize("name", ["adv_interior", "flux_form_adv", "minmod_adv",
-                                  "contracted_ops", "adv_react_2d", "bd_chem"])
+                                  "contracted_ops", "adv_react_2d", "bd_chem",
+                                  "contracting_observed"])
 def test_array_models_differentiate_to_a_non_empty_band_set(valid_dir, name):
     """The CI gate: a tag mismatch makes every one of these silently empty."""
     file = ea.load_path(str(valid_dir / f"{name}.esm"))

@@ -21,8 +21,8 @@ fn load(name: &str) -> earthsci_ast::EsmFile {
     earthsci_ast::load_path(&path).expect("fixture loads")
 }
 
-const NAMES: [&str; 5] = ["bd_chem", "adv_interior", "contracted_ops",
-                          "flux_form_adv", "minmod_adv"];
+const NAMES: [&str; 6] = ["bd_chem", "adv_interior", "contracted_ops",
+                          "flux_form_adv", "minmod_adv", "contracting_observed"];
 
 #[test]
 fn band_goldens() {
@@ -71,16 +71,26 @@ fn value_goldens() {
                 states.insert(cellname.clone(), Value::from(val));
             }
         }
-        for (base, mut pts) in cells {
-            pts.sort_by(|a, b| a.0.cmp(&b.0));
+        for (base, pts) in cells {
+            // nested arrays, 1-based cells, any rank
             let rank = pts[0].0.len();
-            assert_eq!(rank, 1, "test helper handles rank-1 states");
-            let n = pts.iter().map(|(i, _)| i[0]).max().unwrap();
-            let mut arr = vec![Value::Null; n as usize];
-            for (i, v) in pts {
-                arr[(i[0] - 1) as usize] = Value::from(v);
+            let shape: Vec<i64> = (0..rank)
+                .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap()).collect();
+            fn full(shape: &[i64]) -> Value {
+                match shape.split_first() {
+                    None => Value::Null,
+                    Some((n, rest)) => Value::Array(vec![full(rest); *n as usize]),
+                }
             }
-            states.insert(base, Value::Array(arr));
+            let mut arr = full(&shape);
+            for (i, v) in pts {
+                let mut cur = &mut arr;
+                for c in &i {
+                    cur = &mut cur.as_array_mut().unwrap()[(*c - 1) as usize];
+                }
+                *cur = Value::from(v);
+            }
+            states.insert(base, arr);
         }
         let params: HashMap<String, Value> = g["params"].as_object().unwrap()
             .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
