@@ -125,6 +125,12 @@ EarthSciAST implementation and is gated by the same goldens.
       path. Symbolic reverse mode turned out unnecessary at this scale —
       the remaining `prepare_jacobian` cost is tree-walk kernel JIT, i.e.
       the dedicated compiled `jac!` kernel already noted in Design notes.
+- [x] Trimmed evaluation document: the source's state derivatives are
+      zeroed in the derived model, so a `jac!` call evaluates the band
+      fields and the observed they read but no longer recomputes `f`
+      (6–36% less time per `jac!` call on the fixtures, copy-in and scatter
+      included; the saving grows with the cost of `f`). Pinned by
+      `*.evaldoc.json`.
 - [x] Static region clipping for `index(makearray…)` reads (`clip.jl`):
       decidable membership guards are decided exactly by splitting band row
       ranges at their affine breakpoints (equal-coefficient sub-bands
@@ -166,8 +172,10 @@ EarthSciAST implementation and is gated by the same goldens.
       plan), and numeric assembly — all three golden gates pass
       byte-for-byte / at tolerance on every fixture. Caught up with esm
       1.0.0/1.1.0 (the `faq` tag, the unknown/parameter variable model,
-      inline pruning) together with Python. Still to come: production-rate
-      assembly ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4)).
+      inline pruning) together with Python. Emits the derived evaluation
+      document (with `hoist_observed`) byte-identically to Julia
+      (`*.evaldoc.json`). Still to come: production-rate assembly
+      ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4)).
 
 ## License
 
