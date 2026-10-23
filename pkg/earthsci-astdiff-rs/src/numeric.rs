@@ -12,7 +12,8 @@ use crate::bands::BandError;
 use crate::clip::RIdx;
 use crate::helpers::map_expr_children;
 use crate::jacobian::{jacobian_bands, Wrt};
-use crate::system::{ctx_of, sysview};
+use crate::inline::inline_observed;
+use crate::system::{ctx_of, observed_defs, sysview};
 
 type R<T> = Result<T, BandError>;
 
@@ -81,10 +82,10 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
                 _ => Err(BandError("index into unsupported target".into())),
             }
         }
-        Expr::Operator(n) if n.op == "aggregate" => {
+        Expr::Operator(n) if n.op == "faq" => {
             if n.output_idx.as_ref().map(|o| !o.is_empty()).unwrap_or(false) {
                 return Err(BandError(
-                    "array-producing aggregate in scalar coefficient".into()));
+                    "array-producing faq in scalar coefficient".into()));
             }
             if let Some(red) = &n.reduce {
                 if red != "+" {
@@ -101,7 +102,7 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
                 .map(|nm| crate::bands::range_of(&ranges[nm], &ctx))
                 .collect::<Result<_, _>>()?;
             let body = n.expr.as_deref().ok_or_else(|| BandError(
-                "aggregate without body".into()))?;
+                "faq without body".into()))?;
             let mut total = 0.0;
             let mut cell: Vec<i64> = boxes.iter().map(|(lo, _)| *lo).collect();
             'outer: loop {
@@ -232,9 +233,14 @@ pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
     let entries = jacobian_bands(file, model_name, wrt)?;
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
+    // Pruning leaves target-independent observed as opaque reads in the
+    // coefficients; resolve them from their own definitions (what the
+    // reference's derived evaluation model does).
+    let obs = observed_defs(&sv);
     let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
     for en in &entries {
         let b = &en.band;
+        let coef0 = inline_observed(&b.coef, &obs).map_err(|e| BandError(e.0))?;
         for cell in product_first_fastest(&b.rows) {
             let cranges: Vec<(i64, i64)> =
                 b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
@@ -260,11 +266,11 @@ pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
                     }
                 }
                 let coef = if ibind.is_empty() {
-                    b.coef.clone()
+                    coef0.clone()
                 } else {
                     let sub: HashMap<String, Expr> = ibind.iter()
                         .map(|(k, v)| (k.clone(), Expr::Integer(*v))).collect();
-                    substitute(&b.coef, &sub)
+                    substitute(&coef0, &sub)
                 };
                 let val = as_lit(&resolve(&coef, env)?)?;
                 let key = (cellname(&en.u, &cell), cellname(&en.v, &cidx));

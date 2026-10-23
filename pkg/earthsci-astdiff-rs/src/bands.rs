@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::free_variables;
 use earthsci_ast::substitute;
-use earthsci_ast::{Expr, ExpressionNode};
+use earthsci_ast::{Expr, ExpressionNode, RegionBound};
 
 use crate::branches::{canon_lits, simp};
 use crate::clip::{clip_regions, RIdx};
@@ -99,7 +99,7 @@ pub fn is_array_expr(e: &Expr, ctx: &Ctx) -> bool {
         Expr::Variable(n) => is_array(ctx, n),
         Expr::Operator(n) => {
             if matches!(n.op.as_str(),
-                        "aggregate" | "makearray" | "arrayop" | "broadcast"
+                        "faq" | "makearray" | "broadcast"
                         | "reshape" | "transpose" | "concat") {
                 return true;
             }
@@ -214,7 +214,7 @@ fn bands_array(out: &mut Vec<Band>, e: &Expr, v: &str, ctx: &Ctx,
             if arr.len() != 1 {
                 return Err(BandError(format!(
                     "elementwise product of {} array-valued factors at array \
-                     level; wrap in an aggregate", arr.len())));
+                     level; wrap in a faq node", arr.len())));
             }
             if sc.iter().any(|x| crate::helpers::occurs_var(x, v)) {
                 return Err(BandError(format!(
@@ -233,7 +233,7 @@ fn bands_array(out: &mut Vec<Band>, e: &Expr, v: &str, ctx: &Ctx,
             bands_array(out, &n.args[0], v, ctx, shape_u, &sc)?;
         }
         "makearray" => bands_makearray(out, n, v, ctx, scale)?,
-        "aggregate" => bands_aggregate(out, n, v, ctx, shape_u, scale)?,
+        "faq" => bands_faq(out, n, v, ctx, shape_u, scale)?,
         "index" => {
             let names = row_names(shape_u);
             let rows: Vec<(i64, i64)> = shape_u.iter().map(|x| (1, *x)).collect();
@@ -257,7 +257,7 @@ fn bands_array(out: &mut Vec<Band>, e: &Expr, v: &str, ctx: &Ctx,
                     }
                 }
                 let agg = Expr::operator(ExpressionNode {
-                    op: "aggregate".into(),
+                    op: "faq".into(),
                     output_idx: Some(oidx),
                     expr: Some(Box::new(body)),
                     ranges: Some(ranges),
@@ -275,7 +275,7 @@ fn bands_array(out: &mut Vec<Band>, e: &Expr, v: &str, ctx: &Ctx,
     Ok(())
 }
 
-fn bands_aggregate(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
+fn bands_faq(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
                    shape_u: &[i64], scale: &[Expr]) -> R<()> {
     let oidx: Vec<String> = n.output_idx.clone().unwrap_or_default();
     if oidx.iter().any(|x| x.parse::<i64>().is_ok()) {
@@ -284,7 +284,7 @@ fn bands_aggregate(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
     }
     if n.filter.is_some() {
         return Err(BandError(
-            "filtered aggregates not supported (the filter gate would be \
+            "filtered faq nodes not supported (the filter gate would be \
              dropped from the derivative)".into()));
     }
     let empty = HashMap::new();
@@ -311,14 +311,14 @@ fn bands_aggregate(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
         });
     }
     let body = n.expr.as_deref()
-        .ok_or_else(|| BandError("aggregate without body".into()))?;
+        .ok_or_else(|| BandError("faq without body".into()))?;
     let ridx: Vec<RIdx> = oidx.iter().map(|s| RIdx::Name(s.clone())).collect();
     for (rows2, body2) in clip_regions(body, &ridx, &rows) {
         for s in sorted_sites(&body2, v) {
             let d = dscalar(&body2, &s)?;
             if matches!(&s.expr, Expr::Variable(_)) && is_array(ctx, v) {
                 return Err(BandError(format!(
-                    "whole-array reference to `{v}` inside an aggregate body")));
+                    "whole-array reference to `{v}` inside a faq body")));
             }
             let cidx = site_cidx(&s);
             if crange.is_empty() {
@@ -338,7 +338,7 @@ fn bands_aggregate(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
                     rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
                 }
                 let red = Expr::operator(ExpressionNode {
-                    op: "aggregate".into(),
+                    op: "faq".into(),
                     output_idx: Some(vec![]),
                     reduce: Some("+".into()),
                     expr: Some(Box::new(d)),
@@ -366,6 +366,16 @@ fn bands_aggregate(out: &mut Vec<Band>, n: &ExpressionNode, v: &str, ctx: &Ctx,
     Ok(())
 }
 
+/// A makearray region's inclusive `[lo, hi]`. Symbolic bounds are folded to
+/// integers at load (esm-spec §9.7.6), so an unfolded one reaching the
+/// calculus is an error rather than something to guess at.
+pub fn region_bounds(r: &[RegionBound; 2]) -> R<(i64, i64)> {
+    match (r[0].as_i64(), r[1].as_i64()) {
+        (Some(lo), Some(hi)) => Ok((lo, hi)),
+        _ => Err(BandError("unfolded symbolic makearray region bound".into())),
+    }
+}
+
 fn bands_makearray(out: &mut Vec<Band>, n: &ExpressionNode, v: &str,
                    ctx: &Ctx, scale: &[Expr]) -> R<()> {
     let regions = n.regions.as_ref()
@@ -373,7 +383,8 @@ fn bands_makearray(out: &mut Vec<Band>, n: &ExpressionNode, v: &str,
     let values = n.values.as_ref()
         .ok_or_else(|| BandError("makearray without values".into()))?;
     for (region, val) in regions.iter().zip(values.iter()) {
-        let rows: Vec<(i64, i64)> = region.iter().map(|r| (r[0], r[1])).collect();
+        let rows: Vec<(i64, i64)> = region.iter().map(region_bounds)
+            .collect::<R<_>>()?;
         if rows.iter().any(|(lo, hi)| hi < lo) {
             continue;                                 // folded-empty region
         }
@@ -382,7 +393,7 @@ fn bands_makearray(out: &mut Vec<Band>, n: &ExpressionNode, v: &str,
         if is_array_expr(val, ctx) {
             let mut sub = Vec::new();
             let val_fullrank = matches!(val, Expr::Operator(vn)
-                if vn.op == "aggregate"
+                if vn.op == "faq"
                    && vn.output_idx.as_ref().map(|o| o.len()).unwrap_or(0)
                       == rows.len());
             let sub_shape: Vec<i64> = if val_fullrank {
@@ -392,7 +403,7 @@ fn bands_makearray(out: &mut Vec<Band>, n: &ExpressionNode, v: &str,
             };
             bands_array(&mut sub, val, v, ctx, &sub_shape, scale)?;
             let origins: Vec<i64> = if let Expr::Operator(vn) = val {
-                if vn.op == "aggregate" {
+                if vn.op == "faq" {
                     let empty = HashMap::new();
                     let vr = vn.ranges.as_ref().unwrap_or(&empty);
                     let mut o = Vec::new();
@@ -467,7 +478,7 @@ fn push_index(e: &Expr, idx: &[Expr], ctx: &Ctx) -> R<Expr> {
             Ok(op("index", args))
         }
         Expr::Operator(n) => {
-            if matches!(n.op.as_str(), "aggregate" | "makearray" | "index") {
+            if matches!(n.op.as_str(), "faq" | "makearray" | "index") {
                 return Err(BandError(format!(
                     "cannot push an index into `{}` nested under an \
                      elementwise op", n.op)));
