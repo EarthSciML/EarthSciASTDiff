@@ -9,7 +9,8 @@ from earthsci_ast.expression import free_variables
 
 from .bands import Band, bands, merge_bands, normalize_band
 from .inline import inline_observed
-from .system import SysView, _var_type, ctx_of, lhs_state, observed_defs, sysview
+from .system import (SysView, _var_type, ctx_of, inlinable_observed, lhs_state,
+                     observed_defs, sysview, view_states)
 
 
 @dataclass
@@ -27,11 +28,18 @@ def jacobian_bands(obj, model_name: str | None = None,
     ctx = ctx_of(sv)
     if wrt == "time":
         targets = ["t"]
+    elif wrt == "states":
+        targets = view_states(sv)
     else:
-        want = "state" if wrt == "states" else "parameter"
         targets = sorted(str(n) for n, var in sv.variables.items()
-                         if _var_type(var) == want)
+                         if _var_type(var) == "parameter")
+    tset = set(targets)
+    # Inline only the observed that can move with THIS wrt's targets; the
+    # rest have an identically-zero derivative and stay opaque reads. Time is
+    # not pruned: it also enters implicitly through time-varying data.
     obs = observed_defs(sv)
+    if wrt != "time":
+        obs = inlinable_observed(obs, sv.equations, tset)
     entries: list[JacEntry] = []
     for eq in sv.equations:
         u = lhs_state(eq)
@@ -39,10 +47,9 @@ def jacobian_bands(obj, model_name: str | None = None,
             continue
         shape_u = ctx.shapes.get(u, [])
         rhs = inline_observed(eq.rhs, obs)
-        fv = free_variables(rhs)
-        for v in targets:
-            if v not in fv:
-                continue                     # structural occurrence gate
+        # Structural occurrence gate, driven from the equation: intersect the
+        # RHS's free variables with the target set (sorted = target order).
+        for v in sorted(free_variables(rhs) & tset):
             for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
                 entries.append(JacEntry(u, v, normalize_band(b)))
     return entries

@@ -15,7 +15,7 @@ class InlineError(Exception):
 
 
 def inline_observed(e: Expr, obs: dict[str, Expr]) -> Expr:
-    """Inline observed reads, β-reduce `index`-of-`aggregate`, lower
+    """Inline observed reads, β-reduce `index`-of-`faq`, lower
     `index`-of-`makearray` to region membership `ifelse`. Fixpoint-iterated."""
     if not obs and not _needs_inline(e):
         return e
@@ -57,7 +57,7 @@ def _index_makearray(ma: ExprNode, idx: list[Expr], obs: dict[str, Expr]) -> Exp
             conds.append(op("<=", idx[k], r[1]))
             if region_bound(r[1]) > region_bound(r[0]):
                 sub_idx.append(idx[k])
-        if isinstance(val, ExprNode) and val.op == "aggregate":
+        if isinstance(val, ExprNode) and val.op == "faq":
             oidx = [str(x) for x in val.output_idx]
             if len(oidx) != len(sub_idx):
                 raise InlineError(
@@ -84,7 +84,7 @@ def _inline_once(e: Expr, obs: dict[str, Expr]) -> Expr:
         if t.op == "makearray":
             return _index_makearray(
                 t, [_inline_once(x, obs) for x in e.args[1:]], obs)
-        if t.op == "aggregate":
+        if t.op == "faq":
             oidx = [str(x) for x in t.output_idx]
             subst = {n: _inline_once(e.args[k + 1], obs)
                      for k, n in enumerate(oidx)}
@@ -92,7 +92,7 @@ def _inline_once(e: Expr, obs: dict[str, Expr]) -> Expr:
     if (e.op == "index" and isinstance(e.args[0], str) and e.args[0] in obs):
         name = e.args[0]
         de = obs[name]
-        if isinstance(de, ExprNode) and de.op == "aggregate":
+        if isinstance(de, ExprNode) and de.op == "faq":
             oidx = [str(x) for x in de.output_idx]
             if len(oidx) != len(e.args) - 1:
                 raise InlineError(
@@ -108,5 +108,5 @@ def _inline_once(e: Expr, obs: dict[str, Expr]) -> Expr:
             return op("index", de, *[_inline_once(x, obs) for x in e.args[1:]])
         raise InlineError(
             f"index into observed `{name}` whose definition is not an "
-            "aggregate, makearray or const")
+            "faq, makearray or const")
     return map_children(e, lambda x: _inline_once(x, obs))

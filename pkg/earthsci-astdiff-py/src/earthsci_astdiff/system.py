@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from earthsci_ast import expand_document
 from earthsci_ast.esm_types import EsmFile, Expr, ExprNode
+from earthsci_ast.expr_walk import map_children
+from earthsci_ast.expression import free_variables
 
 from .bands import Ctx
 
@@ -70,11 +72,16 @@ def ctx_of(sv: SysView) -> Ctx:
 
 def lhs_state(eq) -> str | None:
     """The state an equation integrates: plain ``D(u)`` or the pointwise-
-    lifted ``aggregate{ expr: D(index(u, i…)) }`` form."""
+    lifted ``faq{ expr: D(index(u, i…)) }`` form.
+
+    Only the esm 1.1.0 ``faq`` tag is matched: EarthSciAST's loader rewrites
+    the deprecated ``aggregate`` alias at the wire boundary. Matching the old
+    tag silently classifies every array state equation as non-differential
+    (zero bands, no error) — the reference's faq_tag_test.jl."""
     l = eq.lhs
     if not isinstance(l, ExprNode):
         return None
-    if l.op == "aggregate" and isinstance(l.expr, ExprNode) and l.expr.op == "D":
+    if l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D":
         a = l.expr.args[0]
         if (isinstance(a, ExprNode) and a.op == "index"
                 and isinstance(a.args[0], str)):
@@ -85,10 +92,100 @@ def lhs_state(eq) -> str | None:
     return None
 
 
+def lhs_definition(eq) -> str | None:
+    """The variable an equation DEFINES by a bare-variable LHS (``y ~ f(…)``)."""
+    return eq.lhs if isinstance(eq.lhs, str) else None
+
+
 def observed_defs(sv: SysView) -> dict[str, Expr]:
+    """Observed definitions, for inlining. esm 1.0.0 removed the ``observed``
+    type and ``variable.expression``: an observed is an unknown some equation
+    names bare on the left and that no ``D(·)`` equation also targets (mirrors
+    ``earthsci_ast.classification``). First definition wins."""
+    states = {lhs_state(eq) for eq in sv.equations} - {None}
     out: dict[str, Expr] = {}
-    for n, var in sv.variables.items():
-        if (_var_type(var) == "observed"
-                and getattr(var, "expression", None) is not None):
-            out[str(n)] = var.expression
+    for eq in sv.equations:
+        n = lhs_definition(eq)
+        if n is None or n in states or n in out:
+            continue
+        var = sv.variables.get(n)
+        if var is not None and _var_type(var) == "unknown":
+            out[n] = eq.rhs
     return out
+
+
+def view_states(sv: SysView) -> list[str]:
+    """The unknowns occupying a solver slot: every unknown MINUS the observed
+    ones (the 1.0.0 replacement for the 0.x ``state`` type). Sorted."""
+    obs = observed_defs(sv)
+    return sorted(str(n) for n, var in sv.variables.items()
+                  if _var_type(var) == "unknown" and str(n) not in obs)
+
+
+def _opaque_deps(e: Expr) -> bool:
+    # A surviving template reference hides its body's free names: treat it as
+    # target-DEPENDENT so it is kept (and loudly rejected by the inliner).
+    if not isinstance(e, ExprNode):
+        return False
+    if e.op == "apply_expression_template":
+        return True
+    found = False
+
+    def visit(c):
+        nonlocal found
+        found = found or _opaque_deps(c)
+        return c
+    map_children(e, visit)
+    return found
+
+
+def _index_arg_names(acc: set[str], e: Expr) -> None:
+    # Names under an index SUBSCRIPT — ``args[1:]`` of an ``index`` node.
+    if not isinstance(e, ExprNode):
+        return
+    if e.op == "index":
+        _index_arg_names(acc, e.args[0])
+        for x in e.args[1:]:
+            acc |= free_variables(x)
+        return
+
+    def visit(c):
+        _index_arg_names(acc, c)
+        return c
+    map_children(e, visit)
+
+
+def inlinable_observed(obs: dict[str, Expr], equations,
+                       targets: set[str]) -> dict[str, Expr]:
+    """The subset of the observed the band calculus must inline (the
+    reference's ``inlinable_observed``, system.jl). Kept: (1) the reflexive-
+    transitive READER closure of the observed naming a ``targets`` member
+    (all others are constant w.r.t. every target); (2) any observed reached
+    through an index subscript, whose value a column index needs at build
+    time. Joint fixpoint. The seed MUST be this ``wrt``'s targets."""
+    readers: dict[str, list[str]] = {}
+    work: list[str] = []
+    for n, e in obs.items():
+        fv = free_variables(e)
+        if not fv.isdisjoint(targets) or _opaque_deps(e):
+            work.append(n)
+        for m in fv:
+            if m in obs:
+                readers.setdefault(m, []).append(n)
+    keep = set(work)
+    while work:                                   # (1) reader closure
+        for n in readers.get(work.pop(), ()):
+            if n not in keep:
+                keep.add(n)
+                work.append(n)
+    while True:                                   # (2) subscript fixpoint
+        acc: set[str] = set()
+        for eq in equations:
+            _index_arg_names(acc, eq.rhs)
+        for n in keep:
+            _index_arg_names(acc, obs[n])
+        fresh = {n for n in acc if n in obs and n not in keep}
+        if not fresh:
+            break
+        keep |= fresh
+    return {n: obs[n] for n in keep}

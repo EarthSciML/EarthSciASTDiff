@@ -27,7 +27,7 @@ def test_contracted_shapes(valid_dir):
     gath = [e for e in yu if e.band.contracted]
     diag = [e for e in yu if not e.band.contracted]
     assert len(gath) == 1 and gath[0].band.contracted == [("j", 1, 6)]
-    assert len(diag) == 1 and '"aggregate"' in skey(diag[0].band.coef)
+    assert len(diag) == 1 and '"faq"' in skey(diag[0].band.coef)
     zu = [e for e in entries if e.u == "z" and e.v == "u"]
     assert len(zu) == 1 and '"const"' in skey(zu[0].band.cidx[0])
     # conn duplicate neighbor accumulates into ONE pattern position
@@ -37,15 +37,15 @@ def test_contracted_shapes(valid_dir):
 
 def test_guards(valid_dir):
     doc = {
-        "esm": "0.8.0",
+        "esm": "1.1.0",
         "metadata": {"name": "G"},
         "index_sets": {"x": {"kind": "interval", "size": 3}},
         "models": {"G": {
-            "variables": {"u": {"type": "state", "shape": ["x"],
+            "variables": {"u": {"type": "unknown", "shape": ["x"],
                                 "default": 0.5}},
             "equations": [{
                 "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
-                "rhs": {"op": "aggregate", "args": [], "output_idx": ["i"],
+                "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
                         "reduce": "min",
                         "ranges": {"i": [1, 3], "j": [1, 3]},
                         "expr": {"op": "index", "args": ["u", "j"]}}}]}}}
