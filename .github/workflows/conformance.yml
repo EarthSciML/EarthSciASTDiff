@@ -1,0 +1,96 @@
+# Cross-language conformance: every binding against the shared fixtures
+# (tests/valid) and goldens (tests/goldens), built against EarthSciAST `main`
+# checked out as a SIBLING — the same layout as a local checkout, which the
+# Rust path dependency (pkg/earthsci-astdiff-rs/Cargo.toml) and the Python
+# conftest fallback both assume.
+#
+# The weekly schedule is the point as much as the PR trigger: the failures
+# this catches (the `faq` tag rename, the esm 1.0.0 variable model) arrive
+# from EarthSciAST without any change here. Each binding's faq-tag test
+# asserts a NON-EMPTY band list on every array fixture, so such a change fails
+# loudly here instead of silently producing an all-zero Jacobian.
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      earthsci-ast-ref:
+        description: EarthSciAST ref to test against
+        default: main
+
+env:
+  EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref || 'main' }}
+
+jobs:
+  julia:
+    name: Julia (reference)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v4
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      # Manifest.toml is gitignored, so `Pkg.develop` is what points the test
+      # environment at the sibling EarthSciAST rather than the registry.
+      - name: Test
+        run: |
+          julia --project=EarthSciASTDiff/pkg/EarthSciASTDiff.jl -e '
+            using Pkg
+            Pkg.develop(path="EarthSciAST/pkg/EarthSciAST.jl")
+            Pkg.test()'
+
+  python:
+    name: Python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v4
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e EarthSciAST/pkg/earthsci-ast-py pytest
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-py
+        run: python -m pytest tests -q
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v4
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+        run: cargo test

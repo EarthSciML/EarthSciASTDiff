@@ -164,8 +164,10 @@ EarthSciAST implementation and is gated by the same goldens.
 - [x] Rust binding (`pkg/earthsci-astdiff-rs`), same scope as Python:
       band calculus, block emission (template CSE + structure + block-LU
       plan), and numeric assembly — all three golden gates pass
-      byte-for-byte / at tolerance on every fixture. Still to come: the
-      diffsol solver integration (production-rate `jac!` over the bands).
+      byte-for-byte / at tolerance on every fixture. Caught up with esm
+      1.0.0/1.1.0 (the `faq` tag, the unknown/parameter variable model,
+      inline pruning) together with Python. Still to come: production-rate
+      assembly ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4)).
 
 ## License
 

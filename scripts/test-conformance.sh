@@ -1,8 +1,10 @@
 #!/bin/bash
 # Cross-language conformance runner for EarthSciASTDiff.
 # Each language binding runs its test suite against the shared fixtures in
-# tests/valid and the goldens in tests/goldens. Currently: Julia only; add a
-# section per binding as they land (mirrors EarthSciAST's runner).
+# tests/valid and the goldens in tests/goldens: Julia (reference), Python and
+# Rust (mirrors EarthSciAST's runner). Every binding also carries the faq-tag
+# non-empty gate, so a future wire-tag rename fails here instead of silently
+# producing empty band lists.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
