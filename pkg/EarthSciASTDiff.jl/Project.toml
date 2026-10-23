@@ -16,7 +16,7 @@ SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 EarthSciASTDiffSciMLBaseExt = "SciMLBase"
 
 [compat]
-EarthSciAST = "0.1, 0.2"
+EarthSciAST = "0.3"
 JSON3 = "1"
 OrderedCollections = "1"
 SciMLBase = "2"
@@ -24,9 +24,10 @@ julia = "1.10"
 
 [extras]
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 OrdinaryDiffEqRosenbrock = "43230ef6-c299-4910-a778-202eb28ce4ce"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["ForwardDiff", "OrdinaryDiffEqRosenbrock", "SciMLBase", "Test"]
+test = ["ForwardDiff", "LinearAlgebra", "OrdinaryDiffEqRosenbrock", "SciMLBase", "Test"]

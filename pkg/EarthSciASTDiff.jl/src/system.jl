@@ -122,47 +122,94 @@ unknown is now exactly an unknown some equation names bare on the left
 """
 lhs_definition(eq) = eq.lhs isa VarExpr ? eq.lhs.name : nothing
 
+# An arrayed-observed definition `faq{expr: index(y, i…)} ~ f(i…)` (`y[i…] ~
+# f(i…)` as documents spell it), rewritten to the whole-array form
+# `y ~ faq{output_idx: [i…], expr: f(i…)}` that `inline_observed` β-reduces.
+# The indexed half of `EarthSciAST.observed_definitions`, whose LHS unwrap
+# credits this form to `y`. `nothing` when the LHS is not an indexed read of a
+# bare name; `(y, nothing)` when it is one whose subscripts are not exactly the
+# output indices — a partial or pinned definition (`y[1] ~ …`), which has no
+# whole-array form.
+function _indexed_definition(eq)
+    l = eq.lhs
+    l isa OpExpr || return nothing
+    f = nothing
+    if l.op == "faq"
+        (l.expr_body isa OpExpr && l.expr_body.op == "index") || return nothing
+        f, l = l, l.expr_body
+    end
+    (l.op == "index" && !isempty(l.args) && l.args[1] isa VarExpr) || return nothing
+    name = l.args[1].name
+    sub = l.args[2:end]
+    (f !== nothing && all(x -> x isa VarExpr, sub)) || return (name, nothing)
+    names = String[x.name for x in sub]
+    (String[String(x) for x in f.output_idx] == names && allunique(names)) ||
+        return (name, nothing)
+    return (name, OpExpr("faq", ASTExpr[]; output_idx = Any[names...],
+                         expr_body = eq.rhs, ranges = f.ranges))
+end
+
 # Observed-variable definitions of a view, for inlining.
 #
 # The 0.x form of this read `variables[n].expression` for every
 # `ObservedVariable`. Both are gone in esm 1.0.0 -- `StateVariable` and
 # `ObservedVariable` were removed from the enum with no deprecation path, and a
 # definition moved out of the variable into the model's `equations`. So the same
-# set is now derived: a bare-variable LHS naming an unknown that no D(.) equation
-# also targets. An unknown a `D` equation DOES target is an ODE state, and a
+# set is now derived: an LHS naming an unknown -- bare, or indexed (an ARRAYED
+# observed, rewritten by `_indexed_definition`) -- that no D(.) equation also
+# targets. An unknown a `D` equation DOES target is an ODE state, and a
 # bare-LHS equation on it would be a constraint on the state rather than a
 # definition of it -- hence the exclusion, which mirrors
 # `EarthSciAST.observed_definitions`. First definition wins, as there.
+#
+# The indexed form is not optional: left out, an arrayed observed is counted
+# as a solver slot by `view_states` -- a spurious column target -- and is never
+# inlined, so the chain rule through it is silently lost. An arrayed observed
+# whose definition cannot be rewritten (partial, pinned, or split over several
+# equations) is therefore an error rather than a fallback to that.
 function _observed_defs(sv::SysView)
     states = Set{String}()
     for eq in sv.equations
         n = lhs_state(eq); n === nothing || push!(states, String(n))
     end
     defs = Dict{String,ASTExpr}()
+    indexed = Set{String}()
     for eq in sv.equations
-        n = lhs_definition(eq); n === nothing && continue
-        n = String(n)
+        bare = lhs_definition(eq)
+        nd = bare === nothing ? _indexed_definition(eq) : (bare, eq.rhs)
+        nd === nothing && continue
+        n, d = String(nd[1]), nd[2]
         n in states && continue
         var = get(sv.variables, n, nothing)
         (var !== nothing && var.type == EarthSciAST.UnknownVariable) || continue
-        haskey(defs, n) || (defs[n] = eq.rhs)
+        d === nothing && throw(BandError(
+            "arrayed observed `$n`: defining LHS subscripts must be the " *
+            "distinct output indices (partial definitions are not supported)"))
+        if haskey(defs, n)
+            (n in indexed || bare === nothing) && throw(BandError(
+                "arrayed observed `$n` is defined by more than one equation " *
+                "(piecewise definitions are not supported)"))
+            continue
+        end
+        defs[n] = d
+        bare === nothing && push!(indexed, n)
     end
     return defs
 end
 
 """
-    view_states(sv::SysView) -> Vector{String}
+    view_states(sv::SysView, obs = _observed_defs(sv)) -> Vector{String}
 
 The unknowns occupying a solver slot: every unknown MINUS the observed ones.
 The 1.0.0 replacement for `var.type == StateVariable`, and deliberately the
 complement rather than the `D(.)`-targeted set, so an unknown constrained only
 implicitly (an algebraic unknown) still counts as a slot instead of vanishing
--- which is what the 0.x declared type `state` meant.
+-- which is what the 0.x declared type `state` meant. Pass `obs` when the
+caller already holds it.
 """
-function view_states(sv::SysView)
-    obs = keys(_observed_defs(sv))
+function view_states(sv::SysView, obs = _observed_defs(sv))
     return sort!(String[String(n) for (n, var) in sv.variables
-                        if var.type == EarthSciAST.UnknownVariable && !(String(n) in obs)])
+                        if var.type == EarthSciAST.UnknownVariable && !haskey(obs, String(n))])
 end
 
 # ── inline pruning: which observed the calculus must descend into ─────────────
@@ -277,17 +324,23 @@ function inlinable_observed(obs::Dict{String,ASTExpr}, equations,
             n in keep || (push!(keep, n); push!(work, n))
         end
     end
-    while true                                    # (2): fixpoint over the BODIES
-        acc = Set{String}()                       # kept so far — the other
-        for eq in equations                       # direction; a subscripted name
-            _index_arg_names!(acc, eq.rhs)        # does NOT pull in its readers,
-        end                                       # only what its own body needs
-        for n in keep
+    # (2): fixpoint over the BODIES kept so far — the other direction; a
+    # subscripted name does NOT pull in its readers, only what its own body
+    # needs. The equations are scanned once and each pass scans only the
+    # bodies it just added: nothing else can change between passes, and
+    # re-walking every equation per pass is O(chain length × document).
+    acc = Set{String}()
+    for eq in equations
+        _index_arg_names!(acc, eq.rhs)
+    end
+    added = collect(keep)
+    while true
+        for n in added
             _index_arg_names!(acc, obs[n])
         end
-        fresh = String[n for n in acc if haskey(obs, n) && !(n in keep)]
-        isempty(fresh) && break
-        union!(keep, fresh)
+        added = String[n for n in acc if haskey(obs, n) && !(n in keep)]
+        isempty(added) && break
+        union!(keep, added)
     end
     return Dict{String,ASTExpr}(n => obs[n] for n in keep)
 end

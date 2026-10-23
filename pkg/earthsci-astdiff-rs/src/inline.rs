@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use earthsci_ast::substitute;
 use earthsci_ast::{Expr, ExpressionNode};
 
+use crate::bands::region_bounds;
 use crate::helpers::{map_expr_children, op, skey};
 
 pub const MAX_INLINE_PASSES: usize = 64;
@@ -66,14 +67,15 @@ fn index_makearray(ma: &ExpressionNode, idx: &[Expr],
         let mut conds = Vec::new();
         let mut sub_idx = Vec::new();
         for (k, r) in region.iter().enumerate() {
-            conds.push(op(">=", vec![idx[k].clone(), Expr::Integer(r[0])]));
-            conds.push(op("<=", vec![idx[k].clone(), Expr::Integer(r[1])]));
-            if r[1] > r[0] {
+            let (lo, hi) = region_bounds(r).map_err(|e| InlineError(e.0))?;
+            conds.push(op(">=", vec![idx[k].clone(), Expr::Integer(lo)]));
+            conds.push(op("<=", vec![idx[k].clone(), Expr::Integer(hi)]));
+            if hi > lo {
                 sub_idx.push(idx[k].clone());
             }
         }
         let v = if let Expr::Operator(vn) = val {
-            if vn.op == "aggregate" {
+            if vn.op == "faq" {
                 let oidx = vn.output_idx.clone().unwrap_or_default();
                 if oidx.len() != sub_idx.len() {
                     return Err(InlineError(format!(
@@ -81,7 +83,7 @@ fn index_makearray(ma: &ExpressionNode, idx: &[Expr],
                         oidx.len(), sub_idx.len())));
                 }
                 let body = vn.expr.as_deref().ok_or_else(|| {
-                    InlineError("aggregate without body".into())
+                    InlineError("faq without body".into())
                 })?;
                 let binds: HashMap<String, Expr> = oidx
                     .iter().cloned().zip(sub_idx.iter().cloned()).collect();
@@ -123,10 +125,10 @@ fn inline_once(e: &Expr, obs: &HashMap<String, Expr>) -> R {
                     .collect::<Result<_, _>>()?;
                 return index_makearray(t, &idx, obs);
             }
-            if t.op == "aggregate" {
+            if t.op == "faq" {
                 let oidx = t.output_idx.clone().unwrap_or_default();
                 let body = t.expr.as_deref().ok_or_else(|| {
-                    InlineError("aggregate without body".into())
+                    InlineError("faq without body".into())
                 })?;
                 let mut binds = HashMap::new();
                 for (k, nme) in oidx.iter().enumerate() {
@@ -138,7 +140,7 @@ fn inline_once(e: &Expr, obs: &HashMap<String, Expr>) -> R {
         if let Some(Expr::Variable(name)) = n.args.first() {
             if let Some(def) = obs.get(name) {
                 if let Expr::Operator(dn) = def {
-                    if dn.op == "aggregate" {
+                    if dn.op == "faq" {
                         let oidx = dn.output_idx.clone().unwrap_or_default();
                         if oidx.len() != n.args.len() - 1 {
                             return Err(InlineError(format!(
@@ -146,7 +148,7 @@ fn inline_once(e: &Expr, obs: &HashMap<String, Expr>) -> R {
                                 n.args.len() - 1, oidx.len())));
                         }
                         let body = dn.expr.as_deref().ok_or_else(|| {
-                            InlineError("aggregate without body".into())
+                            InlineError("faq without body".into())
                         })?;
                         let mut binds = HashMap::new();
                         for (k, nme) in oidx.iter().enumerate() {
@@ -171,7 +173,7 @@ fn inline_once(e: &Expr, obs: &HashMap<String, Expr>) -> R {
                 }
                 return Err(InlineError(format!(
                     "index into observed `{name}` whose definition is not an \
-                     aggregate, makearray or const")));
+                     faq, makearray or const")));
             }
         }
     }

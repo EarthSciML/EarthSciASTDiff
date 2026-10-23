@@ -38,14 +38,14 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     wrt in (:states, :parameters, :time) ||
         throw(ArgumentError("wrt must be :states, :parameters or :time, got $wrt"))
     ctx = _ctx(sv)
+    obs = _observed_defs(sv)
     targets = if wrt == :time
         ["t"]
     else
-        wrt == :states ? view_states(sv) :
+        wrt == :states ? view_states(sv, obs) :
             sort!([String(n) for (n, var) in sv.variables
                    if var.type == EarthSciAST.ParameterVariable])
     end
-    obs = _observed_defs(sv)
     # Only the observed that can actually move with a target are inlined; the
     # rest have an identically-zero derivative and stay opaque reads that the
     # derived evaluation model resolves from their own definitions. Exact, and

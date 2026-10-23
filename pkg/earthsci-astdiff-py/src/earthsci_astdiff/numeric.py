@@ -4,7 +4,7 @@ performance one.
 The Julia reference compiles a derived evaluation model through its
 tree-walk; here each band coefficient is evaluated per (row, contracted)
 cell by resolving every read (state/parameter/`t`/const-table gathers and
-scalar ``reduce: "+"`` aggregates) to a literal and handing the closed tree
+scalar ``reduce: "+"`` faq nodes) to a literal and handing the closed tree
 to the official ``numpy_interpreter`` evaluator — so operator semantics
 (ifelse, min/max, ``fn`` lookups) stay the runtime's own. Complexity is
 O(cells × coefficient size) per call; use the Julia binding for production
@@ -20,8 +20,9 @@ from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.substitute import substitute
 
 from .emit import _cellname, _eval_cidx, _product
-from .jacobian import jacobian_bands
-from .system import SysView, _var_type, ctx_of, sysview
+from .inline import inline_observed
+from .jacobian import _jacobian_bands
+from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
 
 class EvalError(Exception):
@@ -80,9 +81,9 @@ def _resolve(e: Expr, env: _Env) -> Expr:
                 v = v[c - 1]
             return v
         raise EvalError(f"index into unsupported target `{t}`")
-    if e.op == "aggregate":
+    if e.op == "faq":
         if e.output_idx:
-            raise EvalError("array-producing aggregate in scalar coefficient")
+            raise EvalError("array-producing faq in scalar coefficient")
         if e.reduce not in (None, "+"):
             raise EvalError(f"reduce=`{e.reduce}` in scalar coefficient")
         names = sorted(str(n) for n in (e.ranges or {}))
@@ -103,11 +104,12 @@ def _as_lit(e: Expr) -> float:
     return float(evaluate(e, {}))
 
 
-def _default_values(sv: SysView, ctx):
+def _default_values(sv: SysView, ctx, obs: dict):
     states: dict = {}
     params: dict = {}
+    slots = set(view_states(sv, obs))
     for n, var in sv.variables.items():
-        ty = _var_type(var)
+        ty = "state" if str(n) in slots else _var_type(var)
         if ty not in ("state", "parameter"):
             continue
         default = getattr(var, "default", None)
@@ -133,18 +135,27 @@ def assemble_jacobian(obj, model_name: str | None = None, wrt: str = "states",
     with contributions to one (row, col) pair SUMMED (§4 additivity, incl.
     contracted-point accumulation). ``states``/``params`` map variable name
     → nested list (1-based cells) or scalar; defaults come from the document."""
+    if wrt not in ("states", "parameters", "time"):
+        raise ValueError(f"wrt must be states, parameters or time, got {wrt}")
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
     ctx = ctx_of(sv)
-    dstates, dparams = _default_values(sv, ctx)
+    obs = observed_defs(sv)
+    dstates, dparams = _default_values(sv, ctx, obs)
     if states:
         dstates.update(states)
     if params:
         dparams.update(params)
     env = _Env(dstates, dparams, t)
-    entries = jacobian_bands(sv, wrt=wrt)
+    entries = _jacobian_bands(sv, ctx, obs, wrt)
+    # Pruning leaves target-independent observed as opaque reads in the
+    # coefficients; resolve them from their own definitions (what the
+    # reference's derived evaluation model does). This splices in only the
+    # observed a coefficient actually reads — exactly what evaluating it at
+    # a point needs — so it rejects nothing an evaluation could do without.
     out: dict[tuple[str, str], float] = {}
     for en in entries:
         b = en.band
+        coef0 = inline_observed(b.coef, obs)
         for cell in _product(b.rows):
             for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
                 bind = {r: cell[k] for k, r in enumerate(b.ridx)
@@ -158,7 +169,7 @@ def assemble_jacobian(obj, model_name: str | None = None, wrt: str = "states",
                         not (1 <= cidx[d] <= vshape[d])
                         for d in range(len(cidx))):
                     continue                # ghost/boundary read: no column
-                coef = substitute(b.coef, dict(bind)) if bind else b.coef
+                coef = substitute(coef0, dict(bind)) if bind else coef0
                 val = float(_as_lit(_resolve(coef, env)))
                 key = (_cellname(en.u, cell), _cellname(en.v, cidx))
                 out[key] = out.get(key, 0.0) + val

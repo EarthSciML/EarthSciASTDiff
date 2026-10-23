@@ -1,21 +1,22 @@
 //! Uniform system view over one model of a loaded `EsmFile` (the reference's
 //! system.jl; template expansion already happened inside `load`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
-use earthsci_ast::{Equation, EsmFile, Expr, Model, ModelVariable, VariableType};
+use earthsci_ast::{free_variables, Equation, EsmFile, Expr, ExpressionNode, Model,
+                   ModelVariable, VariableType};
+use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
 
 pub struct SysView<'a> {
-    pub variables: &'a HashMap<String, ModelVariable>,
+    pub variables: &'a IndexMap<String, ModelVariable>,
     pub equations: &'a Vec<Equation>,
-    pub index_sets: HashMap<String, IndexSet>,
+    pub index_sets: IndexMap<String, IndexSet>,
 }
 
-fn models(file: &EsmFile) -> Result<&std::collections::HashMap<String, Model>,
-                                     BandError> {
+fn models(file: &EsmFile) -> Result<&IndexMap<String, Model>, BandError> {
     file.models.as_ref()
         .ok_or_else(|| BandError("document has no models".into()))
 }
@@ -74,10 +75,15 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
 }
 
 /// The state an equation integrates: plain `D(u)` or the pointwise-lifted
-/// `aggregate{ expr: D(index(u, i…)) }` form.
+/// `faq{ expr: D(index(u, i…)) }` form.
+///
+/// Only the esm 1.1.0 `faq` tag is matched: EarthSciAST's loader rewrites the
+/// deprecated `aggregate` alias to `faq` at the wire boundary. Matching the old
+/// tag instead silently classifies every array state equation as
+/// non-differential (zero bands, no error) — the reference's faq_tag_test.jl.
 pub fn lhs_state(eq: &Equation) -> Option<String> {
     let Expr::Operator(l) = &eq.lhs else { return None };
-    if l.op == "aggregate" {
+    if l.op == "faq" {
         if let Some(body) = l.expr.as_deref() {
             if let Expr::Operator(d) = body {
                 if d.op == "D" {
@@ -101,10 +107,191 @@ pub fn lhs_state(eq: &Equation) -> Option<String> {
     None
 }
 
-pub fn observed_defs(sv: &SysView) -> HashMap<String, Expr> {
-    sv.variables.iter()
-        .filter(|(_, v)| v.var_type == VariableType::Observed
-                && v.expression.is_some())
-        .map(|(n, v)| (n.clone(), v.expression.clone().unwrap()))
-        .collect()
+/// The variable an equation DEFINES by a bare-variable LHS (`y ~ f(…)`).
+pub fn lhs_definition(eq: &Equation) -> Option<&String> {
+    match &eq.lhs {
+        Expr::Variable(n) => Some(n),
+        _ => None,
+    }
+}
+
+/// An arrayed-observed definition `faq{expr: index(y, i…)} ~ f(i…)` (`y[i…]
+/// ~ f(i…)` as documents spell it) rewritten to the whole-array form `y ~
+/// faq{output_idx: [i…], expr: f(i…)}` the inliner β-reduces. Mirrors the
+/// indexed half of `EarthSciAST::observed_definitions`. `None` when the LHS
+/// is not an indexed read of a bare name; `Some((y, None))` when it is one
+/// whose subscripts are not exactly the output indices (a partial or pinned
+/// definition such as `y[1] ~ …`, not rewritable).
+fn indexed_definition(eq: &Equation) -> Option<(&String, Option<Expr>)> {
+    let Expr::Operator(l) = &eq.lhs else { return None };
+    let (faq, ix) = if l.op == "faq" {
+        match l.expr.as_deref() {
+            Some(Expr::Operator(ix)) if ix.op == "index" => (Some(l), ix),
+            _ => return None,
+        }
+    } else {
+        (None, l)
+    };
+    if ix.op != "index" {
+        return None;
+    }
+    let Some(Expr::Variable(name)) = ix.args.first() else { return None };
+    let sub: Option<Vec<String>> = ix.args[1..].iter().map(|x| match x {
+        Expr::Variable(n) => Some(n.clone()),
+        _ => None,
+    }).collect();
+    let (Some(faq), Some(sub)) = (faq, sub) else { return Some((name, None)) };
+    let distinct = sub.iter().collect::<HashSet<_>>().len() == sub.len();
+    if faq.output_idx.as_ref() != Some(&sub) || !distinct {
+        return Some((name, None));
+    }
+    Some((name, Some(Expr::operator(ExpressionNode {
+        op: "faq".into(),
+        output_idx: Some(sub),
+        expr: Some(Box::new(eq.rhs.clone())),
+        ranges: faq.ranges.clone(),
+        ..Default::default()
+    }))))
+}
+
+/// Observed-variable definitions, for inlining. esm 1.0.0 removed the
+/// `observed` declared type and `variable.expression`: an observed is an
+/// unknown some equation names on the left — bare, or indexed (an arrayed
+/// observed, rewritten by [`indexed_definition`]) — and that no `D(·)`
+/// equation also targets (mirrors `EarthSciAST::observed_definitions`).
+/// First definition wins; an arrayed observed that is defined piecewise or
+/// partially is rejected rather than left to become a solver slot.
+pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
+    let states: HashSet<String> = sv.equations.iter()
+        .filter_map(lhs_state).collect();
+    let mut defs = HashMap::new();
+    let mut indexed: HashSet<String> = HashSet::new();
+    for eq in sv.equations {
+        let bare = lhs_definition(eq);
+        let (n, d) = match bare {
+            Some(n) => (n, Some(eq.rhs.clone())),
+            None => match indexed_definition(eq) {
+                Some(nd) => nd,
+                None => continue,
+            },
+        };
+        let unknown = sv.variables.get(n)
+            .is_some_and(|v| v.var_type == VariableType::Unknown);
+        if states.contains(n) || !unknown {
+            continue;
+        }
+        let Some(d) = d else {
+            return Err(BandError(format!(
+                "arrayed observed `{n}`: defining LHS subscripts must be the \
+                 distinct output indices (partial definitions are not \
+                 supported)")));
+        };
+        if defs.contains_key(n) {
+            if indexed.contains(n) || bare.is_none() {
+                return Err(BandError(format!(
+                    "arrayed observed `{n}` is defined by more than one \
+                     equation (piecewise definitions are not supported)")));
+            }
+            continue;
+        }
+        defs.insert(n.clone(), d);
+        if bare.is_none() {
+            indexed.insert(n.clone());
+        }
+    }
+    Ok(defs)
+}
+
+/// The unknowns occupying a solver slot: every unknown MINUS the observed
+/// ones `obs` ([`observed_defs`]; the 1.0.0 replacement for the 0.x `state`
+/// type; an algebraic unknown still counts as a slot). Sorted.
+pub fn view_states(sv: &SysView, obs: &HashMap<String, Expr>) -> Vec<String> {
+    let mut out: Vec<String> = sv.variables.iter()
+        .filter(|(n, v)| v.var_type == VariableType::Unknown
+                && !obs.contains_key(*n))
+        .map(|(n, _)| n.clone()).collect();
+    out.sort();
+    out
+}
+
+// An expression whose true dependencies `free_variables` cannot see: a
+// surviving template reference exposes only its bindings. Treated as
+// target-DEPENDENT so it is kept (and loudly rejected by the inliner) rather
+// than silently pruned to zero.
+fn opaque_deps(e: &Expr) -> bool {
+    let Expr::Operator(n) = e else { return false };
+    if n.op == "apply_expression_template" {
+        return true;
+    }
+    let mut found = false;
+    n.for_each_child(&mut |c: &Expr| found = found || opaque_deps(c));
+    found
+}
+
+// Names occurring under an index SUBSCRIPT — `args[1..]` of an `index` node.
+fn index_arg_names(acc: &mut HashSet<String>, e: &Expr) {
+    let Expr::Operator(n) = e else { return };
+    if n.op == "index" {
+        if let Some(a0) = n.args.first() {
+            index_arg_names(acc, a0);
+        }
+        for x in n.args.iter().skip(1) {
+            acc.extend(free_variables(x));
+        }
+        return;
+    }
+    n.for_each_child(&mut |c: &Expr| index_arg_names(acc, c));
+}
+
+/// The subset of the observed definitions the band calculus has to inline
+/// (the reference's `inlinable_observed`, system.jl). Kept: (1) the
+/// reflexive-transitive READER closure of the observed that name a `targets`
+/// member (everything else is constant w.r.t. every target — derivative
+/// identically zero); and (2) any observed reached through an index
+/// subscript, whose value a column index needs at build time. Joint fixpoint.
+/// The seed MUST be this `wrt`'s targets: an emissions field is
+/// state-independent but not parameter-independent.
+pub fn inlinable_observed(obs: &HashMap<String, Expr>, equations: &[Equation],
+                          targets: &HashSet<String>) -> HashMap<String, Expr> {
+    let mut readers: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut work: Vec<&str> = Vec::new();
+    for (n, e) in obs {
+        let fv = free_variables(e);
+        if !fv.is_disjoint(targets) || opaque_deps(e) {
+            work.push(n);
+        }
+        for m in &fv {
+            if let Some((k, _)) = obs.get_key_value(m) {
+                readers.entry(k.as_str()).or_default().push(n);
+            }
+        }
+    }
+    let mut keep: HashSet<&str> = work.iter().copied().collect();
+    while let Some(m) = work.pop() {                  // (1) reader closure
+        for &n in readers.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if keep.insert(n) {
+                work.push(n);
+            }
+        }
+    }
+    // (2) subscript fixpoint. The equations are scanned once; each pass then
+    // scans only the bodies it just added, since nothing else can change.
+    let mut acc = HashSet::new();
+    for eq in equations {
+        index_arg_names(&mut acc, &eq.rhs);
+    }
+    let mut added: Vec<&str> = keep.iter().copied().collect();
+    loop {
+        for n in &added {
+            index_arg_names(&mut acc, &obs[*n]);
+        }
+        added = acc.iter()
+            .filter_map(|n| obs.get_key_value(n).map(|(k, _)| k.as_str()))
+            .filter(|n| !keep.contains(n)).collect();
+        if added.is_empty() {
+            break;
+        }
+        keep.extend(added.iter().copied());
+    }
+    keep.into_iter().map(|n| (n.to_string(), obs[n].clone())).collect()
 }

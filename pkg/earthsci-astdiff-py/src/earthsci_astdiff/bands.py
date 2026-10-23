@@ -80,7 +80,7 @@ def is_array_expr(e: Expr, ctx: Ctx) -> bool:
         return is_array(ctx, e)
     if not isinstance(e, ExprNode):
         return False
-    if e.op in ("aggregate", "makearray", "arrayop", "broadcast",
+    if e.op in ("faq", "makearray", "broadcast",
                 "reshape", "transpose", "concat"):
         return True
     if e.op == "index":
@@ -147,7 +147,7 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
         if len(arr) != 1:
             raise BandError(
                 f"elementwise product of {len(arr)} array-valued factors at "
-                "array level; wrap in an aggregate")
+                "array level; wrap in a faq node")
         if any(occurs_var(x, v) for x in sc):
             raise BandError(
                 f"scalar factor depends on `{v}` in an array-level product")
@@ -159,8 +159,8 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
                      scale + [op("/", 1, e.args[1])])
     elif o == "makearray":
         _bands_makearray(out, e, v, ctx, scale)
-    elif o == "aggregate":
-        _bands_aggregate(out, e, v, ctx, shape_u, scale)
+    elif o == "faq":
+        _bands_faq(out, e, v, ctx, shape_u, scale)
     elif o == "index":
         names = [f"_r{k + 1}" for k in range(len(shape_u))]
         _scalar_bands(out, e, v, [(1, n) for n in shape_u], names, scale)
@@ -169,7 +169,7 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
             names = [f"_r{k + 1}" for k in range(len(shape_u))]
             idx = [n for n in names]
             body = _push_index(e, idx, ctx)
-            agg = ExprNode(op="aggregate", args=[],
+            agg = ExprNode(op="faq", args=[],
                            output_idx=list(names), expr=body,
                            ranges={n: [1, shape_u[k]]
                                    for k, n in enumerate(names)})
@@ -179,12 +179,12 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
             _scalar_bands(out, e, v, [(1, n) for n in shape_u], names, scale)
 
 
-def _bands_aggregate(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
+def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
     oidx = [str(x) for x in e.output_idx if isinstance(x, str)]
     if len(oidx) != len(e.output_idx):
         raise BandError("singleton `1` output_idx entries not supported yet")
     if e.filter is not None:
-        raise BandError("filtered aggregates not supported (the filter gate "
+        raise BandError("filtered faq nodes not supported (the filter gate "
                         "would be dropped from the derivative)")
     ranges = e.ranges or {}
     cnames = sorted(str(n) for n in ranges if str(n) not in oidx)
@@ -202,7 +202,7 @@ def _bands_aggregate(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None
             d = dscalar(body2, s)
             if isinstance(s.expr, str) and is_array(ctx, v):
                 raise BandError(
-                    f"whole-array reference to `{v}` inside an aggregate body")
+                    f"whole-array reference to `{v}` inside a faq body")
             cidx = _site_cidx(s)
             if not crange:
                 coef = simp(mul(d, *scale))
@@ -210,7 +210,7 @@ def _bands_aggregate(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None
                     out.append(Band(rows2, list(oidx), cidx, coef))
             elif not any(any(n in free_variables(c) for c in cidx)
                          for n, _, _ in crange):
-                red = ExprNode(op="aggregate", args=[], output_idx=[],
+                red = ExprNode(op="faq", args=[], output_idx=[],
                                reduce="+", expr=d,
                                ranges={n: [lo, hi] for n, lo, hi in crange})
                 coef = simp(mul(red, *scale))
@@ -231,14 +231,14 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
         nonsing = [k for k, (lo, hi) in enumerate(rows) if hi > lo]
         if is_array_expr(val, ctx):
             sub: list[Band] = []
-            val_fullrank = (isinstance(val, ExprNode) and val.op == "aggregate"
+            val_fullrank = (isinstance(val, ExprNode) and val.op == "faq"
                             and len(val.output_idx) == len(rows))
             if val_fullrank:
                 sub_shape = [hi - lo + 1 for lo, hi in rows]
             else:
                 sub_shape = [rows[k][1] - rows[k][0] + 1 for k in nonsing]
             _bands_array(sub, val, v, ctx, sub_shape, scale)
-            if isinstance(val, ExprNode) and val.op == "aggregate":
+            if isinstance(val, ExprNode) and val.op == "faq":
                 vr = val.ranges or {}
                 origins = [_range_of(vr[str(n)], ctx)[0] if str(n) in vr else 1
                            for n in val.output_idx]
@@ -279,7 +279,7 @@ def _push_index(e: Expr, idx: list, ctx: Ctx) -> Expr:
     if isinstance(e, str):
         return op("index", e, *idx) if is_array(ctx, e) else e
     if isinstance(e, ExprNode):
-        if e.op in ("aggregate", "makearray", "index"):
+        if e.op in ("faq", "makearray", "index"):
             raise BandError(f"cannot push an index into `{e.op}` nested "
                             "under an elementwise op")
         return map_children(e, lambda x: _push_index(x, idx, ctx))
