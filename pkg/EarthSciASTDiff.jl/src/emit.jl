@@ -231,10 +231,7 @@ end
 # hoisted-observed axes: same `jcax<size>` convention, reused when present).
 function _axis_name!(doc, sz::Int)
     isets = doc["index_sets"]
-    nm = "jcax$(sz)"
-    while haskey(isets, nm) && get(isets[nm], "size", nothing) != sz
-        nm *= "x"
-    end
+    nm = _jcax_name(n -> haskey(isets, n) && get(isets[n], "size", nothing) != sz, sz)
     haskey(isets, nm) ||
         (isets[nm] = OrderedDict{String,Any}("kind" => "interval", "size" => sz))
     return nm
@@ -246,6 +243,8 @@ end
 # any further ones dropped. The states keep their solver slots — `jac!`
 # copies `u` into them exactly as before — so the observed definitions and
 # band fields read them unchanged, but each call no longer recomputes `f`.
+# Observed the coefficients do not read (directly or through other observed)
+# are dropped with their declarations: they fed only `f`.
 #
 # Why zero derivatives rather than turning the states into parameters: an
 # array parameter is a build-time `param_arrays` buffer, and EarthSciAST
@@ -253,12 +252,37 @@ end
 # writing a new `u` into the buffer in place leaves those values stale
 # (minmod_adv's limiters, off by up to 16.0 at a second point) unless an
 # internal epoch hook is called on every write.
-function _zero_source_derivatives!(m, sv::SysView, ctx)
+function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry})
+    states = Set{String}(u for u in (lhs_state(eq) for eq in sv.equations)
+                         if u !== nothing)
+    defined = [lhs_state(eq) === nothing ? _defined_name(eq) : nothing
+               for eq in sv.equations]
+    reads = Dict{String,Vector{ASTExpr}}()     # observed → its definitions' RHS
+    for (eq, n) in zip(sv.equations, defined)
+        (n === nothing || n in states) || push!(get!(reads, n, ASTExpr[]), eq.rhs)
+    end
+    live = Set{String}()
+    stack = String[v for en in entries for v in free_variables(en.band.coef)]
+    while !isempty(stack)
+        n = pop!(stack)
+        (haskey(reads, n) && !(n in live)) || continue
+        push!(live, n)
+        for r in reads[n]
+            append!(stack, free_variables(r))
+        end
+    end
     done = Set{String}()
     eqs = Any[]
-    for (eq, ser) in zip(sv.equations, m["equations"])
+    for (eq, ser, n) in zip(sv.equations, m["equations"], defined)
         u = lhs_state(eq)
         if u === nothing
+            _is_derivative(eq) && throw(BandError(
+                "unsupported derivative LHS $(JSON3.write(_ser_expr(eq.lhs))) (a state's " *
+                "derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"))
+            if n !== nothing && haskey(reads, n) && !(n in live)
+                delete!(m["variables"], n)
+                continue
+            end
             push!(eqs, ser)
         elseif !(u in done)
             push!(done, u)
@@ -276,9 +300,10 @@ function _zero_source_derivatives!(m, sv::SysView, ctx)
     return m
 end
 
-# Derived model: the source's observed definitions with its state derivatives
-# zeroed, plus one state per band whose RHS is the band's coefficient field. With `cse = true`, repeated coefficient subtrees are
-# first hoisted into observed variables of the document
+# Derived model: the source's observed definitions that the coefficients
+# read, with its state derivatives zeroed, plus one state per band whose RHS
+# is the band's coefficient field. With `cse = true`, repeated coefficient
+# subtrees are first hoisted into observed variables of the document
 # ([`hoist_observed`](@ref)) so the tree-walk's factored array-observed
 # buffers evaluate them once per cell per RHS call — the compile-time and
 # duplicate-work control for limiter-heavy (PPM-scale) coefficients.
@@ -288,7 +313,7 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
-    _zero_source_derivatives!(m, sv, ctx)
+    _zero_source_derivatives!(m, sv, ctx, entries)
     h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
     coefs = h === nothing ? ASTExpr[en.band.coef for en in entries] : h.coefs
     if h !== nothing

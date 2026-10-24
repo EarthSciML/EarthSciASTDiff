@@ -107,6 +107,22 @@ pub fn lhs_state(eq: &Equation) -> Option<String> {
     None
 }
 
+/// Whether an equation's LHS is a time derivative of any form — including
+/// ones [`lhs_state`] does not recognize (`D(index(u, 1))`), which no pass
+/// supports and none may silently skip.
+pub fn is_derivative(eq: &Equation) -> bool {
+    let Expr::Operator(l) = &eq.lhs else { return false };
+    l.op == "D" || (l.op == "faq"
+        && matches!(l.expr.as_deref(), Some(Expr::Operator(d)) if d.op == "D"))
+}
+
+/// The variable a non-derivative equation defines: a bare LHS (`y ~ …`) or
+/// an indexed one (`y[i…] ~ …`, lifted or pinned).
+pub(crate) fn defined_name(eq: &Equation) -> Option<String> {
+    lhs_definition(eq).cloned()
+        .or_else(|| indexed_definition(eq).map(|(n, _)| n.clone()))
+}
+
 /// The variable an equation DEFINES by a bare-variable LHS (`y ~ f(…)`).
 pub fn lhs_definition(eq: &Equation) -> Option<&String> {
     match &eq.lhs {

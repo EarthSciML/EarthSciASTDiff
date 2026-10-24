@@ -167,10 +167,7 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
     let mut existing: BTreeMap<String, i64> = sv.index_sets.iter()
         .filter_map(|(n, s)| s.size.map(|sz| (n.clone(), sz))).collect();
     let mut axis_for = |sz: i64| -> String {
-        let mut nm = format!("jcax{sz}");
-        while existing.get(&nm).is_some_and(|e| *e != sz) {
-            nm.push('x');
-        }
+        let nm = crate::emit::jcax_name(|n| existing.get(n).is_some_and(|e| *e != sz), sz);
         if !existing.contains_key(&nm) {
             axes.push((nm.clone(), sz));
             existing.insert(nm.clone(), sz);

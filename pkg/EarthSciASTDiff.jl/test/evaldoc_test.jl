@@ -13,6 +13,11 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
         sv = sysview(file, first(keys(file.models)))
         doc, _ = _evaluation_document(sv, jacobian_bands(sv))
         @test stable_json(doc) == read(joinpath(golden_dir, "$name.evaldoc.json"), String)
+        # without hoisting; no `-nocse` golden means nothing to hoist
+        doc0, _ = _evaluation_document(sv, jacobian_bands(sv); cse = false)
+        p0 = joinpath(golden_dir, "$name.evaldoc-nocse.json")
+        @test stable_json(doc0) ==
+              read(isfile(p0) ? p0 : joinpath(golden_dir, "$name.evaldoc.json"), String)
     end
 end
 
@@ -32,9 +37,53 @@ end
             rhs = only(mine)["rhs"]
             @test rhs == 0.0 || (rhs["op"] == "makearray" && rhs["values"] == Any[0.0])
         end
-        # no lifted (faq-LHS) source derivative is left behind either
-        @test !any(eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "faq" for eq in eqs)
+        # no lifted (faq-LHS) source derivative is left behind either; an
+        # indexed observed definition `faq{index(y, i)} ~ …` is not one
+        @test !any(eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "faq" &&
+                   eq["lhs"]["expr"] isa AbstractDict && eq["lhs"]["expr"]["op"] == "D"
+                   for eq in eqs)
     end
+end
+
+@testset "evaluation document: only the observed the coefficients read" begin
+    # flux_form_adv's flux F, contracting_observed's s and c and
+    # contracted_ops's conn feed only f: inlined into every coefficient, so
+    # nothing in the derived document reads them. minmod_adv's dx is read.
+    for (name, gone, kept) in (("flux_form_adv", ["F"], String[]),
+                               ("contracting_observed", ["s", "c"], String[]),
+                               ("contracted_ops", ["conn"], String[]),
+                               ("minmod_adv", String[], ["dx"]))
+        file = fixture("$name.esm")
+        sv = sysview(file, first(keys(file.models)))
+        doc, _ = _evaluation_document(sv, jacobian_bands(sv))
+        m = doc["models"]["JacobianEval"]
+        defs = Set(eq["lhs"] for eq in m["equations"] if eq["lhs"] isa String)
+        for n in gone
+            @test !haskey(m["variables"], n) && !(n in defs)
+        end
+        for n in kept
+            @test haskey(m["variables"], n) && n in defs
+        end
+    end
+end
+
+@testset "evaluation document: an element derivative LHS is refused" begin
+    # `D(index(u, 1)) = …` is no form lhs_state knows: dropping it would lose
+    # its rows from the Jacobian and keep its RHS in the evaluation document.
+    doc = EarthSciAST.load_document(Dict{String,Any}(
+        "esm" => "1.1.0", "metadata" => Dict("name" => "Elem"),
+        "index_sets" => Dict("x" => Dict("kind" => "interval", "size" => 3)),
+        "models" => Dict("Elem" => Dict(
+            "variables" => Dict("u" => Dict("type" => "unknown", "shape" => ["x"],
+                                            "default" => 1.0)),
+            "equations" => [Dict(
+                "lhs" => Dict("op" => "D", "wrt" => "t", "args" => [
+                    Dict("op" => "index", "args" => ["u", 1])]),
+                "rhs" => Dict("op" => "-", "args" => [
+                    Dict("op" => "index", "args" => ["u", 1])]))]))))
+    sv = sysview(doc, "Elem")
+    @test_throws EarthSciASTDiff.BandError jacobian_bands(sv)
+    @test_throws EarthSciASTDiff.BandError _evaluation_document(sv, JacEntry[])
 end
 
 @testset "evaluation document: one prepared jac! tracks u across calls" begin
