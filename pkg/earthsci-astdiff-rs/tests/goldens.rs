@@ -54,6 +54,11 @@ fn evaldoc_goldens() {
             root().join("tests/goldens").join(format!("{name}.evaldoc.json")))
             .unwrap();
         assert_eq!(stable_json(&doc), golden, "evaldoc golden diverges: {name}");
+        // without hoisting; no `-nocse` golden means nothing to hoist
+        let (doc0, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
+        let p0 = root().join("tests/goldens").join(format!("{name}.evaldoc-nocse.json"));
+        let golden0 = if p0.exists() { fs::read_to_string(p0).unwrap() } else { golden };
+        assert_eq!(stable_json(&doc0), golden0, "evaldoc (cse = false) diverges: {name}");
     }
 }
 

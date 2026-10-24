@@ -111,6 +111,12 @@ function lhs_state(eq)
     return nothing
 end
 
+# Whether an equation's LHS is a time derivative of any form — including ones
+# `lhs_state` does not recognize (`D(index(u, 1))`), which no pass supports
+# and none may silently skip.
+_is_derivative(eq) = eq.lhs isa OpExpr && (eq.lhs.op == "D" ||
+    (eq.lhs.op == "faq" && eq.lhs.expr_body isa OpExpr && eq.lhs.expr_body.op == "D"))
+
 """
     lhs_definition(eq) -> Union{String,Nothing}
 
@@ -147,6 +153,15 @@ function _indexed_definition(eq)
         return (name, nothing)
     return (name, OpExpr("faq", ASTExpr[]; output_idx = Any[names...],
                          expr_body = eq.rhs, ranges = f.ranges))
+end
+
+# The variable a non-derivative equation defines: a bare LHS (`y ~ …`) or an
+# indexed one (`y[i…] ~ …`, lifted or pinned); `nothing` otherwise.
+function _defined_name(eq)
+    n = lhs_definition(eq)
+    n === nothing || return String(n)
+    d = _indexed_definition(eq)
+    return d === nothing ? nothing : String(d[1])
 end
 
 # Observed-variable definitions of a view, for inlining.

@@ -7,7 +7,7 @@ use earthsci_ast::{EsmFile, Expr, VariableType};
 
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::inline::inline_observed_cached;
-use crate::system::{ctx_of, inlinable_observed, lhs_state, observed_defs, sysview,
+use crate::system::{ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview,
                     view_states, SysView};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +72,12 @@ pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
     let mut entries = Vec::new();
     let mut obs_names = None;
     for eq in sv.equations {
-        let Some(u) = lhs_state(eq) else { continue };
+        let Some(u) = lhs_state(eq) else {
+            if is_derivative(eq) {
+                return Err(unsupported_derivative(eq));
+            }
+            continue;
+        };
         let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
         let rhs = inline_observed_cached(&eq.rhs, obs, &mut obs_names)
             .map_err(|e| BandError(e.0))?;
@@ -94,4 +99,13 @@ pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
         }
     }
     Ok(entries)
+}
+
+/// The refusal for a derivative LHS that is not `D(u)` or the lifted
+/// `faq{D(index(u, i…))}` (shared with the evaluation document).
+pub(crate) fn unsupported_derivative(eq: &earthsci_ast::Equation) -> BandError {
+    BandError(format!("unsupported derivative LHS {} (a state's derivative is `D(u)` \
+                       or the lifted `faq{{D(index(u, i…))}}`)",
+                      serde_json::to_string(&crate::helpers::ser_expr(&eq.lhs))
+                          .expect("expression serializes")))
 }

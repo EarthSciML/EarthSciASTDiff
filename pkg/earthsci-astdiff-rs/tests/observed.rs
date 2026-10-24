@@ -89,3 +89,22 @@ fn closed_expression_region_bound_is_evaluated() {
     let free: earthsci_ast::Expr = serde_json::from_value(json!("n")).unwrap();
     assert!(region_bounds(&[RegionBound::Int(1), RegionBound::Expr(free)]).is_err());
 }
+
+#[test]
+fn element_derivative_lhs_is_refused() {
+    // `D(index(u, 1)) = …` is no form lhs_state knows: skipping it would lose
+    // its rows from the Jacobian and keep its RHS in the evaluation document.
+    let d = json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "Elem"},
+        "index_sets": {"x": {"kind": "interval", "size": 3}},
+        "models": {"Elem": {
+            "variables": {"u": {"type": "unknown", "shape": ["x"], "default": 1.0}},
+            "equations": [
+                {"lhs": {"op": "D", "wrt": "t", "args": [idx("u", json!(1))]},
+                 "rhs": {"op": "-", "args": [idx("u", json!(1))]}}]}}});
+    let file = earthsci_ast::load_document(&d).expect("doc loads");
+    assert!(jacobian_bands(&file, None, Wrt::States).is_err());
+    let sv = sysview(&file, None).unwrap();
+    assert!(earthsci_astdiff::evaluation_document(&sv, &[], false, 12).is_err());
+}
