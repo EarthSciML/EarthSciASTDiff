@@ -7,8 +7,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use earthsci_astdiff::{
-    assemble_jacobian, jacobian_bands, jacobian_block, serialize_band,
-    stable_json, Wrt,
+    assemble_jacobian, evaluation_document, jacobian_bands, jacobian_block,
+    serialize_band, stable_json, sysview, Wrt,
 };
 use serde_json::Value;
 
@@ -47,6 +47,26 @@ fn block_goldens() {
             root().join("tests/goldens").join(format!("{name}.block.json")))
             .unwrap();
         assert_eq!(stable_json(&block), golden, "block golden diverges: {name}");
+    }
+}
+
+#[test]
+fn evaldoc_goldens() {
+    for name in NAMES {
+        let file = load(name);
+        let sv = sysview(&file, None).unwrap();
+        let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
+        let (doc, names) = evaluation_document(&sv, &entries, true, 12).unwrap();
+        assert_eq!(names.len(), entries.len());
+        let golden = fs::read_to_string(
+            root().join("tests/goldens").join(format!("{name}.evaldoc.json")))
+            .unwrap();
+        assert_eq!(stable_json(&doc), golden, "evaldoc golden diverges: {name}");
+        // without hoisting; no `-nocse` golden means nothing to hoist
+        let (doc0, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
+        let p0 = root().join("tests/goldens").join(format!("{name}.evaldoc-nocse.json"));
+        let golden0 = if p0.exists() { fs::read_to_string(p0).unwrap() } else { golden };
+        assert_eq!(stable_json(&doc0), golden0, "evaldoc (cse = false) diverges: {name}");
     }
 }
 

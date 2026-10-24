@@ -2,16 +2,18 @@
 //! factorization plans, and the block emission — golden-gated against the
 //! reference byte-for-byte.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
-use earthsci_ast::{Expr, ExpressionNode};
-use serde_json::{json, Value};
+use earthsci_ast::{free_variables, Expr, ExpressionNode, VariableType};
+use serde_json::{json, Map, Value};
 
-use crate::bands::Band;
+use crate::bands::{Band, Ctx};
 use crate::clip::RIdx;
+use crate::eval_cse::hoist_observed;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::{JacEntry, Wrt};
-use crate::system::SysView;
+use crate::jacobian::unsupported_derivative;
+use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
 pub fn serialize_band(en: &JacEntry) -> Value {
     let b = &en.band;
@@ -364,4 +366,227 @@ pub fn jacobian_block(file: &earthsci_ast::EsmFile,
         block.insert("factorization".into(), block_diagonal_plan(&entries));
     }
     Ok(Value::Object(block))
+}
+
+// ── the derived evaluation document (emit.jl `_evaluation_document`) ────────
+//
+// The source's observed definitions with its state derivatives ZEROED, plus
+// one band-field state `J_k` per entry whose RHS is the band's coefficient
+// field: `D(J_k) = makearray(0, band region ← faq(coef))`. Byte-gated by the
+// `*.evaldoc.json` goldens.
+
+/// The source model as a document: every variable (sorted) and every
+/// equation verbatim (emit.jl `_base_document`).
+fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, Value>) {
+    let mut vars = Map::new();
+    let mut names: Vec<&String> = sv.variables.keys().collect();
+    names.sort();
+    for n in names {
+        let var = &sv.variables[n];
+        let mut d = Map::new();
+        d.insert("type".into(), json!(if var.var_type == VariableType::Parameter {
+            "parameter"
+        } else {
+            "unknown"
+        }));
+        // index-set names, written as stored (the schema allows only strings)
+        if let Some(sh) = var.shape.as_ref().filter(|s| !s.is_empty()) {
+            d.insert("shape".into(), json!(sh));
+        }
+        if let Some(def) = &var.default {
+            d.insert("default".into(), serde_json::to_value(def).expect("default serializes"));
+        }
+        vars.insert(n.clone(), Value::Object(d));
+    }
+    let eqs: Vec<Value> = sv.equations.iter()
+        .map(|eq| json!({"lhs": ser_expr(&eq.lhs), "rhs": ser_expr(&eq.rhs)}))
+        .collect();
+    let isets: Map<String, Value> = sv.index_sets.iter()
+        .filter_map(|(n, s)| s.size.map(|sz| (n.clone(), json!({"kind": "interval", "size": sz}))))
+        .collect();
+    let mut doc = Map::new();
+    // 1.1.0: the band coefficients may carry `faq` nodes.
+    doc.insert("esm".into(), json!("1.1.0"));
+    doc.insert("metadata".into(), json!({"name": name}));
+    doc.insert("index_sets".into(), Value::Object(isets));
+    let mut model = Map::new();
+    model.insert("variables".into(), Value::Object(vars));
+    model.insert("equations".into(), Value::Array(eqs));
+    (doc, model)
+}
+
+/// Every source `D(u)` equation of `model` (as `base_document` serialized
+/// it) becomes `D(u) = 0` (a zero `makearray` over an array state's shape),
+/// in place of the first and with any further ones dropped. The states keep
+/// their slots, so the observed and band fields read them unchanged, but
+/// evaluating the document no longer recomputes `f`. Observed the
+/// coefficients do not read (directly or through other observed) are dropped
+/// with their declarations: they fed only `f`. (Carrying the states as
+/// parameters instead is unsafe: EarthSciAST caches observed that read only
+/// parameters, so an in-place `u` update goes stale.)
+fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &Ctx,
+                           entries: &[JacEntry]) -> Result<(), crate::bands::BandError> {
+    let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
+    let defined: Vec<Option<String>> = sv.equations.iter()
+        .map(|eq| if lhs_state(eq).is_none() { defined_name(eq) } else { None })
+        .collect();
+    let mut reads: HashMap<&str, Vec<&Expr>> = HashMap::new();  // observed → its RHS
+    for (eq, n) in sv.equations.iter().zip(&defined) {
+        if let Some(n) = n.as_ref().filter(|n| !states.contains(*n)) {
+            reads.entry(n.as_str()).or_default().push(&eq.rhs);
+        }
+    }
+    let mut live: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = entries.iter()
+        .flat_map(|en| free_variables(&en.band.coef)).collect();
+    while let Some(n) = stack.pop() {
+        let Some(rs) = reads.get(n.as_str()) else { continue };
+        if !live.insert(n) {
+            continue;
+        }
+        for r in rs {
+            stack.extend(free_variables(r));
+        }
+    }
+    let Some(Value::Array(ser)) = model.remove("equations") else { unreachable!() };
+    let Some(Value::Object(vars)) = model.get_mut("variables") else { unreachable!() };
+    let mut done: HashSet<String> = HashSet::new();
+    let mut eqs = Vec::new();
+    for ((eq, ser), n) in sv.equations.iter().zip(ser).zip(&defined) {
+        match lhs_state(eq) {
+            None => {
+                if is_derivative(eq) {
+                    return Err(unsupported_derivative(eq));
+                }
+                if let Some(n) = n.as_ref()
+                    .filter(|n| reads.contains_key(n.as_str()) && !live.contains(*n)) {
+                    vars.remove(n);
+                    continue;
+                }
+                eqs.push(ser);
+            }
+            Some(u) if done.insert(u.clone()) => {
+                let shape = ctx.shapes.get(&u).cloned().unwrap_or_default();
+                let rhs = if shape.is_empty() {
+                    json!(0.0)
+                } else {
+                    json!({"op": "makearray", "args": [],
+                           "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
+                           "values": [0.0]})
+                };
+                eqs.push(json!({"lhs": {"op": "D", "args": [u], "wrt": "t"}, "rhs": rhs}));
+            }
+            Some(_) => {}
+        }
+    }
+    model.insert("equations".into(), Value::Array(eqs));
+    Ok(())
+}
+
+/// The `jcax<size>` axis index-set name for extent `sz`, `x`-suffixed past
+/// any name `taken(nm)` (an existing set of another size). The one naming
+/// rule for contracted band-field axes and hoisted-observed axes
+/// (`eval_cse`), so an extent gets the same name in both.
+pub(crate) fn jcax_name(taken: impl Fn(&str) -> bool, sz: i64) -> String {
+    let mut nm = format!("jcax{sz}");
+    while taken(&nm) {
+        nm.push('x');
+    }
+    nm
+}
+
+/// A literal-size axis index set of the derived document (`jcax<size>`,
+/// reused when present with that size).
+fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
+    let nm = jcax_name(|n| isets.get(n).is_some_and(|s| s.get("size") != Some(&json!(sz))), sz);
+    if !isets.contains_key(&nm) {
+        isets.insert(nm.clone(), json!({"kind": "interval", "size": sz}));
+    }
+    nm
+}
+
+/// The derived evaluation document and its band-state names (`J_1`, …).
+/// With `cse`, repeated coefficient subtrees are first hoisted into observed
+/// ([`crate::eval_cse::hoist_observed`]).
+pub fn evaluation_document(sv: &SysView, entries: &[JacEntry], cse: bool,
+                           cse_min_nodes: usize)
+                           -> Result<(Value, Vec<String>), crate::bands::BandError> {
+    let ctx = crate::system::ctx_of(sv)?;
+    let (mut doc, mut model) = base_document(sv, "JacobianEval");
+    zero_source_derivatives(&mut model, sv, &ctx, entries)?;
+    let Some(Value::Array(mut eqs)) = model.remove("equations") else { unreachable!() };
+    let mut isets = match doc.remove("index_sets") {
+        Some(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    let Some(Value::Object(vars)) = model.get_mut("variables") else { unreachable!() };
+    let h = if cse { hoist_observed(entries, sv, cse_min_nodes) } else { None };
+    let coefs: Vec<Expr> = match &h {
+        Some(h) => h.coefs.clone(),
+        None => entries.iter().map(|en| en.band.coef.clone()).collect(),
+    };
+    if let Some(h) = &h {
+        for (nm, sz) in &h.axes {
+            isets.insert(nm.clone(), json!({"kind": "interval", "size": sz}));
+        }
+        for (nm, vd) in &h.obs {
+            vars.insert(nm.clone(), vd.clone());
+        }
+        for (nm, rhs) in &h.obs_eqs {
+            eqs.push(json!({"lhs": nm, "rhs": rhs}));
+        }
+    }
+    let mut names = Vec::new();
+    for (k, en) in entries.iter().enumerate() {
+        let b = &en.band;
+        let nm = format!("J_{}", k + 1);
+        names.push(nm.clone());
+        let shape_u = ctx.shapes.get(&en.u).cloned().unwrap_or_default();
+        let cr = &b.contracted;
+        let rhs = if shape_u.is_empty() && cr.is_empty() {
+            vars.insert(nm.clone(), json!({"type": "unknown", "default": 0.0}));
+            ser_expr(&coefs[k])
+        } else {
+            // The band field spans the row dims PLUS any free contracted dims.
+            let mut shape: Vec<Value> = if shape_u.is_empty() {
+                Vec::new()
+            } else {
+                sv.variables[&en.u].shape.as_deref().unwrap_or(&[]).iter()
+                    .map(|x| json!(x)).collect()
+            };
+            shape.extend(cr.iter().map(|(_, _, hi)| json!(axis_name(&mut isets, *hi))));
+            vars.insert(nm.clone(), json!({"type": "unknown", "default": 0.0, "shape": shape}));
+            let free: Vec<(usize, &String)> = b.ridx.iter().enumerate()
+                .filter_map(|(k2, r)| match r {
+                    RIdx::Name(s) => Some((k2, s)),
+                    RIdx::Fixed(_) => None,
+                }).collect();
+            let mut aggnames: Vec<Value> = free.iter().map(|(_, r)| json!(r)).collect();
+            aggnames.extend(cr.iter().map(|(n, _, _)| json!(n)));
+            let val = if aggnames.is_empty() {
+                ser_expr(&coefs[k])
+            } else {
+                let mut rngs = Map::new();
+                for (k2, r) in &free {
+                    rngs.insert((*r).clone(), json!([b.rows[*k2].0, b.rows[*k2].1]));
+                }
+                for (n, lo, hi) in cr {
+                    rngs.insert(n.clone(), json!([lo, hi]));
+                }
+                json!({"op": "faq", "args": [], "output_idx": aggnames,
+                       "ranges": rngs, "expr": ser_expr(&coefs[k])})
+            };
+            let mut full: Vec<Value> = shape_u.iter().map(|n| json!([1, n])).collect();
+            full.extend(cr.iter().map(|(_, _, hi)| json!([1, hi])));
+            let mut region: Vec<Value> = b.rows.iter().map(|(lo, hi)| json!([lo, hi])).collect();
+            region.extend(cr.iter().map(|(_, lo, hi)| json!([lo, hi])));
+            json!({"op": "makearray", "args": [], "regions": [full, region],
+                   "values": [0.0, val]})
+        };
+        eqs.push(json!({"lhs": {"op": "D", "args": [nm], "wrt": "t"}, "rhs": rhs}));
+    }
+    model.insert("equations".into(), Value::Array(eqs));
+    doc.insert("index_sets".into(), Value::Object(isets));
+    doc.insert("models".into(), json!({"JacobianEval": Value::Object(model)}));
+    Ok((Value::Object(doc), names))
 }

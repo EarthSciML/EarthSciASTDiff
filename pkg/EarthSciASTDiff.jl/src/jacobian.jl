@@ -72,7 +72,12 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     obs_names = Ref{Union{Nothing,Set{String}}}(nothing)
     for eq in sv.equations
         u = lhs_state(eq)
-        u === nothing && continue
+        if u === nothing
+            _is_derivative(eq) && throw(BandError(
+                "unsupported derivative LHS $(JSON3.write(EarthSciAST.serialize_expression(eq.lhs))) " *
+                "(a state's derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"))
+            continue
+        end
         shape_u = get(ctx.shapes, u, Int[])
         rhs = inline_observed(eq.rhs, obs; obs_names = obs_names)
         hits = sort!(String[v for v in free_variables(rhs) if v in tset])

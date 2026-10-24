@@ -7,10 +7,10 @@ from dataclasses import dataclass
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, bands, merge_bands, normalize_band
+from .bands import Band, BandError, bands, merge_bands, normalize_band
 from .inline import inline_observed
-from .system import (SysView, _var_type, ctx_of, inlinable_observed, lhs_state,
-                     observed_defs, sysview, view_states)
+from .system import (SysView, _var_type, ctx_of, inlinable_observed, is_derivative,
+                     lhs_state, observed_defs, sysview, view_states)
 
 
 @dataclass
@@ -49,6 +49,10 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str) -> list[JacEntry]:
     for eq in sv.equations:
         u = lhs_state(eq)
         if u is None:
+            if is_derivative(eq):
+                raise BandError(
+                    f"unsupported derivative LHS {eq.lhs!r} (a state's derivative "
+                    "is `D(u)` or the lifted `faq{D(index(u, i…))}`)")
             continue
         shape_u = ctx.shapes.get(u, [])
         rhs = inline_observed(eq.rhs, obs, obs_names)

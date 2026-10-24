@@ -36,6 +36,19 @@ function _deref(e::ASTExpr, readmap::Dict{String,ASTExpr})::ASTExpr
     return map_children(x -> _deref(x, readmap), e)
 end
 
+
+# The `jcax<size>` axis index-set name for extent `sz`, `x`-suffixed past
+# any name `taken(nm)` (an existing set of another size). The one naming rule
+# for hoisted-observed axes and contracted band-field axes (emit.jl), so an
+# extent gets the same name in both.
+function _jcax_name(taken, sz::Int)
+    nm = "jcax$(sz)"
+    while taken(nm)
+        nm *= "x"
+    end
+    return nm
+end
+
 """
     hoist_observed(entries, sv::SysView; min_nodes = 12) -> NamedTuple | nothing
 
@@ -135,10 +148,7 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
         s.size === nothing || (existing[String(nm)] = s.size)
     end
     function axis_for(sz::Int)
-        nm = "jcax$(sz)"
-        while haskey(existing, nm) && existing[nm] != sz
-            nm *= "x"
-        end
+        nm = _jcax_name(n -> haskey(existing, n) && existing[n] != sz, sz)
         haskey(existing, nm) || (axes[nm] = sz; existing[nm] = sz)
         return nm
     end

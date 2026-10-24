@@ -7,6 +7,7 @@ pub mod bands;
 pub mod branches;
 pub mod clip;
 pub mod emit;
+pub mod eval_cse;
 pub mod helpers;
 pub mod inline;
 pub mod jacobian;
@@ -18,8 +19,9 @@ pub mod system;
 pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 pub use branches::{canon_lits, simp, simplify_branches};
 pub use clip::{clip_regions, RIdx};
-pub use emit::{cse_templates, detect_structure, jacobian_block, lu_fill,
-               markowitz_ordering, serialize_band};
+pub use emit::{cse_templates, detect_structure, evaluation_document, jacobian_block,
+               lu_fill, markowitz_ordering, serialize_band};
+pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{jacobian_bands, JacEntry, Wrt};

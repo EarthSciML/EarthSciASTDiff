@@ -93,3 +93,20 @@ def test_flattened_system_has_states():
     j = assemble_jacobian(sv, states={u: 0.7}, params={
         n: K for n, v in sv.variables.items() if v.type == "parameter"})
     assert j[(u, u)] == pytest.approx(-2 * K * 0.7, abs=1e-14)
+
+
+def test_element_derivative_lhs_is_refused():
+    # `D(index(u, 1)) = …` is no form lhs_state knows: skipping it would lose
+    # its rows from the Jacobian.
+    from earthsci_astdiff.bands import BandError
+    file = ea.load_document({
+        "esm": "1.1.0",
+        "metadata": {"name": "Elem"},
+        "index_sets": {"x": {"kind": "interval", "size": 3}},
+        "models": {"Elem": {
+            "variables": {"u": {"type": "unknown", "shape": ["x"], "default": 1.0}},
+            "equations": [
+                {"lhs": {"op": "D", "wrt": "t", "args": [_idx("u", 1)]},
+                 "rhs": {"op": "-", "args": [_idx("u", 1)]}}]}}})
+    with pytest.raises(BandError, match="unsupported derivative LHS"):
+        jacobian_bands(file)

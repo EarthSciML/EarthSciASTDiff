@@ -92,6 +92,15 @@ def lhs_state(eq) -> str | None:
     return None
 
 
+def is_derivative(eq) -> bool:
+    """Whether an equation's LHS is a time derivative of any form — including
+    ones ``lhs_state`` does not recognize (``D(index(u, 1))``), which no pass
+    supports and none may silently skip."""
+    l = eq.lhs
+    return isinstance(l, ExprNode) and (l.op == "D" or (
+        l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D"))
+
+
 def lhs_definition(eq) -> str | None:
     """The variable an equation DEFINES by a bare-variable LHS (``y ~ f(…)``)."""
     return eq.lhs if isinstance(eq.lhs, str) else None
