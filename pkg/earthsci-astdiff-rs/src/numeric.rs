@@ -8,11 +8,11 @@ use earthsci_ast::substitute;
 use earthsci_ast::{EsmFile, Expr};
 use serde_json::Value;
 
-use crate::bands::BandError;
+use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::helpers::map_expr_children;
-use crate::jacobian::{jacobian_bands_view, Wrt};
-use crate::inline::inline_observed;
+use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
+use crate::inline::inline_observed_cached;
 use crate::system::{ctx_of, observed_defs, sysview};
 
 type R<T> = Result<T, BandError>;
@@ -194,14 +194,14 @@ fn fold_const_gathers(e: &Expr, bind: &HashMap<String, f64>) -> R<Expr> {
     }
 }
 
-fn eval_cidx(c: &Expr, bind: &HashMap<String, f64>) -> R<i64> {
+pub(crate) fn eval_cidx(c: &Expr, bind: &HashMap<String, f64>) -> R<i64> {
     let folded = fold_const_gathers(c, bind)?;
     evaluate(&folded, bind)
         .map(|v| v.round() as i64)
         .map_err(|er| BandError(format!("evaluate cidx: {er:?}")))
 }
 
-fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
+pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
     let mut out = Vec::new();
     let mut cell: Vec<i64> = ranges.iter().map(|(lo, _)| *lo).collect();
     if ranges.is_empty() {
@@ -224,6 +224,75 @@ fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
     }
 }
 
+/// Every point of one band: `f(row cell, contracted cell, index binding,
+/// column cell)` per (row cell, contracted cell), first index fastest, with
+/// the column index evaluated there (ghost reads included). The one point
+/// walk shared by numeric assembly and the CSR scatter plan.
+pub(crate) fn foreach_point(
+    b: &Band,
+    f: &mut dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()>,
+) -> R<()> {
+    let cranges: Vec<(i64, i64)> =
+        b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
+    for cell in product_first_fastest(&b.rows) {
+        for cc in product_first_fastest(&cranges) {
+            let mut ibind: HashMap<String, i64> = HashMap::new();
+            for (k, r) in b.ridx.iter().enumerate() {
+                if let RIdx::Name(nm) = r {
+                    ibind.insert(nm.clone(), cell[k]);
+                }
+            }
+            for (k, (nm, _, _)) in b.contracted.iter().enumerate() {
+                ibind.insert(nm.clone(), cc[k]);
+            }
+            let fbind: HashMap<String, f64> =
+                ibind.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
+            let cidx: Vec<i64> = b.cidx.iter()
+                .map(|c| eval_cidx(c, &fbind))
+                .collect::<Result<_, _>>()?;
+            f(&cell, &cc, &ibind, &cidx)?;
+        }
+    }
+    Ok(())
+}
+
+/// Every non-ghost point of every band at a point: `f(k, entry, row cell,
+/// contracted cell, column cell, value)`, bands in order, cells first index
+/// fastest.
+fn for_each_value(ctx: &Ctx, obs: &HashMap<String, Expr>, entries: &[JacEntry], env: &Env,
+                  f: &mut dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64))
+                  -> R<()> {
+    // Pruning leaves target-independent observed as opaque reads in the
+    // coefficients; resolve them from their own definitions (what the
+    // reference's derived evaluation model does). This splices in only the
+    // observed a coefficient actually reads — exactly what evaluating it at
+    // a point needs — so it rejects nothing an evaluation could do without.
+    let mut obs_names = None;
+    for (k, en) in entries.iter().enumerate() {
+        let coef0 = inline_observed_cached(&en.band.coef, obs, &mut obs_names)
+            .map_err(|e| BandError(e.0))?;
+        let vshape = ctx.shapes.get(&en.v);
+        foreach_point(&en.band, &mut |cell, cc, ibind, cidx| {
+            if let Some(vshape) = vshape {
+                if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
+                    return Ok(());             // ghost read: no column
+                }
+            }
+            let coef = if ibind.is_empty() {
+                coef0.clone()
+            } else {
+                let sub: HashMap<String, Expr> = ibind.iter()
+                    .map(|(k, v)| (k.clone(), Expr::Integer(*v))).collect();
+                substitute(&coef0, &sub)
+            };
+            let val = as_lit(&resolve(&coef, env)?)?;
+            f(k, en, cell, cc, cidx, val);
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
 /// Evaluate the band entries at a point: `{(rowname, colname): value}`,
 /// contributions summed (§4 additivity, contracted points included).
 pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
@@ -232,51 +301,31 @@ pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
     let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt)?;
-    // Pruning leaves target-independent observed as opaque reads in the
-    // coefficients; resolve them from their own definitions (what the
-    // reference's derived evaluation model does). This splices in only the
-    // observed a coefficient actually reads — exactly what evaluating it at
-    // a point needs — so it rejects nothing an evaluation could do without.
     let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
-    for en in &entries {
-        let b = &en.band;
-        let coef0 = inline_observed(&b.coef, &obs).map_err(|e| BandError(e.0))?;
-        for cell in product_first_fastest(&b.rows) {
-            let cranges: Vec<(i64, i64)> =
-                b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
-            for cc in product_first_fastest(&cranges) {
-                let mut ibind: HashMap<String, i64> = HashMap::new();
-                for (k, r) in b.ridx.iter().enumerate() {
-                    if let RIdx::Name(nm) = r {
-                        ibind.insert(nm.clone(), cell[k]);
-                    }
-                }
-                for (k, (nm, _, _)) in b.contracted.iter().enumerate() {
-                    ibind.insert(nm.clone(), cc[k]);
-                }
-                let fbind: HashMap<String, f64> =
-                    ibind.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
-                let cidx: Vec<i64> = b.cidx.iter()
-                    .map(|c| eval_cidx(c, &fbind))
-                    .collect::<Result<_, _>>()?;
-                if let Some(vshape) = ctx.shapes.get(&en.v) {
-                    if cidx.iter().zip(vshape.iter())
-                        .any(|(c, s)| *c < 1 || c > s) {
-                        continue;              // ghost read: no column
-                    }
-                }
-                let coef = if ibind.is_empty() {
-                    coef0.clone()
-                } else {
-                    let sub: HashMap<String, Expr> = ibind.iter()
-                        .map(|(k, v)| (k.clone(), Expr::Integer(*v))).collect();
-                    substitute(&coef0, &sub)
-                };
-                let val = as_lit(&resolve(&coef, env)?)?;
-                let key = (cellname(&en.u, &cell), cellname(&en.v, &cidx));
-                *out.entry(key).or_insert(0.0) += val;
-            }
-        }
-    }
+    for_each_value(&ctx, &obs, &entries, env, &mut |_, en, cell, _, cidx, val| {
+        let key = (cellname(&en.u, cell), cellname(&en.v, cidx));
+        *out.entry(key).or_insert(0.0) += val;
+    })?;
     Ok(out)
+}
+
+/// The band fields at a point — what the derived evaluation document's
+/// `J_k` states hold, and what a [`crate::ScatterPlan`] scatters: field `k`
+/// over the row shape then the contracted extents, column-major. Ghost
+/// points (no column) and cells outside the band region stay 0.
+pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env)
+                   -> R<Vec<Vec<f64>>> {
+    let sv = sysview(file, model_name)?;
+    let ctx = ctx_of(&sv)?;
+    let obs = observed_defs(&sv)?;
+    let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+    let shapes: Vec<Vec<i64>> = entries.iter()
+        .map(|en| crate::scatter::field_shape(en, &ctx)).collect();
+    let mut fields: Vec<Vec<f64>> = shapes.iter()
+        .map(|sh| vec![0.0; sh.iter().product::<i64>() as usize]).collect();
+    for_each_value(&ctx, &obs, &entries, env, &mut |k, _, cell, cc, _, val| {
+        let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
+        fields[k][crate::scatter::flat(&full, &shapes[k])] = val;
+    })?;
+    Ok(fields)
 }

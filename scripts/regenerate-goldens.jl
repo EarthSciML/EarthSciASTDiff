@@ -38,3 +38,20 @@ for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minm
         println("wrote ", epath0)
     end
 end
+# scatter plans (spec §8): one golden per (fixture, applicable layout); the
+# fixtures not listed for a layout refuse it (test/scatter_test.jl)
+for (name, tag, layout) in (("bd_chem", "lane_blocks", LaneBlocks()),
+                            ("bd_chem", "lane_sparse_blocks", LaneSparseBlocks()),
+                            ("bd_chem", "column_banded", ColumnBanded("z")),
+                            ("bd_chem", "csr", Csr()),
+                            ("adv_interior", "column_banded", ColumnBanded("x")),
+                            ("adv_interior", "csr", Csr()),
+                            ("flux_form_adv", "csr", Csr()),
+                            ("minmod_adv", "csr", Csr()),
+                            ("contracted_ops", "csr", Csr()),
+                            ("contracting_observed", "csr", Csr()))
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    ppath = joinpath(root, "tests", "goldens", "$name.$tag.plan.json")
+    write(ppath, stable_json(serialize_scatter_plan(scatter_plan(file, layout))))
+    println("wrote ", ppath)
+end

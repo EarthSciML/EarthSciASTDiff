@@ -26,6 +26,9 @@ Layered API, lowest to highest:
   - [`plan_factorization`](@ref)   — symbolic factorization info (general interface;
                                      per-cell block LU is the first implementation)
   - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`
+  - [`scatter_plan`](@ref)         — checked band-field → storage map (lane blocks,
+                                     sparse lane blocks, column bands, CSR);
+                                     [`bind_plan`](@ref) + [`jac_into!`](@ref) fill it
   - [`assemble_jacobian`](@ref)    — one-shot: values + pattern at a point
   - [`odeproblem`](@ref)           — `SciMLBase.ODEProblem` with the analytical
                                      sparse Jacobian attached (needs SciMLBase
@@ -55,7 +58,10 @@ export Site, dscalar, simplify_branches,
        jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
        ode_components, odefunction, odeproblem,
        detect_structure, jac_prototype,
-       FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill
+       FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
+       StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
+       ScatterPlan, scatter_plan, serialize_scatter_plan,
+       BoundScatter, bind_plan, jac_into!, scatter_targets
 
 include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
 include("hashcons.jl")       # structural interning (size-independent equality)
@@ -72,6 +78,7 @@ include("emit.jl")           # "jacobians" document block: emit / parse / golden
 include("assemble.jl")       # numeric assembly + prepared evaluator
 include("structure.jl")      # structure detection + jac_prototype
 include("factorization.jl")  # factorization-info interface + block-diagonal plan
+include("scatter.jl")        # scatter plans: band fields → consumer storage layouts
 include("ode.jl")            # solver-free ODE pieces + SciMLBase ext dispatchers
 
 end # module

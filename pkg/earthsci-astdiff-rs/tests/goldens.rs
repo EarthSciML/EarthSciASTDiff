@@ -2,9 +2,7 @@
 //! match byte-for-byte; the value goldens to 1e-10 relative with the exact
 //! (row, col) key set.
 
-use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
 use earthsci_astdiff::{
     assemble_jacobian, evaluation_document, jacobian_bands, jacobian_block,
@@ -12,14 +10,8 @@ use earthsci_astdiff::{
 };
 use serde_json::Value;
 
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn load(name: &str) -> earthsci_ast::EsmFile {
-    let path = root().join("tests/valid").join(format!("{name}.esm"));
-    earthsci_ast::load_path(&path).expect("fixture loads")
-}
+mod common;
+use common::{load, root};
 
 const NAMES: [&str; 6] = ["bd_chem", "adv_interior", "contracted_ops",
                           "flux_form_adv", "minmod_adv", "contracting_observed"];
@@ -74,51 +66,7 @@ fn evaldoc_goldens() {
 fn value_goldens() {
     for name in NAMES {
         let file = load(name);
-        let g: Value = serde_json::from_str(&fs::read_to_string(
-            root().join("tests/goldens").join(format!("{name}.jvals.json")))
-            .unwrap()).unwrap();
-        // cell-named state values → nested arrays
-        let mut states: HashMap<String, Value> = HashMap::new();
-        let mut cells: HashMap<String, Vec<(Vec<i64>, f64)>> = HashMap::new();
-        for (cellname, v) in g["u"].as_object().unwrap() {
-            let val = v.as_f64().unwrap();
-            if let Some(br) = cellname.find('[') {
-                let base = cellname[..br].to_string();
-                let idx: Vec<i64> = cellname[br + 1..cellname.len() - 1]
-                    .split(',').map(|x| x.parse().unwrap()).collect();
-                cells.entry(base).or_default().push((idx, val));
-            } else {
-                states.insert(cellname.clone(), Value::from(val));
-            }
-        }
-        for (base, pts) in cells {
-            // nested arrays, 1-based cells, any rank
-            let rank = pts[0].0.len();
-            let shape: Vec<i64> = (0..rank)
-                .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap()).collect();
-            fn full(shape: &[i64]) -> Value {
-                match shape.split_first() {
-                    None => Value::Null,
-                    Some((n, rest)) => Value::Array(vec![full(rest); *n as usize]),
-                }
-            }
-            let mut arr = full(&shape);
-            for (i, v) in pts {
-                let mut cur = &mut arr;
-                for c in &i {
-                    cur = &mut cur.as_array_mut().unwrap()[(*c - 1) as usize];
-                }
-                *cur = Value::from(v);
-            }
-            states.insert(base, arr);
-        }
-        let params: HashMap<String, Value> = g["params"].as_object().unwrap()
-            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let env = earthsci_astdiff::numeric::Env {
-            states,
-            params,
-            t: g["t"].as_f64().unwrap(),
-        };
+        let (env, g) = common::jvals_env(name);
         let got = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
         let want: Vec<(String, String, f64)> = g["entries"].as_array().unwrap()
             .iter().map(|e| {

@@ -35,7 +35,8 @@ that will merge into EarthSciAST's `esm-spec.md`). Layout mirrors EarthSciAST:
 holds shared fixtures + goldens that all future bindings must match.
 
 Python binding (`pkg/earthsci-astdiff-py/src/earthsci_astdiff/`): a module-
-for-module mirror of the Julia source map below, plus `simplify_port.py` — a
+for-module mirror of the Julia source map below (except `scatter.jl`, not yet
+ported: the `*.plan.json` goldens are checked by Julia and Rust only), plus `simplify_port.py` — a
 faithful port of the Julia reference's `EarthSciAST.simplify` (the bindings'
 own simplifiers differ in commutative-argument handling, and the goldens pin
 the Julia behavior; never switch the band calculus back to
@@ -69,6 +70,8 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `assemble.jl`     — pattern, scatter map, prepared `jac!`
 - `structure.jl`    — structure classification from column-index expressions
 - `factorization.jl`— FactorizationPlan interface + block-diagonal LU plan
+- `scatter.jl`     — scatter plans (spec §8): band fields → lane blocks,
+  sparse lane blocks, column bands, CSR; `bind_plan` / `jac_into!`
 - `ode.jl`          — solver-free ODE pieces (`ode_components`) + dispatchers
   into `ext/EarthSciASTDiffSciMLBaseExt.jl` (`odefunction` / `odeproblem`)
 
