@@ -49,9 +49,10 @@ def test_time_band_golden(name, valid_dir, golden_dir):
     assert text == (golden_dir / f"{name}.time.bands.json").read_text()
 
 
-@pytest.mark.parametrize("name", ("bd_chem", "adv_interior", "minmod_adv"))
+@pytest.mark.parametrize("name", [n for n in GOLDEN_NAMES if n not in TIME_NAMES])
 def test_time_bands_empty_for_autonomous(name, valid_dir):
-    # spec §4.2: an empty time band list means f_t == 0
+    # spec §4.2: an empty time band list means f_t == 0; every fixture
+    # without `.time.*` goldens is autonomous
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     assert jacobian_bands(file, next(iter(file.models)), wrt="time") == []
 
@@ -68,3 +69,15 @@ def test_stable_json_float_layout(value, want):
     # EarthSciAST CONFORMANCE_SPEC §5.5.3.1's probe table plus Julia `show`
     # values: the goldens are written in the reference's float layout
     assert stable_json([value]) == f"[{want}]"
+
+
+def test_stable_json_non_string_keys():
+    # coerced the way json.dumps does, then sorted as the written strings
+    assert stable_json({10: 1, 2: 2, "a": 3.0}) == '{"10":1,"2":2,"a":3.0}'
+
+
+def test_skey_survives_non_finite_constants():
+    # equality keys never go through the golden writer, so a folded inf
+    # still keys (and keys differently from a finite constant)
+    from earthsci_astdiff import skey
+    assert skey(float("inf")) != skey(1.0)

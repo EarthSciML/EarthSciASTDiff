@@ -77,6 +77,10 @@ end
     # a datetime name outside the §9.2 registry has no rule
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
         OpExpr("fn", ASTExpr[VarExpr("x")]; name = "datetime.week"), s)
+    # a julian_day call of the wrong arity is a rule error, not silently
+    # differentiated through its first argument
+    @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
+        OpExpr("fn", ASTExpr[VarExpr("x"), VarExpr("x")]; name = "datetime.julian_day"), s)
     # Rewrite-target ops must be lowered first.
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
         OpExpr("D", ASTExpr[VarExpr("x")]; wrt = "lon"), s)

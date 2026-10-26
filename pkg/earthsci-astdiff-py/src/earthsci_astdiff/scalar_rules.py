@@ -239,6 +239,9 @@ def dfn(e: ExprNode, s: Site) -> Expr:
         return 0
     if name == "datetime.julian_day":
         # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        if len(a) != 1:
+            raise DerivativeRuleError(
+                f"`datetime.julian_day` takes 1 argument, got {len(a)}")
         dx = dscalar(a[0], s)
         if is_zero(dx):
             return 0

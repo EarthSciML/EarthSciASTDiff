@@ -73,6 +73,11 @@ def test_structural_zero_and_policies():
     # a datetime name outside esm-spec §9.2 has no rule
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "fn", "name": "datetime.week", "args": ["x"]}), Site.of("x"))
+    # a julian_day call of the wrong arity is a rule error, not silently
+    # differentiated through its first argument
+    with pytest.raises(DerivativeRuleError):
+        dscalar(ex({"op": "fn", "name": "datetime.julian_day", "args": ["x", "x"]}),
+                Site.of("x"))
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))

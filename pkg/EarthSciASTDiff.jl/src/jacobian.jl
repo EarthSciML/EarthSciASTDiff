@@ -21,9 +21,10 @@ end
 Differentiate every differential equation of the system with respect to every
 state (`wrt = :states`) or every parameter (`wrt = :parameters`) that
 structurally occurs in its (observed-inlined) RHS — or with respect to time
-itself (`wrt = :time`, the single scalar site `t`; `datetime.*` reads are
-piecewise-constant and differentiate to 0, `interp.linear`/`interp.bilinear`
-of `t` to the active-segment slope).
+itself (`wrt = :time`, the single scalar site `t`; the integer-valued
+`datetime.*` calendar fields are piecewise-constant and differentiate to 0,
+the continuous `datetime.julian_day` to `d[t]/86400`, and
+`interp.linear`/`interp.bilinear` of `t` to the active-segment slope).
 
 The pattern implied by the result is GLOBAL: `ifelse`/`min`/`max` branches
 are unioned, so it is valid at every point and is a superset of any local

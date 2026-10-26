@@ -32,6 +32,12 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     binds the same `k` (the capture case), squared (chain rule through the
     nested sum), and a scalar observed whose sum is not its root — nested
     sums renamed apart, column-reading sites as `contracted` dimensions
+  - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
+    target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
+    observed, `interp.linear` of `t` through a scalar observed, a
+    `datetime.hour` factor (piecewise-constant: no time band), a
+    `datetime.julian_day` source (continuous: `d[t]/86400`), and one
+    autonomous row
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
@@ -51,11 +57,17 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   numeric assemblies must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
-- `goldens/` — `<fixture>.bands.json` (all six fixtures): the `entries` list of the `"jacobians"`
+- `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate
   with `scripts/regenerate-goldens.jl` after an INTENDED rule or format
   change; the diff is the review surface.
+- `goldens/` — `<fixture>.time.{bands,block,evaldoc,evaldoc-nocse,jvals}.json`:
+  the same goldens for `wrt: "time"` (spec §4.2), present only for a fixture
+  whose right-hand side reads `t` (currently `tgrad_photolysis`). A fixture
+  without them is autonomous: its time band list MUST be empty.
+- Floats in every golden use the reference layout of spec §5 item 2 (an
+  integral float keeps its `.0`; scientific notation for magnitudes outside `[1e-4, 1e6)`).
 
 Value-level conformance (Jacobian entries at sample points) is asserted in
 each binding's own test suite against a machine-precision oracle — for Julia,

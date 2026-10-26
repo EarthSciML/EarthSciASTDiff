@@ -81,15 +81,30 @@ def canonical_float(f: float) -> str:
     return ("-" if sign else "") + body
 
 
+def _key_str(k: Any) -> str:
+    """An object key as JSON's string form, the way ``json.dumps`` coerces
+    one (``1`` → ``"1"``, ``True`` → ``"true"``), so non-string keys still
+    give valid JSON and sort as the strings they are written as."""
+    if isinstance(k, str):
+        return k
+    if k is None or isinstance(k, (bool, int)):
+        return json.dumps(k)
+    if isinstance(k, float):
+        return canonical_float(k)
+    raise TypeError(f"JSON object key {k!r} is not a string or a number")
+
+
 def _write_stable(x: Any, out: list) -> None:
     if isinstance(x, dict):
+        items = sorted(((_key_str(k), v) for k, v in x.items()),
+                       key=lambda kv: kv[0])
         out.append("{")
-        for i, k in enumerate(sorted(x)):
+        for i, (k, v) in enumerate(items):
             if i:
                 out.append(",")
             out.append(json.dumps(k, ensure_ascii=False))
             out.append(":")
-            _write_stable(x[k], out)
+            _write_stable(v, out)
         out.append("}")
     elif isinstance(x, (list, tuple)):
         out.append("[")
@@ -116,9 +131,18 @@ def ser_expr(e: Expr) -> Any:
     return _serialize_expression(e)
 
 
+def key_json(x: Any) -> str:
+    """Deterministic JSON for equality keys only (``skey``, CSE interning):
+    the C ``json.dumps`` with sorted keys. Never written out, so it need not
+    match the reference's float layout, and a non-finite constant (``inf``
+    from folding ``1.0/0.0``) still gets a key."""
+    return json.dumps(x, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+
+
 def skey(e: Expr) -> str:
     """Full-structure key for ANY expression (array ops included)."""
-    return stable_json(ser_expr(e))
+    return key_json(ser_expr(e))
 
 
 def ckey(e: Expr) -> str:

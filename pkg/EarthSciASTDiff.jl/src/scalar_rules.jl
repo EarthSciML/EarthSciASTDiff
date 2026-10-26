@@ -256,6 +256,8 @@ function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         return lit(0)
     elseif name == "datetime.julian_day"
         # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        length(a) == 1 || throw(DerivativeRuleError(
+            "`datetime.julian_day` takes 1 argument, got $(length(a))"))
         dx = dscalar(a[1], s, occ); iszero_lit(dx) && return lit(0)
         return op("/", dx, lit(86400))
     elseif name == "interp.linear"

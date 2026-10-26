@@ -309,11 +309,14 @@ Fixture corpus in `tests/` of this repository:
 1. **Scalar rule goldens** — (expression, site) → canonical derivative JSON,
    one per operator row of §3, including the tie/branch policies.
 2. **Band goldens** — per fixture model: the `entries` list in
-   deterministic JSON (sorted object keys, numbers in the EarthSciAST
-   CONFORMANCE_SPEC §5.5.3.1 layout — integral values as integer literals,
-   other floats shortest round-trip, positional iff the first significant
-   digit's decimal exponent is in `-4..5`, else `d.f…e<exp>`: `2.4405875e6`,
-   `7.27220521664304e-5`), byte-compared across bindings. Each fixture
+   deterministic JSON (sorted object keys; an integer node as an integer
+   literal; a float node in shortest round-trip digits, positional iff the
+   first significant digit's decimal exponent is in `-4..5`, else
+   `d.f…e<exp>`, always with at least one fraction digit — `0.0`, `1.0`,
+   `100.0`, `1.0e6`, `2.4405875e6`, `7.27220521664304e-5`. This is the float
+   layout of EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule 2, but an integral
+   float stays a float: `1.0` is never written `1`), byte-compared across
+   bindings. Each fixture
    `<name>` carries `<name>.bands.json`, `<name>.block.json` (§4 block),
    `<name>.evaldoc.json` (§8 evaluation document; `-nocse` when it differs
    without hoisting) and `<name>.jvals.json` (values, item 3). A fixture
@@ -396,9 +399,10 @@ rather than re-derived by each consumer.
 way from the time band list: one field `J_k` per entry, of the row variable's
 shape (the scalar site `t` contributes no contracted dimension). No plan
 layout is defined for it, since `f_t` is one dense vector: field `k`'s cell
-`f` adds into the canonical-state-order position of state `row_k`'s cell `f`
-(the state's offset plus `f`), and every cell outside the band's region reads
-zero.
+`f` (column-major, as for the state Jacobian fields above) adds into the
+canonical-state-order position of state `row_k`'s cell `f` (the state's
+offset plus `f`, both column-major, so no permutation is involved), and every
+cell outside the band's region reads zero.
 
 **Common fields.** `layout` (the tag below), `wrt` (`"states"`; plans cover
 the state Jacobian only), `states` (`[{name, shape}]` in canonical order),

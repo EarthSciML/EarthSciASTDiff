@@ -305,6 +305,12 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     }
     if name == "datetime.julian_day" {
         // continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        if a.len() != 1 {
+            return Err(DerivativeRuleError(format!(
+                "`datetime.julian_day` takes 1 argument, got {}",
+                a.len()
+            )));
+        }
         let dx = dscalar(&a[0], s)?;
         if is_zero(&dx) {
             return Ok(Expr::Integer(0));
@@ -398,5 +404,10 @@ mod tests {
         // a datetime name outside esm-spec §9.2 has no rule
         let wk = ex(serde_json::json!({"op": "fn", "name": "datetime.week", "args": ["x"]}));
         assert!(dscalar(&wk, &s).is_err());
+        // a call of the wrong arity is a rule error, not silently
+        // differentiated through its first argument
+        let bad = ex(serde_json::json!({"op": "fn", "name": "datetime.julian_day",
+                                        "args": ["x", "x"]}));
+        assert!(dscalar(&bad, &s).is_err());
     }
 }
