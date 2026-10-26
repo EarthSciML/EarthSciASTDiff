@@ -183,9 +183,31 @@ EarthSciAST implementation and is gated by the same goldens.
       document (with `hoist_observed`) byte-identically to Julia
       (`*.evaldoc.json`) and the scatter plans (`*.plan.json`), with
       `band_fields` + `ScatterPlan::scatter` checked against the oracle on
-      every fixture. Still to come: compiling the band fields through
-      earthsci-ast-rs and the matrix-free products
-      ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4) W2, W4).
+      every fixture.
+- [x] Production-rate Rust assembly
+      ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4) W2, W4,
+      W5): `JacobianProgram` compiles the evaluation document once through
+      earthsci-ast-rs's own `RhsProgram` (`native`, selected to the band
+      fields, so no source `D` equation runs), and a `JacPlan` binds a
+      scatter plan to an executor — the whole-domain program, or a lane
+      program over run-time cells or columns (RFC U3) — and to the
+      integrator's program for the same operator (states, parameters and
+      forcing slots resolved by name; a source from another build is
+      refused). `eval_into` fills any of the four layouts (`f64` or `f32`
+      storage) and leaves the band slab for matrix-free `apply` (J·v) and
+      `apply_transpose` (Jᵀ·λ, `f64`). `Send + Sync` program and plan, one
+      `JacWorkspace` per thread; bitwise invariant to thread count, lane
+      order and padding; equal to the oracle to 1e-13 on every plan
+      fixture. On `bd_chem` at 6,552 cells it is 0.65–0.95× Julia's `jac!`
+      per call (lane layouts fastest, CSR slowest) and builds in
+      milliseconds where `prepare_jacobian` takes ~55 s
+      (`examples/bench_production.rs`, `scripts/bench-production.jl`).
+      Still to come: tile (stencil) programs, U8's second-order `Contract`,
+      the reseact / CBM-Z benchmarks (B2, B3), and lane programs for
+      column bands that stop short of the column ends (refused by
+      earthsci-ast's lane rewrite today; the domain plan covers them).
+- [ ] diffsol solver integration — not needed by EarthSciIntegrator, which
+      owns its linear algebra; it could be built on the `Csr` layout.
 
 ## License
 
