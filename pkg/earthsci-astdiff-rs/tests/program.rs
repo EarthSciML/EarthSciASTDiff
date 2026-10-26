@@ -623,3 +623,102 @@ fn forcing_reaches_the_band_fields() {
     prog.eval_into(&plan, &u, &[], &p, 0.0, &f1, &[], 0, &mut out, &mut ws).unwrap();
     assert_eq!(out, vec![-2.0, -8.0, -18.0, -32.0]);
 }
+
+/// A band row fixed along an extent-1 dimension spans the field, but its
+/// `faq` leaves the fixed dimension out: it stays a `makearray` (§ fused
+/// band form) and evaluates like any other.
+#[test]
+fn fixed_row_over_an_extent_one_dimension() {
+    let d = json!({
+        "esm": "1.2.0",
+        "metadata": {"name": "pinned", "authors": ["test"]},
+        "index_sets": {"x": {"kind": "interval", "size": 1},
+                       "y": {"kind": "interval", "size": 3}},
+        "models": {"M": {
+            "variables": {
+                "u": {"type": "unknown", "units": "1", "shape": ["x", "y"], "default": 1.0},
+                "k": {"type": "parameter", "units": "1", "default": 0.5}
+            },
+            "equations": [{
+                "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+                "rhs": {"op": "makearray", "args": [], "regions": [[[1, 1], [1, 3]]],
+                        "values": [{"op": "faq", "args": [], "output_idx": ["i", "j"],
+                                    "ranges": {"i": [1, 1], "j": [1, 3]},
+                                    "expr": {"op": "*", "args": [-1, "k",
+                                             {"op": "index", "args": ["u", 1, "j"]},
+                                             {"op": "index", "args": ["u", 1, "j"]}]}}]}
+            }]
+        }}
+    });
+    let file = earthsci_ast::load_document(&d).unwrap();
+    let src = source(&file);
+    let prog = JacobianProgram::build(&file, None, &BuildOptions::default()).unwrap();
+    let plan = prog.plan(&Layout::Csr, &src, Exec::Domain).unwrap();
+    let mut ws = prog.new_workspace(&plan);
+    let p = src.parameter_vector(&HashMap::new()).unwrap();
+    let mut out = vec![0.0; plan.out_len()];
+    prog.eval_into(&plan, &[1.0, 2.0, 3.0], &[], &p, 0.0, &src.default_forcing(), &[], 0,
+                   &mut out, &mut ws).unwrap();
+    assert_eq!(out, vec![-1.0, -2.0, -3.0]);
+}
+
+/// A forcing set for another program's slots is refused (an error, never an
+/// out-of-bounds slot), here for a source with a slot the Jacobian does not
+/// read.
+#[test]
+fn a_foreign_forcing_set_is_refused() {
+    let refresh = json!({"kind": "schedule", "interval": 60.0, "handler": {"handler_id": "reload"}});
+    let forced = |extra: bool| {
+        let mut vars = json!({
+            "u": {"type": "unknown", "units": "1", "shape": ["x"], "default": 1.0},
+            "F": {"type": "parameter", "units": "1", "shape": ["x"], "default": 0.25,
+                  "update": refresh}
+        });
+        let mut rhs = json!({"op": "*", "args": [-1, {"op": "index", "args": ["F", "i"]},
+                             {"op": "index", "args": ["u", "i"]},
+                             {"op": "index", "args": ["u", "i"]}]});
+        if extra {
+            // `A` is a forcing slot ahead of `F` that only `f`, not `J`, reads.
+            vars["A"] = json!({"type": "parameter", "units": "1", "shape": ["x"],
+                               "default": 0.1, "update": refresh});
+            rhs = json!({"op": "+", "args": [rhs, {"op": "index", "args": ["A", "i"]}]});
+        }
+        earthsci_ast::load_document(&json!({
+            "esm": "1.2.0",
+            "metadata": {"name": "forced", "authors": ["test"]},
+            "index_sets": {"x": {"kind": "interval", "size": 4}},
+            "models": {"M": {"variables": vars, "equations": [{
+                "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+                "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
+                        "ranges": {"i": {"from": "x"}}, "expr": rhs}}]}}
+        })).unwrap()
+    };
+    let file = forced(true);
+    let src = source(&file);
+    assert_eq!(src.forcing_slots().len(), 2);
+    let prog = JacobianProgram::build(&file, None, &BuildOptions::default()).unwrap();
+    let plan = prog.plan(&Layout::LaneBlocks, &src, Exec::Domain).unwrap();
+    let mut ws = prog.new_workspace(&plan);
+    let u = vec![1.0, 2.0, 3.0, 4.0];
+    let p = src.parameter_vector(&HashMap::new()).unwrap();
+    let mut out = vec![0.0; plan.out_len()];
+    let foreign = source(&forced(false)).default_forcing();
+    assert!(prog.eval_into(&plan, &u, &[], &p, 0.0, &foreign, &[], 0, &mut out, &mut ws)
+        .is_err());
+    prog.eval_into(&plan, &u, &[], &p, 0.0, &src.default_forcing(), &[], 0, &mut out, &mut ws)
+        .unwrap();
+    assert_eq!(out, vec![-0.5, -1.0, -1.5, -2.0]);
+}
+
+/// The evaluation document names its band fields `J_k`: a source variable
+/// of that name is refused, not shadowed.
+#[test]
+fn a_source_variable_named_like_a_band_field_is_refused() {
+    let mut d: Value = serde_json::from_str(
+        &std::fs::read_to_string(root().join("tests/valid/bd_chem.esm")).unwrap()).unwrap();
+    d["models"]["Chem"]["variables"]["J_1"] =
+        json!({"type": "parameter", "units": "1", "default": 0.0});
+    let file = earthsci_ast::load_document(&d).unwrap();
+    let err = JacobianProgram::build(&file, None, &BuildOptions::default()).unwrap_err();
+    assert!(err.to_string().contains("J_1"), "{err}");
+}

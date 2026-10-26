@@ -437,7 +437,8 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
 
 /// Every source `D(u)` equation of `model` (as `base_document` serialized
 /// it) becomes `D(u) = 0` (a zero `makearray` over an array state's shape),
-/// in place of the first and with any further ones dropped. The states keep
+/// in place of the first and with any further ones dropped — or, without
+/// `zeroed`, is dropped outright (the states become read-only inputs). The states keep
 /// their slots, so the observed and band fields read them unchanged, but
 /// evaluating the document no longer recomputes `f`. Observed the
 /// coefficients do not read (directly or through other observed) are dropped
@@ -445,7 +446,8 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
 /// parameters instead is unsafe: EarthSciAST caches observed that read only
 /// parameters, so an in-place `u` update goes stale.)
 fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &Ctx,
-                           entries: &[JacEntry]) -> Result<(), crate::bands::BandError> {
+                           entries: &[JacEntry], zeroed: bool)
+                           -> Result<(), crate::bands::BandError> {
     let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
     let defined: Vec<Option<String>> = sv.equations.iter()
         .map(|eq| if lhs_state(eq).is_none() { defined_name(eq) } else { None })
@@ -485,7 +487,7 @@ fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &C
                 }
                 eqs.push(ser);
             }
-            Some(u) if done.insert(u.clone()) => {
+            Some(u) if zeroed && done.insert(u.clone()) => {
                 let shape = ctx.shapes.get(&u).cloned().unwrap_or_default();
                 let rhs = if shape.is_empty() {
                     json!(0.0)
@@ -531,9 +533,18 @@ fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
 pub fn evaluation_document(sv: &SysView, entries: &[JacEntry], cse: bool,
                            cse_min_nodes: usize)
                            -> Result<(Value, Vec<String>), crate::bands::BandError> {
+    evaluation_document_with(sv, entries, cse, cse_min_nodes, true)
+}
+
+/// [`evaluation_document`], with the source `D(u)` equations zeroed
+/// (`zeroed`, the golden form) or dropped (the band-field program's form:
+/// a `D(u) = 0` would make a `select`ed program keep writing `u`).
+pub(crate) fn evaluation_document_with(sv: &SysView, entries: &[JacEntry], cse: bool,
+                                       cse_min_nodes: usize, zeroed: bool)
+                                       -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
-    zero_source_derivatives(&mut model, sv, &ctx, entries)?;
+    zero_source_derivatives(&mut model, sv, &ctx, entries, zeroed)?;
     let Some(Value::Array(mut eqs)) = model.remove("equations") else { unreachable!() };
     let mut isets = match doc.remove("index_sets") {
         Some(Value::Object(m)) => m,
