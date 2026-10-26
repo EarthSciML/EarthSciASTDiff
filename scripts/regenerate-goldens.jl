@@ -4,7 +4,7 @@
 using EarthSciAST, EarthSciASTDiff
 root = normpath(joinpath(@__DIR__, ".."))
 for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-             "contracting_observed")
+             "contracting_observed", "tgrad_photolysis")
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     entries = jacobian_bands(file, mname)
@@ -37,6 +37,28 @@ for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minm
         write(epath0, stable_json(evdoc0))
         println("wrote ", epath0)
     end
+end
+# time-derivative bands (spec §4.2): `<name>.time.*` goldens for the fixtures
+# whose right-hand side reads `t` explicitly. No scatter plan: the time
+# Jacobian is one column, scattered by canonical state position (spec §8).
+for name in ("tgrad_photolysis",)
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    mname = first(keys(file.models))
+    sv = sysview(file, mname)
+    entries = jacobian_bands(sv; wrt = :time)
+    gold(kind) = joinpath(root, "tests", "goldens", "$name.time.$kind.json")
+    write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    doc = jacobian_document(file, mname; wrt = :time)
+    write(gold("block"), stable_json(doc["jacobians"][mname]))
+    evdoc, _ = EarthSciASTDiff._evaluation_document(sv, entries)
+    write(gold("evaldoc"), stable_json(evdoc))
+    evdoc0, _ = EarthSciASTDiff._evaluation_document(sv, entries; cse = false)
+    if stable_json(evdoc0) == stable_json(evdoc)
+        rm(gold("evaldoc-nocse"); force = true)
+    else
+        write(gold("evaldoc-nocse"), stable_json(evdoc0))
+    end
+    println("wrote ", name, ".time.{bands,block,evaldoc}.json")
 end
 # scatter plans (spec §8): one golden per (fixture, applicable layout); the
 # fixtures not listed for a layout refuse it (test/scatter_test.jl)

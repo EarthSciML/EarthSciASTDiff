@@ -13,6 +13,14 @@ from earthsci_ast.expression import free_variables
 
 from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
 
+# The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
+# their time argument, so a.e. zero. ``datetime.julian_day`` is not one of them.
+PIECEWISE_CONSTANT_DATETIME = {
+    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
+    "datetime.minute", "datetime.second", "datetime.day_of_year",
+    "datetime.is_leap_year",
+}
+
 ZERO_DERIV_OPS = {
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
     "sign", "floor", "ceil", "pi", "π", "e", "true", "false", "const", "enum",
@@ -227,8 +235,17 @@ def dfn(e: ExprNode, s: Site) -> Expr:
     a = e.args
     if name is None:
         raise DerivativeRuleError("`fn` node without a name")
-    if name.startswith("datetime.") or name == "interp.searchsorted":
+    if name in PIECEWISE_CONSTANT_DATETIME or name == "interp.searchsorted":
         return 0
+    if name == "datetime.julian_day":
+        # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        if len(a) != 1:
+            raise DerivativeRuleError(
+                f"`datetime.julian_day` takes 1 argument, got {len(a)}")
+        dx = dscalar(a[0], s)
+        if is_zero(dx):
+            return 0
+        return op("/", dx, 86400)
     if name == "interp.linear":
         table, axis, x = a[0], a[1], a[2]
         dx = dscalar(x, s)

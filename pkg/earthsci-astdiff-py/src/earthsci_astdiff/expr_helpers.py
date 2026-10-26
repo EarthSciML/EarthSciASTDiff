@@ -7,7 +7,9 @@ references); only operator nodes are ``ExprNode``.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from earthsci_ast.canonicalize import canonical_json
@@ -54,19 +56,93 @@ def neg(x: Expr) -> Expr:
     return 0 if is_zero(x) else op("-", x)
 
 
+def canonical_float(f: float) -> str:
+    """A float in the Julia reference's layout (EarthSciAST CONFORMANCE_SPEC
+    §5.5.3.1 rule 2): shortest round-trip digits, positional iff the decimal
+    exponent of the first significant digit is in ``-4..5``, otherwise
+    ``d.f…e<exp>`` with at least one fraction digit (``1.0e-5``,
+    ``2.4405875e6``). ``repr`` has the same digits but switches layout at
+    other magnitudes (``7.27e-05``, ``2440587.5``)."""
+    if f != f or f in (float("inf"), float("-inf")):
+        raise ValueError(f"non-finite float {f!r} has no JSON form")
+    if f == 0.0:
+        return "-0.0" if math.copysign(1.0, f) < 0 else "0.0"
+    sign, digits, exp = Decimal(repr(f)).as_tuple()
+    ds = "".join(map(str, digits)).rstrip("0")
+    exp += len(digits) - len(ds)
+    e10 = len(ds) - 1 + exp
+    if -4 <= e10 <= 5:
+        if e10 < 0:
+            body = "0." + "0" * (-e10 - 1) + ds
+        else:
+            body = ds[:e10 + 1].ljust(e10 + 1, "0") + "." + (ds[e10 + 1:] or "0")
+    else:
+        body = ds[0] + "." + (ds[1:] or "0") + "e" + str(e10)
+    return ("-" if sign else "") + body
+
+
+def _key_str(k: Any) -> str:
+    """An object key as JSON's string form, the way ``json.dumps`` coerces
+    one (``1`` → ``"1"``, ``True`` → ``"true"``), so non-string keys still
+    give valid JSON and sort as the strings they are written as."""
+    if isinstance(k, str):
+        return k
+    if k is None or isinstance(k, (bool, int)):
+        return json.dumps(k)
+    if isinstance(k, float):
+        return canonical_float(k)
+    raise TypeError(f"JSON object key {k!r} is not a string or a number")
+
+
+def _write_stable(x: Any, out: list) -> None:
+    if isinstance(x, dict):
+        items = sorted(((_key_str(k), v) for k, v in x.items()),
+                       key=lambda kv: kv[0])
+        out.append("{")
+        for i, (k, v) in enumerate(items):
+            if i:
+                out.append(",")
+            out.append(json.dumps(k, ensure_ascii=False))
+            out.append(":")
+            _write_stable(v, out)
+        out.append("}")
+    elif isinstance(x, (list, tuple)):
+        out.append("[")
+        for i, v in enumerate(x):
+            if i:
+                out.append(",")
+            _write_stable(v, out)
+        out.append("]")
+    elif isinstance(x, float):
+        out.append(canonical_float(x))
+    else:
+        out.append(json.dumps(x, ensure_ascii=False))
+
+
 def stable_json(x: Any) -> str:
-    """Deterministic JSON: sorted object keys at every level (emit.jl)."""
-    return json.dumps(x, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
+    """Deterministic JSON: sorted object keys at every level, floats in the
+    reference's layout (``canonical_float``) — emit.jl's ``stable_json``."""
+    out: list = []
+    _write_stable(x, out)
+    return "".join(out)
 
 
 def ser_expr(e: Expr) -> Any:
     return _serialize_expression(e)
 
 
+def key_json(x: Any) -> str:
+    """Deterministic JSON for equality keys only (``skey``, CSE interning):
+    the C ``json.dumps`` with sorted keys. Never written out, so it need not
+    match the reference's float layout, and a non-finite constant (``inf``
+    from folding ``1.0/0.0``) still gets a key."""
+    return json.dumps(x, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+
+
 def skey(e: Expr) -> str:
     """Full-structure key for ANY expression (array ops included)."""
-    return stable_json(ser_expr(e))
+    return key_json(ser_expr(e))
 
 
 def ckey(e: Expr) -> str:

@@ -50,7 +50,7 @@ end
     # Every fixture whose states are arrays must produce bands. A tag
     # mismatch makes all of these silently empty.
     for name in ("adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
-                 "adv_react_2d", "bd_chem", "contracting_observed")
+                 "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis")
         file = fixture("$name.esm")
         model = first(keys(file.models))
         sv = sysview(file, model)

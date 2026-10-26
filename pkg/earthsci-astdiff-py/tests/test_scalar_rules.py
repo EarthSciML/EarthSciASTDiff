@@ -66,6 +66,18 @@ def test_structural_zero_and_policies():
     assert dscalar(ex({"op": "<", "args": ["x", 1.0]}), Site.of("x")) == 0
     assert dscalar(ex({"op": "fn", "name": "datetime.year", "args": ["x"]}),
                    Site.of("x")) == 0
+    # ... except julian_day, which is continuous: d/dt = 1/86400
+    jd = ex({"op": "fn", "name": "datetime.julian_day",
+             "args": [{"op": "*", "args": [3, "x"]}]})
+    assert evaluate(dscalar(jd, Site.of("x")), {"x": 0.7}) == pytest.approx(3 / 86400)
+    # a datetime name outside esm-spec §9.2 has no rule
+    with pytest.raises(DerivativeRuleError):
+        dscalar(ex({"op": "fn", "name": "datetime.week", "args": ["x"]}), Site.of("x"))
+    # a julian_day call of the wrong arity is a rule error, not silently
+    # differentiated through its first argument
+    with pytest.raises(DerivativeRuleError):
+        dscalar(ex({"op": "fn", "name": "datetime.julian_day", "args": ["x", "x"]}),
+                Site.of("x"))
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))

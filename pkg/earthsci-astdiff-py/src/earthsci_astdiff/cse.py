@@ -9,7 +9,7 @@ from __future__ import annotations
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 
-from .expr_helpers import ser_expr, stable_json
+from .expr_helpers import key_json, ser_expr
 
 
 class _Intern:
@@ -43,8 +43,8 @@ class _Intern:
 
             shell = map_children(e, repl)
             nn = 1 + sum(self.nnodes[cid - 1] for cid in childids)
-            return stable_json(ser_expr(shell)), nn
-        return stable_json(ser_expr(e)), 1
+            return key_json(ser_expr(shell)), nn
+        return key_json(ser_expr(e)), 1
 
 
 def _replace_id(e: Expr, it: _Intern, target: int, repl: Expr):

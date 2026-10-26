@@ -19,12 +19,24 @@
 #                              axis — extrapolate-flat), emitted as a segment
 #                              `ifelse` over slopes precomputed from the
 #                              literal `const` tables — no registry addition.
-#   * `datetime.*`, `interp.searchsorted` → 0 (piecewise-constant / integer,
-#                              matching the a.e.-zero contract in
-#                              EarthSciAST/src/registered_functions.jl).
+#   * the integer-valued `datetime.*` fields and `interp.searchsorted` → 0
+#                              (piecewise-constant, matching the a.e.-zero
+#                              contract in EarthSciAST/src/registered_functions.jl);
+#                              `datetime.julian_day` is CONTINUOUS (it carries
+#                              the fractional time of day, esm-spec §9.2), so
+#                              its derivative is `d[t] / 86400`; any other
+#                              `datetime.*` name has no rule and throws.
 #   * rewrite-target ops (spatial `D`, `grad`, `table_lookup`, …) → error:
 #     they have no evaluator and must be lowered before differentiation,
 #     mirroring the tree-walk's `unlowered_operator` gate.
+
+# The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
+# their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
+const PIECEWISE_CONSTANT_DATETIME = Set([
+    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
+    "datetime.minute", "datetime.second", "datetime.day_of_year",
+    "datetime.is_leap_year",
+])
 
 const ZERO_DERIV_OPS = Set([
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
@@ -240,8 +252,14 @@ dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr,Bool}())
 function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
     name = e.name
     a = e.args
-    if startswith(name, "datetime.") || name == "interp.searchsorted"
+    if name in PIECEWISE_CONSTANT_DATETIME || name == "interp.searchsorted"
         return lit(0)
+    elseif name == "datetime.julian_day"
+        # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        length(a) == 1 || throw(DerivativeRuleError(
+            "`datetime.julian_day` takes 1 argument, got $(length(a))"))
+        dx = dscalar(a[1], s, occ); iszero_lit(dx) && return lit(0)
+        return op("/", dx, lit(86400))
     elseif name == "interp.linear"
         # interp.linear(table, axis, x) — spec §9.2: TABLE first, AXIS second,
         # extrapolate-flat boundaries, and both arrays MUST be literal

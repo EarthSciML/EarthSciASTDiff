@@ -7,8 +7,13 @@
 using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
-for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-             "contracting_observed")
+# `<name>.time.jvals.json` (wrt = :time, the single column `t`) for the
+# fixtures in `TIME`, at the same pinned point.
+const TIME = ("tgrad_photolysis",)
+for (name, wrt) in Iterators.flatten((
+        ((n, :states) for n in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
+                                "minmod_adv", "contracting_observed", "tgrad_photolysis")),
+        ((n, :time) for n in TIME)))
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     f!, u0, p0, _, vm = build_evaluator(file)
@@ -19,7 +24,7 @@ for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minm
     # a sum (`compiler_refused_rule`); the interpreter evaluates them.
     kw = name in ("contracted_ops", "contracting_observed") ?
          (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
-    res = assemble_jacobian(file; u = u, t = t, kw...)
+    res = assemble_jacobian(file; wrt = wrt, u = u, t = t, kw...)
     rn, cn = res.rownames, res.colnames
     entries = Any[]
     I, J, V = findnz(res.J)
@@ -33,7 +38,8 @@ for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minm
         "params" => p0 === nothing ? OrderedDict{String,Any}() :
                     OrderedDict{String,Any}(String(k) => v for (k, v) in pairs(p0)),
         "entries" => entries)
-    path = joinpath(root, "tests", "goldens", "$name.jvals.json")
+    path = joinpath(root, "tests", "goldens",
+                    wrt == :time ? "$name.time.jvals.json" : "$name.jvals.json")
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(entries), " stored entries)")
 end
