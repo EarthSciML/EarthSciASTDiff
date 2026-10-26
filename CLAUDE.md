@@ -48,6 +48,13 @@ Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
 Two Rust-specific parity traps are already handled — Julia `fld` is floor
 division (NOT `div_euclid`, which differs for negative divisors), and
 `simplify_port.rs` carries the same Julia-simplify port as Python.
+Rust-only: `program.rs` (production assembly, #4 W2/W4) compiles the
+evaluation document through earthsci-ast-rs's `RhsProgram` (domain and lane
+programs) and scatters/applies the band slab; `numeric.rs` stays the oracle
+it is tested against (`tests/program.rs`). The compiled copy differs from the
+`*.evaldoc.json` golden ON PURPOSE (source declarations kept, zeroed `D`
+equations dropped, band fields in a fused form for domain plans) — never
+"fix" the golden to match it.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

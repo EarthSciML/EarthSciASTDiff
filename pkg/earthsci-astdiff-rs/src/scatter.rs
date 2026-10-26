@@ -113,12 +113,12 @@ pub fn flat(cell: &[i64], shape: &[i64]) -> usize {
     f as usize
 }
 
-fn ncells(shape: &[i64]) -> usize {
+pub(crate) fn ncells(shape: &[i64]) -> usize {
     shape.iter().product::<i64>() as usize
 }
 
 /// 1-based cell of a 0-based column-major flat index.
-fn unflat(mut f: usize, shape: &[i64]) -> Vec<i64> {
+pub(crate) fn unflat(mut f: usize, shape: &[i64]) -> Vec<i64> {
     shape.iter().map(|n| {
         let c = f % *n as usize;
         f /= *n as usize;
@@ -290,7 +290,7 @@ impl ScatterPlan {
     }
 
     /// Field cell of column `lane` at row level `lev` (both 0-based).
-    fn column_cell(cells: &[i64], axis_dim: usize, lev: usize, lane: usize) -> usize {
+    pub(crate) fn column_cell(cells: &[i64], axis_dim: usize, lev: usize, lane: usize) -> usize {
         let (mut f, mut stride, mut rest) = (0usize, 1usize, lane);
         for (m, n) in cells.iter().enumerate() {
             let n = *n as usize;
@@ -303,7 +303,7 @@ impl ScatterPlan {
 
     /// `(band k, field cell, output position)` per contribution, in
     /// accumulation order: plan order, lanes innermost.
-    fn contributions(&self, l: usize) -> Vec<(usize, usize, usize)> {
+    pub(crate) fn contributions(&self, l: usize) -> Vec<(usize, usize, usize)> {
         let nl = self.lanes();
         match &self.kind {
             PlanKind::LaneBlocks { items, .. } | PlanKind::LaneSparseBlocks { items, .. } =>

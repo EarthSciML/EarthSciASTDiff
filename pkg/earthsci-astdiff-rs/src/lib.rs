@@ -12,6 +12,7 @@ pub mod helpers;
 pub mod inline;
 pub mod jacobian;
 pub mod numeric;
+pub mod program;
 pub mod rules;
 pub mod scatter;
 pub mod simplify_port;
@@ -27,6 +28,8 @@ pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{jacobian_bands, JacEntry, Wrt};
 pub use numeric::{assemble_jacobian, band_fields};
+pub use program::{BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram,
+                  StorageScalar};
 pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};
 pub use rules::{dscalar, DerivativeRuleError};
 pub use system::{ctx_of, sysview, SysView};
