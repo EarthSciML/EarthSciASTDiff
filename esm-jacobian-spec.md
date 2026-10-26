@@ -12,8 +12,8 @@ then, bindings MUST ignore an unrecognized `"jacobians"` block.
 A **Jacobian document** is an ordinary ESM document plus a `"jacobians"`
 top-level block that carries, per model, the analytical derivative of the
 model's ODE right-hand side with respect to its state variables
-(`wrt: "states"`) or parameters (`wrt: "parameters"`), as a list of
-**bands** (§4). Coefficients are ordinary ESM expressions over the model's
+(`wrt: "states"`), its parameters (`wrt: "parameters"`) or time itself
+(`wrt: "time"`, §4.2), as a list of **bands** (§4). Coefficients are ordinary ESM expressions over the model's
 own variables, so any binding that evaluates ESM expressions evaluates the
 Jacobian — no binding needs a differentiator to *consume* the block.
 
@@ -96,7 +96,8 @@ encountering one MUST fail (diagnostic `underivable_operator`), never emit 0.
 
 | name | rule |
 |---|---|
-| `datetime.*` | `0` (piecewise-constant by the registry's a.e.-zero contract) |
+| `datetime.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`, `.day_of_year`, `.is_leap_year` | `0` (integer-valued, so piecewise-constant: the registry's a.e.-zero contract) |
+| `datetime.julian_day(x)` | `d[x] / 86400` — the Julian day is continuous (it carries the fractional time of day, §9.2), one day per 86400 s of UTC time. A `datetime.*` name outside the §9.2 registry has no rule (`underivable_operator`). |
 | `interp.searchsorted` | `0` (integer-valued) |
 | `interp.linear(table, axis, x)` | `slope · d[x]`, where `slope` is the active segment's slope `(table[k+1] − table[k]) / (axis[k+1] − axis[k])` for `axis[k] ≤ x < axis[k+1]`, and **0 outside the axis** (extrapolate-flat, §9.2). Since `table`/`axis` MUST be literal `const` arrays (§9.2 `interp_table_not_const`), the producer precomputes the per-segment slopes and emits a nested segment `ifelse` (`ifelse(x < axis[k+1], sₖ, …)`, flat-zero guards at both ends) — scalar-evaluable, no dynamic table gather, only existing operators. |
 | `interp.bilinear(table, axis_x, axis_y, x, y)` | `∂B/∂x · d[x] + ∂B/∂y · d[y]`. On cell `(i, j)` (located per §9.2's clamp + largest-knot-below convention), `∂B/∂x = sxᵢⱼ + wy · (sxᵢ,ⱼ₊₁ − sxᵢⱼ)` where `sxᵢⱼ = (table[i+1][j] − table[i][j]) / (axis_x[i+1] − axis_x[i])` and `wy` is the **clamped** y-weight; symmetrically for `∂B/∂y`. Outside `axis_x` the blend is constant in `x`, so `∂B/∂x = 0` there (and symmetrically for `y`), while the *other* partial persists at the clamped edge row/column. Since the table and axes MUST be literal `const` arrays, the producer precomputes the per-cell slope constants and emits each partial as a nested segment `ifelse` over the partial's own axis whose leaves are inner segment chains over the other axis (edge rows as the clamp leaves) — scalar-evaluable, no dynamic table gather, only existing operators. A query exactly on an interior knot selects the cell whose weight is 0, matching §9.2 step 2. |
@@ -175,7 +176,8 @@ Each **entry** (band) is one structured block of `∂(RHS of the equation for
 row)/∂(col)`:
 
 - `row` — a state variable name (the equation's integrated variable).
-- `col` — a state (`wrt: "states"`) or parameter (`wrt: "parameters"`) name.
+- `col` — a state (`wrt: "states"`) or parameter (`wrt: "parameters"`)
+  name, or `"t"` (`wrt: "time"`, §4.2).
 - `rows` — a rectangular region of `row`'s index space, one inclusive
   `[lo, hi]` integer pair per dimension; `[]` for a scalar `row`.
 - `row_idx` — per dimension: a free index NAME (string) ranging over the
@@ -261,6 +263,45 @@ factoring, not hygienic abstraction.
   largest-first with deterministic naming (`jt1`, `jt2`, … in extraction
   order) so byte-comparison goldens are stable.
 
+### 4.2 Time-derivative bands (`wrt: "time"`)
+
+A block with `"wrt": "time"` carries `f_t = ∂f/∂t`, the derivative of the
+right-hand side with respect to the independent variable — the term a
+Rosenbrock stage adds when `f` depends on `t` explicitly. Its single column
+is the scalar site `t`, so every entry has `"col": "t"`, `"col_idx": []` and
+no `contracted` dimensions; `rows`, `row_idx` and `coef` are as for state
+bands. The meaning is §4's with `J` an `N × 1` matrix: for every point `r`
+of `rows`, `f_t[row[r]] += coef(r)`. Entry order is the state bands' order —
+equation order, and the single column within each equation.
+
+**Coverage (normative).**
+
+- Every explicit occurrence of `t` in a right-hand side is differentiated,
+  including occurrences inside the observed it reads: a producer MUST inline
+  every observed variable the right-hand side reads, transitively, before
+  differentiating. (The state and parameter axes prune the inlining to the
+  observed that can depend on a target; the time axis does not — an
+  observed's time dependence can also arrive through data its definition
+  reads, so `{t}` is not a sound seed.)
+- Closed functions of `t` follow §3.4: the integer `datetime.*` fields
+  differentiate to 0, `datetime.julian_day` to `1/86400`, and
+  `interp.linear` / `interp.bilinear` of `t` to the active segment's slope.
+- `f_t` is the **partial** derivative with every parameter held fixed. Time
+  dependence that enters only through data — two-record forcing blend weights
+  a provider sets at each refresh, parameters a `data` source updates — is
+  NOT in the band list, and a consumer that needs it MUST account for it
+  itself (for example by not stepping across a data refresh). Bands with
+  respect to forcing values are a separate, planned axis (§7). A blend weight
+  that the model computes from `t` (a `frac` expression) is an explicit
+  occurrence and IS covered.
+
+**Autonomous systems.** An empty `"time"` entry list means `f_t ≡ 0`: no
+row's right-hand side reads `t`. A consumer MAY skip evaluating `f_t` for
+such a model and use the zero vector.
+
+A `"jacobians"` block holds one `wrt` per model, so a document carries its
+time bands separately from its state bands (a derived document per axis).
+
 ## 5. Conformance
 
 Fixture corpus in `tests/` of this repository:
@@ -268,11 +309,26 @@ Fixture corpus in `tests/` of this repository:
 1. **Scalar rule goldens** — (expression, site) → canonical derivative JSON,
    one per operator row of §3, including the tie/branch policies.
 2. **Band goldens** — per fixture model: the `entries` list in
-   deterministic JSON (sorted object keys), byte-compared across bindings.
+   deterministic JSON (sorted object keys, numbers in the EarthSciAST
+   CONFORMANCE_SPEC §5.5.3.1 layout — integral values as integer literals,
+   other floats shortest round-trip, positional iff the first significant
+   digit's decimal exponent is in `-4..5`, else `d.f…e<exp>`: `2.4405875e6`,
+   `7.27220521664304e-5`), byte-compared across bindings. Each fixture
+   `<name>` carries `<name>.bands.json`, `<name>.block.json` (§4 block),
+   `<name>.evaldoc.json` (§8 evaluation document; `-nocse` when it differs
+   without hoisting) and `<name>.jvals.json` (values, item 3). A fixture
+   whose right-hand side reads `t` also carries the same four for
+   `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
+   photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
+   `interp.linear` of `t` through a scalar observed, a `datetime.hour`
+   factor, a `datetime.julian_day` source, and one autonomous row).
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
    and the structural pattern must be a superset of the local pattern.
+   Shipped value goldens (`*.jvals.json`) are compared with exactly the same
+   (row, column) key set and `rtol 1e-10` (evaluation order differs between
+   runtimes).
 
 ## 6. Factorization information (optional)
 
@@ -308,10 +364,12 @@ a fill-correct superset of `pattern`.
 
 ## 7. Out of scope (this draft)
 
-Time gradients (`tgrad`), second derivatives, derivatives with respect to
-forcing buffers / const arrays, contracted-index bands, and
-CSE/`expression_templates`-based coefficient sharing are planned extensions;
-each will be specified with fixtures before implementation is required.
+Second derivatives and derivatives with respect to forcing buffers / const
+arrays (and so the data-borne time dependence §4.2 excludes) are planned
+extensions; each will be specified with fixtures before implementation is
+required. (Time-derivative bands, contracted-index bands and
+`expression_templates` coefficient sharing, once listed here, are specified
+in §4.2, §3.5/§4 and §4.1.)
 
 ## 8. Scatter plans (conformance artifact)
 
@@ -333,6 +391,14 @@ rather than re-derived by each consumer.
   cells column-major. A scalar state is one slot.
 - *Ghost reads* — points whose column index falls outside the column
   variable — have no storage position and appear in no plan.
+
+**Time bands.** The evaluation document for `wrt: "time"` is built the same
+way from the time band list: one field `J_k` per entry, of the row variable's
+shape (the scalar site `t` contributes no contracted dimension). No plan
+layout is defined for it, since `f_t` is one dense vector: field `k`'s cell
+`f` adds into the canonical-state-order position of state `row_k`'s cell `f`
+(the state's offset plus `f`), and every cell outside the band's region reads
+zero.
 
 **Common fields.** `layout` (the tag below), `wrt` (`"states"`; plans cover
 the state Jacobian only), `states` (`[{name, shape}]` in canonical order),

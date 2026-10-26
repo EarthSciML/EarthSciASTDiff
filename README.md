@@ -154,6 +154,16 @@ EarthSciAST implementation and is gated by the same goldens.
       and `tgrad` (`wrt = :time` through the same band calculus;
       `ode_components`/`odefunction` attach the analytical `tgrad!`, with a
       zero fill for autonomous systems).
+- [x] Time-derivative bands specified and golden-gated
+      ([#11](https://github.com/EarthSciML/EarthSciASTDiff/issues/11)):
+      `wrt: "time"` is spec §4.2 (one scalar column `t`, every read observed
+      inlined, the partial with parameters held fixed, data-borne time
+      dependence excluded, an empty list meaning `f_t ≡ 0`), and
+      `tgrad_photolysis.time.{bands,block,evaldoc,jvals}.json` pin Julia,
+      Rust and Python against each other. `datetime.julian_day` now
+      differentiates to `1/86400` (it is continuous; the other `datetime.*`
+      fields stay 0), and the Rust and Python golden writers emit floats in
+      the reference's layout (`2.4405875e6`, not `2440587.5`).
 - [ ] Forcing-buffer columns (∂f/∂(streamed forcing values), the EarthSciIO
       coupling) — needs the streaming-forcing representation to settle.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,

@@ -10,7 +10,8 @@ import pytest
 from earthsci_astdiff import assemble_jacobian
 
 NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv", "contracting_observed")
+         "minmod_adv", "contracting_observed",
+         "tgrad_photolysis")
 
 
 def _cells_to_arrays(u: dict):
@@ -34,11 +35,13 @@ def _cells_to_arrays(u: dict):
     return {k: to_list(v) for k, v in arrays.items()}
 
 
-@pytest.mark.parametrize("name", NAMES)
-def test_values_golden(name, golden_dir, valid_dir):
-    g = json.loads((golden_dir / f"{name}.jvals.json").read_text())
+@pytest.mark.parametrize("name,wrt", [(n, "states") for n in NAMES] +
+                         [("tgrad_photolysis", "time")])
+def test_values_golden(name, wrt, golden_dir, valid_dir):
+    tag = f"{name}.time" if wrt == "time" else name
+    g = json.loads((golden_dir / f"{tag}.jvals.json").read_text())
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
-    got = assemble_jacobian(file, next(iter(file.models)),
+    got = assemble_jacobian(file, next(iter(file.models)), wrt=wrt,
                             states=_cells_to_arrays(g["u"]),
                             params=g["params"], t=g["t"])
     want = {(r, c): v for r, c, v in g["entries"]}

@@ -1,7 +1,5 @@
 """Block emission against the Julia reference's block goldens
 (tests/goldens/*.block.json): byte-identical, factorization plan included."""
-import json
-
 import earthsci_ast as ea
 import pytest
 
@@ -9,15 +7,15 @@ from earthsci_astdiff import (jacobian_bands, jacobian_block,
                               parse_jacobian_block, skey, stable_json)
 
 NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv", "contracting_observed")
+         "minmod_adv", "contracting_observed",
+         "tgrad_photolysis")
 
 
 @pytest.mark.parametrize("name", NAMES)
 def test_block_golden(name, valid_dir, golden_dir):
-    g = json.loads((golden_dir / f"{name}.block.json").read_text())
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     block = jacobian_block(file, next(iter(file.models)))
-    assert stable_json(block) == stable_json(g)
+    assert stable_json(block) == (golden_dir / f"{name}.block.json").read_text()
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -31,3 +29,11 @@ def test_block_roundtrip(name, valid_dir):
     for a, b in zip(ref, back):
         assert skey(a.band.coef) == skey(b.band.coef)
         assert [skey(c) for c in a.band.cidx] == [skey(c) for c in b.band.cidx]
+
+
+@pytest.mark.parametrize("name", ("tgrad_photolysis",))
+def test_time_block_golden(name, valid_dir, golden_dir):
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
+    block = jacobian_block(file, next(iter(file.models)), wrt="time")
+    assert block["wrt"] == "time"
+    assert stable_json(block) == (golden_dir / f"{name}.time.block.json").read_text()

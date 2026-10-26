@@ -21,6 +21,14 @@ impl std::error::Error for DerivativeRuleError {}
 
 type R = Result<Expr, DerivativeRuleError>;
 
+/// The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
+/// their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
+const PIECEWISE_CONSTANT_DATETIME: &[&str] = &[
+    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
+    "datetime.minute", "datetime.second", "datetime.day_of_year",
+    "datetime.is_leap_year",
+];
+
 const ZERO_DERIV_OPS: &[&str] = &[
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor",
     "ceil", "pi", "π", "e", "true", "false", "const", "enum", "Pre",
@@ -292,8 +300,16 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     let name = n.name.as_deref().ok_or_else(|| {
         DerivativeRuleError("`fn` node without a name".into())
     })?;
-    if name.starts_with("datetime.") || name == "interp.searchsorted" {
+    if PIECEWISE_CONSTANT_DATETIME.contains(&name) || name == "interp.searchsorted" {
         return Ok(Expr::Integer(0));
+    }
+    if name == "datetime.julian_day" {
+        // continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
+        let dx = dscalar(&a[0], s)?;
+        if is_zero(&dx) {
+            return Ok(Expr::Integer(0));
+        }
+        return Ok(op("/", vec![dx, Expr::Integer(86400)]));
     }
     if name == "interp.linear" {
         let (table, axis, x) = (&a[0], &a[1], &a[2]);
@@ -356,4 +372,31 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
         return Ok(add(terms));
     }
     Err(DerivativeRuleError(format!("unknown closed function `{name}`")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::is_zero;
+
+    fn ex(v: serde_json::Value) -> Expr {
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn datetime_rules() {
+        let s = Site::of(&Expr::Variable("x".into()));
+        // integer calendar fields are piecewise-constant: a.e. zero
+        let hour = ex(serde_json::json!({"op": "fn", "name": "datetime.hour", "args": ["x"]}));
+        assert!(is_zero(&dscalar(&hour, &s).unwrap()));
+        // julian_day is continuous: d/dx julian_day(3x) = 3/86400
+        let jd = ex(serde_json::json!({"op": "fn", "name": "datetime.julian_day",
+                                       "args": [{"op": "*", "args": [3, "x"]}]}));
+        let d = dscalar(&jd, &s).unwrap();
+        let v = earthsci_ast::evaluate(&d, &std::collections::HashMap::new()).unwrap();
+        assert!((v - 3.0 / 86400.0).abs() < 1e-18, "{v}");
+        // a datetime name outside esm-spec §9.2 has no rule
+        let wk = ex(serde_json::json!({"op": "fn", "name": "datetime.week", "args": ["x"]}));
+        assert!(dscalar(&wk, &s).is_err());
+    }
 }

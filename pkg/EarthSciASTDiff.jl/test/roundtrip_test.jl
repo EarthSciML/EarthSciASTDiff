@@ -35,7 +35,7 @@ end
     # scripts/regenerate-goldens.jl after an INTENDED rule/format change.
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
     for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-                 "contracting_observed")
+                 "contracting_observed", "tgrad_photolysis")
         file = fixture("$name.esm")
         entries = jacobian_bands(file, first(keys(file.models)))
         text = stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries])

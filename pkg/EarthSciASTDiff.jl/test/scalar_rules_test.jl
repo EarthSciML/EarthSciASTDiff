@@ -69,6 +69,14 @@ end
     # datetime.* / searchsorted are piecewise-constant: derivative 0.
     e = OpExpr("fn", ASTExpr[VarExpr("x")]; name = "datetime.year")
     @test EarthSciASTDiff.iszero_lit(dscalar(e, s))
+    # ... except julian_day, which is continuous (fractional time of day,
+    # esm-spec §9.2): d/dx julian_day(3x) = 3/86400.
+    e = OpExpr("fn", ASTExpr[OpExpr("*", ASTExpr[IntExpr(3), VarExpr("x")])];
+               name = "datetime.julian_day")
+    @test evaluate_expr(dscalar(e, s), Dict("x" => 0.7)) ≈ 3 / 86400
+    # a datetime name outside the §9.2 registry has no rule
+    @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
+        OpExpr("fn", ASTExpr[VarExpr("x")]; name = "datetime.week"), s)
     # Rewrite-target ops must be lowered first.
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
         OpExpr("D", ASTExpr[VarExpr("x")]; wrt = "lon"), s)

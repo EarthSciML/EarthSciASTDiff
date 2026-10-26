@@ -52,9 +52,43 @@ pub fn neg(x: Expr) -> Expr {
     }
 }
 
-/// Deterministic JSON: sorted object keys at every level, scalars formatted
-/// by serde_json (Ryu shortest round-trip — the same family the reference's
-/// JSON3 uses).
+/// A float in the Julia reference's layout (EarthSciAST CONFORMANCE_SPEC
+/// §5.5.3.1 rule 2): shortest round-trip digits, positional iff the decimal
+/// exponent of the first significant digit is in `-4..=5`, otherwise
+/// `d.f…e<exp>` with at least one fraction digit (`1.0e-5`, `2.4405875e6`).
+/// serde_json has the same digits but switches layout at other magnitudes
+/// (`0.0000727…`, `2440587.5`). Not `earthsci_ast::format_canonical_float`,
+/// which is the RFC §5.4.6 canonical-form layout.
+pub fn canonical_float(f: f64) -> String {
+    assert!(f.is_finite(), "non-finite float {f} has no JSON form");
+    if f == 0.0 {
+        return if f.is_sign_negative() { "-0.0" } else { "0.0" }.into();
+    }
+    // `{:e}` is the shortest round-trip digits as `d[.ddd]e<exp>`
+    let sci = format!("{:e}", f.abs());
+    let (mant, exp) = sci.split_once('e').unwrap();
+    let e10: i32 = exp.parse().unwrap();
+    let ds: String = mant.chars().filter(|c| *c != '.').collect();
+    let sign = if f < 0.0 { "-" } else { "" };
+    let body = if (-4..=5).contains(&e10) {
+        if e10 < 0 {
+            format!("0.{}{ds}", "0".repeat((-e10 - 1) as usize))
+        } else {
+            let k = (e10 + 1) as usize;
+            let int = format!("{:0<k$}", &ds[..k.min(ds.len())]);
+            let frac = if ds.len() > k { &ds[k..] } else { "0" };
+            format!("{int}.{frac}")
+        }
+    } else {
+        let frac = if ds.len() > 1 { &ds[1..] } else { "0" };
+        format!("{}.{frac}e{e10}", &ds[..1])
+    };
+    format!("{sign}{body}")
+}
+
+/// Deterministic JSON: sorted object keys at every level, floats in the
+/// reference's layout ([`canonical_float`]), every other scalar by
+/// serde_json.
 pub fn stable_json(v: &Value) -> String {
     let mut out = String::new();
     write_stable(v, &mut out);
@@ -87,7 +121,32 @@ fn write_stable(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) =>
+            out.push_str(&canonical_float(n.as_f64().unwrap())),
         _ => out.push_str(&serde_json::to_string(v).unwrap()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_float;
+
+    #[test]
+    fn canonical_float_matches_the_reference_layout() {
+        // CONFORMANCE_SPEC §5.5.3.1's probe table, plus Julia `show` values
+        for (v, want) in [(1.0e-9, "1.0e-9"), (1.5e-5, "1.5e-5"),
+                          (0.000123456, "0.000123456"), (2.5, "2.5"),
+                          (999999.5, "999999.5"), (1000000.5, "1.0000005e6"),
+                          (123456789.25, "1.2345678925e8"), (0.0, "0.0"),
+                          (-0.0, "-0.0"), (1.0, "1.0"), (100.0, "100.0"),
+                          (1.0e6, "1.0e6"), (1.0e22, "1.0e22"), (0.0001, "0.0001"),
+                          (1.0e-5, "1.0e-5"), (-2.5e-7, "-2.5e-7"),
+                          (2440587.5, "2.4405875e6"),
+                          (7.27220521664304e-5, "7.27220521664304e-5"),
+                          (5e-324, "5.0e-324"),
+                          (1.7976931348623157e308, "1.7976931348623157e308")] {
+            assert_eq!(canonical_float(v), want, "for {v:e}");
+        }
     }
 }
 
