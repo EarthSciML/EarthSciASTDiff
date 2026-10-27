@@ -1,0 +1,19 @@
+# API reference configuration, read by the shared tooling in
+# EarthSciML/earthsci.dev (tools/api_docs; schema in its README.md).
+
+[reference]
+title = "EarthSciASTDiff"
+summary = "differentiate the same `.esm` models symbolically into structured Jacobian bands."
+
+[bindings.julia]
+path = "pkg/EarthSciASTDiff.jl"
+package = "EarthSciASTDiff"
+env = "docs/api/examples/julia"
+
+[bindings.python]
+path = "pkg/earthsci-astdiff-py"
+package = "earthsci_astdiff"
+
+[bindings.rust]
+path = "pkg/earthsci-astdiff-rs"
+crate = "earthsci-astdiff"

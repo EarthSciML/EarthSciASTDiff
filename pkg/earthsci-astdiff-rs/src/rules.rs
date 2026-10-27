@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::helpers::{add, is_site, is_zero, mul, neg, occurs, op, Site};
 
+/// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
 pub struct DerivativeRuleError(pub String);
 
@@ -34,6 +35,8 @@ const ZERO_DERIV_OPS: &[&str] = &[
     "ceil", "pi", "π", "e", "true", "false", "const", "enum", "Pre",
 ];
 
+/// The derivative of the scalar expression `e` with respect to the site `s`
+/// (a variable or an indexed read), by the §3 rule table.
 pub fn dscalar(e: &Expr, s: &Site) -> R {
     if is_site(e, s) {
         return Ok(Expr::Integer(1));

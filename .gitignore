@@ -2,3 +2,9 @@ Manifest.toml
 conformance-results/
 *.cov
 .DS_Store
+build/
+docs/content/generated/
+docs/api/examples/rust/target/
+docs/api/examples/rust/Cargo.lock
+docs/api/examples/julia/Manifest.toml
+.deps/

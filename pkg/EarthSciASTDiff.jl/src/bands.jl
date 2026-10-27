@@ -45,6 +45,12 @@ struct Ctx
 end
 is_array(ctx::Ctx, name) = haskey(ctx.shapes, name)
 
+"""
+    BandError(msg)
+
+An expression has a form the band calculus cannot differentiate (for example a
+filtered `faq` node or a non-`"+"` semiring).
+"""
 struct BandError <: Exception
     msg::String
 end

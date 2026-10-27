@@ -31,6 +31,9 @@ def _offset_class(c: Expr, r) -> str:
 
 
 def detect_structure(entries: list[JacEntry], sv: SysView) -> str:
+    """Classify the band list: ``"block_diagonal"``, ``"banded"``, ``"general"``
+    (or ``"empty"`` / ``"other"``), read off the column-index expressions
+    without evaluating anything. Use it to choose a matrix type."""
     if not entries:
         return "empty"
     ctx = ctx_of(sv)

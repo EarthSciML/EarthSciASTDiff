@@ -14,6 +14,10 @@ use crate::inline::{all_names, binders};
 use crate::rules::{dscalar, plain_sum, reduction, DerivativeRuleError};
 use crate::simplify_port::simplify_jl;
 
+/// One rectangular region of a Jacobian block: the rows it covers
+/// (`rows`, 1-based inclusive ranges, named by `ridx`), the column-index
+/// expressions (`cidx`) and the coefficient expression (`coef`). `contracted`
+/// lists extra column dimensions that accumulate (summed) at assembly.
 #[derive(Clone, Debug)]
 pub struct Band {
     pub rows: Vec<(i64, i64)>,
@@ -30,6 +34,8 @@ pub struct Ctx {
     pub params: HashSet<String>,
 }
 
+/// An expression has a form the band calculus cannot differentiate (for
+/// example a filtered `faq` node or a non-`"+"` semiring).
 #[derive(Debug)]
 pub struct BandError(pub String);
 

@@ -44,6 +44,11 @@ const ZERO_DERIV_OPS = Set([
     "Pre",
 ])
 
+"""
+    DerivativeRuleError(msg)
+
+A scalar operator has no derivative rule (spec §3).
+"""
 struct DerivativeRuleError <: Exception
     msg::String
 end

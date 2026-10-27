@@ -13,6 +13,10 @@ from .system import SysView
 
 @dataclass
 class BlockDiagonalPlan:
+    """Per-cell block LU of a block-diagonal Jacobian: the block variables in
+    Markowitz order, the block pattern, the 1-based ordering and the pattern
+    of the LU factors including fill-in."""
+
     block_vars: list[str]
     pattern: list[list[bool]]
     ordering: list[int]                    # 1-based, matching the reference
@@ -57,6 +61,12 @@ def markowitz_ordering(pattern: list[list[bool]]) -> list[int]:
 
 def plan_factorization(entries: list[JacEntry], sv: SysView,
                        structure: str | None = None):
+    """Symbolic factorization info for the detected structure.
+
+    Returns a :class:`BlockDiagonalPlan` when the structure is
+    ``"block_diagonal"`` and ``None`` otherwise; banded and general plans are
+    not implemented yet.
+    """
     if structure is None:
         structure = detect_structure(entries, sv)
     if structure == "block_diagonal":

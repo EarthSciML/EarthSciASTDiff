@@ -1,0 +1,270 @@
+{
+  "$schema_note": "Manifest read by the shared API-doc tooling (EarthSciML/earthsci.dev, tools/api_docs/README.md \u00a70.2). Hand-curated: a canonical name lists each binding's spelling of the same operation.",
+  "version": 1,
+  "symbols": [
+    {
+      "name": "assemble_jacobian",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "assemble_jacobian",
+        "python": "assemble_jacobian",
+        "rust": "assemble_jacobian"
+      }
+    },
+    {
+      "name": "band",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "Band",
+        "python": "Band",
+        "rust": "Band"
+      }
+    },
+    {
+      "name": "band_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "BandError",
+        "python": "BandError",
+        "rust": "BandError"
+      }
+    },
+    {
+      "name": "block_diagonal_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "BlockDiagonalPlan",
+        "python": "BlockDiagonalPlan",
+        "rust": "BlockLu"
+      }
+    },
+    {
+      "name": "cse_templates",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "cse_templates",
+        "python": "cse_templates",
+        "rust": "cse_templates"
+      }
+    },
+    {
+      "name": "derivative_rule_error",
+      "kind": "error",
+      "tier": "stable",
+      "bindings": {
+        "julia": "DerivativeRuleError",
+        "python": "DerivativeRuleError",
+        "rust": "DerivativeRuleError"
+      }
+    },
+    {
+      "name": "detect_structure",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "detect_structure",
+        "python": "detect_structure",
+        "rust": "detect_structure"
+      }
+    },
+    {
+      "name": "dscalar",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "dscalar",
+        "python": "dscalar",
+        "rust": "dscalar"
+      }
+    },
+    {
+      "name": "jac_entry",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "JacEntry",
+        "python": "JacEntry",
+        "rust": "JacEntry"
+      }
+    },
+    {
+      "name": "jac_prototype",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jac_prototype"
+      }
+    },
+    {
+      "name": "jacobian_bands",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_bands",
+        "python": "jacobian_bands",
+        "rust": "jacobian_bands"
+      }
+    },
+    {
+      "name": "jacobian_block",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "python": "jacobian_block",
+        "rust": "jacobian_block"
+      }
+    },
+    {
+      "name": "jacobian_document",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_document"
+      }
+    },
+    {
+      "name": "jacobian_evaluator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "JacobianEvaluator"
+      }
+    },
+    {
+      "name": "jacobian_pattern",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_pattern",
+        "python": "jacobian_pattern"
+      }
+    },
+    {
+      "name": "lu_fill",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "lu_fill",
+        "python": "lu_fill",
+        "rust": "lu_fill"
+      }
+    },
+    {
+      "name": "markowitz_ordering",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "python": "markowitz_ordering",
+        "rust": "markowitz_ordering"
+      }
+    },
+    {
+      "name": "ode_components",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ode_components"
+      }
+    },
+    {
+      "name": "plan_factorization",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "plan_factorization",
+        "python": "plan_factorization",
+        "rust": "block_diagonal_lu"
+      },
+      "notes": "Rust exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+    },
+    {
+      "name": "prepare_jacobian",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "prepare_jacobian"
+      }
+    },
+    {
+      "name": "scatter_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "scatter_plan"
+      }
+    },
+    {
+      "name": "scatter_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ScatterPlan",
+        "rust": "ScatterPlan"
+      }
+    },
+    {
+      "name": "serialize_band",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "python": "serialize_band",
+        "rust": "serialize_band"
+      }
+    },
+    {
+      "name": "simplify_branches",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "simplify_branches",
+        "python": "simplify_branches",
+        "rust": "simplify_branches"
+      }
+    },
+    {
+      "name": "site",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "Site",
+        "python": "Site",
+        "rust": "Site"
+      }
+    },
+    {
+      "name": "stable_json",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "stable_json",
+        "python": "stable_json",
+        "rust": "stable_json"
+      }
+    },
+    {
+      "name": "sys_view",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "SysView",
+        "python": "SysView",
+        "rust": "SysView"
+      }
+    },
+    {
+      "name": "sysview",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "sysview",
+        "python": "sysview",
+        "rust": "sysview"
+      }
+    }
+  ]
+}

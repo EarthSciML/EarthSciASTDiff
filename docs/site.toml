@@ -1,0 +1,13 @@
+id = "astdiff"
+title = "EarthSciASTDiff"
+description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST."
+repo = "EarthSciML/EarthSciASTDiff"
+
+# Run from the repo root before the docs-bundle action (see templates/docs.yml
+# in EarthSciML/earthsci.dev). Writes docs/content/generated/spec.md from
+# esm-jacobian-spec.md so the spec has a single source.
+prebuild = ["python3 docs/build_content.py"]
+
+[[nav]]
+title = "Specification"
+path = "generated/spec/"

@@ -29,7 +29,7 @@ ZERO_DERIV_OPS = {
 
 
 class DerivativeRuleError(Exception):
-    pass
+    """Raised when a scalar operator has no derivative rule (spec §3)."""
 
 
 def dscalar(e: Expr, s: Site) -> Expr:
