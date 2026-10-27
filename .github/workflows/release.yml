@@ -1,0 +1,91 @@
+name: Release 3 - Publish
+
+# Step 3 of 3 (see release-register.yml). TagBot's push of `v<version>` starts
+# this run, which publishes to PyPI and crates.io from that tag. The jobs live in
+# EarthSciML/.github (RELEASING.md there).
+#
+# Every publish step treats "already published" as success, so a run that
+# failed partway is finished by running this workflow by hand on the same tag.
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to (re-)publish, e.g. v0.4.0. Steps already done are skipped.'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # The tag must be the commit General accepted.
+  resolve:
+    uses: EarthSciML/.github/.github/workflows/release-resolve.yml@main
+    with:
+      julia-package: EarthSciASTDiff
+      julia-subdir: pkg/EarthSciASTDiff.jl
+      tag: ${{ inputs.tag || github.ref_name }}
+      version-files: pkg/earthsci-astdiff-py/pyproject.toml pkg/earthsci-astdiff-rs/Cargo.toml
+
+  # Python. Published from this workflow directly, never from a reusable one:
+  # PyPI's trusted publishing cannot match a reusable workflow.
+  publish-pypi:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: pypi
+      url: https://pypi.org/p/earthsci-astdiff
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build and check distributions
+        working-directory: pkg/earthsci-astdiff-py
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pkg/earthsci-astdiff-py/dist
+          # PyPI refuses a version that already exists; let a re-run be a no-op.
+          skip-existing: true
+
+  publish:
+    needs: resolve
+    permissions:
+      contents: write
+    uses: EarthSciML/.github/.github/workflows/release-publish.yml@main
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      version: ${{ needs.resolve.outputs.version }}
+      crates: pkg/earthsci-astdiff-rs
+      install-notes: |
+        ```
+        using Pkg; Pkg.add("EarthSciASTDiff")   # Julia
+        pip install earthsci-astdiff             # Python
+        ```
+    secrets: inherit
+
+  report:
+    needs: [ resolve, publish-pypi, publish ]
+    if: always() && needs.resolve.result == 'success'
+    permissions:
+      issues: write
+    uses: EarthSciML/.github/.github/workflows/release-report.yml@main
+    with:
+      tag: ${{ needs.resolve.outputs.tag }}
+      results: ${{ toJSON(needs) }}
