@@ -6,6 +6,9 @@ use earthsci_ast::Expr;
 use crate::helpers::{is_zero, map_expr_children, op, skey};
 use crate::simplify_port::simplify_jl;
 
+/// `ifelse`-aware simplification, the swell control for coefficients of
+/// limiter-heavy schemes: equal branches collapse and same-condition tests
+/// are pruned.
 pub fn simplify_branches(e: &Expr) -> Expr {
     sbr(e)
 }

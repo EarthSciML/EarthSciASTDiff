@@ -15,6 +15,10 @@ from .system import (SysView, _var_type, ctx_of, inlinable_observed, is_derivati
 
 @dataclass
 class JacEntry:
+    """One block of the Jacobian: row variable ``u``, column variable ``v``,
+    and the :class:`Band` giving the rows it covers, the column-index
+    expressions and the coefficient."""
+
     u: str
     v: str
     band: Band
@@ -22,6 +26,21 @@ class JacEntry:
 
 def jacobian_bands(obj, model_name: str | None = None,
                    wrt: str = "states") -> list[JacEntry]:
+    """Differentiate a model's right-hand side into a list of Jacobian bands.
+
+    **Parameters**
+
+    - ``obj`` — an ``EsmFile``, a flattened system or a :class:`SysView`.
+    - ``model_name`` — which model of an ``EsmFile``; may be omitted when the
+      file has exactly one.
+    - ``wrt`` — ``"states"`` (default), ``"parameters"`` or ``"time"``.
+
+    **Returns**
+
+    One :class:`JacEntry` per (row variable, column variable) pair that occurs
+    in the model. The derivative is symbolic, so the result does not depend on
+    the point where it is later evaluated.
+    """
     if wrt not in ("states", "parameters", "time"):
         raise ValueError(f"wrt must be states, parameters or time, got {wrt}")
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)

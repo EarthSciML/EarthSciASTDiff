@@ -10,6 +10,8 @@ use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
 
+/// A model as the band calculus sees it: its variables, equations and index
+/// sets. Build one with [`sysview`].
 pub struct SysView<'a> {
     pub variables: &'a IndexMap<String, ModelVariable>,
     pub equations: &'a Vec<Equation>,
@@ -30,6 +32,8 @@ pub fn only_model(file: &EsmFile) -> Result<&String, BandError> {
     Ok(m.keys().next().unwrap())
 }
 
+/// View a model of `file` for differentiation. `model_name` may be `None`
+/// when the file has exactly one model.
 pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>)
                    -> Result<SysView<'a>, BandError> {
     let name = match model_name {

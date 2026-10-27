@@ -15,6 +15,10 @@ from .bands import Ctx
 
 @dataclass
 class SysView:
+    """A model or flattened system as the band calculus sees it: its
+    variables, equations and index sets, with subsystems already expanded.
+    Build one with :func:`sysview`."""
+
     variables: dict[str, object]
     equations: list
     index_sets: dict[str, object]
@@ -28,6 +32,14 @@ def _only_model(file: EsmFile) -> str:
 
 
 def sysview(obj, model_name: str | None = None) -> SysView:
+    """View a model of an ``EsmFile``, or a ``FlattenedSystem``, for differentiation.
+
+    **Parameters**
+
+    - ``obj`` — an ``EsmFile`` or a flattened system.
+    - ``model_name`` — which model of an ``EsmFile``; may be omitted when the
+      file has exactly one.
+    """
     if isinstance(obj, EsmFile):
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)

@@ -38,7 +38,8 @@ class Ctx:
 
 
 class BandError(Exception):
-    pass
+    """Raised when an expression has a form the band calculus cannot differentiate
+    (for example a filtered ``faq`` node or a non-``"+"`` semiring)."""
 
 
 def _set_size(name: str, ctx: Ctx) -> int:

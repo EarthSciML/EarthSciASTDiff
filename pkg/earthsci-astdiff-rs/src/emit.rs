@@ -15,6 +15,7 @@ use crate::jacobian::{JacEntry, Wrt};
 use crate::jacobian::unsupported_derivative;
 use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
+/// One entry of the `jacobians` block, as JSON (spec §4).
 pub fn serialize_band(en: &JacEntry) -> Value {
     let b = &en.band;
     let mut d = serde_json::Map::new();
@@ -205,6 +206,9 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
     }
 }
 
+/// Classify the band list as `"block_diagonal"`, `"banded"` or `"general"`
+/// (or `"empty"` / `"other"`), read off the column-index expressions without
+/// evaluating anything. Use it to choose a matrix type.
 pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx)
                         -> &'static str {
     if entries.is_empty() {
@@ -234,6 +238,7 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx)
 
 // ── factorization plan (factorization.jl) ───────────────────────────────────
 
+/// Symbolic (no-pivoting) LU: the pattern plus every fill-in entry.
 pub fn lu_fill(pattern: &[Vec<bool>]) -> Vec<Vec<bool>> {
     let mut p: Vec<Vec<bool>> = pattern.to_vec();
     let n = p.len();
@@ -249,6 +254,8 @@ pub fn lu_fill(pattern: &[Vec<bool>]) -> Vec<Vec<bool>> {
     p
 }
 
+/// A Markowitz pivot ordering of a block pattern (1-based), minimizing fill-in
+/// greedily.
 pub fn markowitz_ordering(pattern: &[Vec<bool>]) -> Vec<usize> {
     let mut p: Vec<Vec<bool>> = pattern.to_vec();
     let n = p.len();
@@ -304,6 +311,8 @@ pub struct BlockLu {
     pub lu: Vec<Vec<bool>>,
 }
 
+/// Symbolic factorization info for a block-diagonal band list: the per-cell
+/// block LU with Markowitz ordering and fill-in ([`BlockLu`]).
 pub fn block_diagonal_lu(entries: &[JacEntry]) -> BlockLu {
     let mut vars: Vec<String> = entries.iter()
         .flat_map(|en| [en.u.clone(), en.v.clone()]).collect();
@@ -344,6 +353,9 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
 
 // ── the block ────────────────────────────────────────────────────────────────
 
+/// The `jacobians` block for one model (spec §4): entries (template-CSE'd when
+/// `cse` is set, hoisting subtrees of at least `cse_min_nodes` nodes), the
+/// structure classification, and the factorization plan where one exists.
 pub fn jacobian_block(file: &earthsci_ast::EsmFile,
                       model_name: Option<&str>, wrt: Wrt,
                       cse: bool, cse_min_nodes: usize)

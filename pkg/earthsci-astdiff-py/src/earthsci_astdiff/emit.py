@@ -14,6 +14,7 @@ from .system import ctx_of, sysview
 
 
 def serialize_band(en: JacEntry) -> dict:
+    """One entry of the ``jacobians`` block, as a JSON-ready dict (spec §4)."""
     b = en.band
     d = {
         "row": en.u,

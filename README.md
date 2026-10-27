@@ -59,6 +59,15 @@ sol = solve(prob, Rodas5P())
 (`ode_components(file)` returns the same pieces — `f!`, `jac!`,
 `jac_prototype`, `u0`, `p`, `var_map` — with no solver dependency.)
 
+## Documentation
+
+The documentation site — getting-started guide, cross-language API reference and the
+specification — is at <https://earthsci.dev/astdiff/>. It is built from `docs/` by
+the shared tooling in [EarthSciML/earthsci.dev](https://github.com/EarthSciML/earthsci.dev)
+(`.github/workflows/docs.yml` publishes it on every push to `main`); preview locally
+with `python3 <earthsci.dev>/tools/api_docs/render.py --repo-root .` (see that repo's
+`tools/api_docs/README.md`).
+
 ## Specification
 
 The `"jacobians"` block format, the per-operator derivative semantics

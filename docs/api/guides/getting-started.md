@@ -1,0 +1,80 @@
+---
+title: "Getting started"
+description: "Differentiate a model, read its sparsity pattern and structure, evaluate the Jacobian, and serialize it as a document block."
+weight: 10
+---
+
+EarthSciASTDiff turns an EarthSciAST (`.esm`) model into its analytical sparse
+Jacobian by symbolic differentiation. This guide takes one small model through
+each step. Each step shows the same task in every binding; pick your language
+on any tab and the rest of the site follows. Every snippet is cut from a
+program that runs, and checks its own result, in CI.
+
+The examples use `bd_chem.esm` from
+[`tests/valid/`](https://github.com/EarthSciML/EarthSciASTDiff/tree/main/tests/valid):
+per-cell chemistry among three species `A`, `B` and `C` on a four-cell column,
+so the Jacobian is block-diagonal: four blocks of three species.
+
+## Differentiate
+
+The Jacobian is a list of **bands**: each is a rectangular region of the
+equation's index space, a symbolic column-index expression, and a coefficient
+expression. One entry is produced for each (row variable, column variable)
+pair that occurs in the model, so the derivative is exact and does not depend
+on the point where you later evaluate it.
+
+<!-- example: bands -->
+
+See [`jacobian_bands`](/generated/api/ref/jacobian_bands) and
+[`sysview`](/generated/api/ref/sysview).
+
+## Sparsity pattern
+
+The pattern is read off structural occurrence, never off numeric probing, so it
+is valid at every point. Branches of `ifelse`, `min` and `max` are unioned, and
+entries that happen to be zero at one point stay in the pattern.
+
+<!-- example: pattern -->
+
+See [`jacobian_pattern`](/generated/api/ref/jacobian_pattern).
+
+## Structure and factorization
+
+The bands are classified as block-diagonal, banded or general, which tells a
+solver what matrix type to use. For block-diagonal systems a symbolic
+per-cell block LU plan (Markowitz ordering and fill-in) is available too.
+
+<!-- example: structure -->
+
+See [`detect_structure`](/generated/api/ref/detect_structure) and
+[`plan_factorization`](/generated/api/ref/plan_factorization).
+
+## Evaluate
+
+The one-shot call evaluates the Jacobian at a point, using the document's
+initial state and parameters unless you pass others.
+
+<!-- example: assemble -->
+
+See [`assemble_jacobian`](/generated/api/ref/assemble_jacobian).
+
+## Prepare once, evaluate many times
+
+To use the Jacobian inside a solver, differentiate and compile once, then fill
+a fixed sparse prototype in place at each step.
+
+<!-- example: prepare -->
+
+See [`prepare_jacobian`](/generated/api/ref/prepare_jacobian).
+
+## Serialize
+
+The bands can be written into the document itself as a `jacobians` block, so
+any binding that can evaluate `.esm` expressions can evaluate the Jacobian.
+The block carries the entries, the structure classification and the
+factorization plan.
+
+<!-- example: block -->
+
+See [`jacobian_block`](/generated/api/ref/jacobian_block) and
+[`jacobian_document`](/generated/api/ref/jacobian_document).

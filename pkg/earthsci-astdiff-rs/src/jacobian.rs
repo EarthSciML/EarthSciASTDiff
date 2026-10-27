@@ -27,6 +27,9 @@ impl Wrt {
     }
 }
 
+/// One block of the Jacobian: row variable `u`, column variable `v`, and the
+/// [`Band`] giving the rows it covers, the column-index expressions and the
+/// coefficient.
 #[derive(Clone, Debug)]
 pub struct JacEntry {
     pub u: String,
@@ -34,6 +37,13 @@ pub struct JacEntry {
     pub band: Band,
 }
 
+/// Differentiate a model's right-hand side into Jacobian bands with respect
+/// to `wrt` (states, parameters or time). `model_name` may be `None` when the
+/// file has exactly one model.
+///
+/// One [`JacEntry`] is returned for each (row variable, column variable) pair
+/// that occurs in the model; the derivative is symbolic, so it does not depend
+/// on the point where it is later evaluated.
 pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
                       -> Result<Vec<JacEntry>, BandError> {
     let sv = sysview(file, model_name)?;
