@@ -22,6 +22,13 @@ on:
       earthsci-ast-ref:
         description: EarthSciAST ref to test against
         default: main
+  # Also a release gate: release-register.yml calls it before registering.
+  workflow_call:
+    inputs:
+      earthsci-ast-ref:
+        description: EarthSciAST ref to test against
+        default: main
+        type: string
 
 env:
   EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref || 'main' }}
@@ -91,6 +98,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+      # Cargo.toml depends on the crates.io earthsci-ast (so the crate can be
+      # published); patch in the sibling checkout to test against the ref.
       - name: Test
         working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-rs
-        run: cargo test
+        env:
+          PATCH: patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"
+        run: |
+          set -euo pipefail
+          # A patch whose version falls outside Cargo.toml's requirement is
+          # silently unused, and the tests would run against crates.io instead.
+          if ! cargo tree --config "$PATCH" -i earthsci-ast -e normal --depth 0 | grep -q 'EarthSciAST/pkg/earthsci-ast-rs'; then
+            echo "::error::EarthSciAST ${{ env.EARTHSCI_AST_REF }} does not satisfy Cargo.toml's earthsci-ast requirement; bump it."
+            exit 1
+          fi
+          cargo test --config "$PATCH"
