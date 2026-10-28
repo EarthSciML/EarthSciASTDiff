@@ -38,18 +38,18 @@ jobs:
     name: Julia (reference)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: EarthSciASTDiff
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: EarthSciML/EarthSciAST
           ref: ${{ env.EARTHSCI_AST_REF }}
           path: EarthSciAST
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v3
         with:
           version: "1"
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       # Manifest.toml is gitignored, so `Pkg.develop` is what points the test
       # environment at the sibling EarthSciAST rather than the registry.
       - name: Test
@@ -63,15 +63,15 @@ jobs:
     name: Python
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: EarthSciASTDiff
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: EarthSciML/EarthSciAST
           ref: ${{ env.EARTHSCI_AST_REF }}
           path: EarthSciAST
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Install
@@ -86,10 +86,10 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: EarthSciASTDiff
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: EarthSciML/EarthSciAST
           ref: ${{ env.EARTHSCI_AST_REF }}
