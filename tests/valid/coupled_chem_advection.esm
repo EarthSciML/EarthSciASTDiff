@@ -1,5 +1,5 @@
 {
- "esm": "1.1.0",
+ "esm": "1.2.0",
  "metadata": {
   "name": "MinimalChemAdvectionSmall",
   "description": "O3-NO-NO2 chemistry with advection over a lon-lat grid and external meteorology",
@@ -87,7 +87,7 @@
          {
           "op": "/",
           "args": [
-           -1370,
+           {"op": "const", "args": [], "value": -1370, "units": "K"},
            "T"
           ]
          }
