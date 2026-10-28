@@ -16,6 +16,12 @@ earthsci-astdiff = { path = "../../../../pkg/earthsci-astdiff-rs" }
 earthsci-ast = { path = "../../../../../EarthSciAST/pkg/earthsci-ast-rs" }
 serde_json = "1"
 
+# earthsci-astdiff depends on the registry earthsci-ast; patch it to the sibling
+# checkout so the examples and the crate share one earthsci_ast (otherwise their
+# EsmFile types differ).
+[patch.crates-io]
+earthsci-ast = { path = "../../../../../EarthSciAST/pkg/earthsci-ast-rs" }
+
 # The examples share one helper: `fixture`, which finds the shared `.esm`
 # documents relative to this directory rather than the working directory.
 [lib]
