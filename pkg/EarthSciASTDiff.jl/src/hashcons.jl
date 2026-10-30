@@ -33,10 +33,10 @@
 Interning table for structural expression equality. See [`sid`](@ref).
 """
 struct StructIndex
-    ids::Dict{String,Int}        # shell key → id
-    memo::IdDict{OpExpr,Int}     # node identity → id (0 is "absent")
+    ids::Dict{String, Int}        # shell key → id
+    memo::IdDict{OpExpr, Int}     # node identity → id (0 is "absent")
 end
-StructIndex() = StructIndex(Dict{String,Int}(), IdDict{OpExpr,Int}())
+StructIndex() = StructIndex(Dict{String, Int}(), IdDict{OpExpr, Int}())
 
 # Distinct from cse.jl's `__cse⟦…⟧` so a tree that already carries CSE
 # placeholders interns without collision.
@@ -99,9 +99,9 @@ _intern_key!(ix::StructIndex, k::String)::Int =
 Identity-memoized structural hash. See [`shash`](@ref).
 """
 struct StructHash
-    memo::IdDict{OpExpr,UInt}    # 0 is "absent"
+    memo::IdDict{OpExpr, UInt}    # 0 is "absent"
 end
-StructHash() = StructHash(IdDict{OpExpr,UInt}())
+StructHash() = StructHash(IdDict{OpExpr, UInt}())
 
 """
     shash(hx::StructHash, e::ASTExpr) -> UInt

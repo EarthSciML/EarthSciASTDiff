@@ -12,7 +12,7 @@ view = sysview(file, "Chem")
 entries = jacobian_bands(view)
 # One entry per (row variable, column variable) pair that occurs in the model.
 @assert sort(unique([(en.u, en.v) for en in entries])) ==
-        [("A", "A"), ("A", "B"), ("A", "C"), ("B", "A"), ("B", "B"), ("C", "B")]
+    [("A", "A"), ("A", "B"), ("A", "C"), ("B", "A"), ("B", "B"), ("C", "B")]
 # endregion
 
 # region: pattern ops=jacobian_pattern

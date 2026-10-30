@@ -10,6 +10,7 @@ to the official ``numpy_interpreter`` evaluator — so operator semantics
 O(cells × coefficient size) per call; use the Julia binding for production
 assembly.
 """
+
 from __future__ import annotations
 
 from itertools import product
@@ -69,8 +70,7 @@ def _resolve(e: Expr, env: _Env) -> Expr:
         return e
     if e.op == "index":
         t = e.args[0]
-        cells = [int(round(float(_as_lit(_resolve(x, env)))))
-                 for x in e.args[1:]]
+        cells = [int(round(float(_as_lit(_resolve(x, env))))) for x in e.args[1:]]
         if isinstance(t, str):
             v = env.gather(t, cells)
             if v is None:
@@ -88,12 +88,10 @@ def _resolve(e: Expr, env: _Env) -> Expr:
         if not plain_sum(e):
             raise EvalError(f"{reduction(e)} in scalar coefficient")
         names = sorted(str(n) for n in (e.ranges or {}))
-        boxes = [range(int(e.ranges[n][0]), int(e.ranges[n][1]) + 1)
-                 for n in names]
+        boxes = [range(int(e.ranges[n][0]), int(e.ranges[n][1]) + 1) for n in names]
         total = 0.0
         for cell in product(*boxes):
-            body = substitute(e.expr, {n: cell[k]
-                                       for k, n in enumerate(names)})
+            body = substitute(e.expr, {n: cell[k] for k, n in enumerate(names)})
             total += float(_as_lit(_resolve(body, env)))
         return total
     return map_children(e, lambda x: _resolve(x, env))
@@ -129,9 +127,14 @@ def _nested_full(shape: list[int], v: float):
     return [_nested_full(shape[1:], v) for _ in range(shape[0])]
 
 
-def assemble_jacobian(obj, model_name: str | None = None, wrt: str = "states",
-                      states: dict | None = None, params: dict | None = None,
-                      t: float = 0.0) -> dict[tuple[str, str], float]:
+def assemble_jacobian(
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    states: dict | None = None,
+    params: dict | None = None,
+    t: float = 0.0,
+) -> dict[tuple[str, str], float]:
     """Evaluate the band entries at a point: ``{(rowname, colname): value}``
     with contributions to one (row, col) pair SUMMED (§4 additivity, incl.
     contracted-point accumulation). ``states``/``params`` map variable name
@@ -159,17 +162,16 @@ def assemble_jacobian(obj, model_name: str | None = None, wrt: str = "states",
         coef0 = inline_observed(b.coef, obs)
         for cell in _product(b.rows):
             for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                bind = {r: cell[k] for k, r in enumerate(b.ridx)
-                        if isinstance(r, str)}
+                bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
                 for k, (nm, _, _) in enumerate(b.contracted):
                     bind[nm] = cc[k]
                 fbind = {k2: float(v2) for k2, v2 in bind.items()}
                 cidx = [_eval_cidx(c, fbind) for c in b.cidx]
                 vshape = ctx.shapes.get(en.v)
                 if vshape is not None and any(
-                        not (1 <= cidx[d] <= vshape[d])
-                        for d in range(len(cidx))):
-                    continue                # ghost/boundary read: no column
+                    not (1 <= cidx[d] <= vshape[d]) for d in range(len(cidx))
+                ):
+                    continue  # ghost/boundary read: no column
                 coef = substitute(coef0, dict(bind)) if bind else coef0
                 val = float(_as_lit(_resolve(coef, env)))
                 key = (_cellname(en.u, cell), _cellname(en.v, cidx))

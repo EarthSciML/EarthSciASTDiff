@@ -21,15 +21,18 @@ pub mod system;
 pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 pub use branches::{canon_lits, simp, simplify_branches};
 pub use clip::{clip_regions, RIdx};
-pub use emit::{block_diagonal_lu, cse_templates, detect_structure, evaluation_document,
-               jacobian_block, lu_fill, markowitz_ordering, serialize_band, BlockLu};
+pub use emit::{
+    block_diagonal_lu, cse_templates, detect_structure, evaluation_document, jacobian_block,
+    lu_fill, markowitz_ordering, serialize_band, BlockLu,
+};
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{jacobian_bands, JacEntry, Wrt};
 pub use numeric::{assemble_jacobian, band_fields};
-pub use program::{BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram,
-                  StorageScalar};
-pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};
+pub use program::{
+    BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram, StorageScalar,
+};
 pub use rules::{dscalar, DerivativeRuleError};
+pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};
 pub use system::{ctx_of, sysview, SysView};

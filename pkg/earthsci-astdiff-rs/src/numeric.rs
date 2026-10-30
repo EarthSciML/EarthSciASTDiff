@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::helpers::map_expr_children;
-use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
 use crate::inline::inline_observed_cached;
+use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
 use crate::system::{ctx_of, observed_defs, sysview};
 
 type R<T> = Result<T, BandError>;
@@ -36,8 +36,7 @@ fn as_lit(e: &Expr) -> R<f64> {
     match e {
         Expr::Integer(i) => Ok(*i as f64),
         Expr::Number(x) => Ok(*x),
-        _ => evaluate(e, &HashMap::new())
-            .map_err(|er| BandError(format!("evaluate: {er:?}"))),
+        _ => evaluate(e, &HashMap::new()).map_err(|er| BandError(format!("evaluate: {er:?}"))),
     }
 }
 
@@ -63,49 +62,69 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
             }
             match n.args.first() {
                 Some(Expr::Variable(t)) => {
-                    let arr = env.states.get(t).or_else(|| env.params.get(t))
-                        .ok_or_else(|| BandError(format!(
-                            "index into unbound array `{t}`")))?;
-                    let v = gather(arr, &cells).ok_or_else(|| BandError(
-                        format!("out-of-range gather into `{t}`")))?;
-                    Ok(Expr::Number(v.as_f64().ok_or_else(|| BandError(
-                        "non-numeric gather".into()))?))
+                    let arr = env
+                        .states
+                        .get(t)
+                        .or_else(|| env.params.get(t))
+                        .ok_or_else(|| BandError(format!("index into unbound array `{t}`")))?;
+                    let v = gather(arr, &cells)
+                        .ok_or_else(|| BandError(format!("out-of-range gather into `{t}`")))?;
+                    Ok(Expr::Number(
+                        v.as_f64()
+                            .ok_or_else(|| BandError("non-numeric gather".into()))?,
+                    ))
                 }
                 Some(Expr::Operator(cn)) if cn.op == "const" => {
-                    let v = cn.value.as_ref().ok_or_else(|| BandError(
-                        "const without value".into()))?;
-                    let v = gather(v, &cells).ok_or_else(|| BandError(
-                        "out-of-range const gather".into()))?;
-                    Ok(Expr::Number(v.as_f64().ok_or_else(|| BandError(
-                        "non-numeric const gather".into()))?))
+                    let v = cn
+                        .value
+                        .as_ref()
+                        .ok_or_else(|| BandError("const without value".into()))?;
+                    let v = gather(v, &cells)
+                        .ok_or_else(|| BandError("out-of-range const gather".into()))?;
+                    Ok(Expr::Number(v.as_f64().ok_or_else(|| {
+                        BandError("non-numeric const gather".into())
+                    })?))
                 }
                 _ => Err(BandError("index into unsupported target".into())),
             }
         }
         Expr::Operator(n) if n.op == "faq" => {
-            if n.output_idx.as_ref().map(|o| !o.is_empty()).unwrap_or(false) {
+            if n.output_idx
+                .as_ref()
+                .map(|o| !o.is_empty())
+                .unwrap_or(false)
+            {
                 return Err(BandError(
-                    "array-producing faq in scalar coefficient".into()));
+                    "array-producing faq in scalar coefficient".into(),
+                ));
             }
             if !crate::rules::plain_sum(n) {
                 return Err(BandError(format!(
-                    "{} in scalar coefficient", crate::rules::reduction(n))));
+                    "{} in scalar coefficient",
+                    crate::rules::reduction(n)
+                )));
             }
             let empty = HashMap::new();
             let ranges = n.ranges.as_ref().unwrap_or(&empty);
             let mut names: Vec<String> = ranges.keys().cloned().collect();
             names.sort();
             let ctx = crate::bands::Ctx::default();
-            let boxes: Vec<(i64, i64)> = names.iter()
+            let boxes: Vec<(i64, i64)> = names
+                .iter()
                 .map(|nm| crate::bands::range_of(&ranges[nm], &ctx))
                 .collect::<Result<_, _>>()?;
-            let body = n.expr.as_deref().ok_or_else(|| BandError(
-                "faq without body".into()))?;
+            let body = n
+                .expr
+                .as_deref()
+                .ok_or_else(|| BandError("faq without body".into()))?;
             let mut total = 0.0;
             let mut cell: Vec<i64> = boxes.iter().map(|(lo, _)| *lo).collect();
             'outer: loop {
-                let binds: HashMap<String, Expr> = names.iter().cloned()
-                    .zip(cell.iter().map(|c| Expr::Integer(*c))).collect();
+                let binds: HashMap<String, Expr> = names
+                    .iter()
+                    .cloned()
+                    .zip(cell.iter().map(|c| Expr::Integer(*c)))
+                    .collect();
                 total += as_lit(&resolve(&substitute(body, &binds), env)?)?;
                 let mut k = 0;
                 loop {
@@ -149,43 +168,52 @@ fn cellname(v: &str, cell: &[i64]) -> String {
     if cell.is_empty() {
         v.to_string()
     } else {
-        format!("{v}[{}]", cell.iter().map(|c| c.to_string())
-                .collect::<Vec<_>>().join(","))
+        format!(
+            "{v}[{}]",
+            cell.iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
     }
 }
 
 fn fold_const_gathers(e: &Expr, bind: &HashMap<String, f64>) -> R<Expr> {
-    let Expr::Operator(n) = e else { return Ok(e.clone()) };
+    let Expr::Operator(n) = e else {
+        return Ok(e.clone());
+    };
     if n.op == "index" {
         if let Some(Expr::Operator(cn)) = n.args.first() {
             if cn.op == "const" {
-                let mut v = cn.value.as_ref().ok_or_else(|| BandError(
-                    "const without value".into()))?;
+                let mut v = cn
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| BandError("const without value".into()))?;
                 for x in &n.args[1..] {
                     let i = eval_cidx(x, bind)?;
-                    v = v.as_array().and_then(|a| a.get((i - 1) as usize))
-                        .ok_or_else(|| BandError(
-                            "out-of-range const gather".into()))?;
+                    v = v
+                        .as_array()
+                        .and_then(|a| a.get((i - 1) as usize))
+                        .ok_or_else(|| BandError("out-of-range const gather".into()))?;
                 }
                 return Ok(match v {
-                    Value::Number(num) if num.is_i64() =>
-                        Expr::Integer(num.as_i64().unwrap()),
-                    _ => Expr::Number(v.as_f64().ok_or_else(|| BandError(
-                        "non-numeric const gather".into()))?),
+                    Value::Number(num) if num.is_i64() => Expr::Integer(num.as_i64().unwrap()),
+                    _ => Expr::Number(
+                        v.as_f64()
+                            .ok_or_else(|| BandError("non-numeric const gather".into()))?,
+                    ),
                 });
             }
         }
     }
     let mut err: Option<BandError> = None;
-    let out = map_expr_children(e, &mut |x| {
-        match fold_const_gathers(x, bind) {
-            Ok(v) => v,
-            Err(er) => {
-                if err.is_none() {
-                    err = Some(er);
-                }
-                x.clone()
+    let out = map_expr_children(e, &mut |x| match fold_const_gathers(x, bind) {
+        Ok(v) => v,
+        Err(er) => {
+            if err.is_none() {
+                err = Some(er);
             }
+            x.clone()
         }
     });
     match err {
@@ -232,8 +260,7 @@ pub(crate) fn foreach_point(
     b: &Band,
     f: &mut dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()>,
 ) -> R<()> {
-    let cranges: Vec<(i64, i64)> =
-        b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
+    let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
     for cell in product_first_fastest(&b.rows) {
         for cc in product_first_fastest(&cranges) {
             let mut ibind: HashMap<String, i64> = HashMap::new();
@@ -247,7 +274,9 @@ pub(crate) fn foreach_point(
             }
             let fbind: HashMap<String, f64> =
                 ibind.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
-            let cidx: Vec<i64> = b.cidx.iter()
+            let cidx: Vec<i64> = b
+                .cidx
+                .iter()
                 .map(|c| eval_cidx(c, &fbind))
                 .collect::<Result<_, _>>()?;
             f(&cell, &cc, &ibind, &cidx)?;
@@ -259,9 +288,13 @@ pub(crate) fn foreach_point(
 /// Every non-ghost point of every band at a point: `f(k, entry, row cell,
 /// contracted cell, column cell, value)`, bands in order, cells first index
 /// fastest.
-fn for_each_value(ctx: &Ctx, obs: &HashMap<String, Expr>, entries: &[JacEntry], env: &Env,
-                  f: &mut dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64))
-                  -> R<()> {
+fn for_each_value(
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    entries: &[JacEntry],
+    env: &Env,
+    f: &mut dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64),
+) -> R<()> {
     // Pruning leaves target-independent observed as opaque reads in the
     // coefficients; resolve them from their own definitions (what the
     // reference's derived evaluation model does). This splices in only the
@@ -275,14 +308,16 @@ fn for_each_value(ctx: &Ctx, obs: &HashMap<String, Expr>, entries: &[JacEntry], 
         foreach_point(&en.band, &mut |cell, cc, ibind, cidx| {
             if let Some(vshape) = vshape {
                 if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
-                    return Ok(());             // ghost read: no column
+                    return Ok(()); // ghost read: no column
                 }
             }
             let coef = if ibind.is_empty() {
                 coef0.clone()
             } else {
-                let sub: HashMap<String, Expr> = ibind.iter()
-                    .map(|(k, v)| (k.clone(), Expr::Integer(*v))).collect();
+                let sub: HashMap<String, Expr> = ibind
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Expr::Integer(*v)))
+                    .collect();
                 substitute(&coef0, &sub)
             };
             let val = as_lit(&resolve(&coef, env)?)?;
@@ -295,17 +330,27 @@ fn for_each_value(ctx: &Ctx, obs: &HashMap<String, Expr>, entries: &[JacEntry], 
 
 /// Evaluate the band entries at a point: `{(rowname, colname): value}`,
 /// contributions summed (§4 additivity, contracted points included).
-pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
-                         env: &Env) -> R<BTreeMap<(String, String), f64>> {
+pub fn assemble_jacobian(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    env: &Env,
+) -> R<BTreeMap<(String, String), f64>> {
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
     let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt)?;
     let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
-    for_each_value(&ctx, &obs, &entries, env, &mut |_, en, cell, _, cidx, val| {
-        let key = (cellname(&en.u, cell), cellname(&en.v, cidx));
-        *out.entry(key).or_insert(0.0) += val;
-    })?;
+    for_each_value(
+        &ctx,
+        &obs,
+        &entries,
+        env,
+        &mut |_, en, cell, _, cidx, val| {
+            let key = (cellname(&en.u, cell), cellname(&en.v, cidx));
+            *out.entry(key).or_insert(0.0) += val;
+        },
+    )?;
     Ok(out)
 }
 
@@ -313,16 +358,19 @@ pub fn assemble_jacobian(file: &EsmFile, model_name: Option<&str>, wrt: Wrt,
 /// `J_k` states hold, and what a [`crate::ScatterPlan`] scatters: field `k`
 /// over the row shape then the contracted extents, column-major. Ghost
 /// points (no column) and cells outside the band region stay 0.
-pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env)
-                   -> R<Vec<Vec<f64>>> {
+pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec<Vec<f64>>> {
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
     let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
-    let shapes: Vec<Vec<i64>> = entries.iter()
-        .map(|en| crate::scatter::field_shape(en, &ctx)).collect();
-    let mut fields: Vec<Vec<f64>> = shapes.iter()
-        .map(|sh| vec![0.0; sh.iter().product::<i64>() as usize]).collect();
+    let shapes: Vec<Vec<i64>> = entries
+        .iter()
+        .map(|en| crate::scatter::field_shape(en, &ctx))
+        .collect();
+    let mut fields: Vec<Vec<f64>> = shapes
+        .iter()
+        .map(|sh| vec![0.0; sh.iter().product::<i64>() as usize])
+        .collect();
     for_each_value(&ctx, &obs, &entries, env, &mut |k, _, cell, cc, _, val| {
         let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
         fields[k][crate::scatter::flat(&full, &shapes[k])] = val;

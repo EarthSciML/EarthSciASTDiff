@@ -2,6 +2,7 @@
 
 ``stable_json(serialize_band(e) for e in entries)`` is the cross-language
 conformance surface: byte-identical to the Julia reference's goldens."""
+
 from __future__ import annotations
 
 from earthsci_ast.numpy_interpreter import evaluate
@@ -50,11 +51,10 @@ def _fold_const_gathers(e, bind: dict[str, float]):
 
     if not isinstance(e, ExprNode):
         return e
-    if (e.op == "index" and isinstance(e.args[0], ExprNode)
-            and e.args[0].op == "const"):
+    if e.op == "index" and isinstance(e.args[0], ExprNode) and e.args[0].op == "const":
         v = e.args[0].value
         for x in e.args[1:]:
-            v = v[_eval_cidx(x, bind) - 1]      # wire tables are 1-based
+            v = v[_eval_cidx(x, bind) - 1]  # wire tables are 1-based
         return v
     return map_children(e, lambda x: _fold_const_gathers(x, bind))
 
@@ -82,13 +82,11 @@ def scatter_pairs(sv, entries: list[JacEntry]):
         b = en.band
         for cell in _product(b.rows):
             for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                bind = {r: float(cell[k2]) for k2, r in enumerate(b.ridx)
-                        if isinstance(r, str)}
+                bind = {r: float(cell[k2]) for k2, r in enumerate(b.ridx) if isinstance(r, str)}
                 for k2, (n, _, _) in enumerate(b.contracted):
                     bind[n] = float(cc[k2])
                 cidx = [_eval_cidx(c, bind) for c in b.cidx]
-                pairs.append((k, _cellname(en.u, cell),
-                              _cellname(en.v, cidx)))
+                pairs.append((k, _cellname(en.u, cell), _cellname(en.v, cidx)))
     return pairs
 
 
@@ -103,8 +101,13 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states"):
     return pairs, entries
 
 
-def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
-                   cse: bool = True, cse_min_nodes: int = 12) -> dict:
+def jacobian_block(
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    cse: bool = True,
+    cse_min_nodes: int = 12,
+) -> dict:
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default), the structure classification, and the block-local
     `expression_templates`, plus the `factorization` plan where one exists
@@ -121,13 +124,19 @@ def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
     templates: dict = {}
     if cse:
         templates, rewritten = cse_templates(
-            [en.band.coef for en in entries], min_nodes=cse_min_nodes)
+            [en.band.coef for en in entries], min_nodes=cse_min_nodes
+        )
         if templates:
-            ser_entries = [JacEntry(en.u, en.v,
-                                    Band(en.band.rows, en.band.ridx,
-                                         en.band.cidx, rewritten[k],
-                                         en.band.contracted))
-                           for k, en in enumerate(entries)]
+            ser_entries = [
+                JacEntry(
+                    en.u,
+                    en.v,
+                    Band(
+                        en.band.rows, en.band.ridx, en.band.cidx, rewritten[k], en.band.contracted
+                    ),
+                )
+                for k, en in enumerate(entries)
+            ]
     block: dict = {
         "wrt": wrt,
         "entries": [serialize_band(en) for en in ser_entries],
@@ -135,8 +144,8 @@ def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
     }
     if templates:
         block["expression_templates"] = {
-            n: {"params": [], "body": ser_expr(b)}
-            for n, b in templates.items()}
+            n: {"params": [], "body": ser_expr(b)} for n, b in templates.items()
+        }
     from .factorization import plan_factorization, serialize_plan
 
     plan = plan_factorization(entries, sv, structure=structure)
@@ -154,13 +163,21 @@ def parse_jacobian_block(block: dict):
     wrt = block["wrt"]
     entries = [parse_band(d) for d in block["entries"]]
     if "expression_templates" in block:
-        reg = {str(n): parse_expression(t["body"])
-               for n, t in block["expression_templates"].items()}
-        entries = [JacEntry(en.u, en.v,
-                            Band(en.band.rows, en.band.ridx,
-                                 [expand_templates(c, reg)
-                                  for c in en.band.cidx],
-                                 expand_templates(en.band.coef, reg),
-                                 en.band.contracted))
-                   for en in entries]
+        reg = {
+            str(n): parse_expression(t["body"]) for n, t in block["expression_templates"].items()
+        }
+        entries = [
+            JacEntry(
+                en.u,
+                en.v,
+                Band(
+                    en.band.rows,
+                    en.band.ridx,
+                    [expand_templates(c, reg) for c in en.band.cidx],
+                    expand_templates(en.band.coef, reg),
+                    en.band.contracted,
+                ),
+            )
+            for en in entries
+        ]
     return wrt, entries

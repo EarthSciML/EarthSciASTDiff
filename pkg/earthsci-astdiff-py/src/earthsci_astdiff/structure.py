@@ -1,5 +1,6 @@
 """Matrix-structure classification from the bands' column-index expressions
 (structure.jl) — never probed numerically."""
+
 from __future__ import annotations
 
 from earthsci_ast.esm_types import Expr, ExprNode

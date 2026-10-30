@@ -1,6 +1,7 @@
 """Uniform system view over an ``EsmFile`` model or a ``FlattenedSystem``,
 plus the expansion step guaranteeing we differentiate the same tree the
 evaluators run (system.jl)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,8 +27,7 @@ class SysView:
 
 def _only_model(file: EsmFile) -> str:
     if len(file.models) != 1:
-        raise ValueError(
-            f"document has {len(file.models)} models; pass model_name")
+        raise ValueError(f"document has {len(file.models)} models; pass model_name")
     return next(iter(file.models))
 
 
@@ -44,8 +44,7 @@ def sysview(obj, model_name: str | None = None) -> SysView:
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)
         model = expanded.models[name]
-        return SysView(dict(model.variables), list(model.equations),
-                       dict(expanded.index_sets))
+        return SysView(dict(model.variables), list(model.equations), dict(expanded.index_sets))
     # FlattenedSystem
     vars: dict[str, object] = {}
     for d in (obj.state_variables, obj.parameters, obj.observed_variables):
@@ -75,8 +74,7 @@ def ctx_of(sv: SysView) -> Ctx:
     for n, var in sv.variables.items():
         shape = getattr(var, "shape", None)
         if shape:
-            shapes[str(n)] = [int(x) if isinstance(x, int) else isets[str(x)]
-                              for x in shape]
+            shapes[str(n)] = [int(x) if isinstance(x, int) else isets[str(x)] for x in shape]
         if _var_type(var) == "parameter":
             params.add(str(n))
     return Ctx(isets, shapes, params)
@@ -95,8 +93,7 @@ def lhs_state(eq) -> str | None:
         return None
     if l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D":
         a = l.expr.args[0]
-        if (isinstance(a, ExprNode) and a.op == "index"
-                and isinstance(a.args[0], str)):
+        if isinstance(a, ExprNode) and a.op == "index" and isinstance(a.args[0], str):
             return a.args[0]
         return None
     if l.op == "D" and isinstance(l.args[0], str):
@@ -109,8 +106,9 @@ def is_derivative(eq) -> bool:
     ones ``lhs_state`` does not recognize (``D(index(u, 1))``), which no pass
     supports and none may silently skip."""
     l = eq.lhs
-    return isinstance(l, ExprNode) and (l.op == "D" or (
-        l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D"))
+    return isinstance(l, ExprNode) and (
+        l.op == "D" or (l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D")
+    )
 
 
 def lhs_definition(eq) -> str | None:
@@ -137,16 +135,24 @@ def _indexed_definition(eq) -> tuple[str, Expr | None] | None:
     if l.op != "index" or not l.args or not isinstance(l.args[0], str):
         return None
     name, sub = l.args[0], list(l.args[1:])
-    if (faq is None or [str(x) for x in faq.output_idx] != sub
-            or len(set(sub)) != len(sub)):
+    if faq is None or [str(x) for x in faq.output_idx] != sub or len(set(sub)) != len(sub):
         return name, None
-    return name, ExprNode(op="faq", args=[], output_idx=sub, expr=eq.rhs,
-                          ranges=dict(faq.ranges) if faq.ranges else None)
+    return name, ExprNode(
+        op="faq",
+        args=[],
+        output_idx=sub,
+        expr=eq.rhs,
+        ranges=dict(faq.ranges) if faq.ranges else None,
+    )
 
 
-_UNKNOWN_TYPES = ("unknown",
-                  # a FlattenedVariable carries its DERIVED role instead
-                  "state", "observed", "species")
+_UNKNOWN_TYPES = (
+    "unknown",
+    # a FlattenedVariable carries its DERIVED role instead
+    "state",
+    "observed",
+    "species",
+)
 
 
 def _is_unknown(var) -> bool:
@@ -175,12 +181,14 @@ def observed_defs(sv: SysView) -> dict[str, Expr]:
         if d is None:
             raise ValueError(
                 f"arrayed observed `{n}`: defining LHS subscripts must be the "
-                "distinct output indices (partial definitions are not supported)")
+                "distinct output indices (partial definitions are not supported)"
+            )
         if n in out:
             if n in indexed or bare is None:
                 raise ValueError(
                     f"arrayed observed `{n}` is defined by more than one "
-                    "equation (piecewise definitions are not supported)")
+                    "equation (piecewise definitions are not supported)"
+                )
             continue
         out[n] = d
         if bare is None:
@@ -194,8 +202,9 @@ def view_states(sv: SysView, obs: dict[str, Expr] | None = None) -> list[str]:
     ``obs`` (:func:`observed_defs`) when the caller already has it."""
     if obs is None:
         obs = observed_defs(sv)
-    return sorted(str(n) for n, var in sv.variables.items()
-                  if _is_unknown(var) and str(n) not in obs)
+    return sorted(
+        str(n) for n, var in sv.variables.items() if _is_unknown(var) and str(n) not in obs
+    )
 
 
 def _opaque_deps(e: Expr) -> bool:
@@ -211,6 +220,7 @@ def _opaque_deps(e: Expr) -> bool:
         nonlocal found
         found = found or _opaque_deps(c)
         return c
+
     map_children(e, visit)
     return found
 
@@ -228,11 +238,11 @@ def _index_arg_names(acc: set[str], e: Expr) -> None:
     def visit(c):
         _index_arg_names(acc, c)
         return c
+
     map_children(e, visit)
 
 
-def inlinable_observed(obs: dict[str, Expr], equations,
-                       targets: set[str]) -> dict[str, Expr]:
+def inlinable_observed(obs: dict[str, Expr], equations, targets: set[str]) -> dict[str, Expr]:
     """The subset of the observed the band calculus must inline (the
     reference's ``inlinable_observed``, system.jl). Kept: (1) the reflexive-
     transitive READER closure of the observed naming a ``targets`` member
@@ -249,7 +259,7 @@ def inlinable_observed(obs: dict[str, Expr], equations,
             if m in obs:
                 readers.setdefault(m, []).append(n)
     keep = set(work)
-    while work:                                   # (1) reader closure
+    while work:  # (1) reader closure
         for n in readers.get(work.pop(), ()):
             if n not in keep:
                 keep.add(n)

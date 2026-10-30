@@ -32,18 +32,24 @@ solver consumes. Wrap the pieces yourself for any solver interface, or load
 SciMLBase and call [`odefunction`](@ref) / [`odeproblem`](@ref).
 """
 function ode_components(input; model_name = nothing, build_kwargs = NamedTuple())
-    f!, u0, p0, _, vm = _build_eval(_sv_src(input, model_name)[2], model_name;
-                                    build_kwargs...)
-    jac = prepare_jacobian(input; wrt = :states, model_name = model_name,
-                           build_kwargs = build_kwargs)
+    f!, u0, p0, _, vm = _build_eval(
+        _sv_src(input, model_name)[2], model_name;
+        build_kwargs...
+    )
+    jac = prepare_jacobian(
+        input; wrt = :states, model_name = model_name,
+        build_kwargs = build_kwargs
+    )
     jac! = (J, u, p, t) -> jac(J, u, p, t)
     # Time gradient: an autonomous RHS (no structural `t` occurrence) gets a
     # zero fill instead of a second compiled evaluator.
     tgrad! = if isempty(jacobian_bands(_sv_src(input, model_name)[1]; wrt = :time))
         (dT, u, p, t) -> fill!(dT, 0.0)
     else
-        tg = prepare_jacobian(input; wrt = :time, model_name = model_name,
-                              build_kwargs = build_kwargs)
+        tg = prepare_jacobian(
+            input; wrt = :time, model_name = model_name,
+            build_kwargs = build_kwargs
+        )
         Tbuf = copy(tg.prototype)
         (dT, u, p, t) -> begin
             tg(Tbuf, u, p, t)
@@ -55,8 +61,10 @@ function ode_components(input; model_name = nothing, build_kwargs = NamedTuple()
             dT
         end
     end
-    return (f! = f!, jac! = jac!, jac_prototype = copy(jac.prototype),
-            tgrad! = tgrad!, u0 = u0, p = p0, var_map = vm, jacobian = jac)
+    return (
+        f! = f!, jac! = jac!, jac_prototype = copy(jac.prototype),
+        tgrad! = tgrad!, u0 = u0, p = p0, var_map = vm, jacobian = jac,
+    )
 end
 
 const _SCIML_HINT = "requires the SciMLBase glue: load SciMLBase (any \

@@ -44,8 +44,12 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
         ["t"]
     else
         wrt == :states ? view_states(sv, obs) :
-            sort!([String(n) for (n, var) in sv.variables
-                   if var.type == EarthSciAST.ParameterVariable])
+            sort!(
+                [
+                    String(n) for (n, var) in sv.variables
+                    if var.type == EarthSciAST.ParameterVariable
+                ]
+            )
     end
     # Only the observed that can actually move with a target are inlined; the
     # rest have an identically-zero derivative and stay opaque reads that the
@@ -70,13 +74,16 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states)
     # the `entries` order is what downstream pattern/scatter construction
     # (assemble.jl) reads.
     tset = Set{String}(targets)
-    obs_names = Ref{Union{Nothing,Set{String}}}(nothing)
+    obs_names = Ref{Union{Nothing, Set{String}}}(nothing)
     for eq in sv.equations
         u = lhs_state(eq)
         if u === nothing
-            _is_derivative(eq) && throw(BandError(
-                "unsupported derivative LHS $(JSON3.write(EarthSciAST.serialize_expression(eq.lhs))) " *
-                "(a state's derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"))
+            _is_derivative(eq) && throw(
+                BandError(
+                    "unsupported derivative LHS $(JSON3.write(EarthSciAST.serialize_expression(eq.lhs))) " *
+                        "(a state's derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                )
+            )
             continue
         end
         shape_u = get(ctx.shapes, u, Int[])

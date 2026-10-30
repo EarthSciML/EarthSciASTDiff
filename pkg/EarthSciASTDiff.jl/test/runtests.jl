@@ -12,7 +12,7 @@ fixture(name) = EarthSciAST.load_path(joinpath(FIXTURES, name))
 # ForwardDiff oracle: dense Jacobian of the tree-walk RHS w.r.t. states.
 function ad_jacobian(f!, u, p, t)
     du = similar(u)
-    sparse(ForwardDiff.jacobian((du, u) -> f!(du, u, p, t), du, u))
+    return sparse(ForwardDiff.jacobian((du, u) -> f!(du, u, p, t), du, u))
 end
 
 @testset "EarthSciASTDiff" begin

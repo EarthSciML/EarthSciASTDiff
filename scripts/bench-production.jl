@@ -10,8 +10,10 @@
 using EarthSciAST, EarthSciASTDiff
 
 function median_time(f; n = 50)
-    for _ in 1:5; f(); end
-    sort!([(t0 = time_ns(); f(); (time_ns() - t0) / 1e3) for _ in 1:n])[n ÷ 2 + 1]
+    for _ in 1:5
+        f()
+    end
+    return sort!([(t0 = time_ns(); f(); (time_ns() - t0) / 1.0e3) for _ in 1:n])[n ÷ 2 + 1]
 end
 
 dir = ARGS[1]
@@ -27,7 +29,9 @@ for name in ("bd_chem", "column")
     tj = median_time(() -> jac(J, u, nothing, 0.5))   # the parameter defaults
     du = similar(u)
     tf = median_time(() -> f!(du, u, p, 0.5))
-    println(rpad(name, 10), " prepare_jacobian ", round(tprep; digits = 2), " s | jac! ",
-            round(tj; digits = 1), " µs | RHS ", round(tf; digits = 1), " µs | ",
-            length(u), " states, nnz ", length(J.nzval))
+    println(
+        rpad(name, 10), " prepare_jacobian ", round(tprep; digits = 2), " s | jac! ",
+        round(tj; digits = 1), " µs | RHS ", round(tf; digits = 1), " µs | ",
+        length(u), " states, nnz ", length(J.nzval)
+    )
 end

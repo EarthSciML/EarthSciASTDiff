@@ -1,0 +1,16 @@
+# Starter ruff config for repositories that call the shared lint workflow
+# (EarthSciML/.github/.github/workflows/lint.yml). Copy it to the repository
+# root and adjust; ruff cannot inherit config from another repository.
+line-length = 100
+
+[lint]
+# An explicit `select`, not ruff's default set: the default grew from 59 to
+# 413 rules in ruff 0.16, and an explicit list does not move when the pinned
+# ruff version is bumped. Add rule groups one at a time.
+#   E4/E7/E9/F  pyflakes + core pycodestyle (correctness)
+#   B           flake8-bugbear (likely bugs)
+#   UP          pyupgrade (modern syntax for the target version)
+#   I           isort (import order)
+#   NPY         NumPy-specific rules
+#   RUF         ruff's own rules
+select = ["E4", "E7", "E9", "F", "B", "UP", "I", "NPY", "RUF"]

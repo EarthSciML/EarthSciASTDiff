@@ -70,6 +70,10 @@ fn pruned_observed_values_on_both_axes() {
     assert_eq!(jp.len(), 4, "the k column must not be pruned to zero");
     for (i, ui) in u.iter().enumerate() {
         let v = jp[&(format!("u[{}]", i + 1), "k".to_string())];
-        assert!((v - (2.0 - 2.0 * ui)).abs() <= 1e-14, "∂u[{}]/∂k = {v}", i + 1);
+        assert!(
+            (v - (2.0 - 2.0 * ui)).abs() <= 1e-14,
+            "∂u[{}]/∂k = {v}",
+            i + 1
+        );
     }
 }

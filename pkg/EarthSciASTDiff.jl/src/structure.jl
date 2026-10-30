@@ -78,6 +78,8 @@ jac_prototype(jac::JacobianEvaluator) = copy(jac.prototype)
 
 function jac_prototype(input; wrt::Symbol = :states, model_name = nothing)
     pat = jacobian_pattern(input; wrt = wrt, model_name = model_name).pattern
-    return SparseMatrixCSC(pat.m, pat.n, copy(pat.colptr), copy(pat.rowval),
-                           zeros(length(pat.rowval)))
+    return SparseMatrixCSC(
+        pat.m, pat.n, copy(pat.colptr), copy(pat.rowval),
+        zeros(length(pat.rowval))
+    )
 end

@@ -29,8 +29,10 @@ fully usable — a plan is an optimization, never a requirement).
 
 Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref).
 """
-function plan_factorization(entries::Vector{JacEntry}, sv::SysView;
-                            structure::Symbol = detect_structure(entries, sv))
+function plan_factorization(
+        entries::Vector{JacEntry}, sv::SysView;
+        structure::Symbol = detect_structure(entries, sv)
+    )
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
     return nothing
 end
@@ -88,9 +90,9 @@ function lu_fill(pattern::AbstractMatrix{Bool})::BitMatrix
     P = BitMatrix(pattern)
     n = size(P, 1)
     @assert size(P, 2) == n
-    for k in 1:n, i in (k+1):n
+    for k in 1:n, i in (k + 1):n
         if P[i, k]
-            for j in (k+1):n
+            for j in (k + 1):n
                 P[i, j] |= P[k, j]
             end
         end
@@ -134,13 +136,15 @@ function markowitz_ordering(pattern::AbstractMatrix{Bool})::Vector{Int}
 end
 
 function serialize_plan(p::BlockDiagonalPlan)
-    nzpairs(M) = Any[Any[ij[1], ij[2]] for ij in
-                     sort!([(i, j) for i in 1:size(M,1), j in 1:size(M,2) if M[i, j]])]
-    OrderedDict{String,Any}(
-        "type"       => "block_diagonal_lu",
+    nzpairs(M) = Any[
+        Any[ij[1], ij[2]] for ij in
+            sort!([(i, j) for i in 1:size(M, 1), j in 1:size(M, 2) if M[i, j]])
+    ]
+    return OrderedDict{String, Any}(
+        "type" => "block_diagonal_lu",
         "block_vars" => p.block_vars,
-        "ordering"   => p.ordering,
-        "pattern"    => nzpairs(p.pattern),
+        "ordering" => p.ordering,
+        "pattern" => nzpairs(p.pattern),
         "lu_pattern" => nzpairs(p.lu),
     )
 end

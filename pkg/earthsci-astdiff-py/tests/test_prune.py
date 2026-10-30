@@ -7,6 +7,7 @@ against the analytic Jacobian on both axes: ``src = 2k`` is state-independent
 
     D(u)[i] = -(src·u[i]) + src   ⇒   ∂/∂u[i] = -2k,   ∂/∂k = 2 − 2u[i]
 """
+
 import earthsci_ast as ea
 import pytest
 
@@ -19,23 +20,40 @@ K = 3.0
 def _probe():
     def idx(v, i):
         return {"op": "index", "args": [v, i]}
-    body = {"op": "+", "args": [
-        {"op": "-", "args": [{"op": "*", "args": ["src", idx("u", "i")]}]},
-        "src"]}
-    return ea.load_document({
-        "esm": "1.1.0",
-        "metadata": {"name": "PruneProbe"},
-        "index_sets": {"x": {"kind": "interval", "size": 4}},
-        "models": {"PruneProbe": {
-            "variables": {
-                "u": {"type": "unknown", "shape": ["x"], "default": 0.5},
-                "k": {"type": "parameter", "default": K},
-                "src": {"type": "unknown"}},
-            "equations": [
-                {"lhs": "src", "rhs": {"op": "*", "args": ["k", 2]}},
-                {"lhs": {"op": "D", "args": ["u"], "wrt": "t"},
-                 "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
-                         "ranges": {"i": [1, 4]}, "expr": body}}]}}})
+
+    body = {
+        "op": "+",
+        "args": [{"op": "-", "args": [{"op": "*", "args": ["src", idx("u", "i")]}]}, "src"],
+    }
+    return ea.load_document(
+        {
+            "esm": "1.1.0",
+            "metadata": {"name": "PruneProbe"},
+            "index_sets": {"x": {"kind": "interval", "size": 4}},
+            "models": {
+                "PruneProbe": {
+                    "variables": {
+                        "u": {"type": "unknown", "shape": ["x"], "default": 0.5},
+                        "k": {"type": "parameter", "default": K},
+                        "src": {"type": "unknown"},
+                    },
+                    "equations": [
+                        {"lhs": "src", "rhs": {"op": "*", "args": ["k", 2]}},
+                        {
+                            "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+                            "rhs": {
+                                "op": "faq",
+                                "args": [],
+                                "output_idx": ["i"],
+                                "ranges": {"i": [1, 4]},
+                                "expr": body,
+                            },
+                        },
+                    ],
+                }
+            },
+        }
+    )
 
 
 def test_pruning_decision_is_per_axis():
@@ -55,8 +73,7 @@ def test_pruned_observed_values_on_both_axes():
         # A coefficient that dropped the pruned observed would read -1; one
         # that zeroed it, 0.
         assert ju[(f"u[{i}]", f"u[{i}]")] == pytest.approx(-2 * K, abs=1e-14)
-    jp = assemble_jacobian(file, wrt="parameters", states={"u": u},
-                           params={"k": K})
+    jp = assemble_jacobian(file, wrt="parameters", states={"u": u}, params={"k": K})
     assert len(jp) == 4, "the k column must not be pruned to zero"
     for i, ui in enumerate(u, start=1):
         assert jp[(f"u[{i}]", "k")] == pytest.approx(2 - 2 * ui, abs=1e-14)

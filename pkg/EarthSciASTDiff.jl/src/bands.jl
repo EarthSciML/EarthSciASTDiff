@@ -29,18 +29,18 @@ referencing a contracted name is an indirect/contracted gather
 (source–receptor matrices, regrid joins, `conn[]`-table stencils).
 """
 struct Band
-    rows::Vector{Tuple{Int,Int}}
-    ridx::Vector{Union{String,Int}}
+    rows::Vector{Tuple{Int, Int}}
+    ridx::Vector{Union{String, Int}}
     cidx::Vector{ASTExpr}
     coef::ASTExpr
-    contracted::Vector{Tuple{String,Int,Int}}
+    contracted::Vector{Tuple{String, Int, Int}}
 end
-Band(rows, ridx, cidx, coef) = Band(rows, ridx, cidx, coef, Tuple{String,Int,Int}[])
+Band(rows, ridx, cidx, coef) = Band(rows, ridx, cidx, coef, Tuple{String, Int, Int}[])
 
 "Differentiation context: index-set sizes, array-variable shapes, parameter names."
 struct Ctx
-    index_sets::Dict{String,Int}
-    shapes::Dict{String,Vector{Int}}
+    index_sets::Dict{String, Int}
+    shapes::Dict{String, Vector{Int}}
     params::Set{String}
 end
 is_array(ctx::Ctx, name) = haskey(ctx.shapes, name)
@@ -56,7 +56,7 @@ struct BandError <: Exception
 end
 Base.showerror(io::IO, e::BandError) = print(io, "BandError: ", e.msg)
 
-function _range_of(r, ctx::Ctx)::Tuple{Int,Int}
+function _range_of(r, ctx::Ctx)::Tuple{Int, Int}
     if r isa IndexSetRef
         return (1, _set_size(r.from, ctx))
     elseif r isa AbstractVector
@@ -72,7 +72,7 @@ _set_size(name, ctx::Ctx)::Int = haskey(ctx.index_sets, name) ? ctx.index_sets[n
 
 # All distinct sites of `v` inside a scalar body: the bare VarExpr and every
 # `index(v, …)` node, keyed by canonical JSON.
-function sites_of(e::ASTExpr, v::String, acc = Dict{String,Site}())
+function sites_of(e::ASTExpr, v::String, acc = Dict{String, Site}())
     if e isa VarExpr && e.name == v
         s = Site(e); acc[s.key] = s
     elseif e isa OpExpr && e.op == "index" && e.args[1] isa VarExpr && e.args[1].name == v
@@ -95,16 +95,18 @@ end
 # every such shadowing it produces, so this fires only on a hand-written
 # shadowing sum.
 function _nested_sums(e::ASTExpr, v::String, outer)
-    acc = Dict{String,Dict{String,Any}}()
-    _nested_sums!(acc, e, v, Set{String}(outer), Pair{String,Any}[])
+    acc = Dict{String, Dict{String, Any}}()
+    _nested_sums!(acc, e, v, Set{String}(outer), Pair{String, Any}[])
     return acc
 end
 
 function _nested_sums!(acc, e::ASTExpr, v::String, outer::Set{String}, stack)
-    if (e isa VarExpr && e.name == v) || (e isa OpExpr && e.op == "index" &&
-                                         e.args[1] isa VarExpr && e.args[1].name == v)
+    if (e isa VarExpr && e.name == v) || (
+            e isa OpExpr && e.op == "index" &&
+                e.args[1] isa VarExpr && e.args[1].name == v
+        )
         isempty(stack) && return
-        d = get!(() -> Dict{String,Any}(), acc, Site(e).key)
+        d = get!(() -> Dict{String, Any}(), acc, Site(e).key)
         seen = Set{String}()
         for (n, r) in stack
             d[n] = n in outer || n in seen || (haskey(d, n) && d[n] != r) ? :ambiguous : r
@@ -128,13 +130,13 @@ function _nested_sums!(acc, e::ASTExpr, v::String, outer::Set{String}, stack)
 end
 
 # Substitution that does not descend into a faq node for the names it binds.
-function _subst_free(e::ASTExpr, m::Dict{String,ASTExpr})::ASTExpr
+function _subst_free(e::ASTExpr, m::Dict{String, ASTExpr})::ASTExpr
     e isa VarExpr && return get(m, e.name, e)
     e isa OpExpr || return e
     if e.op == "faq"
         bound = _binders(e)
         if any(n -> haskey(m, n), bound)
-            m = Dict{String,ASTExpr}(k => v for (k, v) in m if !(k in bound))
+            m = Dict{String, ASTExpr}(k => v for (k, v) in m if !(k in bound))
             isempty(m) && return e
         end
     end
@@ -151,9 +153,11 @@ end
 # substitutes contracted values without regard to binders.
 # `nested` is `_nested_sums` of `body`, and `taken` a lazily filled cache of
 # its names; both are per body, not per site.
-function _lift_nested(nested, s::Site, body::ASTExpr, cidx::Vector{ASTExpr},
-                      coef::ASTExpr, ctx::Ctx, outer, taken)
-    none = Tuple{String,Int,Int}[]
+function _lift_nested(
+        nested, s::Site, body::ASTExpr, cidx::Vector{ASTExpr},
+        coef::ASTExpr, ctx::Ctx, outer, taken
+    )
+    none = Tuple{String, Int, Int}[]
     d = get(nested, s.key, nothing)
     d === nothing && return cidx, coef, none
     read = Set{String}()
@@ -163,11 +167,14 @@ function _lift_nested(nested, s::Site, body::ASTExpr, cidx::Vector{ASTExpr},
     names = sort!([n for n in keys(d) if n in read])
     isempty(names) && return cidx, coef, none
     taken[] === nothing && (taken[] = _all_names!(Set{String}(String.(outer)), body))
-    ren = Dict{String,ASTExpr}(); extra = Tuple{String,Int,Int}[]
+    ren = Dict{String, ASTExpr}(); extra = Tuple{String, Int, Int}[]
     for n in names
-        d[n] === :ambiguous && throw(BandError(
-            "a column reads `$n`, which the sums around it bind ambiguously " *
-            "(shadowing an enclosing index, or over two different ranges)"))
+        d[n] === :ambiguous && throw(
+            BandError(
+                "a column reads `$n`, which the sums around it bind ambiguously " *
+                    "(shadowing an enclosing index, or over two different ranges)"
+            )
+        )
         f = n * "_j"
         while f in taken[] || any(x -> x.name == f, values(ren))
             f *= "_j"
@@ -193,8 +200,10 @@ function is_array_expr(e::ASTExpr, ctx::Ctx)::Bool
     # (`[E_REMOVED_OP]`) and no tree reaching here can carry it. `faq` is the
     # unified query node, spelled `aggregate` before esm 1.1.0 and normalized
     # to `faq` at the wire boundary (docs/content/rfcs/faq-node-rename.md).
-    e.op in ("faq", "makearray", "broadcast",
-             "reshape", "transpose", "concat") && return true
+    e.op in (
+        "faq", "makearray", "broadcast",
+        "reshape", "transpose", "concat",
+    ) && return true
     e.op == "index" && return false
     return any(x -> is_array_expr(x, ctx), e.args)
 end
@@ -210,14 +219,16 @@ function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[]):
     out = Band[]
     if isempty(shape_u)
         nested = _nested_sums(rhs, v, String[])
-        taken = Ref{Union{Nothing,Set{String}}}(nothing)
+        taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(rhs, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra = _lift_nested(nested, s, rhs, cidx, dscalar(rhs, s), ctx,
-                                          String[], taken)
+            cidx, d, extra = _lift_nested(
+                nested, s, rhs, cidx, dscalar(rhs, s), ctx,
+                String[], taken
+            )
             coef = _simp(d)
             iszero_lit(coef) && continue
-            push!(out, Band(Tuple{Int,Int}[], Union{String,Int}[], cidx, coef, extra))
+            push!(out, Band(Tuple{Int, Int}[], Union{String, Int}[], cidx, coef, extra))
         end
         return out
     end
@@ -233,16 +244,19 @@ function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale)
     outer = String[r for r in ridx if r isa String]
     for (rows2, body) in clip_regions(e, ridx, rows)
         nested = _nested_sums(body, v, outer)
-        taken = Ref{Union{Nothing,Set{String}}}(nothing)
+        taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra = _lift_nested(nested, s, body, cidx, dscalar(body, s), ctx,
-                                          outer, taken)
+            cidx, d, extra = _lift_nested(
+                nested, s, body, cidx, dscalar(body, s), ctx,
+                outer, taken
+            )
             coef = _simp(mul(d, scale...))
             iszero_lit(coef) && continue
-            push!(out, Band(rows2, collect(Union{String,Int}, ridx), cidx, coef, extra))
+            push!(out, Band(rows2, collect(Union{String, Int}, ridx), cidx, coef, extra))
         end
     end
+    return
 end
 
 # `scale` accumulates elementwise scalar multipliers from enclosing `*`, `-`,
@@ -251,8 +265,12 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
     if e isa VarExpr
         e.name == v || return out
         names = ["_r$k" for k in 1:length(shape_u)]           # identity band
-        push!(out, Band([(1, n) for n in shape_u], Union{String,Int}[names...],
-                        ASTExpr[VarExpr(n) for n in names], mul(scale...)))
+        push!(
+            out, Band(
+                [(1, n) for n in shape_u], Union{String, Int}[names...],
+                ASTExpr[VarExpr(n) for n in names], mul(scale...)
+            )
+        )
         return out
     end
     e isa OpExpr || return out
@@ -269,18 +287,26 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
         _bands_array!(out, e.args[1], v, ctx, shape_u, vcat(scale, [lit(-1)]))
     elseif o == "*"
         arr = [x for x in e.args if is_array_expr(x, ctx)]
-        sc  = [x for x in e.args if !is_array_expr(x, ctx)]
-        length(arr) == 1 || throw(BandError(
-            "elementwise product of $(length(arr)) array-valued factors at array " *
-            "level; wrap in a faq node"))
-        any(x -> occurs_var(x, v), sc) && throw(BandError(
-            "scalar factor depends on `$v` in an array-level product"))
+        sc = [x for x in e.args if !is_array_expr(x, ctx)]
+        length(arr) == 1 || throw(
+            BandError(
+                "elementwise product of $(length(arr)) array-valued factors at array " *
+                    "level; wrap in a faq node"
+            )
+        )
+        any(x -> occurs_var(x, v), sc) && throw(
+            BandError(
+                "scalar factor depends on `$v` in an array-level product"
+            )
+        )
         _bands_array!(out, arr[1], v, ctx, shape_u, vcat(scale, sc))
     elseif o == "/"
         is_array_expr(e.args[2], ctx) &&
             throw(BandError("array-valued divisor at array level"))
-        _bands_array!(out, e.args[1], v, ctx, shape_u,
-                      vcat(scale, [op("/", lit(1), e.args[2])]))
+        _bands_array!(
+            out, e.args[1], v, ctx, shape_u,
+            vcat(scale, [op("/", lit(1), e.args[2])])
+        )
     elseif o == "makearray"
         _bands_makearray!(out, e, v, ctx, scale)
     elseif o == "faq"
@@ -296,10 +322,13 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
             names = ["_r$k" for k in 1:length(shape_u)]
             idx = ASTExpr[VarExpr(n) for n in names]
             body = _push_index(e, idx, ctx)
-            agg = OpExpr("faq", ASTExpr[];
-                         output_idx = Any[names...], expr_body = body,
-                         ranges = Dict{String,Any}(
-                             n => Any[1, shape_u[k]] for (k, n) in enumerate(names)))
+            agg = OpExpr(
+                "faq", ASTExpr[];
+                output_idx = Any[names...], expr_body = body,
+                ranges = Dict{String, Any}(
+                    n => Any[1, shape_u[k]] for (k, n) in enumerate(names)
+                )
+            )
             _bands_array!(out, agg, v, ctx, shape_u, scale)
         else
             # Scalar expression broadcast over u's shape.
@@ -312,18 +341,28 @@ end
 
 function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     oidx = [String(x) for x in e.output_idx if x isa AbstractString]
-    length(oidx) == length(e.output_idx) || throw(BandError(
-        "singleton `1` output_idx entries not supported yet"))
-    e.filter === nothing || throw(BandError(
-        "filtered faq nodes not supported (the filter gate would be dropped " *
-        "from the derivative)"))
-    ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
+    length(oidx) == length(e.output_idx) || throw(
+        BandError(
+            "singleton `1` output_idx entries not supported yet"
+        )
+    )
+    e.filter === nothing || throw(
+        BandError(
+            "filtered faq nodes not supported (the filter gate would be dropped " *
+                "from the derivative)"
+        )
+    )
+    ranges = e.ranges === nothing ? Dict{String, Any}() : e.ranges
     cnames = sort!([String(n) for n in keys(ranges) if !(String(n) in oidx)])
-    _plain_sum(e) || throw(BandError(
-        "$(_reduction(e)) (non-smooth semiring reductions have no bands)"))
-    crange = Tuple{String,Int,Int}[
-        (n, _range_of(ranges[n], ctx)...) for n in cnames]
-    rows = Tuple{Int,Int}[]
+    _plain_sum(e) || throw(
+        BandError(
+            "$(_reduction(e)) (non-smooth semiring reductions have no bands)"
+        )
+    )
+    crange = Tuple{String, Int, Int}[
+        (n, _range_of(ranges[n], ctx)...) for n in cnames
+    ]
+    rows = Tuple{Int, Int}[]
     for (k, n) in enumerate(oidx)
         push!(rows, haskey(ranges, n) ? _range_of(ranges[n], ctx) : (1, shape_u[k]))
     end
@@ -331,45 +370,60 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     outer = vcat(oidx, cnames)
     for (rows2, body2) in clip_regions(body, oidx, rows)
         nested = _nested_sums(body2, v, outer)
-        taken = Ref{Union{Nothing,Set{String}}}(nothing)
+        taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body2, v)
-            s.expr isa VarExpr && is_array(ctx, v) && throw(BandError(
-                "whole-array reference to `$v` inside a faq body"))
+            s.expr isa VarExpr && is_array(ctx, v) && throw(
+                BandError(
+                    "whole-array reference to `$v` inside a faq body"
+                )
+            )
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra = _lift_nested(nested, s, body2, cidx, dscalar(body2, s),
-                                          ctx, outer, taken)
+            cidx, d, extra = _lift_nested(
+                nested, s, body2, cidx, dscalar(body2, s),
+                ctx, outer, taken
+            )
             if isempty(crange)
                 coef = _simp(mul(d, scale...))
                 iszero_lit(coef) && continue
-                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef, extra))
-            elseif !any(n -> any(c -> n in free_variables(c), cidx),
-                        first.(crange))
+                push!(out, Band(rows2, Union{String, Int}[oidx...], cidx, coef, extra))
+            elseif !any(
+                    n -> any(c -> n in free_variables(c), cidx),
+                    first.(crange)
+                )
                 # The column is independent of every contracted index: a
                 # plain band whose coefficient is the (scalar) `reduce: "+"`
                 # of the site derivative over the contraction.
-                red = OpExpr("faq", ASTExpr[];
-                             output_idx = Any[], reduce = "+", expr_body = d,
-                             ranges = Dict{String,Any}(
-                                 n => Any[lo, hi] for (n, lo, hi) in crange))
+                red = OpExpr(
+                    "faq", ASTExpr[];
+                    output_idx = Any[], reduce = "+", expr_body = d,
+                    ranges = Dict{String, Any}(
+                        n => Any[lo, hi] for (n, lo, hi) in crange
+                    )
+                )
                 coef = _simp(mul(red, scale...))
                 iszero_lit(coef) && continue
-                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef, extra))
+                push!(out, Band(rows2, Union{String, Int}[oidx...], cidx, coef, extra))
             else
                 # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
                 # with free contracted column dimensions; entries landing on
                 # one column accumulate at assembly.
                 coef = _simp(mul(d, scale...))
                 iszero_lit(coef) && continue
-                push!(out, Band(rows2, Union{String,Int}[oidx...], cidx, coef,
-                                vcat(crange, extra)))
+                push!(
+                    out, Band(
+                        rows2, Union{String, Int}[oidx...], cidx, coef,
+                        vcat(crange, extra)
+                    )
+                )
             end
         end
     end
+    return
 end
 
 function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
     for (region, val) in zip(e.regions, e.values)
-        rows = [( _region_bound(r[1]), _region_bound(r[2]) ) for r in region]
+        rows = [(_region_bound(r[1]), _region_bound(r[2])) for r in region]
         any(((lo, hi),) -> hi < lo, rows) && continue        # folded-empty region
         nonsing = [k for (k, (lo, hi)) in enumerate(rows) if hi > lo]
         if is_array_expr(val, ctx)
@@ -378,7 +432,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             # (singleton dims included); a reduced-rank value covers only the
             # non-singleton dims.
             val_fullrank = val isa OpExpr && val.op == "faq" &&
-                           length(val.output_idx) == length(rows)
+                length(val.output_idx) == length(rows)
             sub_shape = val_fullrank ?
                 [hi - lo + 1 for (lo, hi) in rows] :
                 [rows[k][2] - rows[k][1] + 1 for k in nonsing]
@@ -390,15 +444,17 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             # start, which for a region-clipped sub-band (clip.jl) sits past
             # the origin. Singletons are pinned.
             origins = if val isa OpExpr && val.op == "faq"
-                vr = val.ranges === nothing ? Dict{String,Any}() : val.ranges
-                Int[haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
-                    for n in val.output_idx]
+                vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
+                Int[
+                    haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
+                        for n in val.output_idx
+                ]
             else
                 ones(Int, length(nonsing))   # identity/broadcast bands are 1-based
             end
             for b in sub
-                ridx = Union{String,Int}[]; subst = Dict{String,ASTExpr}()
-                rows2 = Tuple{Int,Int}[]
+                ridx = Union{String, Int}[]; subst = Dict{String, ASTExpr}()
+                rows2 = Tuple{Int, Int}[]
                 fullrank = length(b.ridx) == length(rows)
                 kk = 0
                 for (k, (lo, hi)) in enumerate(rows)
@@ -419,15 +475,18 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
                 end
                 coef = isempty(subst) ? b.coef : substitute(b.coef, subst)
                 cidx = isempty(subst) ? b.cidx :
-                       ASTExpr[substitute(c, subst) for c in b.cidx]
+                    ASTExpr[substitute(c, subst) for c in b.cidx]
                 push!(out, Band(rows2, ridx, cidx, coef, b.contracted))
             end
         else
             # Scalar value broadcast over the region.
-            _scalar_bands!(out, val, v, ctx, rows,
-                           Union{String,Int}[lo for (lo, _) in rows], scale)
+            _scalar_bands!(
+                out, val, v, ctx, rows,
+                Union{String, Int}[lo for (lo, _) in rows], scale
+            )
         end
     end
+    return
 end
 
 # Index-pushdown for bare elementwise array expressions: A ↦ index(A, idx…).
@@ -436,8 +495,12 @@ function _push_index(e::ASTExpr, idx::Vector{ASTExpr}, ctx::Ctx)::ASTExpr
         return is_array(ctx, e.name) ? op("index", e, idx...) : e
     elseif e isa OpExpr
         e.op in ("faq", "makearray", "index") &&
-            throw(BandError("cannot push an index into `$(e.op)` " *
-                            "nested under an elementwise op"))
+            throw(
+            BandError(
+                "cannot push an index into `$(e.op)` " *
+                    "nested under an elementwise op"
+            )
+        )
         return map_children(x -> _push_index(x, idx, ctx), e)
     end
     return e
@@ -451,7 +514,7 @@ a one-cell boundary face) to that constant, substituting it through `cidx`
 and `coef`. Keeps emitted coefficient faq nodes rank-consistent.
 """
 function normalize_band(b::Band)::Band
-    subst = Dict{String,ASTExpr}(); ridx = Union{String,Int}[]
+    subst = Dict{String, ASTExpr}(); ridx = Union{String, Int}[]
     for (k, r) in enumerate(b.ridx)
         lo, hi = b.rows[k]
         if r isa String && lo == hi
@@ -460,12 +523,14 @@ function normalize_band(b::Band)::Band
             push!(ridx, r)
         end
     end
-    contracted = Tuple{String,Int,Int}[]
+    contracted = Tuple{String, Int, Int}[]
     for (n, lo, hi) in b.contracted           # a one-value contraction pins too
         lo == hi ? (subst[n] = lit(lo)) : push!(contracted, (n, lo, hi))
     end
     isempty(subst) && return b
-    return Band(b.rows, ridx,
-                ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
-                _simp(substitute(b.coef, subst)), contracted)
+    return Band(
+        b.rows, ridx,
+        ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
+        _simp(substitute(b.coef, subst)), contracted
+    )
 end

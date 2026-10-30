@@ -45,23 +45,23 @@ module EarthSciASTDiff
 
 using EarthSciAST
 using EarthSciAST: ASTExpr, NumExpr, IntExpr, VarExpr, OpExpr, IndexSetRef,
-                   canonical_json, simplify, map_children, expression_from_json
+    canonical_json, simplify, map_children, expression_from_json
 using SparseArrays
 using OrderedCollections: OrderedDict
 using JSON3
 
 export Site, dscalar, simplify_branches,
-       Band, JacEntry, bands, jacobian_bands,
-       SysView, sysview, expanded_model, inlinable_observed,
-       jacobian_document, parse_jacobian_block, stable_json,
-       cse_templates, expand_templates, hoist_observed,
-       jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
-       ode_components, odefunction, odeproblem,
-       detect_structure, jac_prototype,
-       FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
-       StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
-       ScatterPlan, scatter_plan, serialize_scatter_plan,
-       BoundScatter, bind_plan, jac_into!, scatter_targets
+    Band, JacEntry, bands, jacobian_bands,
+    SysView, sysview, expanded_model, inlinable_observed,
+    jacobian_document, parse_jacobian_block, stable_json,
+    cse_templates, expand_templates, hoist_observed,
+    jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
+    ode_components, odefunction, odeproblem,
+    detect_structure, jac_prototype,
+    FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
+    StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
+    ScatterPlan, scatter_plan, serialize_scatter_plan,
+    BoundScatter, bind_plan, jac_into!, scatter_targets
 
 include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
 include("hashcons.jl")       # structural interning (size-independent equality)

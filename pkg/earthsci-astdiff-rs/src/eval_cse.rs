@@ -46,7 +46,9 @@ fn refs_of(e: &Expr) -> HashSet<String> {
 }
 
 fn deref(e: &Expr, readmap: &HashMap<String, Expr>) -> Expr {
-    let Expr::Operator(n) = e else { return e.clone() };
+    let Expr::Operator(n) = e else {
+        return e.clone();
+    };
     if n.op == "apply_expression_template" {
         if let Some(r) = n.name.as_ref().and_then(|nm| readmap.get(nm)) {
             return r.clone();
@@ -59,8 +61,7 @@ fn deref(e: &Expr, readmap: &HashMap<String, Expr>) -> Expr {
 /// occurrences) as observed of the derived document. `None` when there is
 /// nothing to hoist, or when a template's free index names are not bound by
 /// every band that uses it (the caller then emits the plain document).
-pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
-                      -> Option<Hoisted> {
+pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize) -> Option<Hoisted> {
     let coefs: Vec<Expr> = entries.iter().map(|en| en.band.coef.clone()).collect();
     // Hoisted names must be fresh in the derived model's variable namespace.
     let mut pfx = "Jcse".to_string();
@@ -71,24 +72,30 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
     if templates.is_empty() {
         return None;
     }
-    let body: HashMap<&str, &Expr> =
-        templates.iter().map(|(n, b)| (n.as_str(), b)).collect();
+    let body: HashMap<&str, &Expr> = templates.iter().map(|(n, b)| (n.as_str(), b)).collect();
     let tnames: Vec<&str> = templates.iter().map(|(n, _)| n.as_str()).collect();
 
     // Per entry: index name → (lo, hi) — row dims plus free contracted dims.
-    let boxof: Vec<HashMap<String, (i64, i64)>> = entries.iter().map(|en| {
-        let mut d: HashMap<String, (i64, i64)> = en.band.ridx.iter().enumerate()
-            .filter_map(|(k, r)| match r {
-                RIdx::Name(nm) => Some((nm.clone(), en.band.rows[k])),
-                RIdx::Fixed(_) => None,
-            }).collect();
-        for (n, lo, hi) in &en.band.contracted {
-            d.insert(n.clone(), (*lo, *hi));
-        }
-        d
-    }).collect();
-    let allnames: HashSet<String> =
-        boxof.iter().flat_map(|b| b.keys().cloned()).collect();
+    let boxof: Vec<HashMap<String, (i64, i64)>> = entries
+        .iter()
+        .map(|en| {
+            let mut d: HashMap<String, (i64, i64)> = en
+                .band
+                .ridx
+                .iter()
+                .enumerate()
+                .filter_map(|(k, r)| match r {
+                    RIdx::Name(nm) => Some((nm.clone(), en.band.rows[k])),
+                    RIdx::Fixed(_) => None,
+                })
+                .collect();
+            for (n, lo, hi) in &en.band.contracted {
+                d.insert(n.clone(), (*lo, *hi));
+            }
+            d
+        })
+        .collect();
+    let allnames: HashSet<String> = boxof.iter().flat_map(|b| b.keys().cloned()).collect();
 
     // Which entries evaluate each template, transitively through the
     // reference DAG.
@@ -114,18 +121,27 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
             }
         }
     }
-    let live: Vec<&str> = tnames.iter().copied().filter(|n| !uses[n].is_empty()).collect();
+    let live: Vec<&str> = tnames
+        .iter()
+        .copied()
+        .filter(|n| !uses[n].is_empty())
+        .collect();
 
     // Free row-index names per template (transitive; sorted = the axis order).
-    fn s_of<'a>(n: &'a str, body: &HashMap<&str, &Expr>,
-                refs_body: &HashMap<&str, HashSet<String>>,
-                allnames: &HashSet<String>, memo: &mut HashMap<String, Vec<String>>)
-                -> Vec<String> {
+    fn s_of<'a>(
+        n: &'a str,
+        body: &HashMap<&str, &Expr>,
+        refs_body: &HashMap<&str, HashSet<String>>,
+        allnames: &HashSet<String>,
+        memo: &mut HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
         if let Some(s) = memo.get(n) {
             return s.clone();
         }
-        let mut s: HashSet<String> = free_variables(body[n]).into_iter()
-            .filter(|x| allnames.contains(x)).collect();
+        let mut s: HashSet<String> = free_variables(body[n])
+            .into_iter()
+            .filter(|x| allnames.contains(x))
+            .collect();
         for n2 in &refs_body[n] {
             s.extend(s_of(n2, body, refs_body, allnames, memo));
         }
@@ -135,8 +151,10 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
         v
     }
     let mut smemo: HashMap<String, Vec<String>> = HashMap::new();
-    let s: HashMap<&str, Vec<String>> = live.iter()
-        .map(|n| (*n, s_of(n, &body, &refs_body, &allnames, &mut smemo))).collect();
+    let s: HashMap<&str, Vec<String>> = live
+        .iter()
+        .map(|n| (*n, s_of(n, &body, &refs_body, &allnames, &mut smemo)))
+        .collect();
     // Consistency: every user band must bind every axis name.
     for n in &live {
         for &k in &uses[n] {
@@ -164,8 +182,11 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
     // Axis index sets: one per distinct extent, reusing an existing set of
     // exactly that size when the name is free.
     let mut axes: Vec<(String, i64)> = Vec::new();
-    let mut existing: BTreeMap<String, i64> = sv.index_sets.iter()
-        .filter_map(|(n, s)| s.size.map(|sz| (n.clone(), sz))).collect();
+    let mut existing: BTreeMap<String, i64> = sv
+        .index_sets
+        .iter()
+        .filter_map(|(n, s)| s.size.map(|sz| (n.clone(), sz)))
+        .collect();
     let mut axis_for = |sz: i64| -> String {
         let nm = crate::emit::jcax_name(|n| existing.get(n).is_some_and(|e| *e != sz), sz);
         if !existing.contains_key(&nm) {
@@ -175,16 +196,19 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
         nm
     };
 
-    let readmap: HashMap<String, Expr> = live.iter().map(|n| {
-        let r = if s[n].is_empty() {
-            Expr::Variable(n.to_string())
-        } else {
-            let mut args = vec![Expr::Variable(n.to_string())];
-            args.extend(s[n].iter().map(|x| Expr::Variable(x.clone())));
-            op("index", args)
-        };
-        (n.to_string(), r)
-    }).collect();
+    let readmap: HashMap<String, Expr> = live
+        .iter()
+        .map(|n| {
+            let r = if s[n].is_empty() {
+                Expr::Variable(n.to_string())
+            } else {
+                let mut args = vec![Expr::Variable(n.to_string())];
+                args.extend(s[n].iter().map(|x| Expr::Variable(x.clone())));
+                op("index", args)
+            };
+            (n.to_string(), r)
+        })
+        .collect();
 
     let mut obs = Vec::new();
     let mut obs_eqs = Vec::new();
@@ -196,21 +220,39 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize)
             continue;
         }
         let exts: Vec<i64> = (0..s[n].len())
-            .map(|j| boxes[n].iter().map(|bx| bx[j].1).max().unwrap()).collect();
-        let mut regions = vec![json!(exts.iter().map(|e| json!([1, e])).collect::<Vec<_>>())];
+            .map(|j| boxes[n].iter().map(|bx| bx[j].1).max().unwrap())
+            .collect();
+        let mut regions = vec![json!(exts
+            .iter()
+            .map(|e| json!([1, e]))
+            .collect::<Vec<_>>())];
         let mut values = vec![json!(0.0)];
         for bx in &boxes[n] {
-            regions.push(json!(bx.iter().map(|(lo, hi)| json!([lo, hi])).collect::<Vec<_>>()));
-            let ranges: Map<String, Value> = s[n].iter().enumerate()
-                .map(|(j, x)| (x.clone(), json!([bx[j].0, bx[j].1]))).collect();
+            regions.push(json!(bx
+                .iter()
+                .map(|(lo, hi)| json!([lo, hi]))
+                .collect::<Vec<_>>()));
+            let ranges: Map<String, Value> = s[n]
+                .iter()
+                .enumerate()
+                .map(|(j, x)| (x.clone(), json!([bx[j].0, bx[j].1])))
+                .collect();
             values.push(json!({"op": "faq", "args": [], "output_idx": s[n],
                                "ranges": ranges, "expr": ser_expr(&b)}));
         }
         let shape: Vec<String> = exts.iter().map(|e| axis_for(*e)).collect();
         obs.push((n.to_string(), json!({"type": "unknown", "shape": shape})));
-        obs_eqs.push((n.to_string(), json!({"op": "makearray", "args": [],
-                                            "regions": regions, "values": values})));
+        obs_eqs.push((
+            n.to_string(),
+            json!({"op": "makearray", "args": [],
+                                            "regions": regions, "values": values}),
+        ));
     }
     let coefs = rewritten.iter().map(|e| deref(e, &readmap)).collect();
-    Some(Hoisted { obs, obs_eqs, axes, coefs })
+    Some(Hoisted {
+        obs,
+        obs_eqs,
+        axes,
+        coefs,
+    })
 }

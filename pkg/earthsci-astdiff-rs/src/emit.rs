@@ -11,8 +11,8 @@ use crate::bands::{Band, Ctx};
 use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
-use crate::jacobian::{JacEntry, Wrt};
 use crate::jacobian::unsupported_derivative;
+use crate::jacobian::{JacEntry, Wrt};
 use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
 /// One entry of the `jacobians` block, as JSON (spec §4).
@@ -21,22 +21,37 @@ pub fn serialize_band(en: &JacEntry) -> Value {
     let mut d = serde_json::Map::new();
     d.insert("row".into(), json!(en.u));
     d.insert("col".into(), json!(en.v));
-    d.insert("rows".into(),
-             Value::Array(b.rows.iter()
-                          .map(|(lo, hi)| json!([lo, hi])).collect()));
-    d.insert("row_idx".into(),
-             Value::Array(b.ridx.iter().map(|r| match r {
-                 RIdx::Name(n) => json!(n),
-                 RIdx::Fixed(i) => json!(i),
-             }).collect()));
-    d.insert("col_idx".into(),
-             Value::Array(b.cidx.iter().map(ser_expr).collect()));
+    d.insert(
+        "rows".into(),
+        Value::Array(b.rows.iter().map(|(lo, hi)| json!([lo, hi])).collect()),
+    );
+    d.insert(
+        "row_idx".into(),
+        Value::Array(
+            b.ridx
+                .iter()
+                .map(|r| match r {
+                    RIdx::Name(n) => json!(n),
+                    RIdx::Fixed(i) => json!(i),
+                })
+                .collect(),
+        ),
+    );
+    d.insert(
+        "col_idx".into(),
+        Value::Array(b.cidx.iter().map(ser_expr).collect()),
+    );
     d.insert("coef".into(), ser_expr(&b.coef));
     if !b.contracted.is_empty() {
-        d.insert("contracted".into(),
-                 Value::Array(b.contracted.iter()
-                              .map(|(n, lo, hi)| json!([n, lo, hi]))
-                              .collect()));
+        d.insert(
+            "contracted".into(),
+            Value::Array(
+                b.contracted
+                    .iter()
+                    .map(|(n, lo, hi)| json!([n, lo, hi]))
+                    .collect(),
+            ),
+        );
     }
     Value::Object(d)
 }
@@ -52,8 +67,12 @@ struct Intern {
 
 impl Intern {
     fn new() -> Self {
-        Intern { ids: HashMap::new(), reps: vec![], nnodes: vec![],
-                 counts: vec![] }
+        Intern {
+            ids: HashMap::new(),
+            reps: vec![],
+            nnodes: vec![],
+            counts: vec![],
+        }
     }
 
     fn intern(&mut self, e: &Expr) -> usize {
@@ -84,8 +103,7 @@ impl Intern {
                 i += 1;
                 Expr::Variable(format!("__cse⟦{}⟧", childids[i - 1]))
             });
-            let nn = 1 + childids.iter().map(|&c| self.nnodes[c - 1])
-                .sum::<usize>();
+            let nn = 1 + childids.iter().map(|&c| self.nnodes[c - 1]).sum::<usize>();
             (stable_json(&ser_expr(&Expr::operator(shell))), nn)
         } else {
             (stable_json(&ser_expr(e)), 1)
@@ -93,8 +111,7 @@ impl Intern {
     }
 }
 
-fn replace_id(e: &Expr, it: &Intern, target: usize, repl: &Expr)
-              -> (Expr, usize) {
+fn replace_id(e: &Expr, it: &Intern, target: usize, repl: &Expr) -> (Expr, usize) {
     let mut childids = Vec::new();
     let mut newchildren = Vec::new();
     if let Expr::Operator(n) = e {
@@ -124,8 +141,11 @@ fn replace_id(e: &Expr, it: &Intern, target: usize, repl: &Expr)
 
 /// Greedy largest-first extraction; deterministic (first-encounter order,
 /// first-max tie-break) to match the reference byte-for-byte.
-pub fn cse_templates(exprs: &[Expr], min_nodes: usize, prefix: &str)
-                     -> (Vec<(String, Expr)>, Vec<Expr>) {
+pub fn cse_templates(
+    exprs: &[Expr],
+    min_nodes: usize,
+    prefix: &str,
+) -> (Vec<(String, Expr)>, Vec<Expr>) {
     let mut work: Vec<Expr> = exprs.to_vec();
     let nin = work.len();
     let mut names: Vec<String> = Vec::new();
@@ -139,7 +159,9 @@ pub fn cse_templates(exprs: &[Expr], min_nodes: usize, prefix: &str)
             if it.counts[id - 1] < 2 || it.nnodes[id - 1] < min_nodes {
                 continue;
             }
-            let Expr::Operator(n) = &it.reps[id - 1] else { continue };
+            let Expr::Operator(n) = &it.reps[id - 1] else {
+                continue;
+            };
             if n.op == "apply_expression_template" {
                 continue;
             }
@@ -158,11 +180,17 @@ pub fn cse_templates(exprs: &[Expr], min_nodes: usize, prefix: &str)
             ..Default::default()
         });
         let body = it.reps[best - 1].clone();
-        work = work.iter().map(|e| replace_id(e, &it, best, &repl).0).collect();
+        work = work
+            .iter()
+            .map(|e| replace_id(e, &it, best, &repl).0)
+            .collect();
         work.push(body);
     }
-    let templates = names.iter().enumerate()
-        .map(|(k, n)| (n.clone(), work[nin + k].clone())).collect();
+    let templates = names
+        .iter()
+        .enumerate()
+        .map(|(k, n)| (n.clone(), work[nin + k].clone()))
+        .collect();
     (templates, work[..nin].to_vec())
 }
 
@@ -184,9 +212,7 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
                     if matches!(a, Expr::Variable(v) if v == rn) && is_lit(b) {
                         return "affine";
                     }
-                    if n.op == "+" && matches!(b, Expr::Variable(v) if v == rn)
-                        && is_lit(a)
-                    {
+                    if n.op == "+" && matches!(b, Expr::Variable(v) if v == rn) && is_lit(a) {
                         return "affine";
                     }
                 }
@@ -197,9 +223,19 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
             "other"
         }
         RIdx::Fixed(ri) => match c {
-            Expr::Integer(i) => if i == ri { "diag" } else { "fixed" },
+            Expr::Integer(i) => {
+                if i == ri {
+                    "diag"
+                } else {
+                    "fixed"
+                }
+            }
             Expr::Number(x) => {
-                if (x.round() as i64) == *ri { "diag" } else { "fixed" }
+                if (x.round() as i64) == *ri {
+                    "diag"
+                } else {
+                    "fixed"
+                }
             }
             _ => "other",
         },
@@ -209,8 +245,7 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
 /// Classify the band list as `"block_diagonal"`, `"banded"` or `"general"`
 /// (or `"empty"` / `"other"`), read off the column-index expressions without
 /// evaluating anything. Use it to choose a matrix type.
-pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx)
-                        -> &'static str {
+pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'static str {
     if entries.is_empty() {
         return "empty";
     }
@@ -233,7 +268,11 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx)
             }
         }
     }
-    if seen_affine { "banded" } else { "block_diagonal" }
+    if seen_affine {
+        "banded"
+    } else {
+        "block_diagonal"
+    }
 }
 
 // ── factorization plan (factorization.jl) ───────────────────────────────────
@@ -274,8 +313,7 @@ pub fn markowitz_ordering(pattern: &[Vec<bool>]) -> Vec<usize> {
             }
         }
         order.push(best);
-        let rest: Vec<usize> =
-            remaining.into_iter().filter(|&i| i != best).collect();
+        let rest: Vec<usize> = remaining.into_iter().filter(|&i| i != best).collect();
         for &i in &rest {
             if p[i][best] {
                 for &j in &rest {
@@ -285,7 +323,7 @@ pub fn markowitz_ordering(pattern: &[Vec<bool>]) -> Vec<usize> {
         }
         remaining = rest;
     }
-    order.iter().map(|&i| i + 1).collect()   // 1-based, like the reference
+    order.iter().map(|&i| i + 1).collect() // 1-based, like the reference
 }
 
 fn nzpairs(m: &[Vec<bool>]) -> Value {
@@ -314,24 +352,27 @@ pub struct BlockLu {
 /// Symbolic factorization info for a block-diagonal band list: the per-cell
 /// block LU with Markowitz ordering and fill-in ([`BlockLu`]).
 pub fn block_diagonal_lu(entries: &[JacEntry]) -> BlockLu {
-    let mut vars: Vec<String> = entries.iter()
-        .flat_map(|en| [en.u.clone(), en.v.clone()]).collect();
+    let mut vars: Vec<String> = entries
+        .iter()
+        .flat_map(|en| [en.u.clone(), en.v.clone()])
+        .collect();
     vars.sort();
     vars.dedup();
-    let slot: BTreeMap<&String, usize> =
-        vars.iter().enumerate().map(|(i, v)| (v, i)).collect();
+    let slot: BTreeMap<&String, usize> = vars.iter().enumerate().map(|(i, v)| (v, i)).collect();
     let ns = vars.len();
     let mut p = vec![vec![false; ns]; ns];
     for i in 0..ns {
-        p[i][i] = true;                       // W = I − γJ has the diagonal
+        p[i][i] = true; // W = I − γJ has the diagonal
     }
     for en in entries {
         p[slot[&en.u]][slot[&en.v]] = true;
     }
     let ordering = markowitz_ordering(&p);
     let idx: Vec<usize> = ordering.iter().map(|o| o - 1).collect();
-    let pp: Vec<Vec<bool>> = idx.iter()
-        .map(|&i| idx.iter().map(|&j| p[i][j]).collect()).collect();
+    let pp: Vec<Vec<bool>> = idx
+        .iter()
+        .map(|&i| idx.iter().map(|&j| p[i][j]).collect())
+        .collect();
     BlockLu {
         block_vars: idx.iter().map(|&i| vars[i].clone()).collect(),
         ordering,
@@ -356,26 +397,32 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
 /// The `jacobians` block for one model (spec §4): entries (template-CSE'd when
 /// `cse` is set, hoisting subtrees of at least `cse_min_nodes` nodes), the
 /// structure classification, and the factorization plan where one exists.
-pub fn jacobian_block(file: &earthsci_ast::EsmFile,
-                      model_name: Option<&str>, wrt: Wrt,
-                      cse: bool, cse_min_nodes: usize)
-                      -> Result<Value, crate::bands::BandError> {
+pub fn jacobian_block(
+    file: &earthsci_ast::EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Result<Value, crate::bands::BandError> {
     let entries = crate::jacobian::jacobian_bands(file, model_name, wrt)?;
     let sv: SysView = crate::system::sysview(file, model_name)?;
     let ctx = crate::system::ctx_of(&sv)?;
     let structure = detect_structure(&entries, &ctx);
-    let mut ser_entries: Vec<Value> =
-        entries.iter().map(serialize_band).collect();
+    let mut ser_entries: Vec<Value> = entries.iter().map(serialize_band).collect();
     let mut templates: Vec<(String, Expr)> = Vec::new();
     if cse {
-        let coefs: Vec<Expr> =
-            entries.iter().map(|en| en.band.coef.clone()).collect();
+        let coefs: Vec<Expr> = entries.iter().map(|en| en.band.coef.clone()).collect();
         let (tpl, rewritten) = cse_templates(&coefs, cse_min_nodes, "jt");
         if !tpl.is_empty() {
-            ser_entries = entries.iter().zip(rewritten)
+            ser_entries = entries
+                .iter()
+                .zip(rewritten)
                 .map(|(en, coef)| {
                     let mut en2 = en.clone();
-                    en2.band = Band { coef, ..en.band.clone() };
+                    en2.band = Band {
+                        coef,
+                        ..en.band.clone()
+                    };
                     serialize_band(&en2)
                 })
                 .collect();
@@ -389,8 +436,7 @@ pub fn jacobian_block(file: &earthsci_ast::EsmFile,
     if !templates.is_empty() {
         let mut t = serde_json::Map::new();
         for (n, body) in &templates {
-            t.insert(n.clone(),
-                     json!({"params": [], "body": ser_expr(body)}));
+            t.insert(n.clone(), json!({"params": [], "body": ser_expr(body)}));
         }
         block.insert("expression_templates".into(), Value::Object(t));
     }
@@ -416,25 +462,38 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
     for n in names {
         let var = &sv.variables[n];
         let mut d = Map::new();
-        d.insert("type".into(), json!(if var.var_type == VariableType::Parameter {
-            "parameter"
-        } else {
-            "unknown"
-        }));
+        d.insert(
+            "type".into(),
+            json!(if var.var_type == VariableType::Parameter {
+                "parameter"
+            } else {
+                "unknown"
+            }),
+        );
         // index-set names, written as stored (the schema allows only strings)
         if let Some(sh) = var.shape.as_ref().filter(|s| !s.is_empty()) {
             d.insert("shape".into(), json!(sh));
         }
         if let Some(def) = &var.default {
-            d.insert("default".into(), serde_json::to_value(def).expect("default serializes"));
+            d.insert(
+                "default".into(),
+                serde_json::to_value(def).expect("default serializes"),
+            );
         }
         vars.insert(n.clone(), Value::Object(d));
     }
-    let eqs: Vec<Value> = sv.equations.iter()
+    let eqs: Vec<Value> = sv
+        .equations
+        .iter()
         .map(|eq| json!({"lhs": ser_expr(&eq.lhs), "rhs": ser_expr(&eq.rhs)}))
         .collect();
-    let isets: Map<String, Value> = sv.index_sets.iter()
-        .filter_map(|(n, s)| s.size.map(|sz| (n.clone(), json!({"kind": "interval", "size": sz}))))
+    let isets: Map<String, Value> = sv
+        .index_sets
+        .iter()
+        .filter_map(|(n, s)| {
+            s.size
+                .map(|sz| (n.clone(), json!({"kind": "interval", "size": sz})))
+        })
         .collect();
     let mut doc = Map::new();
     // 1.1.0: the band coefficients may carry `faq` nodes.
@@ -457,24 +516,40 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
 /// with their declarations: they fed only `f`. (Carrying the states as
 /// parameters instead is unsafe: EarthSciAST caches observed that read only
 /// parameters, so an in-place `u` update goes stale.)
-fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &Ctx,
-                           entries: &[JacEntry], zeroed: bool)
-                           -> Result<(), crate::bands::BandError> {
+fn zero_source_derivatives(
+    model: &mut Map<String, Value>,
+    sv: &SysView,
+    ctx: &Ctx,
+    entries: &[JacEntry],
+    zeroed: bool,
+) -> Result<(), crate::bands::BandError> {
     let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
-    let defined: Vec<Option<String>> = sv.equations.iter()
-        .map(|eq| if lhs_state(eq).is_none() { defined_name(eq) } else { None })
+    let defined: Vec<Option<String>> = sv
+        .equations
+        .iter()
+        .map(|eq| {
+            if lhs_state(eq).is_none() {
+                defined_name(eq)
+            } else {
+                None
+            }
+        })
         .collect();
-    let mut reads: HashMap<&str, Vec<&Expr>> = HashMap::new();  // observed → its RHS
+    let mut reads: HashMap<&str, Vec<&Expr>> = HashMap::new(); // observed → its RHS
     for (eq, n) in sv.equations.iter().zip(&defined) {
         if let Some(n) = n.as_ref().filter(|n| !states.contains(*n)) {
             reads.entry(n.as_str()).or_default().push(&eq.rhs);
         }
     }
     let mut live: HashSet<String> = HashSet::new();
-    let mut stack: Vec<String> = entries.iter()
-        .flat_map(|en| free_variables(&en.band.coef)).collect();
+    let mut stack: Vec<String> = entries
+        .iter()
+        .flat_map(|en| free_variables(&en.band.coef))
+        .collect();
     while let Some(n) = stack.pop() {
-        let Some(rs) = reads.get(n.as_str()) else { continue };
+        let Some(rs) = reads.get(n.as_str()) else {
+            continue;
+        };
         if !live.insert(n) {
             continue;
         }
@@ -482,8 +557,12 @@ fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &C
             stack.extend(free_variables(r));
         }
     }
-    let Some(Value::Array(ser)) = model.remove("equations") else { unreachable!() };
-    let Some(Value::Object(vars)) = model.get_mut("variables") else { unreachable!() };
+    let Some(Value::Array(ser)) = model.remove("equations") else {
+        unreachable!()
+    };
+    let Some(Value::Object(vars)) = model.get_mut("variables") else {
+        unreachable!()
+    };
     let mut done: HashSet<String> = HashSet::new();
     let mut eqs = Vec::new();
     for ((eq, ser), n) in sv.equations.iter().zip(ser).zip(&defined) {
@@ -492,8 +571,10 @@ fn zero_source_derivatives(model: &mut Map<String, Value>, sv: &SysView, ctx: &C
                 if is_derivative(eq) {
                     return Err(unsupported_derivative(eq));
                 }
-                if let Some(n) = n.as_ref()
-                    .filter(|n| reads.contains_key(n.as_str()) && !live.contains(*n)) {
+                if let Some(n) = n
+                    .as_ref()
+                    .filter(|n| reads.contains_key(n.as_str()) && !live.contains(*n))
+                {
                     vars.remove(n);
                     continue;
                 }
@@ -532,7 +613,14 @@ pub(crate) fn jcax_name(taken: impl Fn(&str) -> bool, sz: i64) -> String {
 /// A literal-size axis index set of the derived document (`jcax<size>`,
 /// reused when present with that size).
 fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
-    let nm = jcax_name(|n| isets.get(n).is_some_and(|s| s.get("size") != Some(&json!(sz))), sz);
+    let nm = jcax_name(
+        |n| {
+            isets
+                .get(n)
+                .is_some_and(|s| s.get("size") != Some(&json!(sz)))
+        },
+        sz,
+    );
     if !isets.contains_key(&nm) {
         isets.insert(nm.clone(), json!({"kind": "interval", "size": sz}));
     }
@@ -542,28 +630,43 @@ fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
 /// The derived evaluation document and its band-state names (`J_1`, …).
 /// With `cse`, repeated coefficient subtrees are first hoisted into observed
 /// ([`crate::eval_cse::hoist_observed`]).
-pub fn evaluation_document(sv: &SysView, entries: &[JacEntry], cse: bool,
-                           cse_min_nodes: usize)
-                           -> Result<(Value, Vec<String>), crate::bands::BandError> {
+pub fn evaluation_document(
+    sv: &SysView,
+    entries: &[JacEntry],
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     evaluation_document_with(sv, entries, cse, cse_min_nodes, true)
 }
 
 /// [`evaluation_document`], with the source `D(u)` equations zeroed
 /// (`zeroed`, the golden form) or dropped (the band-field program's form:
 /// a `D(u) = 0` would make a `select`ed program keep writing `u`).
-pub(crate) fn evaluation_document_with(sv: &SysView, entries: &[JacEntry], cse: bool,
-                                       cse_min_nodes: usize, zeroed: bool)
-                                       -> Result<(Value, Vec<String>), crate::bands::BandError> {
+pub(crate) fn evaluation_document_with(
+    sv: &SysView,
+    entries: &[JacEntry],
+    cse: bool,
+    cse_min_nodes: usize,
+    zeroed: bool,
+) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
     zero_source_derivatives(&mut model, sv, &ctx, entries, zeroed)?;
-    let Some(Value::Array(mut eqs)) = model.remove("equations") else { unreachable!() };
+    let Some(Value::Array(mut eqs)) = model.remove("equations") else {
+        unreachable!()
+    };
     let mut isets = match doc.remove("index_sets") {
         Some(Value::Object(m)) => m,
         _ => Map::new(),
     };
-    let Some(Value::Object(vars)) = model.get_mut("variables") else { unreachable!() };
-    let h = if cse { hoist_observed(entries, sv, cse_min_nodes) } else { None };
+    let Some(Value::Object(vars)) = model.get_mut("variables") else {
+        unreachable!()
+    };
+    let h = if cse {
+        hoist_observed(entries, sv, cse_min_nodes)
+    } else {
+        None
+    };
     let coefs: Vec<Expr> = match &h {
         Some(h) => h.coefs.clone(),
         None => entries.iter().map(|en| en.band.coef.clone()).collect(),
@@ -594,16 +697,31 @@ pub(crate) fn evaluation_document_with(sv: &SysView, entries: &[JacEntry], cse: 
             let mut shape: Vec<Value> = if shape_u.is_empty() {
                 Vec::new()
             } else {
-                sv.variables[&en.u].shape.as_deref().unwrap_or(&[]).iter()
-                    .map(|x| json!(x)).collect()
+                sv.variables[&en.u]
+                    .shape
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|x| json!(x))
+                    .collect()
             };
-            shape.extend(cr.iter().map(|(_, _, hi)| json!(axis_name(&mut isets, *hi))));
-            vars.insert(nm.clone(), json!({"type": "unknown", "default": 0.0, "shape": shape}));
-            let free: Vec<(usize, &String)> = b.ridx.iter().enumerate()
+            shape.extend(
+                cr.iter()
+                    .map(|(_, _, hi)| json!(axis_name(&mut isets, *hi))),
+            );
+            vars.insert(
+                nm.clone(),
+                json!({"type": "unknown", "default": 0.0, "shape": shape}),
+            );
+            let free: Vec<(usize, &String)> = b
+                .ridx
+                .iter()
+                .enumerate()
                 .filter_map(|(k2, r)| match r {
                     RIdx::Name(s) => Some((k2, s)),
                     RIdx::Fixed(_) => None,
-                }).collect();
+                })
+                .collect();
             let mut aggnames: Vec<Value> = free.iter().map(|(_, r)| json!(r)).collect();
             aggnames.extend(cr.iter().map(|(n, _, _)| json!(n)));
             let val = if aggnames.is_empty() {
@@ -630,6 +748,9 @@ pub(crate) fn evaluation_document_with(sv: &SysView, entries: &[JacEntry], cse: 
     }
     model.insert("equations".into(), Value::Array(eqs));
     doc.insert("index_sets".into(), Value::Object(isets));
-    doc.insert("models".into(), json!({"JacobianEval": Value::Object(model)}));
+    doc.insert(
+        "models".into(),
+        json!({"JacobianEval": Value::Object(model)}),
+    );
     Ok((Value::Object(doc), names))
 }

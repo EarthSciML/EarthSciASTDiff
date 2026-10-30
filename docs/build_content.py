@@ -5,6 +5,7 @@ The draft specification lives at the repository root, next to the code that
 implements it; the site page is built from it rather than copied, so the two
 cannot drift. Output is not checked in.
 """
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -2,6 +2,7 @@
 the per-cell block (chemistry-shaped) LU as the first implementation —
 Markowitz elimination ordering + LU pattern including fill-in, decided at
 generation time (the KPP precedent)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ class BlockDiagonalPlan:
 
     block_vars: list[str]
     pattern: list[list[bool]]
-    ordering: list[int]                    # 1-based, matching the reference
+    ordering: list[int]  # 1-based, matching the reference
     lu: list[list[bool]]
 
 
@@ -59,8 +60,7 @@ def markowitz_ordering(pattern: list[list[bool]]) -> list[int]:
     return [i + 1 for i in order]
 
 
-def plan_factorization(entries: list[JacEntry], sv: SysView,
-                       structure: str | None = None):
+def plan_factorization(entries: list[JacEntry], sv: SysView, structure: str | None = None):
     """Symbolic factorization info for the detected structure.
 
     Returns a :class:`BlockDiagonalPlan` when the structure is
@@ -78,7 +78,7 @@ def _block_diagonal_plan(entries: list[JacEntry]) -> BlockDiagonalPlan:
     vars = sorted({en.u for en in entries} | {en.v for en in entries})
     slot = {v: i for i, v in enumerate(vars)}
     ns = len(vars)
-    P = [[i == j for j in range(ns)] for i in range(ns)]   # W = I − γJ diag
+    P = [[i == j for j in range(ns)] for i in range(ns)]  # W = I − γJ diag
     for en in entries:
         P[slot[en.u]][slot[en.v]] = True
     ordering = markowitz_ordering(P)
@@ -89,10 +89,10 @@ def _block_diagonal_plan(entries: list[JacEntry]) -> BlockDiagonalPlan:
 
 def serialize_plan(p: BlockDiagonalPlan) -> dict:
     def nzpairs(M):
-        return [[i + 1, j + 1]
-                for i, j in sorted((i, j)
-                                   for i in range(len(M))
-                                   for j in range(len(M[i])) if M[i][j])]
+        return [
+            [i + 1, j + 1]
+            for i, j in sorted((i, j) for i in range(len(M)) for j in range(len(M[i])) if M[i][j])
+        ]
 
     return {
         "type": "block_diagonal_lu",
