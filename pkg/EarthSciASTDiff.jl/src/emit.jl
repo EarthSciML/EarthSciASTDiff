@@ -86,7 +86,10 @@ when a factorization plan exists for that structure, the serialized plan. A
 
 `wrt` may also be a vector of distinct axes (`[:states, :forcing]`): the
 model's entry is then an ARRAY of blocks, one per axis in the given order
-(esm-jacobian-spec.md §4); a single `wrt` keeps the single-object form.
+(esm-jacobian-spec.md §4); a single `wrt` keeps the single-object form. A
+Tuple `(a1, a2)` is an axis PAIR, a block of second-order entries
+([`jacobian_bands2`](@ref), §4.4), alone or in such a list
+(`[:states, (:states, :states)]`).
 
 With `cse = true` (default), repeated coefficient subtrees of at least
 `cse_min_nodes` AST nodes are hoisted into zero-parameter
@@ -127,9 +130,10 @@ function _attach_jacobians!(
         cse::Bool = true, cse_min_nodes::Int = 12
     )
     # One axis may be spelled as a Symbol or a String; iterating a String
-    # would split it into one-character "axes".
-    single = wrt isa Union{Symbol, AbstractString}
-    axes = single ? [Symbol(wrt)] : Symbol[Symbol(w) for w in wrt]
+    # would split it into one-character "axes". A Tuple is one axis PAIR
+    # (second order, §4.4); inside a list, a two-name vector is one too.
+    single = wrt isa Union{Symbol, AbstractString, Tuple}
+    axes = single ? Any[_axis_key(wrt)] : Any[_axis_key(w) for w in wrt]
     (isempty(axes) || !allunique(axes)) &&
         throw(ArgumentError("wrt must name one or more distinct axes, got $wrt"))
     blocks = Any[
@@ -141,6 +145,9 @@ function _attach_jacobians!(
     _raise_faq_floor!(doc)
     return doc
 end
+
+_axis_key(w::Union{Symbol, AbstractString}) = Symbol(w)
+_axis_key(w::Union{Tuple, AbstractVector}) = _axis_pair(w)
 
 # One `"jacobians"` block (esm-jacobian-spec.md §4) for one axis.
 function _jacobian_block(
@@ -218,45 +225,46 @@ end
 
 """
     parse_jacobian_block(block) -> (wrt::Symbol, entries::Vector{JacEntry})
+    parse_jacobian_block(block) -> (wrt::Tuple{Symbol,Symbol}, entries::Vector{JacEntry2})
 
 Inverse of the block emission (round-trip surface for conformance tests).
+A block whose `wrt` is a pair holds second-order entries (§4.4).
 When the block carries `expression_templates` (CSE'd emission), every
 `apply_expression_template` reference in the parsed coefficients is expanded
 back to its body, so the returned entries are always closed expressions.
 """
 function parse_jacobian_block(block::AbstractDict)
-    wrt = Symbol(block["wrt"])
-    entries = JacEntry[parse_band(d) for d in block["entries"]]
+    pair = block["wrt"] isa AbstractVector
+    wrt = pair ? _axis_pair(block["wrt"]) : Symbol(block["wrt"])
+    entries = pair ? JacEntry2[parse_band2(d) for d in block["entries"]] :
+        JacEntry[parse_band(d) for d in block["entries"]]
     if haskey(block, "expression_templates")
         reg = Dict{String, ASTExpr}(
             String(name) => expression_from_json(t["body"])
                 for (name, t) in block["expression_templates"]
         )
-        entries = JacEntry[
-            JacEntry(
-                en.u, en.v, Band(
-                    en.band.rows, en.band.ridx,
-                    ASTExpr[expand_templates(c, reg) for c in en.band.cidx],
-                    expand_templates(en.band.coef, reg),
-                    en.band.contracted
-                )
-            )
-                for en in entries
-        ]
+        entries = map(en -> _with_band(en, _expand_band(en.band, reg)), entries)
     end
     return wrt, entries
 end
+
+_expand_band(b::Band, reg) = Band(
+    b.rows, b.ridx, ASTExpr[expand_templates(c, reg) for c in b.cidx],
+    expand_templates(b.coef, reg), b.contracted
+)
+_with_band(en::JacEntry, b::Band) = JacEntry(en.u, en.v, b)
 
 """
     parse_jacobian_blocks(x) -> Vector{Tuple{Symbol,Vector{JacEntry}}}
 
 [`parse_jacobian_block`](@ref) over a model's `"jacobians"` entry, which is
 either one block or an array of blocks with distinct `wrt`
-(esm-jacobian-spec.md §4); returns one `(wrt, entries)` per block, in order.
+(esm-jacobian-spec.md §4); returns one `(wrt, entries)` per block, in order
+(`wrt` a Symbol, or a Tuple for a second-order pair).
 """
 function parse_jacobian_blocks(x)
     blocks = x isa AbstractDict ? [x] : collect(x)
-    out = Tuple{Symbol, Vector{JacEntry}}[parse_jacobian_block(b) for b in blocks]
+    out = Any[parse_jacobian_block(b) for b in blocks]
     allunique(first.(out)) || throw(ArgumentError("a model's jacobian blocks must have distinct `wrt`"))
     return out
 end

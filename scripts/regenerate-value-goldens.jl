@@ -56,3 +56,44 @@ for (name, wrt, t, tag) in Iterators.flatten(
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(entries), " stored entries)")
 end
+# `<name>.<a1>-<a2>.hvals.json`: the second-order contraction (spec §4.4)
+# `g = ∇_{a2} Σᵢ μᵢᵀ J wᵢ` (on a time pair `∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t`) at the
+# pinned state and two pinned stage pairs, all carried in the golden by name.
+# `g` lists every second column a band point reaches (the exact key set),
+# sorted by name. Parameters take the document defaults.
+for (name, wrt, t) in (
+        ("bd_chem", (:states, :states), 0.7),
+        ("arrhenius_chem", (:states, :states), 0.7),
+        ("arrhenius_chem", (:states, :parameters), 0.7),
+        ("forcing_bracket", (:states, :forcing), 0.37),
+        ("forcing_bracket", (:time, :states), 0.37),
+        ("minmod_adv", (:states, :states), 0.7),
+    )
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    hv = prepare_hvp(file; wrt = wrt)
+    rn, cn, gn = hv.rownames, hv.colnames, hv.col2names
+    u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(rn)]
+    ps = [
+        (
+            [sin(1.7 * k + 0.9 * s) for k in eachindex(rn)],
+            wrt[1] == :time ? 0.5 + 0.25 * s : [cos(0.6 * k + 1.1 * s) for k in eachindex(cn)],
+        ) for s in 1:2
+    ]
+    g = hvp!(zeros(length(gn)), hv, ps, u, nothing, t)
+    reached = sort!(unique([it[4] for it in hv.items]); by = c -> gn[c])
+    doc = OrderedDict{String, Any}(
+        "wrt" => Any[String(wrt[1]), String(wrt[2])],
+        "t" => t,
+        "u" => OrderedDict{String, Any}(rn[i] => u[i] for i in eachindex(rn)),
+        "pairs" => Any[
+            OrderedDict{String, Any}(
+                "mu" => OrderedDict{String, Any}(rn[i] => μ[i] for i in eachindex(rn)),
+                "w" => w isa Number ? w : OrderedDict{String, Any}(cn[i] => w[i] for i in eachindex(cn)),
+            ) for (μ, w) in ps
+        ],
+        "g" => Any[Any[gn[c], g[c]] for c in reached],
+    )
+    path = joinpath(root, "tests", "goldens", "$name.$(wrt[1])-$(wrt[2]).hvals.json")
+    write(path, stable_json(doc))
+    println("wrote ", path, " (", length(reached), " second columns)")
+end

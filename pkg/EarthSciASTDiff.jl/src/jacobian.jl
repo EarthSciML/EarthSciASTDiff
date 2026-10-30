@@ -125,6 +125,14 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
     wrt in (:states, :parameters, :forcing, :time) || throw(
         ArgumentError("wrt must be :states, :parameters, :forcing or :time, got $wrt")
     )
+    return _jacobian_bands(sv, wrt, forcing, String[])
+end
+
+# `seed` adds names to the inlining seed without making them targets: the
+# second-order driver (second_order.jl) differentiates these coefficients
+# again with respect to its second axis, so an observed that moves only with
+# that axis must be inlined too, or its sites stay hidden behind its name.
+function _jacobian_bands(sv::SysView, wrt::Symbol, forcing, seed::Vector{String})
     ctx = _ctx(sv)
     obs = _observed_defs(sv)
     targets = _targets(sv, wrt, forcing, obs)
@@ -136,7 +144,8 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
     # `wrt = :time` is excluded: time also enters implicitly, through
     # externally-provided time-varying data, so `{"t"}` is not a sound
     # over-approximation of the set of time-dependent names.
-    wrt == :time || (obs = inlinable_observed(obs, sv.equations, Set{String}(targets)))
+    wrt == :time ||
+        (obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed))))
     entries = JacEntry[]
     # The structural occurrence gate, driven from the EQUATION rather than
     # from the target list: scanning `targets` per equation is O(|equations| ×

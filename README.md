@@ -19,7 +19,9 @@ expressions. From the bands it derives, without any numeric probing:
   the first implementation),
 - a serialized **`"jacobians"` document block**, so the Jacobian is itself
   an ESM artifact any language binding can evaluate,
-- a prepared evaluator `jac!(J, u, p, t)` over a fixed sparse prototype.
+- a prepared evaluator `jac!(J, u, p, t)` over a fixed sparse prototype,
+- **second-order bands** for Rosenbrock discrete adjoints, contracted to
+  `∇(μᵀ J w)` per step without ever forming a Hessian.
 
 Correctness contract: the derivative is taken on the *same* expanded,
 lowered tree `EarthSciAST.build_evaluator` compiles, and the test suite pins
@@ -54,6 +56,15 @@ jac = prepare_jacobian(file; wrt = :forcing,
                        build_kwargs = (param_arrays = buffers,))  # live buffers
 ḡ = Dict(n => zeros(size(buffers[n])) for n in keys(buffers))
 vjp_forcing!(ḡ, jac, λ, u, p, t)         # ḡ_B += (∂f/∂B)ᵀ λ, no matrix formed
+```
+
+Second order, for a Rosenbrock adjoint: an axis pair `(a1, a2)`,
+`a1 ∈ (:states, :time)`, `a2 ∈ (:states, :parameters, :forcing)`:
+
+```julia
+hv = prepare_hvp(file; wrt = (:states, :states))
+hvp!(g, hv, [(μ₁, w₁), (μ₂, w₂)], u, p, t)   # g += ∇_u Σᵢ μᵢᵀ J(u) wᵢ
+doc = jacobian_document(file, "MyModel"; wrt = [:states, (:states, :states)])
 ```
 
 Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
@@ -195,6 +206,18 @@ EarthSciAST implementation and is gated by the same goldens.
       the transposed bands as a scatter-add into buffer-shaped accumulators
       (Python and Rust: `prepare_jacobian` once, then `vjp_forcing` per stage).
       Pinned by `forcing_bracket.{forcing,parameters}.*` goldens.
+- [x] Second-order bands for Rosenbrock discrete adjoints
+      ([#2](https://github.com/EarthSciML/EarthSciASTDiff/issues/2), spec
+      §4.4): the band calculus applied to first-order coefficients, emitted
+      as `wrt: [a1, a2]` blocks (`col2`, `col2_idx`), and contracted per
+      adjoint step by `hvp!` (`g[col2] += coef2 · Σᵢ μᵢ[row] wᵢ[col]`, or
+      the symmetric form on the state pair) — checked against ForwardDiff
+      over ForwardDiff. Pinned by `<fixture>.<a1>-<a2>.*` goldens on
+      `bd_chem`, `arrhenius_chem`, `forcing_bracket` and `minmod_adv`.
+      Python and Rust reproduce the band and block goldens byte-for-byte
+      and the contraction values (`prepare_hvp` once, then `hvp` per
+      step) on their numeric oracles. Rust's production `Contract` target
+      (below) is still to come.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package
