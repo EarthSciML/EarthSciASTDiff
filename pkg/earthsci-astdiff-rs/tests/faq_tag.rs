@@ -57,6 +57,7 @@ fn array_models_differentiate_to_a_non_empty_band_set() {
         "adv_react_2d",
         "bd_chem",
         "contracting_observed",
+        "forcing_bracket",
     ] {
         let file = fixture(name);
         let sv = sysview(&file, None).unwrap();

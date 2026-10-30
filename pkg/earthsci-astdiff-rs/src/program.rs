@@ -409,7 +409,7 @@ impl JacobianProgram {
         let sv = sysview(file, Some(&model))?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
         if entries.is_empty() {
             return Err(JacError::Build(
                 "empty band list (an all-zero Jacobian is never a valid program — check the \

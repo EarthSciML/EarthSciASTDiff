@@ -154,7 +154,7 @@ impl ScatterPlan {
         let sv = sysview(file, model_name)?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
         ScatterPlan::build(&sv, &entries, layout)
     }
 
@@ -428,7 +428,7 @@ impl ScatterPlan {
         let sv = sysview(file, model_name)?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
         self.bind_entries(&sv, &entries, l)
     }
 
