@@ -20,9 +20,10 @@ from earthsci_ast.expr_walk import map_children
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.substitute import substitute
 
-from .emit import _cellname, _eval_cidx, _product
+from .bands import _range_of
+from .emit import _cellname, _eval_cidx, _product, check_column, column_names
 from .inline import inline_observed
-from .jacobian import _jacobian_bands
+from .jacobian import _AXES, _jacobian_bands, jacobian_columns
 from .scalar_rules import plain_sum, reduction
 from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
@@ -35,10 +36,11 @@ class _Env:
     """Point bindings: state arrays (nested lists, 1-based wire indices),
     scalar/array parameters, and the time value."""
 
-    def __init__(self, states: dict, params: dict, t: float):
+    def __init__(self, states: dict, params: dict, t: float, ctx=None):
         self.states = states
         self.params = params
         self.t = t
+        self.ctx = ctx  # resolves index-set range references ({"from": set})
 
     def scalar(self, name: str):
         if name == "t":
@@ -88,7 +90,10 @@ def _resolve(e: Expr, env: _Env) -> Expr:
         if not plain_sum(e):
             raise EvalError(f"{reduction(e)} in scalar coefficient")
         names = sorted(str(n) for n in (e.ranges or {}))
-        boxes = [range(int(e.ranges[n][0]), int(e.ranges[n][1]) + 1) for n in names]
+        boxes = []
+        for n in names:
+            lo, hi = _range_of(e.ranges[n], env.ctx)
+            boxes.append(range(lo, hi + 1))
         total = 0.0
         for cell in product(*boxes):
             body = substitute(e.expr, {n: cell[k] for k, n in enumerate(names)})
@@ -113,12 +118,21 @@ def _default_values(sv: SysView, ctx, obs: dict):
             continue
         default = getattr(var, "default", None)
         shape = ctx.shapes.get(str(n))
-        if shape:
+        if isinstance(default, (list, tuple)):
+            # an inline array default: row-major nested lists, 1-based cells
+            val = _nested_float(default)
+        elif shape:
             val = _nested_full(shape, 0.0 if default is None else float(default))
         else:
             val = 0.0 if default is None else float(default)
         (states if ty == "state" else params)[str(n)] = val
     return states, params
+
+
+def _nested_float(v):
+    if isinstance(v, (list, tuple)):
+        return [_nested_float(x) for x in v]
+    return float(v)
 
 
 def _nested_full(shape: list[int], v: float):
@@ -134,14 +148,26 @@ def assemble_jacobian(
     states: dict | None = None,
     params: dict | None = None,
     t: float = 0.0,
+    forcing=None,
 ) -> dict[tuple[str, str], float]:
     """Evaluate the band entries at a point: ``{(rowname, colname): value}``
     with contributions to one (row, col) pair SUMMED (§4 additivity, incl.
     contracted-point accumulation). ``states``/``params`` map variable name
-    → nested list (1-based cells) or scalar; defaults come from the document."""
-    if wrt not in ("states", "parameters", "time"):
-        raise ValueError(f"wrt must be states, parameters or time, got {wrt}")
+    → nested list (1-based cells, row-major) or scalar; defaults come from
+    the document (array parameters and forcing buffers included, from their
+    inline array ``default``).
+
+    On the ``"parameters"`` and ``"forcing"`` axes the column names are the
+    cells of the canonical column space (:func:`jacobian_columns`), and a
+    column outside its variable's extent raises :class:`BandError` (no ghost
+    skip; a state stencil reading past the domain is still skipped)."""
+    if wrt not in _AXES:
+        raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    return _assemble(sv, wrt, states, params, t, forcing)
+
+
+def _assemble(sv: SysView, wrt: str, states, params, t, forcing):
     ctx = ctx_of(sv)
     obs = observed_defs(sv)
     dstates, dparams = _default_values(sv, ctx, obs)
@@ -149,8 +175,13 @@ def assemble_jacobian(
         dstates.update(states)
     if params:
         dparams.update(params)
-    env = _Env(dstates, dparams, t)
-    entries = _jacobian_bands(sv, ctx, obs, wrt)
+    env = _Env(dstates, dparams, t, ctx)
+    entries = _jacobian_bands(sv, ctx, obs, wrt, forcing)
+    colset = (
+        set(column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing)))
+        if wrt in ("parameters", "forcing")
+        else None
+    )
     # Pruning leaves target-independent observed as opaque reads in the
     # coefficients; resolve them from their own definitions (what the
     # reference's derived evaluation model does). This splices in only the
@@ -167,13 +198,99 @@ def assemble_jacobian(
                     bind[nm] = cc[k]
                 fbind = {k2: float(v2) for k2, v2 in bind.items()}
                 cidx = [_eval_cidx(c, fbind) for c in b.cidx]
-                vshape = ctx.shapes.get(en.v)
-                if vshape is not None and any(
-                    not (1 <= cidx[d] <= vshape[d]) for d in range(len(cidx))
-                ):
-                    continue  # ghost/boundary read: no column
+                key = (_cellname(en.u, cell), _cellname(en.v, cidx))
+                if colset is not None:
+                    check_column(key[1] in colset, key[1], key[0], wrt)
+                else:
+                    vshape = ctx.shapes.get(en.v)
+                    if vshape is not None and any(
+                        not (1 <= cidx[d] <= vshape[d]) for d in range(len(cidx))
+                    ):
+                        continue  # ghost/boundary read: no column
                 coef = substitute(coef0, dict(bind)) if bind else coef0
                 val = float(_as_lit(_resolve(coef, env)))
-                key = (_cellname(en.u, cell), _cellname(en.v, cidx))
                 out[key] = out.get(key, 0.0) + val
     return out
+
+
+def vjp(
+    g,
+    obj,
+    lam: dict,
+    model_name: str | None = None,
+    wrt: str = "forcing",
+    states: dict | None = None,
+    params: dict | None = None,
+    t: float = 0.0,
+    forcing=None,
+):
+    """The transposed product ``g += Jᵀ λ`` at a point, as a scatter-add over
+    the band points: ``g[col] += coef · λ[row]``, with no matrix formed.
+
+    ``lam`` maps row (state cell) names to values; a row it omits is zero.
+    ``g`` is a flat mutable sequence (list or numpy vector) over the
+    canonical column ordinal of the ``"parameters"`` / ``"forcing"`` axis
+    (:func:`jacobian_columns`, cells column-major) or of ``"time"`` (``[t]``).
+    ``g`` ACCUMULATES — zero it first for a single product. Returns ``g``."""
+    if wrt not in ("parameters", "forcing", "time"):
+        raise ValueError(f"vjp needs wrt = parameters, forcing or time, got {wrt}")
+    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    cnames = (
+        ["t"] if wrt == "time" else column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing))
+    )
+    if len(g) != len(cnames):
+        raise ValueError(f"g has length {len(g)}, the column space {len(cnames)}")
+    slot = {n: i for i, n in enumerate(cnames)}
+    for (r, c), v in _assemble(sv, wrt, states, params, t, forcing).items():
+        g[slot[c]] += v * lam.get(r, 0.0)
+    return g
+
+
+def vjp_forcing(
+    g,
+    obj,
+    lam: dict,
+    model_name: str | None = None,
+    states: dict | None = None,
+    params: dict | None = None,
+    t: float = 0.0,
+    forcing=None,
+):
+    """:func:`vjp` on the forcing axis: the forcing cotangent of one stage
+    evaluation, ``g_B += (∂f/∂B)ᵀ λ`` (spec §4.3). ``g`` is either a flat
+    sequence over the canonical column ordinal or a dict of buffer-shaped
+    numpy accumulators keyed by buffer name (one per forcing buffer, each of
+    the buffer's shape, indexed by cell). It accumulates; which dataset
+    record a buffer slot holds is the caller's bookkeeping."""
+    if not isinstance(g, dict):
+        return vjp(g, obj, lam, model_name, "forcing", states, params, t, forcing)
+    import numpy as np
+
+    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    cols = jacobian_columns(sv, wrt="forcing", forcing=forcing)
+    for name, shape in cols:
+        acc = g.get(name)
+        if acc is None:
+            raise ValueError(f"no accumulator for forcing buffer `{name}`")
+        if tuple(np.shape(acc)) != tuple(shape):
+            raise ValueError(
+                f"accumulator `{name}` has shape {tuple(np.shape(acc))}, the buffer {tuple(shape)}"
+            )
+    flat = vjp(
+        [0.0] * len(column_names(cols)),
+        sv,
+        lam,
+        wrt="forcing",
+        states=states,
+        params=params,
+        t=t,
+        forcing=forcing,
+    )
+    k = 0
+    for name, shape in cols:
+        acc = g[name]
+        for cell in _product([(1, n) for n in shape]):
+            idx = tuple(c - 1 for c in cell)
+            acc[idx] += flat[k]
+            k += 1
+    return g

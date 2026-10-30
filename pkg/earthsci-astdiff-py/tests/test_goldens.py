@@ -13,6 +13,7 @@ GOLDEN_NAMES = (
     "minmod_adv",
     "contracting_observed",
     "tgrad_photolysis",
+    "forcing_bracket",
 )
 
 
@@ -39,8 +40,16 @@ def test_band_roundtrip(name, valid_dir):
         assert skey(back.band.coef) == skey(en.band.coef)
 
 
-# Fixtures with `<name>.time.*` goldens (wrt = time, spec §4.2).
-TIME_NAMES = ("tgrad_photolysis",)
+# Fixtures with `<name>.<axis>.*` goldens beyond the default states axis:
+# time (spec §4.2), forcing and parameters (spec §4, §4.3).
+AXIS_GOLDENS = (
+    ("tgrad_photolysis", "time"),
+    ("forcing_bracket", "forcing"),
+    ("forcing_bracket", "parameters"),
+)
+TIME_NAMES = tuple(n for n, w in AXIS_GOLDENS if w == "time")
+# Time-dependent fixtures pinned on other axes only (no `.time.*` goldens).
+NONAUTONOMOUS = ("forcing_bracket",)
 
 
 @pytest.mark.parametrize("name", TIME_NAMES)
@@ -54,7 +63,9 @@ def test_time_band_golden(name, valid_dir, golden_dir):
     assert text == (golden_dir / f"{name}.time.bands.json").read_text()
 
 
-@pytest.mark.parametrize("name", [n for n in GOLDEN_NAMES if n not in TIME_NAMES])
+@pytest.mark.parametrize(
+    "name", [n for n in GOLDEN_NAMES if n not in TIME_NAMES and n not in NONAUTONOMOUS]
+)
 def test_time_bands_empty_for_autonomous(name, valid_dir):
     # spec §4.2: an empty time band list means f_t == 0; every fixture
     # without `.time.*` goldens is autonomous
@@ -104,3 +115,12 @@ def test_skey_survives_non_finite_constants():
     from earthsci_astdiff import skey
 
     assert skey(float("inf")) != skey(1.0)
+
+
+@pytest.mark.parametrize("name,wrt", [a for a in AXIS_GOLDENS if a[1] != "time"])
+def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
+    entries = jacobian_bands(file, next(iter(file.models)), wrt=wrt)
+    assert entries
+    text = stable_json([serialize_band(e) for e in entries])
+    assert text == (golden_dir / f"{name}.{wrt}.bands.json").read_text()

@@ -17,6 +17,7 @@ NAMES = (
     "minmod_adv",
     "contracting_observed",
     "tgrad_photolysis",
+    "forcing_bracket",
 )
 
 
@@ -43,11 +44,20 @@ def _cells_to_arrays(u: dict):
     return {k: to_list(v) for k, v in arrays.items()}
 
 
-@pytest.mark.parametrize(
-    "name,wrt", [(n, "states") for n in NAMES] + [("tgrad_photolysis", "time")]
+# (fixture, axis, golden suffix) beyond the default states-axis goldens; the
+# array parameters / forcing buffers take their document defaults.
+AXIS_VALUES = (
+    ("tgrad_photolysis", "time", ""),
+    ("forcing_bracket", "forcing", ""),
+    ("forcing_bracket", "forcing", ".w0"),
+    ("forcing_bracket", "parameters", ""),
+    ("forcing_bracket", "parameters", ".w0"),
 )
-def test_values_golden(name, wrt, golden_dir, valid_dir):
-    tag = f"{name}.time" if wrt == "time" else name
+
+
+@pytest.mark.parametrize("name,wrt,sfx", [(n, "states", "") for n in NAMES] + list(AXIS_VALUES))
+def test_values_golden(name, wrt, sfx, golden_dir, valid_dir):
+    tag = name if wrt == "states" else f"{name}.{wrt}{sfx}"
     g = json.loads((golden_dir / f"{tag}.jvals.json").read_text())
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     got = assemble_jacobian(
