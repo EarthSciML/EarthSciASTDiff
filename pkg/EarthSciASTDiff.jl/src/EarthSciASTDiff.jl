@@ -4,8 +4,10 @@
 Symbolic differentiation of EarthSciAST (`.esm`) models by AST substitution.
 
 Computes the analytical Jacobian of an ESM model's ODE right-hand side with
-respect to its state variables (`wrt = :states`) or its parameters
-(`wrt = :parameters`), as a list of structured **bands** ([`Band`](@ref)):
+respect to its state variables (`wrt = :states`), its parameters
+(`wrt = :parameters`, array-valued ones cell by cell), its forcing buffers
+(`wrt = :forcing`, the cells of the live data buffers, record axis included)
+or time (`wrt = :time`), as a list of structured **bands** ([`Band`](@ref)):
 each band is a rectangular region of the equation's index space, symbolic
 column-index expressions, and a scalar ESM coefficient expression. The band
 list is itself serializable as an ESM-document block (the draft `"jacobians"`
@@ -25,7 +27,9 @@ Layered API, lowest to highest:
   - [`detect_structure`](@ref)     — `:block_diagonal` / `:banded` / `:general`
   - [`plan_factorization`](@ref)   — symbolic factorization info (general interface;
                                      per-cell block LU is the first implementation)
-  - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`
+  - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`;
+                                     [`vjp!`](@ref) / [`vjp_forcing!`](@ref) apply
+                                     the transposed bands without forming `J`
   - [`scatter_plan`](@ref)         — checked band-field → storage map (lane blocks,
                                      sparse lane blocks, column bands, CSR);
                                      [`bind_plan`](@ref) + [`jac_into!`](@ref) fill it
@@ -51,11 +55,12 @@ using OrderedCollections: OrderedDict
 using JSON3
 
 export Site, dscalar, simplify_branches,
-    Band, JacEntry, bands, jacobian_bands,
+    Band, JacEntry, bands, jacobian_bands, forcing_names, jacobian_columns,
     SysView, sysview, expanded_model, inlinable_observed,
-    jacobian_document, parse_jacobian_block, stable_json,
+    jacobian_document, parse_jacobian_block, parse_jacobian_blocks, stable_json,
     cse_templates, expand_templates, hoist_observed,
     jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
+    vjp!, vjp_forcing!,
     ode_components, odefunction, odeproblem,
     detect_structure, jac_prototype,
     FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,

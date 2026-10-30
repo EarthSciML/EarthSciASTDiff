@@ -7,18 +7,25 @@
 using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
-# `<name>.time.jvals.json` (wrt = :time, the single column `t`) for the
-# fixtures in `TIME`, at the same pinned point.
-const TIME = ("tgrad_photolysis",)
-for (name, wrt) in Iterators.flatten(
+# `<name>.<axis>.jvals.json` for the other axes: wrt = :time (the single
+# column `t`) at the same pinned point, and the forcing / parameter axes of
+# the forcing fixture (canonical column space, spec §4) at two points of its
+# frac-blend weight w = t - floor(t): t = 0.37 (`w = 0.37`) and t = 2.0
+# (`.w0.`, w = 0 exactly: both bracket records still read, the second with a
+# zero coefficient). The buffers and the array parameter take the document
+# defaults, so the golden needs no array values of its own.
+const STATE_NAMES = (
+    "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
+    "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+)
+for (name, wrt, t, tag) in Iterators.flatten(
         (
+            ((n, :states, 0.7, "") for n in STATE_NAMES),
+            (("tgrad_photolysis", :time, 0.7, ".time"),),
             (
-                (n, :states) for n in (
-                        "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-                        "minmod_adv", "contracting_observed", "tgrad_photolysis",
-                    )
+                ("forcing_bracket", w, t, ".$w$sfx") for w in (:forcing, :parameters)
+                    for (t, sfx) in ((0.37, ""), (2.0, ".w0"))
             ),
-            ((n, :time) for n in TIME),
         )
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
@@ -26,7 +33,6 @@ for (name, wrt) in Iterators.flatten(
     f!, u0, p0, _, vm = build_evaluator(file)
     n = length(u0)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:n]
-    t = 0.7
     # The native compiler declines a derived model whose coefficients carry
     # a sum (`compiler_refused_rule`); the interpreter evaluates them.
     kw = name in ("contracted_ops", "contracting_observed") ?
@@ -46,10 +52,7 @@ for (name, wrt) in Iterators.flatten(
             OrderedDict{String, Any}(String(k) => v for (k, v) in pairs(p0)),
         "entries" => entries
     )
-    path = joinpath(
-        root, "tests", "goldens",
-        wrt == :time ? "$name.time.jvals.json" : "$name.jvals.json"
-    )
+    path = joinpath(root, "tests", "goldens", "$name$tag.jvals.json")
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(entries), " stored entries)")
 end

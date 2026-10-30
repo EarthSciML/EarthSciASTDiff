@@ -72,15 +72,21 @@ function parse_band(d::AbstractDict)::JacEntry
 end
 
 """
-    jacobian_document(file::EsmFile, model_name; wrt = :states,
+    jacobian_document(file::EsmFile, model_name; wrt = :states, forcing = nothing,
                       cse = true, cse_min_nodes = 12) -> Dict
-    jacobian_document(flat::FlattenedSystem; wrt = :states, name = "Flattened",
-                      cse = true, cse_min_nodes = 12) -> Dict
+    jacobian_document(flat::FlattenedSystem; wrt = :states, forcing = nothing,
+                      name = "Flattened", cse = true, cse_min_nodes = 12) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
 (esm-jacobian-spec.md §4): per model, the differentiation axis, the band
-entries, the detected structure class, and — when a factorization plan
-exists for that structure — the serialized plan.
+entries, and — on the state and time axes — the detected structure class and,
+when a factorization plan exists for that structure, the serialized plan. A
+`:parameters` or `:forcing` block carries its column space instead
+(`columns`, [`jacobian_columns`](@ref)).
+
+`wrt` may also be a vector of distinct axes (`[:states, :forcing]`): the
+model's entry is then an ARRAY of blocks, one per axis in the given order
+(esm-jacobian-spec.md §4); a single `wrt` keeps the single-object form.
 
 With `cse = true` (default), repeated coefficient subtrees of at least
 `cse_min_nodes` AST nodes are hoisted into zero-parameter
@@ -90,13 +96,13 @@ and the emitted coefficients reference them via `apply_expression_template`
 expands the references back, so the round-trip is exact either way.
 """
 function jacobian_document(
-        file::EarthSciAST.EsmFile, model_name; wrt::Symbol = :states,
+        file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
         cse::Bool = true, cse_min_nodes::Int = 12
     )
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
     _attach_jacobians!(
-        doc, sv, String(model_name); wrt = wrt,
+        doc, sv, String(model_name); wrt = wrt, forcing = forcing,
         cse = cse, cse_min_nodes = cse_min_nodes
     )
     return doc
@@ -104,24 +110,41 @@ end
 
 function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
-        wrt::Symbol = :states, name::AbstractString = "Flattened",
+        wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
         cse::Bool = true, cse_min_nodes::Int = 12
     )
     sv = sysview(flat)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
-        doc, sv, String(name); wrt = wrt,
+        doc, sv, String(name); wrt = wrt, forcing = forcing,
         cse = cse, cse_min_nodes = cse_min_nodes
     )
     return doc
 end
 
 function _attach_jacobians!(
-        doc, sv::SysView, model_name::String; wrt::Symbol,
+        doc, sv::SysView, model_name::String; wrt, forcing = nothing,
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    entries = jacobian_bands(sv; wrt = wrt)
-    structure = detect_structure(entries, sv)
+    axes = wrt isa Symbol ? [wrt] : Symbol[Symbol(w) for w in wrt]
+    (isempty(axes) || !allunique(axes)) &&
+        throw(ArgumentError("wrt must name one or more distinct axes, got $wrt"))
+    blocks = Any[
+        _jacobian_block(sv, w; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes)
+            for w in axes
+    ]
+    jb = get!(doc, "jacobians", OrderedDict{String, Any}())
+    jb[model_name] = wrt isa Symbol ? only(blocks) : blocks
+    _raise_faq_floor!(doc)
+    return doc
+end
+
+# One `"jacobians"` block (esm-jacobian-spec.md §4) for one axis.
+function _jacobian_block(
+        sv::SysView, wrt::Symbol; forcing = nothing,
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     ser_entries = entries
     templates = OrderedDict{String, ASTExpr}()
     if cse
@@ -143,20 +166,30 @@ function _attach_jacobians!(
     block = OrderedDict{String, Any}(
         "wrt" => String(wrt),
         "entries" => Any[serialize_band(en) for en in ser_entries],
-        "structure" => String(structure),
     )
+    # A parameter or forcing block describes a rectangular matrix, which the
+    # structure classes and the factorization plan do not: it carries its
+    # column space instead, so a consumer can size and order the columns
+    # without the source document.
+    if wrt in (:parameters, :forcing)
+        block["columns"] = Any[
+            OrderedDict{String, Any}("name" => n, "shape" => Any[shape...])
+                for (n, shape) in jacobian_columns(sv; wrt = wrt, forcing = forcing)
+        ]
+    else
+        block["structure"] = String(detect_structure(entries, sv))
+    end
     isempty(templates) || (
         block["expression_templates"] = OrderedDict{String, Any}(
             name => OrderedDict{String, Any}("params" => Any[], "body" => _ser_expr(body))
                 for (name, body) in templates
         )
     )
-    plan = plan_factorization(entries, sv; structure = structure)
-    plan === nothing || (block["factorization"] = serialize_plan(plan))
-    jb = get!(doc, "jacobians", OrderedDict{String, Any}())
-    jb[model_name] = block
-    _raise_faq_floor!(doc)
-    return doc
+    if wrt in (:states, :time)
+        plan = plan_factorization(entries, sv; structure = Symbol(block["structure"]))
+        plan === nothing || (block["factorization"] = serialize_plan(plan))
+    end
+    return block
 end
 
 """
@@ -209,6 +242,20 @@ function parse_jacobian_block(block::AbstractDict)
         ]
     end
     return wrt, entries
+end
+
+"""
+    parse_jacobian_blocks(x) -> Vector{Tuple{Symbol,Vector{JacEntry}}}
+
+[`parse_jacobian_block`](@ref) over a model's `"jacobians"` entry, which is
+either one block or an array of blocks with distinct `wrt`
+(esm-jacobian-spec.md §4); returns one `(wrt, entries)` per block, in order.
+"""
+function parse_jacobian_blocks(x)
+    blocks = x isa AbstractDict ? [x] : collect(x)
+    out = Tuple{Symbol, Vector{JacEntry}}[parse_jacobian_block(b) for b in blocks]
+    allunique(first.(out)) || throw(ArgumentError("a model's jacobian blocks must have distinct `wrt`"))
+    return out
 end
 
 # ── the internal evaluation model ────────────────────────────────────────────

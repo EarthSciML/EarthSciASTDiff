@@ -60,20 +60,53 @@ function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
     return pairs
 end
 
-# Column slot lookup: state columns index the state vector; parameter columns
-# index the scalar-parameter order of the RHS `p` NamedTuple; time is the
-# single column `t`.
-function _colmap(vm0, p0, wrt::Symbol)
+# Column slot lookup: state columns index the state vector; time is the
+# single column `t`; parameter and forcing columns index the axis's CANONICAL
+# column space (esm-jacobian-spec.md §4: the column variables sorted by name,
+# each one's cells column-major), built from the system's declared shapes, so
+# an array parameter's cells are real columns rather than names the scalar
+# `p` NamedTuple cannot hold.
+function _colmap(vm0, cols, wrt::Symbol)
     if wrt == :time
         return name -> name == "t" ? 1 : 0, 1, ["t"]
     elseif wrt == :states
         return name -> get(vm0, name, 0), length(vm0),
             first.(sort(collect(vm0), by = last))
     else
-        pnames = String[String(k) for k in keys(p0)]
-        lut = Dict(n => i for (i, n) in enumerate(pnames))
-        return name -> get(lut, name, 0), length(pnames), pnames
+        cnames = _column_names(cols)
+        lut = Dict(n => i for (i, n) in enumerate(cnames))
+        return name -> get(lut, name, 0), length(cnames), cnames
     end
+end
+
+# The canonical column names of a `jacobian_columns` space, in ordinal order.
+function _column_names(cols)::Vector{String}
+    names = String[]
+    for (v, shape) in cols
+        if isempty(shape)
+            push!(names, v)
+        else
+            for c in Iterators.product((1:n for n in shape)...)
+                push!(names, _cellname(v, collect(c)))
+            end
+        end
+    end
+    return names
+end
+
+# The column slot of one scatter pair. On the parameters and forcing axes a
+# column is a buffer cell, and the ghost-read skip that is legitimate for a
+# state stencil reading past the domain is not: an unresolvable column there
+# would silently drop a gradient, so it is an error (esm-jacobian-spec.md §4).
+function _colslot(colslot, colname::String, rowname::String, wrt::Symbol)
+    cs = colslot(colname)
+    cs == 0 && wrt in (:parameters, :forcing) && throw(
+        BandError(
+            "column `$colname` (row `$rowname`) is outside the declared extent of its " *
+                "variable; on the $wrt axis every column must resolve (no ghost skip)"
+        )
+    )
+    return cs
 end
 
 # --------------------------------------------------------------------------- #
@@ -128,12 +161,6 @@ function _source_layout(src, model_name, build_kwargs, layout, wrt::Symbol)
                 "not a state layout of this model."
         )
     )
-    p0 === nothing && !(wrt in (:states, :time)) && throw(
-        ArgumentError(
-            "source_layout: wrt = :$wrt indexes columns by parameter name, so the " *
-                "layout must carry `p` (the build_evaluator parameter NamedTuple)."
-        )
-    )
     return (n, p0, vm0)
 end
 
@@ -164,28 +191,30 @@ function _rowslot(vm0, rowname::String, cs::Int, strict::Bool)
 end
 
 """
-    jacobian_pattern(input; wrt = :states) -> (pattern, rownames, colnames, entries)
+    jacobian_pattern(input; wrt = :states, forcing = nothing) -> (pattern, rownames, colnames, entries)
 
 The structural (global, point-independent) sparsity pattern of the Jacobian
 as a `SparseMatrixCSC{Bool}`. `input` is an `EsmFile` + model name pair
 (pass a `Tuple`), an `EsmFile` with a single model, or a `FlattenedSystem`.
+On the `:parameters` and `:forcing` axes the columns are the canonical column
+space of [`jacobian_columns`](@ref).
 
 `source_layout` skips this function's own rebuild of the source model — see
 [`prepare_jacobian`](@ref) for the keyword and its contract.
 """
 function jacobian_pattern(
-        input; wrt::Symbol = :states, model_name = nothing,
+        input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
         build_kwargs = NamedTuple(), source_layout = nothing
     )
     sv, src = _sv_src(input, model_name)
-    entries = jacobian_bands(sv; wrt = wrt)
-    _, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
-    colslot, ncol, colnames = _colmap(vm0, p0, wrt)
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
+    _, _, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
+    colslot, ncol, colnames = _colmap(vm0, _axis_columns(sv, wrt, forcing), wrt)
     n = length(vm0)
     strict = source_layout !== nothing
     I = Int[]; J = Int[]
     for (_, rowname, colname, _) in _scatter_pairs(sv, entries)
-        cs = colslot(colname)
+        cs = _colslot(colslot, colname, rowname, wrt)
         r = _rowslot(vm0, rowname, cs, strict)
         cs == 0 && continue                          # ghost / out-of-layout column
         push!(I, r); push!(J, cs)
@@ -197,6 +226,10 @@ function jacobian_pattern(
         colnames = colnames, entries = entries,
     )
 end
+
+_axis_columns(sv::SysView, wrt::Symbol, forcing) =
+    wrt in (:parameters, :forcing) ? jacobian_columns(sv; wrt = wrt, forcing = forcing) :
+    nothing
 
 _sv_src(file::EarthSciAST.EsmFile, model_name) =
     (sysview(file, model_name === nothing ? _only_model(file) : model_name), file)
@@ -230,6 +263,7 @@ struct JacobianEvaluator{F, P}
     umap::Vector{Int}             # uj[umap[i]] = u[i]
     p_default::P
     scatter::Vector{Tuple{Int, Int}}  # (slot in duj, position in nzval)
+    items::Vector{Tuple{Int, Int, Int}} # (slot in duj, row, col): the transposed scatter
     field_shapes::Vector{Vector{Int}} # band k → field shape (scatter plans)
     slots::Dict{String, Int}          # derived-model name → slot in duj
     prototype::SparseMatrixCSC{Float64, Int}
@@ -237,12 +271,13 @@ struct JacobianEvaluator{F, P}
     entries::Vector{JacEntry}
     rownames::Vector{String}
     colnames::Vector{String}
+    columns::Union{Nothing, Vector{Tuple{String, Vector{Int}}}} # parameters / forcing axes
     structure::Symbol
     wrt::Symbol
 end
 
 """
-    prepare_jacobian(input; wrt = :states, model_name = nothing) -> JacobianEvaluator
+    prepare_jacobian(input; wrt = :states, model_name = nothing, forcing = nothing) -> JacobianEvaluator
 
 Build the analytical Jacobian evaluator once: differentiates the system,
 compiles the derived band-field model through the ordinary
@@ -268,20 +303,30 @@ can delete that build by passing its layout:
     that the slots are a permutation, that every name resolves in the derived
     band model); a layout from a build that merely *differs* — other
     `const_arrays`, other `parameter_overrides`, another grid — would put
-    bands in the wrong cells with no visible symptom. `p` may be omitted
-    unless `wrt` selects parameter columns. The default, `nothing`, rebuilds.
+    bands in the wrong cells with no visible symptom. `p` may be omitted:
+    parameter and forcing columns come from the system's declared shapes.
+    The default, `nothing`, rebuilds.
 
     jac = prepare_jacobian(file)
     J = copy(jac.prototype)
     jac(J, u, p, t)              # fills J in place; stored zeros stay
+
+On the `:parameters` and `:forcing` axes the columns are the canonical column
+space of [`jacobian_columns`](@ref) (`jac.columns`), and a column that does
+not resolve to a cell throws. Forcing buffers are bound like any other array
+parameter of the derived band model: through
+`build_kwargs = (param_arrays = buffers,)` they are read live, by reference
+(after writing one in place, call `EarthSciAST.notify_forcing_refresh!(buf)`
+as for the RHS); without it the declared defaults are used. [`vjp!`](@ref) /
+[`vjp_forcing!`](@ref) apply the transposed bands without forming `J`.
 """
 function prepare_jacobian(
-        input; wrt::Symbol = :states, model_name = nothing,
+        input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
         build_kwargs = NamedTuple(), source_layout = nothing,
         eval_cse::Bool = true, eval_cse_min_nodes::Int = 12
     )
     sv, src = _sv_src(input, model_name)
-    entries = jacobian_bands(sv; wrt = wrt)
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     doc, _ = _evaluation_document(
         sv, entries; cse = eval_cse,
         cse_min_nodes = eval_cse_min_nodes
@@ -290,8 +335,9 @@ function prepare_jacobian(
         doc; model_name = "JacobianEval",
         build_kwargs...
     )
-    n, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
-    colslot, ncol, colnames = _colmap(vm0, p0, wrt)
+    n, _, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
+    columns = _axis_columns(sv, wrt, forcing)
+    colslot, ncol, colnames = _colmap(vm0, columns, wrt)
 
     umap = zeros(Int, n)
     for (name, i) in vm0
@@ -301,7 +347,7 @@ function prepare_jacobian(
     strict = source_layout !== nothing
     items = Tuple{Int, Int, Int}[]     # (duj slot, row, col)
     for (k, rowname, colname, jname) in _scatter_pairs(sv, entries)
-        cs = colslot(colname)
+        cs = _colslot(colslot, colname, rowname, wrt)
         r = _rowslot(vm0, rowname, cs, strict)
         cs == 0 && continue
         push!(items, (_slot(vmj, jname, "band"), r, cs))
@@ -337,9 +383,9 @@ function prepare_jacobian(
         applicable(fJ!, zeros(1), pj, 0.0)
     return JacobianEvaluator(
         fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
-        pj, scatter, field_shapes,
+        pj, scatter, items, field_shapes,
         convert(Dict{String, Int}, vmj), proto, pattern, entries,
-        first.(sort(collect(vm0), by = last)), colnames,
+        first.(sort(collect(vm0), by = last)), colnames, columns,
         structure, wrt
     )
 end
@@ -365,8 +411,65 @@ function (jac::JacobianEvaluator)(J::SparseMatrixCSC, u::AbstractVector, p, t::R
 end
 
 """
+    vjp!(ḡ, jac::JacobianEvaluator, λ, u, p, t) -> ḡ
+
+The transposed product `ḡ += Jᵀ λ` at `(u, p, t)`, as a scatter-add over the
+band points: `ḡ[col] += coef · λ[row]` for every point, with no matrix (and
+no transpose) formed. `λ` is indexed like the rows (`jac.rownames`, the
+state vector) and `ḡ` like the columns (`jac.colnames`); `ḡ` ACCUMULATES —
+zero it first for a single product.
+"""
+function vjp!(ḡ::AbstractVector, jac::JacobianEvaluator, λ::AbstractVector, u::AbstractVector, p, t::Real)
+    length(ḡ) == length(jac.colnames) || throw(
+        DimensionMismatch("ḡ has length $(length(ḡ)), the column space $(length(jac.colnames))")
+    )
+    length(λ) == length(jac.rownames) || throw(
+        DimensionMismatch("λ has length $(length(λ)), the row space $(length(jac.rownames))")
+    )
+    duj = _eval_fields!(jac, u, p, t)
+    for (slot, r, c) in jac.items
+        ḡ[c] += duj[slot] * λ[r]
+    end
+    return ḡ
+end
+
+"""
+    vjp_forcing!(ḡ, jac::JacobianEvaluator, λ, u, p, t) -> ḡ
+
+[`vjp!`](@ref) on a `wrt = :forcing` evaluator: the forcing cotangent of one
+stage evaluation, `ḡ_B += (∂f/∂B)ᵀ λ` (esm-jacobian-spec.md §4.3). `ḡ` is
+either a flat vector over the canonical column ordinal (`jac.colnames`) or a
+`Dict` of buffer-shaped accumulators keyed by buffer name (one per
+`jac.columns` entry, each the buffer's shape). It accumulates; which dataset
+record a buffer slot holds, and when to flush, is the caller's bookkeeping.
+"""
+function vjp_forcing!(ḡ::AbstractVector, jac::JacobianEvaluator, λ, u, p, t::Real)
+    jac.wrt == :forcing ||
+        throw(ArgumentError("vjp_forcing! needs a wrt = :forcing evaluator, got wrt = :$(jac.wrt)"))
+    return vjp!(ḡ, jac, λ, u, p, t)
+end
+
+function vjp_forcing!(ḡ::AbstractDict, jac::JacobianEvaluator, λ, u, p, t::Real)
+    flat = vjp_forcing!(zeros(length(jac.colnames)), jac, λ, u, p, t)
+    off = 0
+    for (name, shape) in jac.columns
+        len = prod(shape; init = 1)
+        acc = get(ḡ, name, nothing)
+        acc === nothing && throw(ArgumentError("no accumulator for forcing buffer `$name`"))
+        size(acc) == Tuple(shape) || throw(
+            DimensionMismatch("accumulator `$name` has size $(size(acc)), the buffer $(Tuple(shape))")
+        )
+        for i in 1:len
+            acc[i] += flat[off + i]      # both column-major
+        end
+        off += len
+    end
+    return ḡ
+end
+
+"""
     assemble_jacobian(input; wrt = :states, u = nothing, p = nothing, t = 0.0,
-                      model_name = nothing)
+                      model_name = nothing, forcing = nothing)
         -> (J, pattern, rownames, colnames, entries, structure)
 
 One-shot convenience over [`prepare_jacobian`](@ref): evaluate the analytical
@@ -374,11 +477,11 @@ Jacobian at a point (defaults: the document's initial state and parameters).
 """
 function assemble_jacobian(
         input; wrt::Symbol = :states, u = nothing, p = nothing,
-        t::Real = 0.0, model_name = nothing,
+        t::Real = 0.0, model_name = nothing, forcing = nothing,
         build_kwargs = NamedTuple(), source_layout = nothing
     )
     jac = prepare_jacobian(
-        input; wrt = wrt, model_name = model_name,
+        input; wrt = wrt, model_name = model_name, forcing = forcing,
         build_kwargs = build_kwargs, source_layout = source_layout
     )
     u00, p0 = if source_layout === nothing
