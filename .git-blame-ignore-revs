@@ -1,0 +1,5 @@
+# Formatting-only commits, skipped by `git blame` (GitHub reads this file;
+# locally: git config blame.ignoreRevsFile .git-blame-ignore-revs).
+
+# style: apply rustfmt, ruff format and Runic
+e0c944775130b0d1eeefd780c1f9c99bd10f2c68
