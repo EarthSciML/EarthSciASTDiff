@@ -58,7 +58,7 @@ def forcing_names(sv: SysView, forcing=None) -> list[str]:
     with an ``update`` of kind ``"data"`` (a live buffer a data provider
     refills). An explicit list must name only parameters of the system: a
     name that resolves to no buffer raises ``ValueError``, never yields an
-    empty axis.
+    empty axis. ``forcing`` may be one name (a ``str``) or a collection.
     """
     if forcing is None:
         return sorted(
@@ -68,7 +68,9 @@ def forcing_names(sv: SysView, forcing=None) -> list[str]:
             and getattr(var, "shape", None)
             and any(getattr(u, "kind", None) == "data" for u in _updates(var))
         )
-    names = [str(n) for n in forcing]
+    # One buffer name is the natural call; iterating a str would split it
+    # into characters.
+    names = [forcing] if isinstance(forcing, str) else [str(n) for n in forcing]
     for n in names:
         var = sv.variables.get(n)
         if var is None or not _is_parameter(var):
@@ -129,9 +131,10 @@ def jacobian_bands(
     the point where it is later evaluated.
 
     On the ``"parameters"`` and ``"forcing"`` axes every column index must be
-    closed at build time, and a ``"forcing"`` request whose right-hand sides
-    read the forcing set but yield no band raises :class:`BandError`
-    (spec §4.3).
+    closed at build time; an unclosed one raises :class:`BandError` (spec
+    §4.3). A model that reads the forcing set only where the derivative is
+    identically zero (an ``ifelse`` condition, a piecewise-constant op) has an
+    empty forcing list.
     """
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
@@ -150,7 +153,6 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None) -> list
     if wrt != "time":
         obs = inlinable_observed(obs, sv.equations, tset)
     entries: list[JacEntry] = []
-    read_target = False
     obs_names: list = [None]
     for eq in sv.equations:
         u = lhs_state(eq)
@@ -166,19 +168,12 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None) -> list
         # Structural occurrence gate, driven from the equation: intersect the
         # RHS's free variables with the target set (sorted = target order).
         hits = sorted(free_variables(rhs) & tset)
-        read_target = read_target or bool(hits)
         for v in hits:
             for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
                 entries.append(JacEntry(u, v, normalize_band(b)))
     if wrt in ("parameters", "forcing"):
         for en in entries:
             _check_closed_columns(en)
-        if wrt == "forcing" and read_target and not entries:
-            raise BandError(
-                f"the right-hand sides read the forcing set {targets} but no band was "
-                "produced; an empty forcing block for a document that reads forcing is "
-                "refused rather than emitted"
-            )
     return entries
 
 

@@ -29,7 +29,14 @@ from .factorization import (
 )
 from .inline import InlineError, inline_observed
 from .jacobian import JacEntry, forcing_names, jacobian_bands, jacobian_columns
-from .numeric import EvalError, assemble_jacobian, vjp, vjp_forcing
+from .numeric import (
+    EvalError,
+    JacobianEvaluator,
+    assemble_jacobian,
+    prepare_jacobian,
+    vjp,
+    vjp_forcing,
+)
 from .scalar_rules import DerivativeRuleError, dscalar
 from .simplify_branches import canon_lits, simp, simplify_branches
 from .structure import detect_structure
@@ -44,6 +51,7 @@ __all__ = [
     "EvalError",
     "InlineError",
     "JacEntry",
+    "JacobianEvaluator",
     "Site",
     "SysView",
     "assemble_jacobian",
@@ -71,6 +79,7 @@ __all__ = [
     "parse_jacobian_block",
     "parse_jacobian_blocks",
     "plan_factorization",
+    "prepare_jacobian",
     "scatter_pairs",
     "serialize_band",
     "serialize_plan",

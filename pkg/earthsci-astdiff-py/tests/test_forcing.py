@@ -8,12 +8,15 @@ import numpy as np
 import pytest
 from earthsci_astdiff import (
     BandError,
+    JacobianEvaluator,
     assemble_jacobian,
     column_names,
     forcing_names,
     jacobian_bands,
+    jacobian_block,
     jacobian_columns,
     jacobian_pattern,
+    prepare_jacobian,
     sysview,
     vjp,
     vjp_forcing,
@@ -134,19 +137,43 @@ def test_refused_rather_than_silently_wrong():
         jacobian_pattern(past, "B", wrt="forcing", forcing=["F"])
     with pytest.raises(BandError):
         assemble_jacobian(past, "B", wrt="forcing", forcing=["F"])
-    # the same read on the parameters axis (F is not data-fed here)
-    with pytest.raises(BandError):
-        jacobian_pattern(past, "B", wrt="parameters")
-    # while a state stencil reading past the domain stays a ghost skip
-    ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
-    assert len(assemble_jacobian(ghost, "B")) == 3
-    # reads forcing, yields no band: refused, never an empty block
-    flr = _bracket_doc(_op("*", _ix("c", "i"), _op("floor", _ix("F", 1, "i"))))
-    with pytest.raises(BandError):
-        jacobian_bands(flr, "B", wrt="forcing", forcing=["F"])
     # a model that does not read the forcing set at all has an empty block
     none = _bracket_doc(_op("*", -1, _ix("c", "i")))
     assert jacobian_bands(none, "B", wrt="forcing", forcing=["F"]) == []
+
+
+def test_parameter_read_past_extent_is_a_ghost_read():
+    # the same read on the parameters axis (F is not data-fed here) is a
+    # ghost read, as a state stencil reading past the domain is: i = 4 reads
+    # F[1,6]
+    past = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", 2))))
+    pairs, _ = jacobian_pattern(past, "B", wrt="parameters")
+    assert pairs == [(f"c[{i}]", f"F[1,{i + 2}]") for i in range(1, 4)]
+    assert len(assemble_jacobian(past, "B", wrt="parameters")) == 3
+    ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
+    assert len(assemble_jacobian(ghost, "B")) == 3
+
+
+def test_identically_zero_derivative_is_an_empty_block():
+    # forcing read only where the derivative is 0 (inside a piecewise-
+    # constant op, or as an `ifelse` condition) yields no band and no error
+    flr = _bracket_doc(_op("*", _ix("c", "i"), _op("floor", _ix("F", 1, "i"))))
+    assert jacobian_bands(flr, "B", wrt="forcing", forcing=["F"]) == []
+    cond = _bracket_doc(
+        _op("ifelse", _op(">", _ix("F", 1, "i"), 0), _op("*", -1, _ix("c", "i")), 0)
+    )
+    assert jacobian_bands(cond, "B", wrt="forcing", forcing=["F"]) == []
+    states, forcing = jacobian_block(cond, "B", wrt=["states", "forcing"], forcing=["F"])
+    assert len(states["entries"]) == 1 and forcing["entries"] == []
+
+
+def test_one_forcing_name_as_a_str():
+    ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
+    sv = sysview(ok, "B")
+    assert forcing_names(sv, "F") == ["F"]
+    assert jacobian_block(sv, wrt="forcing", forcing="F") == jacobian_block(
+        sv, wrt="forcing", forcing=["F"]
+    )
 
 
 def test_vjp_is_the_transposed_scatter(bracket):
@@ -178,3 +205,31 @@ def test_vjp_is_the_transposed_scatter(bracket):
         vjp_forcing({"F": np.zeros((2, 5))}, sv, lam, t=0.37)
     with pytest.raises(ValueError):
         vjp_forcing(np.zeros(3), sv, lam, t=0.37)
+
+
+def test_prepared_evaluator_is_reused(bracket):
+    sv = sysview(bracket, "Bracket")
+    jac = prepare_jacobian(sv, wrt="forcing")
+    assert isinstance(jac, JacobianEvaluator) and jac.wrt == "forcing"
+    assert jac.colnames == column_names(jacobian_columns(sv, wrt="forcing"))
+    rows = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
+    lam = dict(zip(rows, [0.3, -1.0, 2.0, 0.5, 1.5]))
+    for t in (0.0, 0.37):
+        want = vjp(np.zeros(len(jac.colnames)), sv, lam, wrt="forcing", t=t)
+        got = vjp_forcing(np.zeros(len(jac.colnames)), jac, lam, t=t)
+        np.testing.assert_allclose(got, want, atol=1e-13)
+        assert assemble_jacobian(jac, t=t) == assemble_jacobian(sv, wrt="forcing", t=t)
+    # an evaluator keeps its own axis
+    with pytest.raises(ValueError):
+        vjp(np.zeros(len(jac.colnames)), jac, lam, wrt="parameters")
+    with pytest.raises(ValueError):
+        vjp_forcing(np.zeros(3), prepare_jacobian(sv, wrt="parameters"), lam)
+
+
+def test_vjp_refuses_an_unbound_row(bracket):
+    # a λ key spelled differently from the row cell name is not a zero row
+    sv = sysview(bracket, "Bracket")
+    jac = prepare_jacobian(sv, wrt="forcing")
+    lam = {"S": 1.0, "c[1]": 1.0, "c[2]": 1.0, "c[3]": 1.0, "c[ 4]": 1.0}
+    with pytest.raises(ValueError, match="binds no row"):
+        vjp(np.zeros(len(jac.colnames)), jac, lam)

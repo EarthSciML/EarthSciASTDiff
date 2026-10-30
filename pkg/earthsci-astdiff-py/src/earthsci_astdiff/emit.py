@@ -94,7 +94,8 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", fo
     """The structural sparsity pattern as sorted (rowname, colname) pairs
     plus the entries — dependency-light (no scipy). On the ``"parameters"``
     and ``"forcing"`` axes the columns are cells of the canonical column
-    space (:func:`jacobian_columns`) and every column must resolve to one."""
+    space (:func:`jacobian_columns`): a forcing column must resolve to one,
+    and a parameter column outside its variable's extent is a ghost read."""
     from .system import SysView
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
@@ -102,8 +103,7 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", fo
     triples = scatter_pairs(sv, entries)
     if wrt in ("parameters", "forcing"):
         cols = set(column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing)))
-        for _, r, c in triples:
-            check_column(c in cols, c, r, wrt)
+        triples = [(k, r, c) for k, r, c in triples if check_column(c in cols, c, r, wrt)]
     pairs = sorted({(r, c) for _, r, c in triples})
     return pairs, entries
 
@@ -120,18 +120,22 @@ def column_names(cols) -> list[str]:
     return names
 
 
-def check_column(ok: bool, colname: str, rowname: str, wrt: str) -> None:
-    """On the parameters and forcing axes a column is a buffer cell, and the
-    ghost-read skip that is legitimate for a state stencil reading past the
-    domain is not: an unresolvable column there would silently drop a
-    gradient, so it is an error (spec §4)."""
+def check_column(ok: bool, colname: str, rowname: str, wrt: str) -> bool:
+    """Whether a column resolves (``ok``), raising where it must. On the
+    forcing axis a column is a cell of a live buffer, and the ghost-read skip
+    that is legitimate for a stencil reading past the domain is not: an
+    unresolvable column there would silently drop a gradient, so it is an
+    error (spec §4). The parameters axis follows the state axis: an array
+    parameter read past its extent is a ghost read, and ``False`` says to
+    skip it."""
     from .bands import BandError
 
-    if not ok and wrt in ("parameters", "forcing"):
+    if not ok and wrt == "forcing":
         raise BandError(
             f"column `{colname}` (row `{rowname}`) is outside the declared extent of its "
             f"variable; on the {wrt} axis every column must resolve (no ghost skip)"
         )
+    return ok
 
 
 def jacobian_block(
