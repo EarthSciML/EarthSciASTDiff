@@ -295,3 +295,17 @@ end
     none = _bracket_doc(_op("*", -1, _ix("c", "i")))
     @test isempty(jacobian_bands(none, "B"; wrt = :forcing, forcing = ["F"]))
 end
+
+@testset "forcing: the evaluation document keeps array defaults row-major" begin
+    # an array parameter's inline default is row-major nested JSON; written
+    # flat (JSON3's column-major view of the loaded Array) it reloads rank-less
+    file = fixture("forcing_bracket.esm")
+    sv = sysview(file, "Bracket")
+    doc, _ = _evaluation_document(sv, jacobian_bands(sv; wrt = :forcing))
+    vars = doc["models"]["JacobianEval"]["variables"]
+    @test vars["F"]["default"] == Any[Any[1.0, 1.25, 1.5, 1.75, 2.0], Any[1.5, 1.25, 2.0, 1.0, 0.75]]
+    back = EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(doc))
+    for n in ("E", "F", "G")
+        @test back.models["JacobianEval"].variables[n].default == sv.variables[n].default
+    end
+end

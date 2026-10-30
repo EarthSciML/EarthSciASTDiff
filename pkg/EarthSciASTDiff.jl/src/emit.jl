@@ -288,7 +288,7 @@ function _base_document(sv::SysView, name::String)
                 var.type == EarthSciAST.ParameterVariable ? "parameter" : "unknown"
         )
         var.shape === nothing || isempty(var.shape) || (d["shape"] = var.shape)
-        var.default === nothing || (d["default"] = var.default)
+        var.default === nothing || (d["default"] = _inline_value(var.default))
         m["variables"][n] = d
     end
     for eq in sv.equations
@@ -312,6 +312,15 @@ function _base_document(sv::SysView, name::String)
         "models" => OrderedDict{String, Any}(name => m)
     )
 end
+
+# A variable's value in the document's inline form: an array value is
+# row-major nested JSON (esm-spec §6.3), outermost list over the FIRST
+# dimension. The loader hands an inline default back as a column-major Julia
+# `Array`, which JSON3 would write flat, a different (and rank-less) value.
+_inline_value(x) = x
+_inline_value(a::AbstractVector) = Any[_inline_value(v) for v in a]
+_inline_value(a::AbstractArray) =
+    Any[_inline_value(collect(selectdim(a, 1, i))) for i in axes(a, 1)]
 
 # A literal-size axis index set of the derived document (shared with the
 # hoisted-observed axes: same `jcax<size>` convention, reused when present).

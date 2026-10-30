@@ -83,6 +83,16 @@
       }
     },
     {
+      "name": "forcing_names",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "forcing_names",
+        "python": "forcing_names",
+        "rust": "forcing_names"
+      }
+    },
+    {
       "name": "jac_entry",
       "kind": "type",
       "tier": "stable",
@@ -117,6 +127,16 @@
       "bindings": {
         "python": "jacobian_block",
         "rust": "jacobian_block"
+      }
+    },
+    {
+      "name": "jacobian_columns",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_columns",
+        "python": "jacobian_columns",
+        "rust": "jacobian_columns"
       }
     },
     {
@@ -169,6 +189,16 @@
       "tier": "stable",
       "bindings": {
         "julia": "ode_components"
+      }
+    },
+    {
+      "name": "parse_jacobian_blocks",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "parse_jacobian_blocks",
+        "python": "parse_jacobian_blocks",
+        "rust": "parse_jacobian_blocks"
       }
     },
     {
@@ -264,6 +294,26 @@
         "julia": "sysview",
         "python": "sysview",
         "rust": "sysview"
+      }
+    },
+    {
+      "name": "vjp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp!",
+        "python": "vjp",
+        "rust": "vjp"
+      }
+    },
+    {
+      "name": "vjp_forcing",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_forcing!",
+        "python": "vjp_forcing",
+        "rust": "vjp_forcing"
       }
     }
   ]
