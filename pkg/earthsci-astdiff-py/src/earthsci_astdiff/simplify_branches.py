@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
-from .simplify_port import simplify_jl as simplify
 
 from .expr_helpers import is_zero, op, skey
+from .simplify_port import simplify_jl as simplify
 
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 

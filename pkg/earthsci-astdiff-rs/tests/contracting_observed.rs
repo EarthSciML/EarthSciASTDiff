@@ -292,7 +292,7 @@ fn index_named_like_an_observed() {
 
 fn sums(e: &Expr, acc: &mut Vec<Expr>) {
     if let Expr::Operator(n) = e {
-        if n.op == "faq" && n.output_idx.as_ref().map_or(true, |o| o.is_empty()) {
+        if n.op == "faq" && n.output_idx.as_ref().is_none_or(|o| o.is_empty()) {
             acc.push(e.clone());
         }
         n.map_children(&mut |c: &Expr| {

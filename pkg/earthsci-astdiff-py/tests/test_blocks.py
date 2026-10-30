@@ -3,7 +3,6 @@
 
 import earthsci_ast as ea
 import pytest
-
 from earthsci_astdiff import jacobian_bands, jacobian_block, parse_jacobian_block, skey, stable_json
 
 NAMES = (

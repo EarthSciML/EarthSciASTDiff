@@ -97,14 +97,12 @@ pub fn lhs_state(eq: &Equation) -> Option<String> {
         return None;
     };
     if l.op == "faq" {
-        if let Some(body) = l.expr.as_deref() {
-            if let Expr::Operator(d) = body {
-                if d.op == "D" {
-                    if let Some(Expr::Operator(ix)) = d.args.first() {
-                        if ix.op == "index" {
-                            if let Some(Expr::Variable(u)) = ix.args.first() {
-                                return Some(u.clone());
-                            }
+        if let Some(Expr::Operator(d)) = l.expr.as_deref() {
+            if d.op == "D" {
+                if let Some(Expr::Operator(ix)) = d.args.first() {
+                    if ix.op == "index" {
+                        if let Some(Expr::Variable(u)) = ix.args.first() {
+                            return Some(u.clone());
                         }
                     }
                 }

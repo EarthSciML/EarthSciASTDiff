@@ -88,16 +88,16 @@ def lhs_state(eq) -> str | None:
     the deprecated ``aggregate`` alias at the wire boundary. Matching the old
     tag silently classifies every array state equation as non-differential
     (zero bands, no error) — the reference's faq_tag_test.jl."""
-    l = eq.lhs
-    if not isinstance(l, ExprNode):
+    lhs = eq.lhs
+    if not isinstance(lhs, ExprNode):
         return None
-    if l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D":
-        a = l.expr.args[0]
+    if lhs.op == "faq" and isinstance(lhs.expr, ExprNode) and lhs.expr.op == "D":
+        a = lhs.expr.args[0]
         if isinstance(a, ExprNode) and a.op == "index" and isinstance(a.args[0], str):
             return a.args[0]
         return None
-    if l.op == "D" and isinstance(l.args[0], str):
-        return l.args[0]
+    if lhs.op == "D" and isinstance(lhs.args[0], str):
+        return lhs.args[0]
     return None
 
 
@@ -105,9 +105,9 @@ def is_derivative(eq) -> bool:
     """Whether an equation's LHS is a time derivative of any form — including
     ones ``lhs_state`` does not recognize (``D(index(u, 1))``), which no pass
     supports and none may silently skip."""
-    l = eq.lhs
-    return isinstance(l, ExprNode) and (
-        l.op == "D" or (l.op == "faq" and isinstance(l.expr, ExprNode) and l.expr.op == "D")
+    lhs = eq.lhs
+    return isinstance(lhs, ExprNode) and (
+        lhs.op == "D" or (lhs.op == "faq" and isinstance(lhs.expr, ExprNode) and lhs.expr.op == "D")
     )
 
 
@@ -124,17 +124,17 @@ def _indexed_definition(eq) -> tuple[str, Expr | None] | None:
     ``None`` when the LHS is not an indexed read of a bare name; ``(y, None)``
     when it is one whose subscripts are not exactly the output indices (a
     partial or pinned definition such as ``y[1] ~ …``, not rewritable)."""
-    l = eq.lhs
-    if not isinstance(l, ExprNode):
+    lhs = eq.lhs
+    if not isinstance(lhs, ExprNode):
         return None
     faq = None
-    if l.op == "faq":
-        if not (isinstance(l.expr, ExprNode) and l.expr.op == "index"):
+    if lhs.op == "faq":
+        if not (isinstance(lhs.expr, ExprNode) and lhs.expr.op == "index"):
             return None
-        faq, l = l, l.expr
-    if l.op != "index" or not l.args or not isinstance(l.args[0], str):
+        faq, lhs = lhs, lhs.expr
+    if lhs.op != "index" or not lhs.args or not isinstance(lhs.args[0], str):
         return None
-    name, sub = l.args[0], list(l.args[1:])
+    name, sub = lhs.args[0], list(lhs.args[1:])
     if faq is None or [str(x) for x in faq.output_idx] != sub or len(set(sub)) != len(sub):
         return name, None
     return name, ExprNode(

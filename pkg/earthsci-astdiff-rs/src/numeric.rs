@@ -17,6 +17,14 @@ use crate::system::{ctx_of, observed_defs, sysview};
 
 type R<T> = Result<T, BandError>;
 
+/// `foreach_point`'s callback: `(row cell, contracted cell, index binding,
+/// column cell)`.
+type PointFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()> + 'a;
+
+/// `for_each_value`'s callback: `(k, entry, row cell, contracted cell,
+/// column cell, value)`.
+type ValueFn<'a> = dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64) + 'a;
+
 pub struct Env {
     /// name → nested array (1-based cells encoded as serde Value) or scalar
     pub states: HashMap<String, Value>,
@@ -256,10 +264,7 @@ pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
 /// column cell)` per (row cell, contracted cell), first index fastest, with
 /// the column index evaluated there (ghost reads included). The one point
 /// walk shared by numeric assembly and the CSR scatter plan.
-pub(crate) fn foreach_point(
-    b: &Band,
-    f: &mut dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()>,
-) -> R<()> {
+pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
     let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
     for cell in product_first_fastest(&b.rows) {
         for cc in product_first_fastest(&cranges) {
@@ -293,7 +298,7 @@ fn for_each_value(
     obs: &HashMap<String, Expr>,
     entries: &[JacEntry],
     env: &Env,
-    f: &mut dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64),
+    f: &mut ValueFn<'_>,
 ) -> R<()> {
     // Pruning leaves target-independent observed as opaque reads in the
     // coefficients; resolve them from their own definitions (what the

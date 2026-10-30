@@ -3,7 +3,6 @@ mirror of the Julia clip/contracted testsets)."""
 
 import earthsci_ast as ea
 import pytest
-
 from earthsci_astdiff import BandError, jacobian_bands, jacobian_pattern, skey, stable_json
 from earthsci_astdiff.expr_helpers import ser_expr
 

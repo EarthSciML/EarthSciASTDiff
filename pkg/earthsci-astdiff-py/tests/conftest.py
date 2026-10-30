@@ -15,7 +15,7 @@ REPO_ROOT = HERE.parent.parent.parent  # EarthSciASTDiff/
 sys.path.insert(0, str(PKG_SRC))
 
 try:
-    import earthsci_ast  # noqa: F401
+    import earthsci_ast
 except ImportError:  # sibling checkout fallback
     cand = os.environ.get("EARTHSCI_AST_PY")
     if cand is None:
@@ -23,7 +23,7 @@ except ImportError:  # sibling checkout fallback
     sys.path.insert(0, cand)
     import earthsci_ast  # noqa: F401
 
-import pytest
+import pytest  # noqa: E402  (after the sys.path setup above)
 
 
 @pytest.fixture(scope="session")

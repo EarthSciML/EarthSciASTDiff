@@ -235,7 +235,7 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
             Ok(dacc)
         }
-        "faq" if n.output_idx.as_ref().map_or(true, |o| o.is_empty()) => dsum(n, s),
+        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
         "fn" => dfn(n, s),
         "index" => Err(DerivativeRuleError(
@@ -260,7 +260,7 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
 /// with no `reduce` is a max, not a sum.
 pub(crate) fn plain_sum(n: &ExpressionNode) -> bool {
     match &n.semiring {
-        None => n.reduce.as_deref().map_or(true, |r| r == "+"),
+        None => n.reduce.as_deref().is_none_or(|r| r == "+"),
         Some(sr) => sr == "sum_product",
     }
 }

@@ -1,12 +1,9 @@
 """Per-op derivative rules against central finite differences of the
 package's own evaluator (mirrors the Julia scalar_rules_test.jl)."""
 
-import math
-
 import pytest
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as ex
-
 from earthsci_astdiff import DerivativeRuleError, Site, dscalar
 from earthsci_astdiff.expr_helpers import op
 

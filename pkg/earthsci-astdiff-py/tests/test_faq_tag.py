@@ -13,7 +13,6 @@ from types import SimpleNamespace
 import earthsci_ast as ea
 import pytest
 from earthsci_ast.esm_types import ExprNode
-
 from earthsci_astdiff import jacobian_bands, serialize_band, stable_json, sysview
 from earthsci_astdiff.system import lhs_state, view_states
 

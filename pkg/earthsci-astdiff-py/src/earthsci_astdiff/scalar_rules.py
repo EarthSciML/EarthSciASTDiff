@@ -243,7 +243,7 @@ def _bilinear_partial(
     out: Expr = 0  # x ≥ axis_x[nx]: flat in x
     for i in range(nx - 2, -1, -1):  # 0-based cell i ↔ knots i, i+1
 
-        def sl(j: int) -> float:
+        def sl(j: int, i: int = i) -> float:
             return (T[i + 1][j] - T[i][j]) / (xv[i + 1] - xv[i])
 
         leaf: Expr = sl(ny - 1)  # y ≥ axis_y[ny]: top edge row

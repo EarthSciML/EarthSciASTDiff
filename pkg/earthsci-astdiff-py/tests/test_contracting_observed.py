@@ -8,10 +8,8 @@ contraction through it.
 
 import earthsci_ast as ea
 import pytest
-
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expr_walk import map_children
-
 from earthsci_astdiff import assemble_jacobian, inline_observed, jacobian_bands
 from earthsci_astdiff.bands import BandError
 from earthsci_astdiff.expr_helpers import skey

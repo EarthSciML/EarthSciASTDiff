@@ -128,8 +128,8 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize) -> O
         .collect();
 
     // Free row-index names per template (transitive; sorted = the axis order).
-    fn s_of<'a>(
-        n: &'a str,
+    fn s_of(
+        n: &str,
         body: &HashMap<&str, &Expr>,
         refs_body: &HashMap<&str, HashSet<String>>,
         allnames: &HashSet<String>,

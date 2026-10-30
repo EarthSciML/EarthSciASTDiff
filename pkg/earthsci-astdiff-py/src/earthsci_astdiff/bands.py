@@ -11,7 +11,7 @@ from earthsci_ast.expression import free_variables
 from earthsci_ast.substitute import substitute
 
 from .clip import clip_regions
-from .expr_helpers import Site, add, ckey, is_zero, mul, neg, op, region_bound, skey
+from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
 from .inline import all_names, binders
 from .scalar_rules import dscalar, plain_sum, reduction
 from .simplify_branches import canon_lits, simp
@@ -245,9 +245,9 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
     elif o == "-":
         _bands_array(out, e.args[0], v, ctx, shape_u, scale)
         if len(e.args) == 2:
-            _bands_array(out, e.args[1], v, ctx, shape_u, scale + [-1])
+            _bands_array(out, e.args[1], v, ctx, shape_u, [*scale, -1])
     elif o == "neg":
-        _bands_array(out, e.args[0], v, ctx, shape_u, scale + [-1])
+        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, -1])
     elif o == "*":
         arr = [x for x in e.args if is_array_expr(x, ctx)]
         sc = [x for x in e.args if not is_array_expr(x, ctx)]
@@ -262,7 +262,7 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
     elif o == "/":
         if is_array_expr(e.args[1], ctx):
             raise BandError("array-valued divisor at array level")
-        _bands_array(out, e.args[0], v, ctx, shape_u, scale + [op("/", 1, e.args[1])])
+        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, op("/", 1, e.args[1])])
     elif o == "makearray":
         _bands_makearray(out, e, v, ctx, scale)
     elif o == "faq":
@@ -367,7 +367,7 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
                 rows2: list[tuple[int, int]] = []
                 fullrank = len(b.ridx) == len(rows)
                 kk = -1
-                for k, (lo, hi) in enumerate(rows):
+                for _k, (lo, hi) in enumerate(rows):
                     if fullrank or hi > lo:
                         kk += 1
                         r = b.ridx[kk]

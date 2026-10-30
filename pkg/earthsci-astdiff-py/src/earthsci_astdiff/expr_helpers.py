@@ -157,7 +157,7 @@ class Site:
     key: str
 
     @staticmethod
-    def of(e: Expr) -> "Site":
+    def of(e: Expr) -> Site:
         return Site(e, ckey(e))
 
 

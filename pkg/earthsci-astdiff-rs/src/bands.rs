@@ -164,7 +164,7 @@ fn nested_walk(
     }
     let Expr::Operator(n) = e else { return };
     let depth = stack.len();
-    if n.op == "faq" && n.output_idx.as_ref().map_or(true, |o| o.is_empty()) {
+    if n.op == "faq" && n.output_idx.as_ref().is_none_or(|o| o.is_empty()) {
         if let Some(rs) = &n.ranges {
             let mut ks: Vec<&String> = rs.keys().collect();
             ks.sort();
@@ -691,7 +691,7 @@ fn bands_makearray(
                 let mut rows2 = Vec::new();
                 let fullrank = b.ridx.len() == rows.len();
                 let mut kk: isize = -1;
-                for (_k, (lo, hi)) in rows.iter().enumerate() {
+                for (lo, hi) in rows.iter() {
                     if fullrank || hi > lo {
                         kk += 1;
                         let r = &b.ridx[kk as usize];
