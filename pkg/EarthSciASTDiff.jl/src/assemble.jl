@@ -94,13 +94,15 @@ function _column_names(cols)::Vector{String}
     return names
 end
 
-# The column slot of one scatter pair. On the parameters and forcing axes a
-# column is a buffer cell, and the ghost-read skip that is legitimate for a
-# state stencil reading past the domain is not: an unresolvable column there
-# would silently drop a gradient, so it is an error (esm-jacobian-spec.md §4).
+# The column slot of one scatter pair. On the forcing axis a column is a cell
+# of a live buffer, and the ghost-read skip that is legitimate for a stencil
+# reading past the domain is not: an unresolvable column there would silently
+# drop a gradient, so it is an error (esm-jacobian-spec.md §4). The parameters
+# axis follows the state axis: an array parameter read past its extent (a
+# face coefficient `K[i+1]` beside `c[i+1]`) is a ghost read.
 function _colslot(colslot, colname::String, rowname::String, wrt::Symbol)
     cs = colslot(colname)
-    cs == 0 && wrt in (:parameters, :forcing) && throw(
+    cs == 0 && wrt == :forcing && throw(
         BandError(
             "column `$colname` (row `$rowname`) is outside the declared extent of its " *
                 "variable; on the $wrt axis every column must resolve (no ghost skip)"
@@ -272,7 +274,7 @@ struct JacobianEvaluator{F, P}
     rownames::Vector{String}
     colnames::Vector{String}
     columns::Union{Nothing, Vector{Tuple{String, Vector{Int}}}} # parameters / forcing axes
-    structure::Symbol
+    structure::Union{Nothing, Symbol} # `nothing` on the rectangular parameters / forcing axes
     wrt::Symbol
 end
 
@@ -312,9 +314,11 @@ can delete that build by passing its layout:
     jac(J, u, p, t)              # fills J in place; stored zeros stay
 
 On the `:parameters` and `:forcing` axes the columns are the canonical column
-space of [`jacobian_columns`](@ref) (`jac.columns`), and a column that does
-not resolve to a cell throws. Forcing buffers are bound like any other array
-parameter of the derived band model: through
+space of [`jacobian_columns`](@ref) (`jac.columns`), and `jac.structure` is
+`nothing` (the classes describe square matrices). A forcing column that does
+not resolve to a cell throws; a parameter column outside its extent is a
+ghost read, skipped as on the state axis. Forcing buffers are bound like any
+other array parameter of the derived band model: through
 `build_kwargs = (param_arrays = buffers,)` they are read live, by reference
 (after writing one in place, call `EarthSciAST.notify_forcing_refresh!(buf)`
 as for the RHS); without it the declared defaults are used. [`vjp!`](@ref) /
@@ -365,7 +369,9 @@ function prepare_jacobian(
         pos = rng[searchsortedfirst(view(proto.rowval, rng), r)]
         push!(scatter, (slot, pos))
     end
-    structure = detect_structure(entries, sv)
+    # The structure classes describe square matrices; a parameters or forcing
+    # Jacobian is rectangular, so it has none (as its emitted block omits it).
+    structure = columns === nothing ? detect_structure(entries, sv) : nothing
     # Field shapes and the derived name → slot map, for scatter plans
     # (scatter.jl): `bind_plan` resolves only the field cells a plan reads.
     ctx = _ctx(sv)

@@ -283,17 +283,55 @@ end
     @test_throws BandError prepare_jacobian(
         past; wrt = :forcing, forcing = ["F"], source_layout = lay
     )
-    # the same read on the parameters axis (F is not data-fed here)
-    @test_throws BandError jacobian_pattern(past; wrt = :parameters, source_layout = lay)
-    # while a state stencil reading past the domain stays a ghost skip
-    ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
-    @test nnz(jacobian_pattern(ghost; source_layout = lay).pattern) == 3
-    # reads forcing, yields no band: refused, never an empty block
-    flr = _bracket_doc(_op("*", _ix("c", "i"), _op("floor", _ix("F", 1, "i"))))
-    @test_throws BandError jacobian_bands(flr, "B"; wrt = :forcing, forcing = ["F"])
     # a model that does not read the forcing set at all has an empty block
     none = _bracket_doc(_op("*", -1, _ix("c", "i")))
     @test isempty(jacobian_bands(none, "B"; wrt = :forcing, forcing = ["F"]))
+end
+
+@testset "parameters: an array parameter read past its extent is a ghost read" begin
+    ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
+    _, u0, _, _, vm = build_evaluator(ok)
+    lay = (u0 = u0, var_map = vm)
+    # an array parameter read past its extent (F is not data-fed here) is a
+    # ghost read, as the same stencil on a state is: i = 4 reads F[1,6]
+    past = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", 2))))
+    @test nnz(jacobian_pattern(past; wrt = :parameters, source_layout = lay).pattern) == 3
+    @test nnz(prepare_jacobian(past; wrt = :parameters, source_layout = lay).pattern) == 3
+    ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
+    @test nnz(jacobian_pattern(ghost; source_layout = lay).pattern) == 3
+end
+
+@testset "forcing: an identically-zero derivative is an empty block" begin
+    # forcing read only where the derivative is 0 (inside a piecewise-
+    # constant op, or as an `ifelse` condition) yields no band and no error
+    flr = _bracket_doc(_op("*", _ix("c", "i"), _op("floor", _ix("F", 1, "i"))))
+    @test isempty(jacobian_bands(flr, "B"; wrt = :forcing, forcing = ["F"]))
+    cond = _bracket_doc(
+        _op("ifelse", _op(">", _ix("F", 1, "i"), 0), _op("*", -1, _ix("c", "i")), 0)
+    )
+    @test isempty(jacobian_bands(cond, "B"; wrt = :forcing, forcing = ["F"]))
+    doc = jacobian_document(cond, "B"; wrt = [:states, :forcing], forcing = ["F"])
+    states, forcing = doc["jacobians"]["B"]
+    @test length(states["entries"]) == 1 && isempty(forcing["entries"])
+end
+
+@testset "forcing: one name or axis as a String" begin
+    ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
+    sv = sysview(ok, "B")
+    @test forcing_names(sv, "F") == forcing_names(sv, :F) == ["F"]
+    sb = EarthSciASTDiff.serialize_band
+    @test sb.(jacobian_bands(ok, "B"; wrt = :forcing, forcing = "F")) ==
+        sb.(jacobian_bands(ok, "B"; wrt = :forcing, forcing = ["F"]))
+    @test jacobian_document(ok, "B"; wrt = "forcing", forcing = "F")["jacobians"]["B"] ==
+        jacobian_document(ok, "B"; wrt = :forcing, forcing = ["F"])["jacobians"]["B"]
+    @test jacobian_document(ok, "B"; wrt = "states")["jacobians"]["B"]["wrt"] == "states"
+end
+
+@testset "forcing: rectangular axes carry no structure class" begin
+    file = fixture("forcing_bracket.esm")
+    @test prepare_jacobian(file; wrt = :forcing).structure === nothing
+    @test assemble_jacobian(file; wrt = :parameters).structure === nothing
+    @test prepare_jacobian(file).structure isa Symbol
 end
 
 @testset "forcing: the evaluation document keeps array defaults row-major" begin

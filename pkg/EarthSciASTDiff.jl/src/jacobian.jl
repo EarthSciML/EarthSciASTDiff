@@ -23,6 +23,7 @@ the columns of the `wrt = :forcing` axis (esm-jacobian-spec.md §4.3). With
 list is what a planner that builds the providers itself passes (a document
 need not declare the update), and every name in it must be a parameter of the
 system: a name that resolves to no buffer throws, never yields an empty axis.
+`forcing` may be one name (a `String` or `Symbol`) or a collection of them.
 """
 function forcing_names(sv::SysView, forcing = nothing)::Vector{String}
     if forcing === nothing
@@ -35,7 +36,10 @@ function forcing_names(sv::SysView, forcing = nothing)::Vector{String}
             ]
         )
     end
-    names = String[String(n) for n in forcing]
+    # One buffer name is the natural call; iterating a String would split it
+    # into characters.
+    names = forcing isa Union{AbstractString, Symbol} ? [String(forcing)] :
+        String[String(n) for n in forcing]
     for n in names
         var = get(sv.variables, n, nothing)
         (var !== nothing && var.type == EarthSciAST.ParameterVariable) || throw(
@@ -107,9 +111,10 @@ are unioned, so it is valid at every point and is a superset of any local
 
 On the `:parameters` and `:forcing` axes every column index must be closed at
 build time (literals, folded metaparameters, `const` gathers, and the entry's
-row and contracted index names), and a `:forcing` request whose right-hand
-sides read the forcing set but yield no band throws rather than returning an
-empty list (esm-jacobian-spec.md §4.3).
+row and contracted index names); an unclosed one throws
+(esm-jacobian-spec.md §4.3). A model whose right-hand sides read the forcing
+set only where the derivative is identically zero (an `ifelse` condition, a
+piecewise-constant op) has an empty forcing list.
 """
 jacobian_bands(file::EarthSciAST.EsmFile, model_name; kw...) =
     jacobian_bands(sysview(file, model_name); kw...)
@@ -146,7 +151,6 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
     # the `entries` order is what downstream pattern/scatter construction
     # (assemble.jl) reads.
     tset = Set{String}(targets)
-    read_target = false
     obs_names = Ref{Union{Nothing, Set{String}}}(nothing)
     for eq in sv.equations
         u = lhs_state(eq)
@@ -162,23 +166,13 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
         shape_u = get(ctx.shapes, u, Int[])
         rhs = inline_observed(eq.rhs, obs; obs_names = obs_names)
         hits = sort!(String[v for v in free_variables(rhs) if v in tset])
-        read_target |= !isempty(hits)
         for v in hits
             for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))
                 push!(entries, JacEntry(u, v, normalize_band(b)))
             end
         end
     end
-    if wrt in (:parameters, :forcing)
-        foreach(_check_closed_columns, entries)
-        wrt == :forcing && read_target && isempty(entries) && throw(
-            BandError(
-                "the right-hand sides read the forcing set $(targets) but no band " *
-                    "was produced; an empty forcing block for a document that reads " *
-                    "forcing is refused rather than emitted"
-            )
-        )
-    end
+    wrt in (:parameters, :forcing) && foreach(_check_closed_columns, entries)
     return entries
 end
 

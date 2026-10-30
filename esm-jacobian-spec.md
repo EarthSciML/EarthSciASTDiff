@@ -216,11 +216,12 @@ J[ row[r], col[col_idx(r, c)] ] += coef(r, c)
 
 Entries are additive: multiple entries — and multiple contracted points of
 ONE entry — may target the same (row, col) pair.
-On the state axis, a `col_idx(r)` that falls outside `col`'s declared extent
-contributes nothing (it denotes a boundary/ghost read that is not a state
-column). On the `parameters` and `forcing` axes a column is a buffer cell and
-there is no ghost read: a column that does not resolve to a cell of `col` is
-an error, and a consumer MUST refuse the block rather than skip the point.
+On the `states` and `parameters` axes, a `col_idx(r)` that falls outside
+`col`'s declared extent contributes nothing (it denotes a boundary/ghost read,
+such as a face coefficient `K[i+1]` read beside `c[i+1]`, that is not a
+column). On the `forcing` axis a column is a cell of a live buffer and there
+is no ghost read: a column that does not resolve to a cell of `col` is an
+error, and a consumer MUST refuse the block rather than skip the point.
 
 `structure` (optional, derived): `"block_diagonal"` | `"banded"` |
 `"general"` — a *classification* of the exact pattern for consumers choosing
@@ -374,10 +375,10 @@ so the second record keeps its columns with a zero blend coefficient
 (structural sparsity, §2). The weight's dependence on `t` stays on the time
 axis (§4.2).
 
-**Refusals.** Beyond the unclosed column index above, a producer MUST fail
-when the right-hand sides read the forcing set but no band results. It MUST
-NOT emit an empty forcing block for such a model. A model that reads none of
-the forcing set has an empty forcing block.
+**Empty blocks.** A model that reads none of the forcing set has an empty
+forcing block. So does one that reads it only where the derivative is
+identically zero, such as an `ifelse` condition or the argument of a
+piecewise-constant op (§3.2): structural occurrence alone is not a band.
 
 **Meaning and use.** The block describes `∂f/∂B` at one evaluation point
 `(u, B, t)`, with §4's meaning. A consumer applies its transpose by a

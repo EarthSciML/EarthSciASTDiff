@@ -126,7 +126,10 @@ function _attach_jacobians!(
         doc, sv::SysView, model_name::String; wrt, forcing = nothing,
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    axes = wrt isa Symbol ? [wrt] : Symbol[Symbol(w) for w in wrt]
+    # One axis may be spelled as a Symbol or a String; iterating a String
+    # would split it into one-character "axes".
+    single = wrt isa Union{Symbol, AbstractString}
+    axes = single ? [Symbol(wrt)] : Symbol[Symbol(w) for w in wrt]
     (isempty(axes) || !allunique(axes)) &&
         throw(ArgumentError("wrt must name one or more distinct axes, got $wrt"))
     blocks = Any[
@@ -134,7 +137,7 @@ function _attach_jacobians!(
             for w in axes
     ]
     jb = get!(doc, "jacobians", OrderedDict{String, Any}())
-    jb[model_name] = wrt isa Symbol ? only(blocks) : blocks
+    jb[model_name] = single ? only(blocks) : blocks
     _raise_faq_floor!(doc)
     return doc
 end
