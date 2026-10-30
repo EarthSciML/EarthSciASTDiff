@@ -17,9 +17,17 @@
 //!   [`JacWorkspace`] and scatters it, `+=` in plan order into zeroed storage;
 //!   [`JacobianProgram::apply`] and [`JacobianProgram::apply_transpose`] walk
 //!   the slab the last `eval_into` left.
+//! * [`HvpProgram`] does the same for the second-order bands of an axis pair
+//!   (spec §4.4, [`crate::jacobian_bands2`]): each entry rides through the
+//!   first-order compile as a band with concatenated column indices, an
+//!   [`HvpPlan`] resolves every band point to the source program's rows,
+//!   columns and run-time inputs by name, and [`HvpProgram::contract`] runs
+//!   the Rosenbrock-adjoint contraction over the slab (whole-domain plans
+//!   only; [`crate::numeric::HvpEvaluator`] is its oracle).
 //!
-//! `JacobianProgram` and `JacPlan` are immutable, `Send + Sync` and cheap to
-//! clone; a `JacWorkspace` is `Send`, not `Sync`, one per thread. A lane's
+//! `JacobianProgram`, `JacPlan`, `HvpProgram` and `HvpPlan` are immutable,
+//! `Send + Sync` and cheap to clone; a `JacWorkspace` or `HvpWorkspace` is
+//! `Send`, not `Sync`, one per thread. A lane's
 //! result depends only on its own inputs and the plan order (no atomics, no
 //! thread-local partial sums), so assembly is bitwise invariant to thread
 //! count and lane position. The oracle ([`crate::assemble_jacobian`]) stays
@@ -32,7 +40,7 @@ use std::sync::{Arc, OnceLock};
 
 use earthsci_ast::{
     esm_problem, rhs_program, Compiler, EsmFile, ForcingSet, ForcingSlot, LaneKind, LaneProgram,
-    ProblemOptions, RhsError, RhsProgram, RhsSelection, RhsWorkspace,
+    ProblemOptions, RhsError, RhsProgram, RhsSelection, RhsWorkspace, SlotKind,
 };
 use serde_json::{json, Map, Value};
 
@@ -40,7 +48,9 @@ use crate::bands::BandError;
 use crate::clip::RIdx;
 use crate::emit::{evaluation_document, evaluation_document_with};
 use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
-use crate::scatter::{ncells, Layout, PlanKind, ScatterPlan};
+use crate::numeric::{foreach_point, HvpForm};
+use crate::scatter::{flat, ncells, Layout, PlanKind, ScatterPlan};
+use crate::second_order::{axis_pair, bands2_view, JacEntry2};
 use crate::system::{ctx_of, observed_defs, sysview};
 
 /// Why a program, plan or call was refused.
@@ -377,9 +387,16 @@ fn fused_band(name: &str, en: &JacEntry, eq: &Value) -> Vec<Value> {
 
 /// The band-field program of a compiled document: `native`, selected to
 /// write the band fields `<model>.J_k` only.
-fn compile(doc: &Value, model: &str, names: &[String]) -> R<RhsProgram> {
+///
+/// With `runtime_arrays`, every shaped parameter without an `update` stays a
+/// run-time [`earthsci_ast::SlotKind::ArrayParameter`] forcing slot
+/// (`ProblemOptions::runtime_array_parameters`), as in a source program built
+/// that way, so the band fields read the source's buffer rather than a
+/// build-time copy of the document's value.
+fn compile(doc: &Value, model: &str, names: &[String], runtime_arrays: bool) -> R<RhsProgram> {
     let popts = ProblemOptions {
         compiler: Some(Compiler::Native),
+        runtime_array_parameters: runtime_arrays,
         ..Default::default()
     };
     let prob = esm_problem(doc, (0.0, 1.0), popts)
@@ -428,7 +445,7 @@ impl JacobianProgram {
         }
         let src = source_value(file)?;
         let doc = compiled_document(&src, &model, &evaldoc, &names, &entries, true)?;
-        let rhs = compile(&doc, &model, &names)?;
+        let rhs = compile(&doc, &model, &names, false)?;
         let lane_doc = compiled_document(&src, &model, &evaldoc, &names, &entries, false)?;
         let lane_rhs = OnceLock::new();
         if lane_doc == doc {
@@ -542,7 +559,7 @@ impl JacobianProgram {
                 let base = inner
                     .lane_rhs
                     .get_or_init(|| {
-                        compile(&inner.lane_doc, &inner.model, &inner.names)
+                        compile(&inner.lane_doc, &inner.model, &inner.names, false)
                             .map_err(|e| e.to_string())
                     })
                     .as_ref()
@@ -571,97 +588,10 @@ impl JacobianProgram {
             }
         };
 
-        // The band program's own inputs, gathered from the source's.
-        let mut gather = Vec::new();
-        for (name, s) in &ours.vars {
-            if s.written {
-                continue;
-            }
-            let Some(t) = theirs.vars.get(name) else {
-                return perr(format!(
-                    "the band fields read `{name}`, which the source program \
-                                     neither writes nor reads"
-                ));
-            };
-            if t.len != s.len {
-                return perr(format!(
-                    "`{name}` holds {} values in the source program and {} in \
-                                     the band program (a source from another build?)",
-                    t.len, s.len
-                ));
-            }
-            gather.push((t.start, s.start - ours.u_len, s.len));
-        }
-        gather.sort_by_key(|g| g.1);
-        // Reading the source's `u` as is: every input at its own offset.
-        let identity = ours.aux_len == theirs.u_len
-            && gather.iter().map(|g| g.2).sum::<usize>() == ours.aux_len
-            && gather.iter().all(|g| g.0 == g.1);
-        let aux_map = if identity {
-            AuxMap::SourceU
-        } else {
-            AuxMap::Copy(gather)
-        };
-
-        // Parameters by name.
         let bprog = match &pexec {
             PlanExec::Domain(_, b) | PlanExec::Lanes(_, b) => b,
         };
-        let ours_p = bprog.parameters();
-        let theirs_p = source.parameters();
-        let p_map = if ours_p
-            .iter()
-            .map(|p| &p.name)
-            .eq(theirs_p.iter().map(|p| &p.name))
-        {
-            None
-        } else {
-            let at: HashMap<&String, usize> = theirs_p
-                .iter()
-                .enumerate()
-                .map(|(i, p)| (&p.name, i))
-                .collect();
-            let mut m = Vec::with_capacity(ours_p.len());
-            for p in ours_p {
-                match at.get(&p.name) {
-                    Some(i) => m.push(*i),
-                    None => {
-                        return perr(format!(
-                            "parameter `{}` of the band program is not a \
-                                                 parameter of the source program",
-                            p.name
-                        ))
-                    }
-                }
-            }
-            Some(m)
-        };
-
-        // Forcing slots by name.
-        let ours_f = bprog.forcing_slots();
-        let theirs_f = source.forcing_slots();
-        let forcing_map = if ours_f == theirs_f {
-            None
-        } else {
-            let mut m = Vec::with_capacity(ours_f.len());
-            for f in ours_f {
-                match theirs_f
-                    .iter()
-                    .position(|g| g.name == f.name && g.shape == f.shape && g.kind == f.kind)
-                {
-                    Some(i) => m.push(i),
-                    None => {
-                        return perr(format!(
-                            "forcing slot `{}` {:?} ({:?}) of the band \
-                                                 program is not a forcing slot of the source \
-                                                 program",
-                            f.name, f.shape, f.kind
-                        ))
-                    }
-                }
-            }
-            Some(m)
-        };
+        let io = bind_inputs(bprog, &ours, &theirs, source)?;
 
         // Contributions: (slab start, output start, row start in y, column
         // start in v), each covering `width` consecutive lanes.
@@ -850,20 +780,7 @@ impl JacobianProgram {
                 capacity: l,
                 items,
                 runs,
-                ours_u_len: ours.u_len,
-                ours_aux_len: ours.aux_len,
-                src_u_len: theirs.u_len,
-                src_aux_len: theirs.aux_len,
-                n_src_params: theirs_p.len(),
-                aux_map,
-                p_map,
-                src_forcing: if forcing_map.is_some() {
-                    theirs_f.to_vec()
-                } else {
-                    Vec::new()
-                },
-                forcing_map,
-                zeros: vec![0.0; ours.u_len].into(),
+                io,
             }),
         })
     }
@@ -891,9 +808,9 @@ impl JacobianProgram {
         JacWorkspace {
             plan: p.id,
             rhs,
-            slab: vec![0.0; p.ours_u_len],
-            aux: vec![0.0; p.ours_aux_len],
-            p: vec![0.0; p.p_map.as_ref().map_or(0, Vec::len)],
+            slab: vec![0.0; p.io.ours_u_len],
+            aux: vec![0.0; p.io.ours_aux_len],
+            p: vec![0.0; p.io.p_map.as_ref().map_or(0, Vec::len)],
             acc: vec![0.0; p.width],
             forcing: None,
             evaluated: false,
@@ -941,84 +858,15 @@ impl JacobianProgram {
         self.check(plan, ws)?;
         let pl = &*plan.inner;
         ws.evaluated = false;
-        let len = |what: &str, want: usize, got: usize| -> R<()> {
-            if want != got {
-                return Err(JacError::Call(format!(
-                    "{what} has length {got}; the plan needs \
-                                                   {want}"
-                )));
-            }
-            Ok(())
-        };
-        len("u", pl.src_u_len, u.len())?;
-        len("aux", pl.src_aux_len, aux.len())?;
-        len("p", pl.n_src_params, p.len())?;
-        len("out", pl.out_len, out.len())?;
-        let JacWorkspace {
-            rhs,
-            slab,
-            aux: our_aux,
-            p: our_p,
-            acc,
-            forcing: fcache,
-            ..
-        } = ws;
-        let zeros = &pl.zeros[..];
-        let aux_in: &[f64] = match &pl.aux_map {
-            AuxMap::SourceU => u,
-            AuxMap::Copy(m) => {
-                let su = u.len();
-                for &(src, dst, n) in m {
-                    let from = if src < su {
-                        &u[src..src + n]
-                    } else {
-                        &aux[src - su..src - su + n]
-                    };
-                    our_aux[dst..dst + n].copy_from_slice(from);
-                }
-                our_aux
-            }
-        };
-        let p_in: &[f64] = match &pl.p_map {
-            None => p,
-            Some(m) => {
-                for (d, &s) in our_p.iter_mut().zip(m) {
-                    *d = p[s];
-                }
-                our_p
-            }
-        };
-        let f_in: &ForcingSet = match &pl.forcing_map {
-            None => forcing,
-            Some(m) => {
-                if fcache.as_ref().map(|c| c.0) != Some(forcing.epoch()) {
-                    if forcing.slots() != &pl.src_forcing[..] {
-                        return Err(JacError::Call(
-                            "the forcing set is not one for the source \
-                                                   program's slots"
-                                .into(),
-                        ));
-                    }
-                    let bufs = m.iter().map(|&j| Arc::from(forcing.buffer(j))).collect();
-                    let base = match &pl.exec {
-                        PlanExec::Domain(_, b) | PlanExec::Lanes(_, b) => b,
-                    };
-                    *fcache = Some((forcing.epoch(), ForcingSet::new(base, bufs)?));
-                }
-                &fcache.as_ref().expect("filled above").1
-            }
-        };
-        match &pl.exec {
-            PlanExec::Domain(prog, _) => {
-                if !cells.is_empty() || n != 0 {
-                    return Err(JacError::Call("a domain plan takes no cells".into()));
-                }
-                prog.eval_into(zeros, aux_in, p_in, t, f_in, slab, rhs)?;
-            }
-            PlanExec::Lanes(lp, _) => {
-                lp.eval_into(zeros, aux_in, p_in, t, f_in, cells, n, slab, rhs)?
-            }
+        if out.len() != pl.out_len {
+            return Err(JacError::Call(format!(
+                "out has length {}; the plan needs {}",
+                out.len(),
+                pl.out_len
+            )));
         }
+        eval_slab(&pl.io, &pl.exec, u, aux, p, t, forcing, cells, n, ws)?;
+        let JacWorkspace { slab, acc, .. } = ws;
         let w = pl.width;
         for &(lo, hi) in &pl.zero {
             out[lo..hi].iter_mut().for_each(|x| *x = T::from_f64(0.0));
@@ -1139,12 +987,13 @@ impl JacobianProgram {
     }
 
     fn mf_lengths(&self, pl: &PlanInner, cols: usize, rows: usize) -> R<()> {
-        if cols != pl.src_u_len + pl.src_aux_len || rows != pl.src_u_len {
+        let (nu, na) = (pl.io.src_u_len, pl.io.src_aux_len);
+        if cols != nu + na || rows != nu {
             return Err(JacError::Call(format!(
                 "matrix-free vectors have lengths (columns {cols}, rows {rows}); the plan needs \
                  ({}, {})",
-                pl.src_u_len + pl.src_aux_len,
-                pl.src_u_len
+                nu + na,
+                nu
             )));
         }
         Ok(())
@@ -1385,6 +1234,235 @@ impl Slots {
     }
 }
 
+/// Evaluate a band program's fields at a source program's point into
+/// `ws.slab`: the source's `u`, `aux`, `p` and forcing set read through `io`.
+/// Leaves `ws.evaluated` false; the caller sets it once its own step is done.
+#[allow(clippy::too_many_arguments)]
+fn eval_slab(
+    io: &Inputs,
+    exec: &PlanExec,
+    u: &[f64],
+    aux: &[f64],
+    p: &[f64],
+    t: f64,
+    forcing: &ForcingSet,
+    cells: &[i32],
+    n: usize,
+    ws: &mut JacWorkspace,
+) -> R<()> {
+    ws.evaluated = false;
+    let len = |what: &str, want: usize, got: usize| -> R<()> {
+        if want != got {
+            return Err(JacError::Call(format!(
+                "{what} has length {got}; the plan needs \
+                                               {want}"
+            )));
+        }
+        Ok(())
+    };
+    len("u", io.src_u_len, u.len())?;
+    len("aux", io.src_aux_len, aux.len())?;
+    len("p", io.n_src_params, p.len())?;
+    let JacWorkspace {
+        rhs,
+        slab,
+        aux: our_aux,
+        p: our_p,
+        forcing: fcache,
+        ..
+    } = ws;
+    let zeros = &io.zeros[..];
+    let aux_in: &[f64] = match &io.aux_map {
+        AuxMap::SourceU => u,
+        AuxMap::Copy(m) => {
+            let su = u.len();
+            for &(src, dst, n) in m {
+                let from = if src < su {
+                    &u[src..src + n]
+                } else {
+                    &aux[src - su..src - su + n]
+                };
+                our_aux[dst..dst + n].copy_from_slice(from);
+            }
+            our_aux
+        }
+    };
+    let p_in: &[f64] = match &io.p_map {
+        None => p,
+        Some(m) => {
+            for (d, &s) in our_p.iter_mut().zip(m) {
+                *d = p[s];
+            }
+            our_p
+        }
+    };
+    let f_in: &ForcingSet = match &io.forcing_map {
+        None => forcing,
+        Some(m) => {
+            if fcache.as_ref().map(|c| c.0) != Some(forcing.epoch()) {
+                if forcing.slots() != &io.src_forcing[..] {
+                    return Err(JacError::Call(
+                        "the forcing set is not one for the source \
+                                               program's slots"
+                            .into(),
+                    ));
+                }
+                let bufs = m.iter().map(|&j| Arc::from(forcing.buffer(j))).collect();
+                let base = match &exec {
+                    PlanExec::Domain(_, b) | PlanExec::Lanes(_, b) => b,
+                };
+                *fcache = Some((forcing.epoch(), ForcingSet::new(base, bufs)?));
+            }
+            &fcache.as_ref().expect("filled above").1
+        }
+    };
+    match &exec {
+        PlanExec::Domain(prog, _) => {
+            if !cells.is_empty() || n != 0 {
+                return Err(JacError::Call("a domain plan takes no cells".into()));
+            }
+            prog.eval_into(zeros, aux_in, p_in, t, f_in, slab, rhs)?;
+        }
+        PlanExec::Lanes(lp, _) => {
+            lp.eval_into(zeros, aux_in, p_in, t, f_in, cells, n, slab, rhs)?
+        }
+    }
+    Ok(())
+}
+
+/// A band program's inputs bound to a source program: where each call's
+/// `u`, `aux`, `p` and forcing set are read from (see
+/// [`JacobianProgram::plan`]).
+struct Inputs {
+    ours_u_len: usize,
+    ours_aux_len: usize,
+    src_u_len: usize,
+    src_aux_len: usize,
+    n_src_params: usize,
+    aux_map: AuxMap,
+    /// Source parameter index of each band-program parameter (`None`: the
+    /// same list).
+    p_map: Option<Vec<usize>>,
+    /// Source forcing slot of each band-program slot (`None`: the same).
+    forcing_map: Option<Vec<usize>>,
+    /// The source program's forcing slots, when `forcing_map` reads them.
+    src_forcing: Vec<ForcingSlot>,
+    /// The band program's `u` (its own band fields, never read), shared by
+    /// every workspace of the plan.
+    zeros: Arc<[f64]>,
+}
+
+/// Bind the band program `bprog` (laid out as `ours`) to `source` (laid out
+/// as `theirs`), by name: every state it reads must be in `source` with the
+/// same extent, and every parameter and forcing slot one of `source`'s.
+fn bind_inputs(bprog: &RhsProgram, ours: &Slots, theirs: &Slots, source: &RhsProgram) -> R<Inputs> {
+    let perr = |m: String| -> R<Inputs> { Err(JacError::Plan(m)) };
+    // The band program's own inputs, gathered from the source's.
+    let mut gather = Vec::new();
+    for (name, s) in &ours.vars {
+        if s.written {
+            continue;
+        }
+        let Some(t) = theirs.vars.get(name) else {
+            return perr(format!(
+                "the band fields read `{name}`, which the source program \
+                                 neither writes nor reads"
+            ));
+        };
+        if t.len != s.len {
+            return perr(format!(
+                "`{name}` holds {} values in the source program and {} in \
+                                 the band program (a source from another build?)",
+                t.len, s.len
+            ));
+        }
+        gather.push((t.start, s.start - ours.u_len, s.len));
+    }
+    gather.sort_by_key(|g| g.1);
+    // Reading the source's `u` as is: every input at its own offset.
+    let identity = ours.aux_len == theirs.u_len
+        && gather.iter().map(|g| g.2).sum::<usize>() == ours.aux_len
+        && gather.iter().all(|g| g.0 == g.1);
+    let aux_map = if identity {
+        AuxMap::SourceU
+    } else {
+        AuxMap::Copy(gather)
+    };
+
+    // Parameters by name.
+    let ours_p = bprog.parameters();
+    let theirs_p = source.parameters();
+    let p_map = if ours_p
+        .iter()
+        .map(|p| &p.name)
+        .eq(theirs_p.iter().map(|p| &p.name))
+    {
+        None
+    } else {
+        let at: HashMap<&String, usize> = theirs_p
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (&p.name, i))
+            .collect();
+        let mut m = Vec::with_capacity(ours_p.len());
+        for p in ours_p {
+            match at.get(&p.name) {
+                Some(i) => m.push(*i),
+                None => {
+                    return perr(format!(
+                        "parameter `{}` of the band program is not a \
+                                             parameter of the source program",
+                        p.name
+                    ))
+                }
+            }
+        }
+        Some(m)
+    };
+
+    // Forcing slots by name.
+    let ours_f = bprog.forcing_slots();
+    let theirs_f = source.forcing_slots();
+    let forcing_map = if ours_f == theirs_f {
+        None
+    } else {
+        let mut m = Vec::with_capacity(ours_f.len());
+        for f in ours_f {
+            match theirs_f
+                .iter()
+                .position(|g| g.name == f.name && g.shape == f.shape && g.kind == f.kind)
+            {
+                Some(i) => m.push(i),
+                None => {
+                    return perr(format!(
+                        "forcing slot `{}` {:?} ({:?}) of the band \
+                                             program is not a forcing slot of the source \
+                                             program",
+                        f.name, f.shape, f.kind
+                    ))
+                }
+            }
+        }
+        Some(m)
+    };
+    Ok(Inputs {
+        ours_u_len: ours.u_len,
+        ours_aux_len: ours.aux_len,
+        src_u_len: theirs.u_len,
+        src_aux_len: theirs.aux_len,
+        n_src_params: theirs_p.len(),
+        aux_map,
+        p_map,
+        src_forcing: if forcing_map.is_some() {
+            theirs_f.to_vec()
+        } else {
+            Vec::new()
+        },
+        forcing_map,
+        zeros: vec![0.0; ours.u_len].into(),
+    })
+}
+
 /// The executor, with the band program it was made from (whose parameters
 /// and forcing slots a call fills).
 #[derive(Clone)]
@@ -1438,22 +1516,7 @@ struct PlanInner {
     /// `(slab, output)` in slab order, and the rest in output order.
     singles: Vec<(u32, u32)>,
     pairs: Vec<(u32, u32)>,
-    ours_u_len: usize,
-    ours_aux_len: usize,
-    src_u_len: usize,
-    src_aux_len: usize,
-    n_src_params: usize,
-    aux_map: AuxMap,
-    /// Source parameter index of each band-program parameter (`None`: the
-    /// same list).
-    p_map: Option<Vec<usize>>,
-    /// Source forcing slot of each band-program slot (`None`: the same).
-    forcing_map: Option<Vec<usize>>,
-    /// The source program's forcing slots, when `forcing_map` reads them.
-    src_forcing: Vec<ForcingSlot>,
-    /// The band program's `u` (its own band fields, never read), shared by
-    /// every workspace of the plan.
-    zeros: Arc<[f64]>,
+    io: Inputs,
 }
 
 impl fmt::Debug for JacPlan {
@@ -1485,7 +1548,7 @@ impl JacPlan {
 
     /// The lengths of the source `u` and `aux` every call takes.
     pub fn source_lengths(&self) -> (usize, usize) {
-        (self.inner.src_u_len, self.inner.src_aux_len)
+        (self.inner.io.src_u_len, self.inner.io.src_aux_len)
     }
 }
 
@@ -1519,4 +1582,634 @@ impl fmt::Debug for JacWorkspace {
             .field("slab", &self.slab.len())
             .finish()
     }
+}
+
+// ── the second-order contraction (spec §4.4) ────────────────────────────────
+
+/// A model's second-order bands for one axis pair ([`crate::jacobian_bands2`]),
+/// their coefficient fields compiled once — the production form of
+/// [`crate::numeric::HvpEvaluator`], which stays the oracle it is tested
+/// against.
+///
+/// Not a new compile target: each second-order entry rides through the
+/// first-order build as a band whose column indices are `v`'s followed by
+/// `w`'s (the evaluation document reads only rows, row and contracted
+/// indices and the coefficient), so the band fields `J_k` are compiled
+/// exactly as [`JacobianProgram::build`] compiles them. What differs is the
+/// plan: [`HvpProgram::plan`] resolves each band point to a (slab, row,
+/// column, second column) item of the source program's layout instead of a
+/// storage layout, and [`HvpProgram::contract`] walks those items.
+///
+/// Separate from [`JacobianProgram`] because its plans are: a
+/// [`ScatterPlan`] reads every column index as a state column, which a
+/// concatenated `cidx` is not, and a second-order band list may be empty
+/// (a piecewise-linear operator), which the first-order build refuses.
+#[derive(Clone)]
+pub struct HvpProgram {
+    inner: Arc<HvpInner>,
+}
+
+struct HvpInner {
+    id: u64,
+    file: EsmFile,
+    model_name: Option<String>,
+    model: String,
+    wrt: (Wrt, Wrt),
+    entries: Vec<JacEntry2>,
+    /// The compiled document (fused band form) and its band-field names;
+    /// `None` for an empty band list, which compiles nothing.
+    doc: Option<(Value, Vec<String>)>,
+    /// Its band-field program, with shaped parameters build-time data …
+    rhs: Option<RhsProgram>,
+    /// … and with them run-time slots, compiled on the first plan against a
+    /// source built with `ProblemOptions::runtime_array_parameters`.
+    rhs_arrays: OnceLock<Result<RhsProgram, String>>,
+}
+
+impl fmt::Debug for HvpProgram {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HvpProgram")
+            .field("model", &self.inner.model)
+            .field("wrt", &self.inner.wrt)
+            .field("bands", &self.inner.entries.len())
+            .finish()
+    }
+}
+
+/// One contraction item: the band slab slot, the row (source `u`), the first
+/// column (source `u ++ aux`, or 0 on a time pair) and the second column
+/// (`g`'s index).
+#[derive(Clone, Copy, Debug)]
+struct HvpItem {
+    slab: usize,
+    row: usize,
+    col: usize,
+    col2: usize,
+}
+
+/// An [`HvpProgram`] bound to the integrator's program for the same
+/// operator (see [`HvpProgram::plan`]). Immutable, `Send + Sync`, cheap to
+/// clone.
+#[derive(Clone)]
+pub struct HvpPlan {
+    inner: Arc<HvpPlanInner>,
+}
+
+struct HvpPlanInner {
+    id: u64,
+    owner: u64,
+    wrt: (Wrt, Wrt),
+    /// The executor and its input binding; `None` for an empty band list.
+    run: Option<(PlanExec, Inputs)>,
+    src_u_len: usize,
+    src_aux_len: usize,
+    n_src_params: usize,
+    w_len: usize,
+    g_len: usize,
+    /// In plan order: entries in order, each one's points first index
+    /// fastest (rows, then contracted cells).
+    items: Vec<HvpItem>,
+    /// The distinct (row, col) the items read `M` at, and item `k`'s index
+    /// into them.
+    rc: Vec<(usize, usize)>,
+    rcidx: Vec<usize>,
+}
+
+impl fmt::Debug for HvpPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HvpPlan")
+            .field("wrt", &self.inner.wrt)
+            .field("items", &self.inner.items.len())
+            .field("g_len", &self.inner.g_len)
+            .finish()
+    }
+}
+
+impl HvpPlan {
+    /// The lengths of the source `u` and `aux` every call takes.
+    pub fn source_lengths(&self) -> (usize, usize) {
+        (self.inner.src_u_len, self.inner.src_aux_len)
+    }
+
+    /// The length of each stage's `w`: the source's `u ++ aux` on a
+    /// (states, ·) pair, 1 (the column `t`) on a (time, ·) pair.
+    pub fn w_len(&self) -> usize {
+        self.inner.w_len
+    }
+
+    /// The length of `g` (see [`HvpProgram::plan`] for its indexing).
+    pub fn g_len(&self) -> usize {
+        self.inner.g_len
+    }
+
+    /// The `g` positions [`HvpProgram::contract`] writes in `form`, sorted:
+    /// every second column a band point reaches ([`HvpForm::Contract`]), or
+    /// every first column ([`HvpForm::Symmetric`]).
+    pub fn touched(&self, form: HvpForm) -> Vec<usize> {
+        let mut v: Vec<usize> = self
+            .inner
+            .items
+            .iter()
+            .map(|it| match form {
+                HvpForm::Contract => it.col2,
+                HvpForm::Symmetric => it.col,
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+}
+
+/// The per-call buffers of one [`HvpPlan`]: the band program's workspace
+/// and slab, and the contraction's `M` scratch. `Send`, not `Sync`: one per
+/// thread.
+pub struct HvpWorkspace {
+    plan: u64,
+    ws: Option<JacWorkspace>,
+    m: Vec<f64>,
+    evaluated: bool,
+}
+
+impl HvpWorkspace {
+    /// The band slab of the last successful [`HvpProgram::eval`] (empty for
+    /// an empty band list).
+    pub fn slab(&self) -> &[f64] {
+        self.ws.as_ref().map_or(&[], |w| &w.slab[..])
+    }
+}
+
+impl fmt::Debug for HvpWorkspace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HvpWorkspace")
+            .field("slab", &self.slab().len())
+            .finish()
+    }
+}
+
+impl HvpProgram {
+    /// Differentiate `model_name` (the only model when `None`) twice, for
+    /// the axis pair `wrt` (first axis states or time, second states,
+    /// parameters or forcing; `forcing` as for
+    /// [`crate::jacobian_bands2_with_forcing`]), and compile the band fields.
+    /// An empty second-order band list is legitimate (a piecewise-linear
+    /// operator): the program compiles nothing and its contraction is a
+    /// no-op.
+    pub fn build(
+        file: &EsmFile,
+        model_name: Option<&str>,
+        wrt: (Wrt, Wrt),
+        forcing: Option<&[String]>,
+        opts: &BuildOptions,
+    ) -> R<HvpProgram> {
+        let wrt = axis_pair(wrt)?;
+        let model = the_model(file, model_name)?;
+        let sv = sysview(file, Some(&model))?;
+        let ctx = ctx_of(&sv)?;
+        let obs = observed_defs(&sv)?;
+        let (_, entries) = bands2_view(&sv, &ctx, &obs, wrt, forcing)?;
+        let (doc, rhs) = if entries.is_empty() {
+            (None, None)
+        } else {
+            let first = first_order_form(&entries);
+            let (evaldoc, names) =
+                evaluation_document_with(&sv, &first, opts.cse, opts.cse_min_nodes, false)?;
+            if let Some(n) = names.iter().find(|n| sv.variables.contains_key(*n)) {
+                return Err(JacError::Build(format!(
+                    "the source model declares `{n}`, the name of a band field of its \
+                     second-order bands"
+                )));
+            }
+            let src = source_value(file)?;
+            let doc = compiled_document(&src, &model, &evaldoc, &names, &first, true)?;
+            let rhs = compile(&doc, &model, &names, false)?;
+            (Some((doc, names)), Some(rhs))
+        };
+        Ok(HvpProgram {
+            inner: Arc::new(HvpInner {
+                id: next_id(),
+                file: file.clone(),
+                model_name: model_name.map(str::to_string),
+                model,
+                wrt,
+                entries,
+                doc,
+                rhs,
+                rhs_arrays: OnceLock::new(),
+            }),
+        })
+    }
+
+    /// The second-order bands, in `J_k` order.
+    pub fn bands(&self) -> &[JacEntry2] {
+        &self.inner.entries
+    }
+
+    /// The axis pair.
+    pub fn wrt(&self) -> (Wrt, Wrt) {
+        self.inner.wrt
+    }
+
+    /// The model this program differentiates, as passed to `build`.
+    pub fn model_name(&self) -> Option<&str> {
+        self.inner.model_name.as_deref()
+    }
+
+    /// The compiled band-field program (`None` for an empty band list).
+    pub fn rhs(&self) -> Option<&RhsProgram> {
+        self.inner.rhs.as_ref()
+    }
+
+    fn prefixed(&self, name: &str) -> String {
+        format!("{}.{name}", self.inner.model)
+    }
+
+    /// A plan: every band point resolved, by name, against `source` — the
+    /// integrator's program for the same operator, which `u`, `aux`, `p`
+    /// and the forcing set of every call are laid out for — with the same
+    /// strictness as [`JacobianProgram::plan`] (a source from another build
+    /// is refused). Only [`Exec::Domain`]: a lane form is not built yet.
+    ///
+    /// Indexing, for a source with `u` of length `nu`, `aux` of `na` and `np`
+    /// parameters:
+    ///
+    /// * `μ` (one per stage) is a source `u` (the rows);
+    /// * `w` is a source `u ++ aux` (the first columns, as `v` of
+    ///   [`JacobianProgram::apply`]), or one value (the column `t`) on a time
+    ///   pair;
+    /// * `g` is a source `u ++ aux` on a (·, states) pair (as `ḡ` of
+    ///   [`JacobianProgram::apply_transpose`]), else the source's run-time
+    ///   inputs: `p` (length `np`, a scalar parameter's cotangent at its
+    ///   index) followed by every forcing slot's buffer in slot order, each
+    ///   column-major (an array parameter or forcing buffer cell's cotangent
+    ///   at its slot's offset). A column the source holds in neither is
+    ///   refused: an array parameter without an `update` is a slot only when
+    ///   the source is built with `ProblemOptions::runtime_array_parameters`
+    ///   (the band fields then read the slot too).
+    ///
+    /// A column outside its variable's extent is a ghost read and skipped,
+    /// except a second column on the forcing axis, which is refused (as in
+    /// [`crate::numeric::HvpEvaluator`]).
+    pub fn plan(&self, source: &RhsProgram, exec: Exec) -> R<HvpPlan> {
+        let inner = &*self.inner;
+        if let Exec::Lanes { .. } = exec {
+            return Err(JacError::Plan(
+                "a second-order contraction has no lane form yet; use Exec::Domain".into(),
+            ));
+        }
+        let (a1, a2) = inner.wrt;
+        let theirs = Slots::tile(source.layout());
+        let theirs_p = source.parameters();
+        let theirs_f = source.forcing_slots();
+        let n_src_params = theirs_p.len();
+        let runtime_arrays = theirs_f.iter().any(|s| s.kind == SlotKind::ArrayParameter);
+        let run = match (&inner.doc, &inner.rhs) {
+            (Some((doc, names)), Some(rhs)) => {
+                let bprog = if runtime_arrays {
+                    inner
+                        .rhs_arrays
+                        .get_or_init(|| {
+                            compile(doc, &inner.model, names, true).map_err(|e| e.to_string())
+                        })
+                        .as_ref()
+                        .map_err(|e| JacError::Plan(e.clone()))?
+                } else {
+                    rhs
+                };
+                let ours = Slots::tile(bprog.layout());
+                let io = bind_inputs(bprog, &ours, &theirs, source)?;
+                Some((PlanExec::Domain(bprog.clone(), bprog.clone()), io, ours))
+            }
+            _ => None,
+        };
+
+        let sv = sysview(&inner.file, Some(&inner.model))?;
+        let ctx = ctx_of(&sv)?;
+        let perr = |m: String| JacError::Plan(m);
+        let shape_of = |n: &str| ctx.shapes.get(n).cloned().unwrap_or_default();
+        let as_usize = |s: &[i64]| s.iter().map(|&n| n.max(0) as usize).collect::<Vec<_>>();
+        // A state's block in the source's `u ++ aux`, dense column-major
+        // over its declared shape.
+        let state = |n: &str, row: bool| -> R<(&SlotInfo, Vec<i64>)> {
+            let nm = self.prefixed(n);
+            let shape = shape_of(n);
+            match theirs.vars.get(&nm) {
+                Some(s) if s.dense.as_deref() != Some(&as_usize(&shape)[..]) => Err(perr(format!(
+                    "`{nm}`'s block in the source program is not dense column-major over its \
+                     declared shape {shape:?} (storage {:?})",
+                    s.dense
+                ))),
+                Some(s) if s.written || !row => Ok((s, shape)),
+                Some(_) => Err(perr(format!(
+                    "band row `{nm}` is a state the source program reads but does not write"
+                ))),
+                None => Err(perr(format!(
+                    "state `{nm}` is not in the source program (a source from another build?)"
+                ))),
+            }
+        };
+        // Where a non-state column lives in `p ++ forcing buffers`.
+        let mut slot_off = Vec::with_capacity(theirs_f.len());
+        let mut off = n_src_params;
+        for s in theirs_f {
+            slot_off.push(off);
+            off += s.len();
+        }
+        let input_len = off;
+        let input = |n: &str, cell: &[i64]| -> R<usize> {
+            let nm = self.prefixed(n);
+            if let Some(i) = theirs_p.iter().position(|q| q.name == nm) {
+                return Ok(i);
+            }
+            let Some(j) = theirs_f.iter().position(|s| s.name == nm) else {
+                return Err(perr(format!(
+                    "`{nm}` is neither a parameter nor a forcing slot of the source program, \
+                     so its cotangent has no place in `g`: the source holds it as build-time \
+                     data (a shaped parameter without an `update` is a slot only when the \
+                     source is built with ProblemOptions::runtime_array_parameters), or the \
+                     source is from another build"
+                )));
+            };
+            let shape = shape_of(n);
+            if theirs_f[j].shape != as_usize(&shape) {
+                return Err(perr(format!(
+                    "forcing slot `{nm}` has shape {:?} in the source program, {shape:?} here \
+                     (a source from another build?)",
+                    theirs_f[j].shape
+                )));
+            }
+            Ok(slot_off[j] + flat(cell, &shape))
+        };
+        let outside = |n: &str, cell: &[i64]| {
+            ctx.shapes
+                .get(n)
+                .is_some_and(|sh| cell.iter().zip(sh).any(|(c, s)| *c < 1 || c > s))
+        };
+
+        let mut items = Vec::new();
+        for (k, en) in inner.entries.iter().enumerate() {
+            let ours = &run.as_ref().expect("a non-empty band list compiles").2;
+            let nm = self.prefixed(&format!("J_{}", k + 1));
+            let fshape: Vec<i64> = shape_of(&en.u)
+                .into_iter()
+                .chain(en.band.contracted.iter().map(|(_, _, hi)| *hi))
+                .collect();
+            let field = match ours.vars.get(&nm) {
+                Some(f) if f.dense.as_deref() == Some(&as_usize(&fshape)[..]) => f.start,
+                Some(f) => {
+                    return Err(perr(format!(
+                        "band field `{nm}` is not dense column-major over {fshape:?} \
+                         (storage {:?})",
+                        f.dense
+                    )))
+                }
+                None => return Err(perr(format!("no band field `{nm}`"))),
+            };
+            let (urow, ushape) = state(&en.u, true)?;
+            let mut pts: Vec<(Vec<i64>, Vec<i64>, Vec<i64>)> = Vec::new();
+            foreach_point(&en.band, &mut |cell, cc, _, cidx| {
+                pts.push((cell.to_vec(), cc.to_vec(), cidx.to_vec()));
+                Ok(())
+            })?;
+            for (cell, cc, cidx) in pts {
+                let (c1, c2) = cidx.split_at(en.ncol);
+                if outside(&en.w, c2) {
+                    if a2 == Wrt::Forcing {
+                        return Err(perr(format!(
+                            "second column `{}` (row `{}`) is outside the declared extent of \
+                             its variable; on the forcing axis every column must resolve (no \
+                             ghost skip)",
+                            crate::numeric::cellname(&en.w, c2),
+                            crate::numeric::cellname(&en.u, &cell)
+                        )));
+                    }
+                    continue;
+                }
+                if a1 == Wrt::States && outside(&en.v, c1) {
+                    continue; // ghost read: no column
+                }
+                let col = match a1 {
+                    Wrt::Time => 0,
+                    _ => {
+                        let (s, sh) = state(&en.v, false)?;
+                        s.start + flat(c1, &sh)
+                    }
+                };
+                let col2 = match a2 {
+                    Wrt::States => {
+                        let (s, sh) = state(&en.w, false)?;
+                        s.start + flat(c2, &sh)
+                    }
+                    _ => input(&en.w, c2)?,
+                };
+                let full: Vec<i64> = cell.iter().chain(&cc).copied().collect();
+                items.push(HvpItem {
+                    slab: field + flat(&full, &fshape),
+                    row: urow.start + flat(&cell, &ushape),
+                    col,
+                    col2,
+                });
+            }
+        }
+        let mut lut: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut rc = Vec::new();
+        let rcidx = items
+            .iter()
+            .map(|it| {
+                *lut.entry((it.row, it.col)).or_insert_with(|| {
+                    rc.push((it.row, it.col));
+                    rc.len() - 1
+                })
+            })
+            .collect();
+        let cols = theirs.u_len + theirs.aux_len;
+        Ok(HvpPlan {
+            inner: Arc::new(HvpPlanInner {
+                id: next_id(),
+                owner: inner.id,
+                wrt: inner.wrt,
+                run: run.map(|(e, io, _)| (e, io)),
+                src_u_len: theirs.u_len,
+                src_aux_len: theirs.aux_len,
+                n_src_params,
+                w_len: if a1 == Wrt::Time { 1 } else { cols },
+                g_len: if a2 == Wrt::States { cols } else { input_len },
+                items,
+                rc,
+                rcidx,
+            }),
+        })
+    }
+
+    /// Buffers for calls with `plan`.
+    pub fn new_workspace(&self, plan: &HvpPlan) -> HvpWorkspace {
+        let p = &*plan.inner;
+        let ws = p.run.as_ref().map(|(exec, io)| {
+            let PlanExec::Domain(prog, _) = exec else {
+                unreachable!("domain plans only")
+            };
+            JacWorkspace {
+                plan: p.id,
+                rhs: prog.new_workspace(),
+                slab: vec![0.0; io.ours_u_len],
+                aux: vec![0.0; io.ours_aux_len],
+                p: vec![0.0; io.p_map.as_ref().map_or(0, Vec::len)],
+                acc: Vec::new(),
+                forcing: None,
+                evaluated: false,
+            }
+        });
+        HvpWorkspace {
+            plan: p.id,
+            ws,
+            m: vec![0.0; p.rc.len()],
+            evaluated: false,
+        }
+    }
+
+    fn check(&self, plan: &HvpPlan, ws: &HvpWorkspace) -> R<()> {
+        if plan.inner.owner != self.inner.id {
+            return Err(JacError::Call(
+                "the plan was made by another program".into(),
+            ));
+        }
+        if ws.plan != plan.inner.id {
+            return Err(JacError::Call(
+                "the workspace was made for another plan".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Evaluate the second-order band fields at a point of the source
+    /// program (`u`, `aux`, `p` and `forcing` as it takes them) into `ws`,
+    /// for [`Self::contract`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn eval(
+        &self,
+        plan: &HvpPlan,
+        u: &[f64],
+        aux: &[f64],
+        p: &[f64],
+        t: f64,
+        forcing: &ForcingSet,
+        ws: &mut HvpWorkspace,
+    ) -> R<()> {
+        self.check(plan, ws)?;
+        let pl = &*plan.inner;
+        ws.evaluated = false;
+        match (&pl.run, &mut ws.ws) {
+            (Some((exec, io)), Some(jw)) => {
+                eval_slab(io, exec, u, aux, p, t, forcing, &[], 0, jw)?;
+            }
+            _ => {
+                for (what, want, got) in [
+                    ("u", pl.src_u_len, u.len()),
+                    ("aux", pl.src_aux_len, aux.len()),
+                    ("p", pl.n_src_params, p.len()),
+                ] {
+                    if want != got {
+                        return Err(JacError::Call(format!(
+                            "{what} has length {got}; the plan needs {want}"
+                        )));
+                    }
+                }
+            }
+        }
+        ws.evaluated = true;
+        Ok(())
+    }
+
+    /// The second-order contraction over the band slab the last
+    /// [`Self::eval`] left in `ws`, accumulated into `g` in `f64` in plan
+    /// order (zero it first for a single product):
+    ///
+    /// ```text
+    /// g += ∇_{a2} Σᵢ μᵢᵀ J(u) wᵢ          (pair (states, a2))
+    /// g += ∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t         (pair (time, a2))
+    /// ```
+    ///
+    /// `pairs` holds one `(μ, w)` per stage, indexed as [`Self::plan`]
+    /// documents. [`HvpForm::Contract`] sums the stages into `M(row, col)`
+    /// once and runs `g[col2] += J₂ · M(row, col)`; [`HvpForm::Symmetric`]
+    /// (a (states, states) pair only) runs `g[col] += μ[row] · J₂ · w[col2]`
+    /// per stage, with no `M`.
+    pub fn contract(
+        &self,
+        plan: &HvpPlan,
+        ws: &mut HvpWorkspace,
+        pairs: &[(&[f64], &[f64])],
+        form: HvpForm,
+        g: &mut [f64],
+    ) -> R<()> {
+        self.check(plan, ws)?;
+        let pl = &*plan.inner;
+        if !ws.evaluated {
+            return Err(JacError::Call(
+                "no band slab: call eval first (a failed evaluation leaves none)".into(),
+            ));
+        }
+        if form == HvpForm::Symmetric && pl.wrt != (Wrt::States, Wrt::States) {
+            return Err(JacError::Call(format!(
+                "the symmetric form needs a (states, states) pair, got ({}, {})",
+                pl.wrt.0.as_str(),
+                pl.wrt.1.as_str()
+            )));
+        }
+        if g.len() != pl.g_len {
+            return Err(JacError::Call(format!(
+                "g has length {}; the plan needs {}",
+                g.len(),
+                pl.g_len
+            )));
+        }
+        for (mu, w) in pairs {
+            if mu.len() != pl.src_u_len || w.len() != pl.w_len {
+                return Err(JacError::Call(format!(
+                    "a stage pair has lengths (μ {}, w {}); the plan needs ({}, {})",
+                    mu.len(),
+                    w.len(),
+                    pl.src_u_len,
+                    pl.w_len
+                )));
+            }
+        }
+        let HvpWorkspace { ws: jw, m, .. } = ws;
+        let slab: &[f64] = jw.as_ref().map_or(&[], |w| &w.slab[..]);
+        match form {
+            HvpForm::Contract => {
+                m.iter_mut().for_each(|x| *x = 0.0);
+                for (mu, w) in pairs {
+                    for (x, &(r, c)) in m.iter_mut().zip(&pl.rc) {
+                        *x += mu[r] * w[c];
+                    }
+                }
+                for (it, &q) in pl.items.iter().zip(&pl.rcidx) {
+                    g[it.col2] += slab[it.slab] * m[q];
+                }
+            }
+            HvpForm::Symmetric => {
+                for (mu, w) in pairs {
+                    for it in &pl.items {
+                        g[it.col] += mu[it.row] * slab[it.slab] * w[it.col2];
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Second-order entries as first-order ones whose column indices are `v`'s
+/// followed by `w`'s: the form the evaluation document and the compiled
+/// document read (rows, row and contracted indices, the coefficient).
+fn first_order_form(entries: &[JacEntry2]) -> Vec<JacEntry> {
+    entries
+        .iter()
+        .map(|en| JacEntry {
+            u: en.u.clone(),
+            v: en.v.clone(),
+            band: en.band.clone(),
+        })
+        .collect()
 }

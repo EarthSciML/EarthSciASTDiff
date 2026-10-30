@@ -40,7 +40,8 @@ pub use numeric::{
     prepare_jacobian, vjp, vjp_forcing, HvpEvaluator, HvpForm, HvpPair, JacobianEvaluator,
 };
 pub use program::{
-    BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram, StorageScalar,
+    BuildOptions, Exec, HvpPlan, HvpProgram, HvpWorkspace, JacError, JacPlan, JacWorkspace,
+    JacobianProgram, StorageScalar,
 };
 pub use rules::{dscalar, DerivativeRuleError};
 pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};

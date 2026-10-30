@@ -216,8 +216,11 @@ EarthSciAST implementation and is gated by the same goldens.
       `bd_chem`, `arrhenius_chem`, `forcing_bracket` and `minmod_adv`.
       Python and Rust reproduce the band and block goldens byte-for-byte
       and the contraction values (`prepare_hvp` once, then `hvp` per
-      step) on their numeric oracles. Rust's production `Contract` target
-      (below) is still to come.
+      step) on their numeric oracles. Rust also contracts them on its
+      production path (below): `HvpProgram` compiles the second-order band
+      fields through the same `RhsProgram` route, and an `HvpPlan`
+      contracts them against the integrator's own layout (whole-domain
+      only for now).
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package
@@ -264,8 +267,14 @@ EarthSciAST implementation and is gated by the same goldens.
       per call (lane layouts fastest, CSR slowest) and builds in
       milliseconds where `prepare_jacobian` takes ~55 s
       (`examples/bench_production.rs`, `scripts/bench-production.jl`).
-      Still to come: tile (stencil) programs, U8's second-order `Contract`,
-      the reseact / CBM-Z benchmarks (B2, B3), and lane programs for
+      U8's second-order contraction rides the same route: `HvpProgram`
+      compiles the second-order band fields (an empty list, as on
+      `minmod_adv`, is a no-op program), and an `HvpPlan` resolves each
+      point to the source's `u ++ aux`, `p` or forcing slots by name for
+      `contract` (both forms), equal to the `hvp` oracle and the `hvals`
+      goldens to 1e-10. Still to come: tile (stencil) programs, a lane
+      form of the second-order contraction (refused today; the domain
+      plan covers it), the reseact / CBM-Z benchmarks (B2, B3), and lane programs for
       column bands that stop short of the column ends (refused by
       earthsci-ast's lane rewrite today; the domain plan covers them).
 - [ ] diffsol solver integration — not needed by EarthSciIntegrator, which
