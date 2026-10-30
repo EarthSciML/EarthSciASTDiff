@@ -6,7 +6,7 @@
 id = "differentiate"
 title = "Differentiate a model"
 description = "Take a model or flattened system, differentiate its right-hand side, and get back structured Jacobian bands."
-ops = ["sysview", "jacobian_bands", "band", "jac_entry", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
+ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "band", "jac_entry", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
 
 [[group]]
 id = "structure"
@@ -18,10 +18,10 @@ ops = ["jacobian_pattern", "detect_structure", "plan_factorization", "block_diag
 id = "evaluate"
 title = "Evaluate the Jacobian"
 description = "Numeric values at a point, and prepared evaluators and ODE pieces that fill a fixed sparse prototype."
-ops = ["assemble_jacobian", "prepare_jacobian", "jacobian_evaluator", "jac_prototype", "ode_components", "scatter_plan"]
+ops = ["assemble_jacobian", "prepare_jacobian", "jacobian_evaluator", "vjp", "vjp_forcing", "jac_prototype", "ode_components", "scatter_plan"]
 
 [[group]]
 id = "serialize"
 title = "Serialize as a document block"
 description = "The `jacobians` document block, so the Jacobian is itself an `.esm` artifact any binding can evaluate."
-ops = ["jacobian_block", "jacobian_document", "serialize_band", "cse_templates", "stable_json"]
+ops = ["jacobian_block", "jacobian_document", "parse_jacobian_blocks", "serialize_band", "cse_templates", "stable_json"]

@@ -12,8 +12,9 @@ then, bindings MUST ignore an unrecognized `"jacobians"` block.
 A **Jacobian document** is an ordinary ESM document plus a `"jacobians"`
 top-level block that carries, per model, the analytical derivative of the
 model's ODE right-hand side with respect to its state variables
-(`wrt: "states"`), its parameters (`wrt: "parameters"`) or time itself
-(`wrt: "time"`, §4.2), as a list of **bands** (§4). Coefficients are ordinary ESM expressions over the model's
+(`wrt: "states"`), its parameters (`wrt: "parameters"`, array-valued ones
+cell by cell), the cells of its live forcing buffers (`wrt: "forcing"`,
+§4.3) or time itself (`wrt: "time"`, §4.2), as a list of **bands** (§4). Coefficients are ordinary ESM expressions over the model's
 own variables, so any binding that evaluates ESM expressions evaluates the
 Jacobian — no binding needs a differentiator to *consume* the block.
 
@@ -176,15 +177,17 @@ Each **entry** (band) is one structured block of `∂(RHS of the equation for
 row)/∂(col)`:
 
 - `row` — a state variable name (the equation's integrated variable).
-- `col` — a state (`wrt: "states"`) or parameter (`wrt: "parameters"`)
-  name, or `"t"` (`wrt: "time"`, §4.2).
+- `col` — a state (`wrt: "states"`), parameter (`wrt: "parameters"`) or
+  forcing-buffer (`wrt: "forcing"`, §4.3) name, or `"t"` (`wrt: "time"`,
+  §4.2).
 - `rows` — a rectangular region of `row`'s index space, one inclusive
   `[lo, hi]` integer pair per dimension; `[]` for a scalar `row`.
 - `row_idx` — per dimension: a free index NAME (string) ranging over the
   corresponding `rows` pair, or an integer for a singleton dimension. Names
   are local to the entry.
 - `col_idx` — `col`'s index expressions, one per dimension of `col`, over the
-  `row_idx` names; `[]` for a scalar `col`.
+  `row_idx` names; `[]` for a scalar `col`. Full rank: a forcing buffer's
+  record axis is an ordinary dimension (§4.3).
 - `coef` — a scalar Expression over the `row_idx` names, the model's
   variables and parameters, and `t`. Literals MUST be in the wire-canonical
   form of the ESM conformance rules (CONFORMANCE_SPEC §5.5.3.1: an integral,
@@ -213,12 +216,31 @@ J[ row[r], col[col_idx(r, c)] ] += coef(r, c)
 
 Entries are additive: multiple entries — and multiple contracted points of
 ONE entry — may target the same (row, col) pair.
-A `col_idx(r)` that falls outside `col`'s declared extent contributes nothing
-(it denotes a boundary/ghost read that is not a state column).
+On the `states` and `parameters` axes, a `col_idx(r)` that falls outside
+`col`'s declared extent contributes nothing (it denotes a boundary/ghost read,
+such as a face coefficient `K[i+1]` read beside `c[i+1]`, that is not a
+column). On the `forcing` axis a column is a cell of a live buffer and there
+is no ghost read: a column that does not resolve to a cell of `col` is an
+error, and a consumer MUST refuse the block rather than skip the point.
 
 `structure` (optional, derived): `"block_diagonal"` | `"banded"` |
 `"general"` — a *classification* of the exact pattern for consumers choosing
 a matrix type; the pattern itself is always recoverable from the entries.
+Omitted, with `factorization`, on the `parameters` and `forcing` axes: the
+classes describe square matrices.
+
+`columns` (required when `wrt` is `"parameters"` or `"forcing"`, absent
+otherwise): the axis's column variables, `[{"name": …, "shape": [n₁, …]}]`
+with integer extents (`[]` for a scalar), sorted by name — every variable of
+the axis, whether or not an entry reads it. It fixes the **canonical column
+ordinal**: the variables in this order, each one's cells column-major (first
+index fastest), so a consumer can size and order the column space without
+the source document. Each binding maps the ordinal onto its own memory.
+
+**Several axes per model.** `jacobians.<ModelName>` MAY be an ARRAY of
+blocks with pairwise-distinct `wrt` instead of one block, so a producer
+writing several axes of one operator need not write several documents. A
+single object stays legal, and a consumer MUST accept both forms.
 
 **Round-trip.** The block is derived data: producers MUST be able to
 regenerate it from the document, and `Expand(document)` conformance (§9.6.4)
@@ -291,7 +313,7 @@ equation order, and the single column within each equation.
   a provider sets at each refresh, parameters a `data` source updates — is
   NOT in the band list, and a consumer that needs it MUST account for it
   itself (for example by not stepping across a data refresh). Bands with
-  respect to forcing values are a separate, planned axis (§7). A blend weight
+  respect to forcing values are the forcing axis (§4.3). A blend weight
   that the model computes from `t` (a `frac` expression) is an explicit
   occurrence and IS covered.
 
@@ -299,8 +321,80 @@ equation order, and the single column within each equation.
 row's right-hand side reads `t`. A consumer MAY skip evaluating `f_t` for
 such a model and use the zero vector.
 
-A `"jacobians"` block holds one `wrt` per model, so a document carries its
-time bands separately from its state bands (a derived document per axis).
+A `"jacobians"` block holds one `wrt`, so a model's time bands are a block
+of their own: in a derived document per axis, or beside the state block in
+the model's block array (§4).
+
+### 4.3 Forcing and parameter columns (`wrt: "forcing"`, `wrt: "parameters"`)
+
+A block with `"wrt": "forcing"` carries `∂f/∂B`, the derivative of the
+right-hand side with respect to the cells of the **forcing buffers** `B` a
+runtime binds and a data provider refills. A block with `"wrt": "parameters"`
+carries `∂f/∂p` for every parameter outside the forcing set, scalar and
+array-valued alike: an array parameter's cells (a gridded emission field,
+say) are real columns, never dropped.
+
+**The forcing set** is an input to the producer, a list of parameter names.
+When none is given it is inferred: every array-valued parameter with an
+`update` of kind `"data"`. A planner that builds the providers itself passes
+the list explicitly (a document need not declare the update). A name that is
+not a parameter of the system resolves to no buffer, and the producer MUST
+fail. The two axes partition the parameters: a forcing-set member is a column
+of the forcing axis only.
+
+**Columns.** A column is `(buffer name, multi-index over the declared
+shape)`, every dimension included. The canonical ordinal is §4's `columns`
+order: buffers sorted by name, each column-major. Column-index expressions
+MUST be closed at build time: literals, folded metaparameters, `const`
+gathers, and the entry's row and contracted index names. A producer that
+cannot close one (an offset read from a parameter, say) MUST fail rather than
+emit an entry it cannot place. Inlining follows the state axis: only the
+observed that can move with a target are inlined, seeded from the forcing set
+(for `"parameters"`, from that axis's parameters), plus those a column index
+reads.
+
+**The record axis.** A provider that brackets the current time hands the
+model its two bracketing records as an ordinary leading length-2 dimension of
+the buffer (`F[1, …]` the floor record, `F[2, …]` its successor), and the
+model writes the time blend itself. No construct is special: `index(F, 1, …)`
+and `index(F, 2, …)` are distinct sites (§3), and the blend is model AST. For a
+row reading `F̃ = (1 − w)·F[1, m] + w·F[2, m]` with `φ = ∂f/∂F̃` by the ordinary
+rules,
+
+```
+∂f/∂F[1, m] = (1 − w)·φ        ∂f/∂F[2, m] = w·φ
+```
+
+from the `*` and `+` rules alone; the weight's own `floor` differentiates to
+0 (§3.2). A non-blend read of the records, such as `(F[2, m] − F[1, m])/Δ`,
+adds `±φ'/Δ` to the same two columns (entries are additive). A regrid between
+the buffer and the blend is a `reduce: "+"` contraction with `const` weights,
+which yields `contracted` bands over the native grid (§3.5). Producers MUST
+NOT pattern-match the blend. At a record time the frac weight is exactly 0,
+so the second record keeps its columns with a zero blend coefficient
+(structural sparsity, §2). The weight's dependence on `t` stays on the time
+axis (§4.2).
+
+**Empty blocks.** A model that reads none of the forcing set has an empty
+forcing block. So does one that reads it only where the derivative is
+identically zero, such as an `ifelse` condition or the argument of a
+piecewise-constant op (§3.2): structural occurrence alone is not a band.
+
+**Meaning and use.** The block describes `∂f/∂B` at one evaluation point
+`(u, B, t)`, with §4's meaning. A consumer applies its transpose by a
+scatter-add over the band points, without forming a matrix: for a stage
+cotangent `λ`,
+
+```
+ḡ_B[col(r, c)] += coef(u, B, t; r, c) · λ[row(r)]
+```
+
+into one accumulator per buffer, of the buffer's shape. Which dataset record
+a buffer slot held at that stage, and the per-record accumulation across
+provider refreshes, are runtime state that the consumer (an integrator's
+tape) owns. They are not part of the block. A degenerate final bracket that
+repeats one record in both slots maps both slots' gradients to that record,
+where they sum.
 
 ## 5. Conformance
 
@@ -324,14 +418,25 @@ Fixture corpus in `tests/` of this repository:
    `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
    `interp.linear` of `t` through a scalar observed, a `datetime.hour`
-   factor, a `datetime.julian_day` source, and one autonomous row).
+   factor, a `datetime.julian_day` source, and one autonomous row). A fixture
+   with forcing carries the same four for `wrt: "forcing"` and
+   `wrt: "parameters"` as `<name>.forcing.*.json` and
+   `<name>.parameters.*.json`, its forcing set inferred, plus a second value
+   golden per axis, `<name>.<axis>.w0.jvals.json`, at a record time
+   (`forcing_bracket.esm`: an array and a scalar state reading a two-record
+   buffer through a frac-blend weight, a record difference and a gather at a
+   constant offset; a regrid-like `reduce: "+"` contraction with `const`
+   weights over one record of a second buffer; and a const array parameter
+   standing in for an emission field. Its value goldens are at `w = 0.37` and
+   at `w = 0` exactly, with the buffers at the document defaults).
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
    and the structural pattern must be a superset of the local pattern.
    Shipped value goldens (`*.jvals.json`) are compared with exactly the same
    (row, column) key set and `rtol 1e-10` (evaluation order differs between
-   runtimes).
+   runtimes). A column key is the variable name, with `[i,j,…]` (1-based) for
+   a cell of an array variable.
 
 ## 6. Factorization information (optional)
 
@@ -367,12 +472,11 @@ a fill-correct superset of `pattern`.
 
 ## 7. Out of scope (this draft)
 
-Second derivatives and derivatives with respect to forcing buffers / const
-arrays (and so the data-borne time dependence §4.2 excludes) are planned
-extensions; each will be specified with fixtures before implementation is
-required. (Time-derivative bands, contracted-index bands and
-`expression_templates` coefficient sharing, once listed here, are specified
-in §4.2, §3.5/§4 and §4.1.)
+Second derivatives are a planned extension, to be specified with fixtures
+before implementation is required. (Time-derivative bands, contracted-index
+bands, `expression_templates` coefficient sharing, and forcing-buffer and
+array-parameter columns, once listed here, are specified in §4.2, §3.5/§4,
+§4.1 and §4.3.)
 
 ## 8. Scatter plans (conformance artifact)
 

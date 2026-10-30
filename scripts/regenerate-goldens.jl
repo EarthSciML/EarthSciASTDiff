@@ -5,7 +5,7 @@ using EarthSciAST, EarthSciASTDiff
 root = normpath(joinpath(@__DIR__, ".."))
 for name in (
         "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-        "contracting_observed", "tgrad_photolysis",
+        "contracting_observed", "tgrad_photolysis", "forcing_bracket",
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -40,17 +40,23 @@ for name in (
         println("wrote ", epath0)
     end
 end
-# time-derivative bands (spec §4.2): `<name>.time.*` goldens for the fixtures
-# whose right-hand side reads `t` explicitly. No scatter plan: the time
-# Jacobian is one column, scattered by canonical state position (spec §8).
-for name in ("tgrad_photolysis",)
+# the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
+# for the fixtures whose right-hand side reads `t` explicitly; forcing and
+# parameter bands (spec §4.3, array parameters as real columns) for the
+# forcing fixture, its forcing set inferred from the `data` updates. No
+# scatter plan: plans cover the state Jacobian only (spec §8).
+for (name, wrt) in (
+        ("tgrad_photolysis", :time),
+        ("forcing_bracket", :forcing),
+        ("forcing_bracket", :parameters),
+    )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     sv = sysview(file, mname)
-    entries = jacobian_bands(sv; wrt = :time)
-    gold(kind) = joinpath(root, "tests", "goldens", "$name.time.$kind.json")
+    entries = jacobian_bands(sv; wrt = wrt)
+    gold(kind) = joinpath(root, "tests", "goldens", "$name.$wrt.$kind.json")
     write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
-    doc = jacobian_document(file, mname; wrt = :time)
+    doc = jacobian_document(file, mname; wrt = wrt)
     write(gold("block"), stable_json(doc["jacobians"][mname]))
     evdoc, _ = EarthSciASTDiff._evaluation_document(sv, entries)
     write(gold("evaldoc"), stable_json(evdoc))
@@ -60,7 +66,7 @@ for name in ("tgrad_photolysis",)
     else
         write(gold("evaldoc-nocse"), stable_json(evdoc0))
     end
-    println("wrote ", name, ".time.{bands,block,evaldoc}.json")
+    println("wrote ", name, ".$wrt.{bands,block,evaldoc}.json")
 end
 # scatter plans (spec §8): one golden per (fixture, applicable layout); the
 # fixtures not listed for a layout refuse it (test/scatter_test.jl)

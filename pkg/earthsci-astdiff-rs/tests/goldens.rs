@@ -5,15 +5,15 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    assemble_jacobian, evaluation_document, jacobian_bands, jacobian_block, serialize_band,
-    stable_json, sysview, Wrt,
+    assemble_jacobian, evaluation_document, jacobian_bands, jacobian_block, parse_jacobian_block,
+    serialize_band, stable_json, sysview, Wrt,
 };
 use serde_json::Value;
 
 mod common;
 use common::{load, root};
 
-const NAMES: [&str; 7] = [
+const NAMES: [&str; 8] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -21,9 +21,21 @@ const NAMES: [&str; 7] = [
     "minmod_adv",
     "contracting_observed",
     "tgrad_photolysis",
+    "forcing_bracket",
 ];
-/// Fixtures with `<name>.time.*` goldens (`wrt = time`, spec §4.2).
-const TIME_NAMES: [&str; 1] = ["tgrad_photolysis"];
+/// Per-(fixture, axis) goldens beyond the states axis: `<name>.<axis>.*`
+/// (`wrt = time`, spec §4.2; `wrt = forcing` / `parameters`, spec §4.3).
+const AXES: [(&str, Wrt); 3] = [
+    ("tgrad_photolysis", Wrt::Time),
+    ("forcing_bracket", Wrt::Forcing),
+    ("forcing_bracket", Wrt::Parameters),
+];
+/// Extra value-golden points per (fixture, axis): `<name>.<axis><sfx>.jvals.json`.
+const VALUE_POINTS: [(&str, Wrt, &[&str]); 3] = [
+    ("tgrad_photolysis", Wrt::Time, &[""]),
+    ("forcing_bracket", Wrt::Forcing, &["", ".w0"]),
+    ("forcing_bracket", Wrt::Parameters, &["", ".w0"]),
+];
 
 fn golden(file: &str) -> String {
     fs::read_to_string(root().join("tests/goldens").join(file)).unwrap()
@@ -125,57 +137,81 @@ fn check_values(name: &str, golden: &str, wrt: Wrt) {
 }
 
 #[test]
-fn time_band_goldens() {
-    for name in TIME_NAMES {
+fn axis_band_goldens() {
+    for (name, wrt) in AXES {
+        let axis = wrt.as_str();
         let file = load(name);
-        let entries = jacobian_bands(&file, None, Wrt::Time).unwrap();
-        assert!(!entries.is_empty(), "{name}: no time bands");
-        // spec §4.2: one scalar column `t`, no contracted dimensions
-        assert!(entries
-            .iter()
-            .all(|en| en.v == "t" && en.band.cidx.is_empty() && en.band.contracted.is_empty()));
+        let entries = jacobian_bands(&file, None, wrt).unwrap();
+        assert!(!entries.is_empty(), "{name}: no {axis} bands");
+        if wrt == Wrt::Time {
+            // spec §4.2: one scalar column `t`, no contracted dimensions
+            assert!(entries
+                .iter()
+                .all(|en| en.v == "t" && en.band.cidx.is_empty() && en.band.contracted.is_empty()));
+        }
         let text = stable_json(&Value::Array(entries.iter().map(serialize_band).collect()));
         assert_eq!(
             text,
-            golden(&format!("{name}.time.bands.json")),
-            "time band golden diverges: {name}"
+            golden(&format!("{name}.{axis}.bands.json")),
+            "{axis} band golden diverges: {name}"
         );
-        let block = jacobian_block(&file, None, Wrt::Time, true, 12).unwrap();
+        let block = jacobian_block(&file, None, wrt, true, 12).unwrap();
+        // spec §4: a parameters / forcing block carries `columns`, not
+        // `structure` / `factorization`
+        assert_eq!(block.get("columns").is_some(), wrt.has_columns(), "{name}");
+        assert_eq!(
+            block.get("structure").is_none(),
+            wrt.has_columns(),
+            "{name}"
+        );
         assert_eq!(
             stable_json(&block),
-            golden(&format!("{name}.time.block.json")),
-            "time block golden diverges: {name}"
+            golden(&format!("{name}.{axis}.block.json")),
+            "{axis} block golden diverges: {name}"
+        );
+        let (w, back) = parse_jacobian_block(&block).unwrap();
+        assert_eq!(w, wrt);
+        assert_eq!(
+            stable_json(&Value::Array(back.iter().map(serialize_band).collect())),
+            text,
+            "{axis} block round trip: {name}"
         );
         let sv = sysview(&file, None).unwrap();
         let (doc, _) = evaluation_document(&sv, &entries, true, 12).unwrap();
-        let ev = golden(&format!("{name}.time.evaldoc.json"));
+        let ev = golden(&format!("{name}.{axis}.evaldoc.json"));
         assert_eq!(
             stable_json(&doc),
             ev,
-            "time evaldoc golden diverges: {name}"
+            "{axis} evaldoc golden diverges: {name}"
         );
         let (doc0, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
-        let ev0 = golden_or(&format!("{name}.time.evaldoc-nocse.json"), ev);
+        let ev0 = golden_or(&format!("{name}.{axis}.evaldoc-nocse.json"), ev);
         assert_eq!(
             stable_json(&doc0),
             ev0,
-            "time evaldoc (cse = false) diverges: {name}"
+            "{axis} evaldoc (cse = false) diverges: {name}"
         );
     }
 }
 
 #[test]
-fn time_value_goldens() {
-    for name in TIME_NAMES {
-        check_values(name, &format!("{name}.time"), Wrt::Time);
+fn axis_value_goldens() {
+    for (name, wrt, sfxs) in VALUE_POINTS {
+        for sfx in sfxs {
+            check_values(name, &format!("{name}.{}{sfx}", wrt.as_str()), wrt);
+        }
     }
 }
 
 #[test]
 fn time_bands_empty_for_autonomous() {
     // spec §4.2: an empty time band list means f_t ≡ 0; every fixture
-    // without `.time.*` goldens is autonomous
-    for name in NAMES.into_iter().filter(|n| !TIME_NAMES.contains(n)) {
+    // without `.time.*` goldens is autonomous — except forcing_bracket, whose
+    // record blend weight reads `t` explicitly (its time axis is not pinned)
+    for name in NAMES
+        .into_iter()
+        .filter(|n| !AXES.contains(&(*n, Wrt::Time)) && *n != "forcing_bracket")
+    {
         assert!(
             jacobian_bands(&load(name), None, Wrt::Time)
                 .unwrap()

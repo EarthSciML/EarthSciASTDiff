@@ -192,6 +192,7 @@ fn evaluation_document_is_the_golden() {
         "adv_interior",
         "minmod_adv",
         "contracting_observed",
+        "forcing_bracket",
     ] {
         let prog = JacobianProgram::build(&load(name), None, &BuildOptions::default()).unwrap();
         let golden = std::fs::read_to_string(

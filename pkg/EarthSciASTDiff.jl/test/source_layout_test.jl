@@ -45,7 +45,7 @@ _jac_fingerprint(j) = (
         assemble_jacobian(file; u = u, p = p, source_layout = layout).J
 end
 
-@testset "source_layout: parameter columns need `p`" begin
+@testset "source_layout: parameter columns do not need `p`" begin
     file = fixture("adv_react_2d.esm")
     _, u0, p, _, vm = build_evaluator(file)
     ja = prepare_jacobian(file; wrt = :parameters)
@@ -54,10 +54,12 @@ end
         source_layout = (u0 = u0, p = p, var_map = vm)
     )
     @test _jac_fingerprint(ja) == _jac_fingerprint(jb)
-    # without `p` the column names are unknowable, so it must refuse.
-    @test_throws ArgumentError prepare_jacobian(
-        file; wrt = :parameters, source_layout = (u0 = u0, var_map = vm)
-    )
+    # the canonical column space comes from the declared shapes, not `p`
+    @test _jac_fingerprint(
+        prepare_jacobian(
+            file; wrt = :parameters, source_layout = (u0 = u0, var_map = vm)
+        )
+    ) == _jac_fingerprint(ja)
     # state columns never look at `p`, so there it stays optional.
     @test _jac_fingerprint(
         prepare_jacobian(

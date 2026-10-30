@@ -40,6 +40,7 @@ def test_lifted_lhs_is_an_array_state_equation():
         "adv_react_2d",
         "bd_chem",
         "contracting_observed",
+        "forcing_bracket",
     ],
 )
 def test_array_models_differentiate_to_a_non_empty_band_set(valid_dir, name):

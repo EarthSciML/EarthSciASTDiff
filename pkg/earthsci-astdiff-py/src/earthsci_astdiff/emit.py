@@ -10,7 +10,7 @@ from earthsci_ast.parse import _parse_expression as parse_expression
 
 from .bands import Band
 from .expr_helpers import ser_expr
-from .jacobian import JacEntry, jacobian_bands
+from .jacobian import JacEntry, jacobian_bands, jacobian_columns
 from .system import sysview
 
 
@@ -90,36 +90,89 @@ def scatter_pairs(sv, entries: list[JacEntry]):
     return pairs
 
 
-def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states"):
+def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", forcing=None):
     """The structural sparsity pattern as sorted (rowname, colname) pairs
-    plus the entries — dependency-light (no scipy)."""
+    plus the entries — dependency-light (no scipy). On the ``"parameters"``
+    and ``"forcing"`` axes the columns are cells of the canonical column
+    space (:func:`jacobian_columns`): a forcing column must resolve to one,
+    and a parameter column outside its variable's extent is a ghost read."""
     from .system import SysView
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt)
-    pairs = sorted({(r, c) for _, r, c in scatter_pairs(sv, entries)})
+    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
+    triples = scatter_pairs(sv, entries)
+    if wrt in ("parameters", "forcing"):
+        cols = set(column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing)))
+        triples = [(k, r, c) for k, r, c in triples if check_column(c in cols, c, r, wrt)]
+    pairs = sorted({(r, c) for _, r, c in triples})
     return pairs, entries
+
+
+def column_names(cols) -> list[str]:
+    """The canonical column names of a :func:`jacobian_columns` space, in
+    ordinal order: variables in order, each one's cells column-major."""
+    names: list[str] = []
+    for v, shape in cols:
+        if not shape:
+            names.append(v)
+        else:
+            names.extend(_cellname(v, c) for c in _product([(1, n) for n in shape]))
+    return names
+
+
+def check_column(ok: bool, colname: str, rowname: str, wrt: str) -> bool:
+    """Whether a column resolves (``ok``), raising where it must. On the
+    forcing axis a column is a cell of a live buffer, and the ghost-read skip
+    that is legitimate for a stencil reading past the domain is not: an
+    unresolvable column there would silently drop a gradient, so it is an
+    error (spec §4). The parameters axis follows the state axis: an array
+    parameter read past its extent is a ghost read, and ``False`` says to
+    skip it."""
+    from .bands import BandError
+
+    if not ok and wrt == "forcing":
+        raise BandError(
+            f"column `{colname}` (row `{rowname}`) is outside the declared extent of its "
+            f"variable; on the {wrt} axis every column must resolve (no ghost skip)"
+        )
+    return ok
 
 
 def jacobian_block(
     obj,
     model_name: str | None = None,
-    wrt: str = "states",
+    wrt="states",
     cse: bool = True,
     cse_min_nodes: int = 12,
-) -> dict:
+    forcing=None,
+):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
-    default), the structure classification, and the block-local
-    `expression_templates`, plus the `factorization` plan where one exists
-    for the detected structure (per-cell block LU with Markowitz ordering)."""
-    from .bands import Band
-    from .cse import cse_templates
-    from .structure import detect_structure
+    default) and the block-local `expression_templates`; on the state and
+    time axes the structure classification plus the `factorization` plan
+    where one exists for the detected structure (per-cell block LU with
+    Markowitz ordering), on the parameters and forcing axes the column space
+    (`columns`, :func:`jacobian_columns`) instead.
+
+    ``wrt`` may also be a list of distinct axes: the result is then the list
+    of blocks, one per axis in the given order (a model's `jacobians` entry
+    in its array form, spec §4)."""
     from .system import SysView, sysview
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt)
-    structure = detect_structure(entries, sv)
+    if isinstance(wrt, str):
+        return _jacobian_block(sv, wrt, forcing, cse, cse_min_nodes)
+    axes = [str(w) for w in wrt]
+    if not axes or len(set(axes)) != len(axes):
+        raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
+    return [_jacobian_block(sv, w, forcing, cse, cse_min_nodes) for w in axes]
+
+
+def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int) -> dict:
+    from .bands import Band
+    from .cse import cse_templates
+    from .structure import detect_structure
+
+    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     ser_entries = entries
     templates: dict = {}
     if cse:
@@ -140,17 +193,27 @@ def jacobian_block(
     block: dict = {
         "wrt": wrt,
         "entries": [serialize_band(en) for en in ser_entries],
-        "structure": structure,
     }
+    # A parameter or forcing block describes a rectangular matrix, which the
+    # structure classes and the factorization plan do not: it carries its
+    # column space instead.
+    if wrt in ("parameters", "forcing"):
+        block["columns"] = [
+            {"name": n, "shape": list(shape)}
+            for n, shape in jacobian_columns(sv, wrt=wrt, forcing=forcing)
+        ]
+    else:
+        block["structure"] = detect_structure(entries, sv)
     if templates:
         block["expression_templates"] = {
             n: {"params": [], "body": ser_expr(b)} for n, b in templates.items()
         }
-    from .factorization import plan_factorization, serialize_plan
+    if wrt in ("states", "time"):
+        from .factorization import plan_factorization, serialize_plan
 
-    plan = plan_factorization(entries, sv, structure=structure)
-    if plan is not None:
-        block["factorization"] = serialize_plan(plan)
+        plan = plan_factorization(entries, sv, structure=block["structure"])
+        if plan is not None:
+            block["factorization"] = serialize_plan(plan)
     return block
 
 
@@ -181,3 +244,15 @@ def parse_jacobian_block(block: dict):
             for en in entries
         ]
     return wrt, entries
+
+
+def parse_jacobian_blocks(x) -> list:
+    """:func:`parse_jacobian_block` over a model's `jacobians` entry, which
+    is either one block or a list of blocks with distinct `wrt` (spec §4);
+    returns one ``(wrt, entries)`` per block, in order."""
+    blocks = [x] if isinstance(x, dict) else list(x)
+    out = [parse_jacobian_block(b) for b in blocks]
+    ws = [w for w, _ in out]
+    if len(set(ws)) != len(ws):
+        raise ValueError("a model's jacobian blocks must have distinct `wrt`")
+    return out

@@ -83,6 +83,16 @@
       }
     },
     {
+      "name": "forcing_names",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "forcing_names",
+        "python": "forcing_names",
+        "rust": "forcing_names"
+      }
+    },
+    {
       "name": "jac_entry",
       "kind": "type",
       "tier": "stable",
@@ -120,6 +130,16 @@
       }
     },
     {
+      "name": "jacobian_columns",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_columns",
+        "python": "jacobian_columns",
+        "rust": "jacobian_columns"
+      }
+    },
+    {
       "name": "jacobian_document",
       "kind": "function",
       "tier": "stable",
@@ -132,7 +152,9 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
-        "julia": "JacobianEvaluator"
+        "julia": "JacobianEvaluator",
+        "python": "JacobianEvaluator",
+        "rust": "JacobianEvaluator"
       }
     },
     {
@@ -172,6 +194,16 @@
       }
     },
     {
+      "name": "parse_jacobian_blocks",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "parse_jacobian_blocks",
+        "python": "parse_jacobian_blocks",
+        "rust": "parse_jacobian_blocks"
+      }
+    },
+    {
       "name": "plan_factorization",
       "kind": "function",
       "tier": "stable",
@@ -187,7 +219,9 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "prepare_jacobian"
+        "julia": "prepare_jacobian",
+        "python": "prepare_jacobian",
+        "rust": "prepare_jacobian"
       }
     },
     {
@@ -264,6 +298,26 @@
         "julia": "sysview",
         "python": "sysview",
         "rust": "sysview"
+      }
+    },
+    {
+      "name": "vjp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp!",
+        "python": "vjp",
+        "rust": "vjp"
+      }
+    },
+    {
+      "name": "vjp_forcing",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_forcing!",
+        "python": "vjp_forcing",
+        "rust": "vjp_forcing"
       }
     }
   ]

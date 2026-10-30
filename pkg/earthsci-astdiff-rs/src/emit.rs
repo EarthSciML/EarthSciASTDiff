@@ -395,8 +395,11 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
 // ── the block ────────────────────────────────────────────────────────────────
 
 /// The `jacobians` block for one model (spec §4): entries (template-CSE'd when
-/// `cse` is set, hoisting subtrees of at least `cse_min_nodes` nodes), the
-/// structure classification, and the factorization plan where one exists.
+/// `cse` is set, hoisting subtrees of at least `cse_min_nodes` nodes) and —
+/// on the state and time axes — the structure classification and the
+/// factorization plan where one exists. A parameters or forcing block carries
+/// its column space instead (`columns`, [`crate::jacobian_columns`]). The
+/// forcing set is inferred; see [`jacobian_block_with_forcing`].
 pub fn jacobian_block(
     file: &earthsci_ast::EsmFile,
     model_name: Option<&str>,
@@ -404,10 +407,46 @@ pub fn jacobian_block(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<Value, crate::bands::BandError> {
-    let entries = crate::jacobian::jacobian_bands(file, model_name, wrt)?;
+    jacobian_block_with_forcing(file, model_name, wrt, None, cse, cse_min_nodes)
+}
+
+/// The blocks for several distinct axes of one model (`[States, Forcing]`),
+/// in the given order: a model's `jacobians` entry in its ARRAY form (spec
+/// §4). Repeated or no axes are an error.
+pub fn jacobian_blocks(
+    file: &earthsci_ast::EsmFile,
+    model_name: Option<&str>,
+    wrt: &[Wrt],
+    forcing: Option<&[String]>,
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Result<Value, crate::bands::BandError> {
+    let distinct: HashSet<Wrt> = wrt.iter().copied().collect();
+    if wrt.is_empty() || distinct.len() != wrt.len() {
+        return Err(crate::bands::BandError(format!(
+            "wrt must name one or more distinct axes, got {:?}",
+            wrt.iter().map(Wrt::as_str).collect::<Vec<_>>()
+        )));
+    }
+    Ok(Value::Array(
+        wrt.iter()
+            .map(|w| jacobian_block_with_forcing(file, model_name, *w, forcing, cse, cse_min_nodes))
+            .collect::<Result<_, _>>()?,
+    ))
+}
+
+/// [`jacobian_block`] with an explicit forcing set (`None` infers it).
+pub fn jacobian_block_with_forcing(
+    file: &earthsci_ast::EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Result<Value, crate::bands::BandError> {
+    let entries = crate::jacobian::jacobian_bands_with_forcing(file, model_name, wrt, forcing)?;
     let sv: SysView = crate::system::sysview(file, model_name)?;
     let ctx = crate::system::ctx_of(&sv)?;
-    let structure = detect_structure(&entries, &ctx);
     let mut ser_entries: Vec<Value> = entries.iter().map(serialize_band).collect();
     let mut templates: Vec<(String, Expr)> = Vec::new();
     if cse {
@@ -432,7 +471,26 @@ pub fn jacobian_block(
     let mut block = serde_json::Map::new();
     block.insert("wrt".into(), json!(wrt.as_str()));
     block.insert("entries".into(), Value::Array(ser_entries));
-    block.insert("structure".into(), json!(structure));
+    // A parameter or forcing block describes a rectangular matrix, which the
+    // structure classes and the factorization plan do not: it carries its
+    // column space instead, so a consumer can size and order the columns
+    // without the source document.
+    let structure = if wrt.has_columns() {
+        let cols = crate::jacobian::jacobian_columns(&sv, wrt, forcing)?;
+        block.insert(
+            "columns".into(),
+            Value::Array(
+                cols.iter()
+                    .map(|(n, shape)| json!({"name": n, "shape": shape}))
+                    .collect(),
+            ),
+        );
+        None
+    } else {
+        let structure = detect_structure(&entries, &ctx);
+        block.insert("structure".into(), json!(structure));
+        Some(structure)
+    };
     if !templates.is_empty() {
         let mut t = serde_json::Map::new();
         for (n, body) in &templates {
@@ -440,10 +498,174 @@ pub fn jacobian_block(
         }
         block.insert("expression_templates".into(), Value::Object(t));
     }
-    if structure == "block_diagonal" {
+    if structure == Some("block_diagonal") {
         block.insert("factorization".into(), block_diagonal_plan(&entries));
     }
     Ok(Value::Object(block))
+}
+
+// ── parsing a block back (emit.jl `parse_jacobian_block(s)`) ────────────────
+
+fn perr(msg: impl Into<String>) -> crate::bands::BandError {
+    crate::bands::BandError(msg.into())
+}
+
+/// Expand `apply_expression_template` references against the block's
+/// zero-parameter `expression_templates` (bodies may reference earlier ones).
+fn expand_templates(
+    e: &Expr,
+    tpl: &HashMap<String, Expr>,
+) -> Result<Expr, crate::bands::BandError> {
+    if let Expr::Operator(n) = e {
+        if n.op == "apply_expression_template" {
+            let name = n.name.as_deref().unwrap_or_default();
+            let body = tpl
+                .get(name)
+                .ok_or_else(|| perr(format!("unknown expression template `{name}`")))?;
+            return expand_templates(body, tpl);
+        }
+    }
+    let mut err = None;
+    let out = map_expr_children(e, &mut |c| match expand_templates(c, tpl) {
+        Ok(x) => x,
+        Err(er) => {
+            err.get_or_insert(er);
+            c.clone()
+        }
+    });
+    err.map_or(Ok(out), Err)
+}
+
+fn parse_expr(v: &Value) -> Result<Expr, crate::bands::BandError> {
+    serde_json::from_value(v.clone()).map_err(|e| perr(format!("bad expression: {e}")))
+}
+
+fn parse_pairs(v: Option<&Value>, what: &str) -> Result<Vec<(i64, i64)>, crate::bands::BandError> {
+    v.and_then(Value::as_array)
+        .ok_or_else(|| perr(format!("band without `{what}`")))?
+        .iter()
+        .map(|p| match p.as_array().map(|a| a.as_slice()) {
+            Some([lo, hi]) => Ok((
+                lo.as_i64().ok_or_else(|| perr("non-integer bound"))?,
+                hi.as_i64().ok_or_else(|| perr("non-integer bound"))?,
+            )),
+            _ => Err(perr(format!("malformed `{what}` pair"))),
+        })
+        .collect()
+}
+
+/// One §4 band entry back from JSON (the inverse of [`serialize_band`]).
+pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
+    let s = |k: &str| {
+        d.get(k)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| perr(format!("band without `{k}`")))
+    };
+    let ridx = d
+        .get("row_idx")
+        .and_then(Value::as_array)
+        .ok_or_else(|| perr("band without `row_idx`"))?
+        .iter()
+        .map(|r| match r {
+            Value::String(n) => Ok(RIdx::Name(n.clone())),
+            _ => r
+                .as_i64()
+                .map(RIdx::Fixed)
+                .ok_or_else(|| perr("malformed `row_idx`")),
+        })
+        .collect::<Result<_, _>>()?;
+    let cidx = d
+        .get("col_idx")
+        .and_then(Value::as_array)
+        .ok_or_else(|| perr("band without `col_idx`"))?
+        .iter()
+        .map(parse_expr)
+        .collect::<Result<_, _>>()?;
+    let contracted = match d.get("contracted").and_then(Value::as_array) {
+        None => vec![],
+        Some(cs) => cs
+            .iter()
+            .map(|c| match c.as_array().map(|a| a.as_slice()) {
+                Some([n, lo, hi]) => Ok((
+                    n.as_str()
+                        .ok_or_else(|| perr("malformed `contracted`"))?
+                        .to_string(),
+                    lo.as_i64().ok_or_else(|| perr("malformed `contracted`"))?,
+                    hi.as_i64().ok_or_else(|| perr("malformed `contracted`"))?,
+                )),
+                _ => Err(perr("malformed `contracted`")),
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    Ok(JacEntry {
+        u: s("row")?,
+        v: s("col")?,
+        band: Band {
+            rows: parse_pairs(d.get("rows"), "rows")?,
+            ridx,
+            cidx,
+            coef: parse_expr(d.get("coef").ok_or_else(|| perr("band without `coef`"))?)?,
+            contracted,
+        },
+    })
+}
+
+/// One `jacobians` block back to `(wrt, entries)`, its template references
+/// expanded (the round trip is exact with or without CSE).
+pub fn parse_jacobian_block(
+    block: &Value,
+) -> Result<(Wrt, Vec<JacEntry>), crate::bands::BandError> {
+    // `wrt` is required, as in the reference: a block without one is not
+    // read as a state block.
+    let w = block
+        .get("wrt")
+        .and_then(Value::as_str)
+        .ok_or_else(|| perr("block without `wrt`"))?;
+    let wrt = Wrt::parse(w).ok_or_else(|| perr(format!("unknown wrt `{w}`")))?;
+    let mut tpl: HashMap<String, Expr> = HashMap::new();
+    if let Some(ts) = block.get("expression_templates").and_then(Value::as_object) {
+        for (n, t) in ts {
+            let body = t
+                .get("body")
+                .ok_or_else(|| perr(format!("template `{n}` without body")))?;
+            tpl.insert(n.clone(), parse_expr(body)?);
+        }
+    }
+    let entries = block
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| perr("block without `entries`"))?
+        .iter()
+        .map(|d| {
+            let mut en = parse_band(d)?;
+            if !tpl.is_empty() {
+                en.band.coef = expand_templates(&en.band.coef, &tpl)?;
+            }
+            Ok(en)
+        })
+        .collect::<Result<_, crate::bands::BandError>>()?;
+    Ok((wrt, entries))
+}
+
+/// [`parse_jacobian_block`] over a model's `jacobians` entry, which is either
+/// one block or an array of blocks with distinct `wrt` (spec §4); one `(wrt,
+/// entries)` per block, in order.
+pub fn parse_jacobian_blocks(
+    x: &Value,
+) -> Result<Vec<(Wrt, Vec<JacEntry>)>, crate::bands::BandError> {
+    let out: Vec<(Wrt, Vec<JacEntry>)> = match x {
+        Value::Array(bs) => bs
+            .iter()
+            .map(parse_jacobian_block)
+            .collect::<Result<_, _>>()?,
+        _ => vec![parse_jacobian_block(x)?],
+    };
+    let distinct: HashSet<Wrt> = out.iter().map(|(w, _)| *w).collect();
+    if distinct.len() != out.len() {
+        return Err(perr("a model's jacobian blocks must have distinct `wrt`"));
+    }
+    Ok(out)
 }
 
 // ── the derived evaluation document (emit.jl `_evaluation_document`) ────────

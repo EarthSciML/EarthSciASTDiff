@@ -4,7 +4,8 @@ Analytical sparse Jacobians for [EarthSciAST](https://github.com/EarthSciML/Eart
 (`.esm`) models, by symbolic differentiation of the expression AST.
 
 Given an arbitrary `.esm` model (or a coupled document's flattened system),
-EarthSciASTDiff computes `∂f/∂u` (states) and `∂f/∂p` (parameters) of the ODE
+EarthSciASTDiff computes `∂f/∂u` (states), `∂f/∂p` (parameters, array-valued
+ones cell by cell), `∂f/∂B` (live forcing buffers) and `∂f/∂t` of the ODE
 right-hand side as a list of structured **bands** — rectangular index
 regions with symbolic column-index expressions and ESM coefficient
 expressions. From the bands it derives, without any numeric probing:
@@ -44,7 +45,16 @@ flat = flatten(file)
 res = assemble_jacobian(flat; u = u, p = p)   # one-shot: J, pattern, entries…
 ```
 
-`∂f/∂p`: pass `wrt = :parameters` to any of the above.
+`∂f/∂p`: pass `wrt = :parameters` to any of the above. `∂f/∂B`, with respect
+to the cells of the forcing buffers (by default every array parameter with a
+`data` update; pass `forcing = [names…]` to choose), is `wrt = :forcing`:
+
+```julia
+jac = prepare_jacobian(file; wrt = :forcing,
+                       build_kwargs = (param_arrays = buffers,))  # live buffers
+ḡ = Dict(n => zeros(size(buffers[n])) for n in keys(buffers))
+vjp_forcing!(ḡ, jac, λ, u, p, t)         # ḡ_B += (∂f/∂B)ᵀ λ, no matrix formed
+```
 
 Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
 loading one activates the SciMLBase package extension):
@@ -173,8 +183,18 @@ EarthSciAST implementation and is gated by the same goldens.
       differentiates to `1/86400` (it is continuous; the other `datetime.*`
       fields stay 0), and the Rust and Python golden writers emit floats in
       the reference's layout (`2.4405875e6`, not `2440587.5`).
-- [ ] Forcing-buffer columns (∂f/∂(streamed forcing values), the EarthSciIO
-      coupling) — needs the streaming-forcing representation to settle.
+- [x] Forcing-buffer and array-parameter columns
+      ([#1](https://github.com/EarthSciML/EarthSciASTDiff/issues/1), spec
+      §4.3): `wrt: "forcing"` over the cells of the live data buffers (the
+      forcing set inferred from `data` updates or passed in), the record
+      bracket an ordinary leading length-2 axis so the time blend's chain rule
+      falls out of `*`/`+`; array parameters are real columns of
+      `wrt: "parameters"` instead of being dropped at assembly. Blocks carry
+      their `columns` (the canonical column ordinal) and a model's
+      `"jacobians"` entry may be an array of blocks. `vjp_forcing!` applies
+      the transposed bands as a scatter-add into buffer-shaped accumulators
+      (Python and Rust: `prepare_jacobian` once, then `vjp_forcing` per stage).
+      Pinned by `forcing_bracket.{forcing,parameters}.*` goldens.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package

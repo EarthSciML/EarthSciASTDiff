@@ -62,7 +62,7 @@ end
     # mismatch makes all of these silently empty.
     for name in (
             "adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
-            "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis",
+            "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
         )
         file = fixture("$name.esm")
         model = first(keys(file.models))

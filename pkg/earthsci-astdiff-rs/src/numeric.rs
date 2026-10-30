@@ -1,19 +1,20 @@
 //! Numeric assembly — a correctness surface (like the Python binding's):
 //! per-cell read resolution to literals, then the official evaluator.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use earthsci_ast::evaluate;
 use earthsci_ast::substitute;
-use earthsci_ast::{EsmFile, Expr};
+use earthsci_ast::{EsmFile, Expr, VariableType};
 use serde_json::Value;
 
 use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::helpers::map_expr_children;
 use crate::inline::inline_observed_cached;
-use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
-use crate::system::{ctx_of, observed_defs, sysview};
+use crate::jacobian::{column_names, jacobian_bands_view, jacobian_columns, JacEntry, Wrt};
+use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
 type R<T> = Result<T, BandError>;
 
@@ -25,6 +26,7 @@ type PointFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R
 /// column cell, value)`.
 type ValueFn<'a> = dyn FnMut(usize, &JacEntry, &[i64], &[i64], &[i64], f64) + 'a;
 
+#[derive(Clone, Debug)]
 pub struct Env {
     /// name → nested array (1-based cells encoded as serde Value) or scalar
     pub states: HashMap<String, Value>,
@@ -48,7 +50,7 @@ fn as_lit(e: &Expr) -> R<f64> {
     }
 }
 
-fn resolve(e: &Expr, env: &Env) -> R<Expr> {
+fn resolve(e: &Expr, env: &Env, ctx: &Ctx) -> R<Expr> {
     match e {
         Expr::Variable(name) => {
             if name == "t" {
@@ -66,7 +68,7 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
         Expr::Operator(n) if n.op == "index" => {
             let mut cells = Vec::new();
             for x in &n.args[1..] {
-                cells.push(as_lit(&resolve(x, env)?)?.round() as i64);
+                cells.push(as_lit(&resolve(x, env, ctx)?)?.round() as i64);
             }
             match n.args.first() {
                 Some(Expr::Variable(t)) => {
@@ -116,10 +118,9 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
             let ranges = n.ranges.as_ref().unwrap_or(&empty);
             let mut names: Vec<String> = ranges.keys().cloned().collect();
             names.sort();
-            let ctx = crate::bands::Ctx::default();
             let boxes: Vec<(i64, i64)> = names
                 .iter()
-                .map(|nm| crate::bands::range_of(&ranges[nm], &ctx))
+                .map(|nm| crate::bands::range_of(&ranges[nm], ctx))
                 .collect::<Result<_, _>>()?;
             let body = n
                 .expr
@@ -133,7 +134,7 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
                     .cloned()
                     .zip(cell.iter().map(|c| Expr::Integer(*c)))
                     .collect();
-                total += as_lit(&resolve(&substitute(body, &binds), env)?)?;
+                total += as_lit(&resolve(&substitute(body, &binds), env, ctx)?)?;
                 let mut k = 0;
                 loop {
                     if k == cell.len() {
@@ -154,7 +155,7 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
         }
         Expr::Operator(_) => {
             let mut err: Option<BandError> = None;
-            let out = map_expr_children(e, &mut |x| match resolve(x, env) {
+            let out = map_expr_children(e, &mut |x| match resolve(x, env, ctx) {
                 Ok(v) => v,
                 Err(er) => {
                     if err.is_none() {
@@ -172,7 +173,7 @@ fn resolve(e: &Expr, env: &Env) -> R<Expr> {
     }
 }
 
-fn cellname(v: &str, cell: &[i64]) -> String {
+pub(crate) fn cellname(v: &str, cell: &[i64]) -> String {
     if cell.is_empty() {
         v.to_string()
     } else {
@@ -290,29 +291,53 @@ pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
     Ok(())
 }
 
+/// The coefficient of every band with the observed it reads spliced in.
+/// Pruning leaves target-independent observed as opaque reads in the
+/// coefficients; resolve them from their own definitions (what the
+/// reference's derived evaluation model does). This splices in only the
+/// observed a coefficient actually reads — exactly what evaluating it at a
+/// point needs — so it rejects nothing an evaluation could do without.
+fn inlined_coefs(obs: &HashMap<String, Expr>, entries: &[JacEntry]) -> R<Vec<Expr>> {
+    let mut obs_names = None;
+    entries
+        .iter()
+        .map(|en| {
+            inline_observed_cached(&en.band.coef, obs, &mut obs_names).map_err(|e| BandError(e.0))
+        })
+        .collect()
+}
+
 /// Every non-ghost point of every band at a point: `f(k, entry, row cell,
 /// contracted cell, column cell, value)`, bands in order, cells first index
-/// fastest.
+/// fastest. `coefs` are the bands' [`inlined_coefs`].
+///
+/// On the forcing axis the ghost skip is an error instead: a column there is
+/// a cell of a live buffer, and an unresolvable one would silently drop a
+/// gradient (spec §4). The parameters axis follows the state axis: an array
+/// parameter read past its extent is a ghost read.
 fn for_each_value(
     ctx: &Ctx,
-    obs: &HashMap<String, Expr>,
     entries: &[JacEntry],
+    coefs: &[Expr],
     env: &Env,
+    wrt: Wrt,
     f: &mut ValueFn<'_>,
 ) -> R<()> {
-    // Pruning leaves target-independent observed as opaque reads in the
-    // coefficients; resolve them from their own definitions (what the
-    // reference's derived evaluation model does). This splices in only the
-    // observed a coefficient actually reads — exactly what evaluating it at
-    // a point needs — so it rejects nothing an evaluation could do without.
-    let mut obs_names = None;
-    for (k, en) in entries.iter().enumerate() {
-        let coef0 = inline_observed_cached(&en.band.coef, obs, &mut obs_names)
-            .map_err(|e| BandError(e.0))?;
+    for (k, (en, coef0)) in entries.iter().zip(coefs).enumerate() {
         let vshape = ctx.shapes.get(&en.v);
         foreach_point(&en.band, &mut |cell, cc, ibind, cidx| {
             if let Some(vshape) = vshape {
                 if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
+                    if wrt == Wrt::Forcing {
+                        return Err(BandError(format!(
+                            "column `{}` (row `{}`) is outside the declared extent of \
+                             its variable; on the {} axis every column must resolve \
+                             (no ghost skip)",
+                            cellname(&en.v, cidx),
+                            cellname(&en.u, cell),
+                            wrt.as_str()
+                        )));
+                    }
                     return Ok(()); // ghost read: no column
                 }
             }
@@ -323,9 +348,9 @@ fn for_each_value(
                     .iter()
                     .map(|(k, v)| (k.clone(), Expr::Integer(*v)))
                     .collect();
-                substitute(&coef0, &sub)
+                substitute(coef0, &sub)
             };
-            let val = as_lit(&resolve(&coef, env)?)?;
+            let val = as_lit(&resolve(&coef, env, ctx)?)?;
             f(k, en, cell, cc, cidx, val);
             Ok(())
         })?;
@@ -333,30 +358,273 @@ fn for_each_value(
     Ok(())
 }
 
+/// A value of `shape` with every cell `x`, as row-major nested arrays (the
+/// inline array form).
+fn nested_full(shape: &[i64], x: f64) -> Value {
+    match shape.split_first() {
+        None => serde_json::json!(x),
+        Some((n, rest)) => Value::Array((0..*n).map(|_| nested_full(rest, x)).collect()),
+    }
+}
+
+/// Every parameter's document value, as the Python binding's defaults read
+/// it: an inline array `default` as written (row-major nested arrays), a
+/// scalar `default` broadcast over an array parameter's shape, and a missing
+/// one 0 (every cell of an array parameter included). What the reference's
+/// assembly reads when no buffer is bound.
+fn parameter_defaults(sv: &SysView, ctx: &Ctx) -> HashMap<String, Value> {
+    sv.variables
+        .iter()
+        .filter(|(_, v)| v.var_type == VariableType::Parameter)
+        .map(|(n, v)| {
+            let d = v
+                .default
+                .as_ref()
+                .and_then(|d| serde_json::to_value(d).ok());
+            let shape = ctx.shapes.get(n).filter(|s| !s.is_empty());
+            let val = match (d, shape) {
+                (Some(d), _) if d.is_array() => d,
+                (d, Some(shape)) => nested_full(shape, d.and_then(|x| x.as_f64()).unwrap_or(0.0)),
+                (d, None) => serde_json::json!(d.and_then(|x| x.as_f64()).unwrap_or(0.0)),
+            };
+            (n.clone(), val)
+        })
+        .collect()
+}
+
+/// `env` with every parameter it leaves unbound filled from `defaults`
+/// ([`parameter_defaults`]).
+fn with_defaults<'e>(defaults: &HashMap<String, Value>, env: &'e Env) -> Cow<'e, Env> {
+    if defaults.keys().all(|n| env.params.contains_key(n)) {
+        return Cow::Borrowed(env);
+    }
+    let mut params = env.params.clone();
+    for (n, v) in defaults {
+        params.entry(n.clone()).or_insert_with(|| v.clone());
+    }
+    Cow::Owned(Env {
+        states: env.states.clone(),
+        params,
+        t: env.t,
+    })
+}
+
+/// A prepared band evaluation for one model and axis, built once by
+/// [`prepare_jacobian`]: the band calculus, the observed-inlined
+/// coefficients, the column space and the parameter defaults. Each later
+/// evaluation ([`JacobianEvaluator::values`], [`JacobianEvaluator::vjp`],
+/// [`JacobianEvaluator::vjp_forcing`]) only walks the band points at the
+/// given [`Env`] — so an adjoint loop that takes one forcing cotangent per
+/// stage does not redo the build-time work per stage.
+#[derive(Clone, Debug)]
+pub struct JacobianEvaluator {
+    pub wrt: Wrt,
+    pub entries: Vec<JacEntry>,
+    /// The [`crate::jacobian_columns`] space on the parameters and forcing
+    /// axes, `None` otherwise.
+    pub columns: Option<Vec<(String, Vec<i64>)>>,
+    /// The canonical column names of `columns` (empty without one).
+    pub colnames: Vec<String>,
+    ctx: Ctx,
+    coefs: Vec<Expr>,
+    slot: HashMap<String, usize>,
+    defaults: HashMap<String, Value>,
+}
+
+/// Build a [`JacobianEvaluator`] once: differentiation, observed inlining,
+/// the column space (parameters and forcing axes) and the parameter defaults.
+pub fn prepare_jacobian(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+) -> R<JacobianEvaluator> {
+    let sv = sysview(file, model_name)?;
+    let ctx = ctx_of(&sv)?;
+    let obs = observed_defs(&sv)?;
+    let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt, forcing)?;
+    let coefs = inlined_coefs(&obs, &entries)?;
+    let columns = if wrt.has_columns() {
+        Some(jacobian_columns(&sv, wrt, forcing)?)
+    } else {
+        None
+    };
+    let colnames = columns.as_deref().map(column_names).unwrap_or_default();
+    let slot = colnames
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), i))
+        .collect();
+    let defaults = parameter_defaults(&sv, &ctx);
+    Ok(JacobianEvaluator {
+        wrt,
+        entries,
+        columns,
+        colnames,
+        ctx,
+        coefs,
+        slot,
+        defaults,
+    })
+}
+
+impl JacobianEvaluator {
+    fn each_value(&self, env: &Env, f: &mut ValueFn<'_>) -> R<()> {
+        let env = with_defaults(&self.defaults, env);
+        for_each_value(&self.ctx, &self.entries, &self.coefs, &env, self.wrt, f)
+    }
+
+    /// The band entries at a point, as [`assemble_jacobian`] returns them.
+    pub fn values(&self, env: &Env) -> R<BTreeMap<(String, String), f64>> {
+        let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
+        self.each_value(env, &mut |_, en, cell, _, cidx, val| {
+            let key = (cellname(&en.u, cell), cellname(&en.v, cidx));
+            *out.entry(key).or_insert(0.0) += val;
+        })?;
+        Ok(out)
+    }
+
+    /// `ḡ += Jᵀ λ` at a point, as [`vjp`] computes it, on this evaluator's
+    /// parameters or forcing axis.
+    pub fn vjp(&self, env: &Env, lambda: &HashMap<String, f64>, gbar: &mut [f64]) -> R<()> {
+        if !self.wrt.has_columns() {
+            return Err(BandError(format!(
+                "vjp needs wrt = parameters or forcing, got {}",
+                self.wrt.as_str()
+            )));
+        }
+        if gbar.len() != self.colnames.len() {
+            return Err(BandError(format!(
+                "ḡ has length {}, the column space {}",
+                gbar.len(),
+                self.colnames.len()
+            )));
+        }
+        let mut err: Option<BandError> = None;
+        self.each_value(env, &mut |_, en, cell, _, cidx, val| {
+            if err.is_some() {
+                return;
+            }
+            let (r, c) = (cellname(&en.u, cell), cellname(&en.v, cidx));
+            match (lambda.get(&r), self.slot.get(&c)) {
+                (Some(l), Some(&k)) => gbar[k] += val * l,
+                (None, _) => err = Some(BandError(format!("λ binds no row `{r}`"))),
+                (_, None) => {
+                    err = Some(BandError(format!(
+                        "column `{c}` is not in the column space"
+                    )))
+                }
+            }
+        })?;
+        err.map_or(Ok(()), Err)
+    }
+
+    /// The forcing cotangent of one stage evaluation into buffer-shaped
+    /// accumulators, as [`vjp_forcing`] computes it, on this evaluator's
+    /// forcing axis.
+    pub fn vjp_forcing(
+        &self,
+        env: &Env,
+        lambda: &HashMap<String, f64>,
+        gbar: &mut HashMap<String, Vec<f64>>,
+    ) -> R<()> {
+        if self.wrt != Wrt::Forcing {
+            return Err(BandError(format!(
+                "vjp_forcing needs a wrt = forcing evaluator, got wrt = {}",
+                self.wrt.as_str()
+            )));
+        }
+        let mut flat = vec![0.0; self.colnames.len()];
+        self.vjp(env, lambda, &mut flat)?;
+        let mut off = 0;
+        for (name, shape) in self.columns.as_deref().unwrap_or_default() {
+            let len = shape.iter().product::<i64>() as usize;
+            let acc = gbar
+                .get_mut(name)
+                .ok_or_else(|| BandError(format!("no accumulator for forcing buffer `{name}`")))?;
+            if acc.len() != len {
+                return Err(BandError(format!(
+                    "accumulator `{name}` has length {}, the buffer {len}",
+                    acc.len()
+                )));
+            }
+            for (a, g) in acc.iter_mut().zip(&flat[off..off + len]) {
+                *a += g;
+            }
+            off += len;
+        }
+        Ok(())
+    }
+}
+
 /// Evaluate the band entries at a point: `{(rowname, colname): value}`,
-/// contributions summed (§4 additivity, contracted points included).
+/// contributions summed (§4 additivity, contracted points included). The
+/// forcing set is inferred; see [`assemble_jacobian_with_forcing`].
 pub fn assemble_jacobian(
     file: &EsmFile,
     model_name: Option<&str>,
     wrt: Wrt,
     env: &Env,
 ) -> R<BTreeMap<(String, String), f64>> {
-    let sv = sysview(file, model_name)?;
-    let ctx = ctx_of(&sv)?;
-    let obs = observed_defs(&sv)?;
-    let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt)?;
-    let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
-    for_each_value(
-        &ctx,
-        &obs,
-        &entries,
-        env,
-        &mut |_, en, cell, _, cidx, val| {
-            let key = (cellname(&en.u, cell), cellname(&en.v, cidx));
-            *out.entry(key).or_insert(0.0) += val;
-        },
-    )?;
-    Ok(out)
+    assemble_jacobian_with_forcing(file, model_name, wrt, None, env)
+}
+
+/// [`assemble_jacobian`] with an explicit forcing set. On the parameters and
+/// forcing axes the column names are the canonical column space of
+/// [`crate::jacobian_columns`] (`"E[1]"`, `"F[2,3]"`, scalars bare). A
+/// forcing column outside its buffer's extent is an error (no ghost skip); a
+/// parameter or state column read past its extent is a ghost read and is
+/// skipped. A parameter `env.params` does not bind reads the document's
+/// `default`, broadcast over an array parameter's shape (0 without one).
+/// For repeated evaluation, [`prepare_jacobian`] once.
+pub fn assemble_jacobian_with_forcing(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    env: &Env,
+) -> R<BTreeMap<(String, String), f64>> {
+    prepare_jacobian(file, model_name, wrt, forcing)?.values(env)
+}
+
+/// The transposed product `ḡ += Jᵀ λ` at a point, as a scatter-add over the
+/// band points: `ḡ[col] += coef · λ[row]` for every point, with no matrix
+/// (and no transpose) formed. `lambda` is keyed by row cell name (`"c[2]"`,
+/// `"S"`); a row it does not bind is an error. `gbar` is indexed by the
+/// canonical column ordinal of a parameters or forcing axis
+/// ([`crate::jacobian::column_names`] of [`crate::jacobian_columns`]) and
+/// ACCUMULATES — zero it first for a single product. This prepares the
+/// evaluator for one call; a loop calls [`JacobianEvaluator::vjp`] on one
+/// [`prepare_jacobian`] instead.
+pub fn vjp(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    env: &Env,
+    lambda: &HashMap<String, f64>,
+    gbar: &mut [f64],
+) -> R<()> {
+    prepare_jacobian(file, model_name, wrt, forcing)?.vjp(env, lambda, gbar)
+}
+
+/// [`vjp`] on the forcing axis, into buffer-shaped accumulators: the forcing
+/// cotangent of one stage evaluation, `ḡ_B += (∂f/∂B)ᵀ λ` (spec §4.3). `gbar`
+/// holds one accumulator per forcing buffer, keyed by buffer name, each the
+/// buffer's cells COLUMN-MAJOR (first index fastest). It accumulates; which
+/// dataset record a buffer slot holds, and when to flush, is the caller's
+/// bookkeeping. This prepares the evaluator for one call; an adjoint loop
+/// calls [`JacobianEvaluator::vjp_forcing`] on one [`prepare_jacobian`]
+/// instead.
+pub fn vjp_forcing(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    forcing: Option<&[String]>,
+    env: &Env,
+    lambda: &HashMap<String, f64>,
+    gbar: &mut HashMap<String, Vec<f64>>,
+) -> R<()> {
+    prepare_jacobian(file, model_name, Wrt::Forcing, forcing)?.vjp_forcing(env, lambda, gbar)
 }
 
 /// The band fields at a point — what the derived evaluation document's
@@ -367,7 +635,7 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States)?;
+    let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
     let shapes: Vec<Vec<i64>> = entries
         .iter()
         .map(|en| crate::scatter::field_shape(en, &ctx))
@@ -376,9 +644,18 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
         .iter()
         .map(|sh| vec![0.0; sh.iter().product::<i64>() as usize])
         .collect();
-    for_each_value(&ctx, &obs, &entries, env, &mut |k, _, cell, cc, _, val| {
-        let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
-        fields[k][crate::scatter::flat(&full, &shapes[k])] = val;
-    })?;
+    let coefs = inlined_coefs(&obs, &entries)?;
+    let env = with_defaults(&parameter_defaults(&sv, &ctx), env);
+    for_each_value(
+        &ctx,
+        &entries,
+        &coefs,
+        &env,
+        Wrt::States,
+        &mut |k, _, cell, cc, _, val| {
+            let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
+            fields[k][crate::scatter::flat(&full, &shapes[k])] = val;
+        },
+    )?;
     Ok(fields)
 }

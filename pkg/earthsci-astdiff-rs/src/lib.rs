@@ -23,13 +23,20 @@ pub use branches::{canon_lits, simp, simplify_branches};
 pub use clip::{clip_regions, RIdx};
 pub use emit::{
     block_diagonal_lu, cse_templates, detect_structure, evaluation_document, jacobian_block,
-    lu_fill, markowitz_ordering, serialize_band, BlockLu,
+    jacobian_block_with_forcing, jacobian_blocks, lu_fill, markowitz_ordering, parse_band,
+    parse_jacobian_block, parse_jacobian_blocks, serialize_band, BlockLu,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
-pub use jacobian::{jacobian_bands, JacEntry, Wrt};
-pub use numeric::{assemble_jacobian, band_fields};
+pub use jacobian::{
+    column_names, forcing_names, jacobian_bands, jacobian_bands_with_forcing, jacobian_columns,
+    JacEntry, Wrt,
+};
+pub use numeric::{
+    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, prepare_jacobian, vjp,
+    vjp_forcing, JacobianEvaluator,
+};
 pub use program::{
     BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram, StorageScalar,
 };
