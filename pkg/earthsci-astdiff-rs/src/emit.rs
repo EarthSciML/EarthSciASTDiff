@@ -13,6 +13,7 @@ use crate::eval_cse::hoist_observed;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{JacEntry, Wrt};
+use crate::second_order::JacEntry2;
 use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
 /// One entry of the `jacobians` block, as JSON (spec §4).
@@ -410,27 +411,71 @@ pub fn jacobian_block(
     jacobian_block_with_forcing(file, model_name, wrt, None, cse, cse_min_nodes)
 }
 
-/// The blocks for several distinct axes of one model (`[States, Forcing]`),
-/// in the given order: a model's `jacobians` entry in its ARRAY form (spec
-/// §4). Repeated or no axes are an error.
-pub fn jacobian_blocks(
+/// One block's `wrt` in a model's `jacobians` entry: a single axis
+/// (first-order entries) or an axis PAIR (second-order entries, spec §4.4).
+/// A [`Wrt`] converts into the single-axis form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlockWrt {
+    Axis(Wrt),
+    Pair(Wrt, Wrt),
+}
+
+impl From<Wrt> for BlockWrt {
+    fn from(w: Wrt) -> Self {
+        BlockWrt::Axis(w)
+    }
+}
+
+impl From<(Wrt, Wrt)> for BlockWrt {
+    fn from((a1, a2): (Wrt, Wrt)) -> Self {
+        BlockWrt::Pair(a1, a2)
+    }
+}
+
+impl BlockWrt {
+    fn label(&self) -> String {
+        match self {
+            BlockWrt::Axis(w) => w.as_str().to_string(),
+            BlockWrt::Pair(a1, a2) => format!("[{}, {}]", a1.as_str(), a2.as_str()),
+        }
+    }
+}
+
+/// The blocks for several distinct axes (or axis pairs, spec §4.4) of one
+/// model (`[States, Forcing]`, or [`BlockWrt`]s mixing both forms), in the
+/// given order: a model's `jacobians` entry in its ARRAY form (spec §4).
+/// Repeated or no axes are an error.
+pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
     file: &earthsci_ast::EsmFile,
     model_name: Option<&str>,
-    wrt: &[Wrt],
+    wrt: &[W],
     forcing: Option<&[String]>,
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<Value, crate::bands::BandError> {
-    let distinct: HashSet<Wrt> = wrt.iter().copied().collect();
+    let wrt: Vec<BlockWrt> = wrt.iter().map(|w| (*w).into()).collect();
+    let distinct: HashSet<BlockWrt> = wrt.iter().copied().collect();
     if wrt.is_empty() || distinct.len() != wrt.len() {
         return Err(crate::bands::BandError(format!(
             "wrt must name one or more distinct axes, got {:?}",
-            wrt.iter().map(Wrt::as_str).collect::<Vec<_>>()
+            wrt.iter().map(BlockWrt::label).collect::<Vec<_>>()
         )));
     }
     Ok(Value::Array(
         wrt.iter()
-            .map(|w| jacobian_block_with_forcing(file, model_name, *w, forcing, cse, cse_min_nodes))
+            .map(|w| match *w {
+                BlockWrt::Axis(w) => {
+                    jacobian_block_with_forcing(file, model_name, w, forcing, cse, cse_min_nodes)
+                }
+                BlockWrt::Pair(a1, a2) => crate::second_order::jacobian_block2(
+                    file,
+                    model_name,
+                    (a1, a2),
+                    forcing,
+                    cse,
+                    cse_min_nodes,
+                ),
+            })
             .collect::<Result<_, _>>()?,
     ))
 }
@@ -611,18 +656,8 @@ pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
     })
 }
 
-/// One `jacobians` block back to `(wrt, entries)`, its template references
-/// expanded (the round trip is exact with or without CSE).
-pub fn parse_jacobian_block(
-    block: &Value,
-) -> Result<(Wrt, Vec<JacEntry>), crate::bands::BandError> {
-    // `wrt` is required, as in the reference: a block without one is not
-    // read as a state block.
-    let w = block
-        .get("wrt")
-        .and_then(Value::as_str)
-        .ok_or_else(|| perr("block without `wrt`"))?;
-    let wrt = Wrt::parse(w).ok_or_else(|| perr(format!("unknown wrt `{w}`")))?;
+/// A block's zero-parameter `expression_templates`, by name.
+fn block_templates(block: &Value) -> Result<HashMap<String, Expr>, crate::bands::BandError> {
     let mut tpl: HashMap<String, Expr> = HashMap::new();
     if let Some(ts) = block.get("expression_templates").and_then(Value::as_object) {
         for (n, t) in ts {
@@ -632,36 +667,130 @@ pub fn parse_jacobian_block(
             tpl.insert(n.clone(), parse_expr(body)?);
         }
     }
-    let entries = block
+    Ok(tpl)
+}
+
+/// A block's entries through `parse`, template references in each
+/// coefficient expanded.
+fn block_entries<T>(
+    block: &Value,
+    parse: impl Fn(&Value) -> Result<T, crate::bands::BandError>,
+    coef: impl Fn(&mut T) -> &mut Expr,
+) -> Result<Vec<T>, crate::bands::BandError> {
+    let tpl = block_templates(block)?;
+    block
         .get("entries")
         .and_then(Value::as_array)
         .ok_or_else(|| perr("block without `entries`"))?
         .iter()
         .map(|d| {
-            let mut en = parse_band(d)?;
+            let mut en = parse(d)?;
             if !tpl.is_empty() {
-                en.band.coef = expand_templates(&en.band.coef, &tpl)?;
+                let c = coef(&mut en);
+                *c = expand_templates(c, &tpl)?;
             }
             Ok(en)
         })
-        .collect::<Result<_, crate::bands::BandError>>()?;
-    Ok((wrt, entries))
+        .collect()
 }
 
-/// [`parse_jacobian_block`] over a model's `jacobians` entry, which is either
-/// one block or an array of blocks with distinct `wrt` (spec §4); one `(wrt,
-/// entries)` per block, in order.
-pub fn parse_jacobian_blocks(
-    x: &Value,
-) -> Result<Vec<(Wrt, Vec<JacEntry>)>, crate::bands::BandError> {
-    let out: Vec<(Wrt, Vec<JacEntry>)> = match x {
-        Value::Array(bs) => bs
-            .iter()
-            .map(parse_jacobian_block)
-            .collect::<Result<_, _>>()?,
-        _ => vec![parse_jacobian_block(x)?],
+/// A block's `wrt`: a string names one axis, a two-name array an axis pair
+/// (spec §4.4). Required, as in the reference: a block without one is not
+/// read as a state block.
+fn block_wrt(block: &Value) -> Result<BlockWrt, crate::bands::BandError> {
+    let axis = |v: &Value| {
+        let w = v.as_str().ok_or_else(|| perr("malformed `wrt`"))?;
+        Wrt::parse(w).ok_or_else(|| perr(format!("unknown wrt `{w}`")))
     };
-    let distinct: HashSet<Wrt> = out.iter().map(|(w, _)| *w).collect();
+    match block.get("wrt") {
+        None => Err(perr("block without `wrt`")),
+        Some(Value::Array(p)) => match p.as_slice() {
+            [a1, a2] => {
+                let (a1, a2) = crate::second_order::axis_pair((axis(a1)?, axis(a2)?))?;
+                Ok(BlockWrt::Pair(a1, a2))
+            }
+            _ => Err(perr("a pair `wrt` names exactly two axes")),
+        },
+        Some(w) => Ok(BlockWrt::Axis(axis(w)?)),
+    }
+}
+
+/// One `jacobians` block back to `(wrt, entries)`, its template references
+/// expanded (the round trip is exact with or without CSE). A pair block
+/// (second-order entries) is [`parse_jacobian_block2`]'s.
+pub fn parse_jacobian_block(
+    block: &Value,
+) -> Result<(Wrt, Vec<JacEntry>), crate::bands::BandError> {
+    let BlockWrt::Axis(wrt) = block_wrt(block)? else {
+        return Err(perr(
+            "a block whose `wrt` is a pair holds second-order entries \
+             (parse_jacobian_block2)",
+        ));
+    };
+    Ok((
+        wrt,
+        block_entries(block, parse_band, |en| &mut en.band.coef)?,
+    ))
+}
+
+/// One pair block (spec §4.4) back to `((a1, a2), entries)`, its template
+/// references expanded.
+pub fn parse_jacobian_block2(
+    block: &Value,
+) -> Result<((Wrt, Wrt), Vec<JacEntry2>), crate::bands::BandError> {
+    let BlockWrt::Pair(a1, a2) = block_wrt(block)? else {
+        return Err(perr(
+            "a block whose `wrt` is one axis holds first-order entries \
+             (parse_jacobian_block)",
+        ));
+    };
+    Ok((
+        (a1, a2),
+        block_entries(block, crate::second_order::parse_band2, |en| {
+            &mut en.band.coef
+        })?,
+    ))
+}
+
+/// One parsed block of a model's `jacobians` entry: first-order entries of
+/// one axis, or second-order entries of an axis pair (spec §4.4).
+#[derive(Clone, Debug)]
+pub enum ParsedBlock {
+    Axis(Wrt, Vec<JacEntry>),
+    Pair((Wrt, Wrt), Vec<JacEntry2>),
+}
+
+impl ParsedBlock {
+    /// The block's `wrt`.
+    pub fn wrt(&self) -> BlockWrt {
+        match self {
+            ParsedBlock::Axis(w, _) => BlockWrt::Axis(*w),
+            ParsedBlock::Pair((a1, a2), _) => BlockWrt::Pair(*a1, *a2),
+        }
+    }
+}
+
+/// [`parse_jacobian_block`] / [`parse_jacobian_block2`] over a model's
+/// `jacobians` entry, which is either one block or an array of blocks with
+/// distinct `wrt` (spec §4); one [`ParsedBlock`] per block, in order.
+pub fn parse_jacobian_blocks(x: &Value) -> Result<Vec<ParsedBlock>, crate::bands::BandError> {
+    let one = |b: &Value| -> Result<ParsedBlock, crate::bands::BandError> {
+        Ok(match block_wrt(b)? {
+            BlockWrt::Axis(_) => {
+                let (w, es) = parse_jacobian_block(b)?;
+                ParsedBlock::Axis(w, es)
+            }
+            BlockWrt::Pair(..) => {
+                let (w, es) = parse_jacobian_block2(b)?;
+                ParsedBlock::Pair(w, es)
+            }
+        })
+    };
+    let out: Vec<ParsedBlock> = match x {
+        Value::Array(bs) => bs.iter().map(one).collect::<Result<_, _>>()?,
+        _ => vec![one(x)?],
+    };
+    let distinct: HashSet<BlockWrt> = out.iter().map(ParsedBlock::wrt).collect();
     if distinct.len() != out.len() {
         return Err(perr("a model's jacobian blocks must have distinct `wrt`"));
     }

@@ -108,7 +108,7 @@ pub fn forcing_names(sv: &SysView, forcing: Option<&[String]>) -> Result<Vec<Str
 /// The column variables of one axis, in canonical (name-sorted) order: every
 /// parameter outside the forcing set (parameters), the forcing set
 /// (forcing), the solver-slot states (states) or the single site `t`.
-fn targets(
+pub(crate) fn targets(
     sv: &SysView,
     wrt: Wrt,
     forcing: Option<&[String]>,
@@ -223,16 +223,39 @@ pub(crate) fn jacobian_bands_view(
     wrt: Wrt,
     forcing: Option<&[String]>,
 ) -> Result<Vec<JacEntry>, BandError> {
+    jacobian_bands_seeded(sv, ctx, obs, wrt, forcing, &[])
+}
+
+/// [`jacobian_bands_view`] with `seed` added to the inlining seed without
+/// making those names targets: the second-order driver
+/// ([`crate::second_order`]) differentiates these coefficients again with
+/// respect to its second axis, so an observed that moves only with that axis
+/// must be inlined too, or its sites stay hidden behind its name.
+pub(crate) fn jacobian_bands_seeded(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+) -> Result<Vec<JacEntry>, BandError> {
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
-    // Inline only the observed that can move with THIS `wrt`'s targets; the
-    // rest have an identically-zero derivative and stay opaque reads. Time is
-    // not pruned: it also enters implicitly through time-varying data.
+    // Inline only the observed that can move with THIS `wrt`'s targets (and
+    // the seed's); the rest have an identically-zero derivative and stay
+    // opaque reads. Time is not pruned: it also enters implicitly through
+    // time-varying data.
     let pruned;
     let obs = if wrt == Wrt::Time {
         obs
     } else {
-        pruned = inlinable_observed(obs, sv.equations, &tset);
+        pruned = if seed.is_empty() {
+            inlinable_observed(obs, sv.equations, &tset)
+        } else {
+            let mut seeded = tset.clone();
+            seeded.extend(seed.iter().cloned());
+            inlinable_observed(obs, sv.equations, &seeded)
+        };
         &pruned
     };
     let mut entries = Vec::new();

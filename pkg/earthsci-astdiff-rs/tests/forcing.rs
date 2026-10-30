@@ -11,7 +11,7 @@ use earthsci_astdiff::{
     assemble_jacobian, assemble_jacobian_with_forcing, column_names, forcing_names, jacobian_bands,
     jacobian_bands_with_forcing, jacobian_block, jacobian_blocks, jacobian_columns,
     parse_jacobian_block, parse_jacobian_blocks, prepare_jacobian, stable_json, sysview, vjp,
-    vjp_forcing, Wrt,
+    vjp_forcing, BlockWrt, ParsedBlock, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -151,10 +151,13 @@ fn several_axes_in_one_jacobians_entry() {
     );
     let parsed = parse_jacobian_blocks(&blocks).unwrap();
     assert_eq!(
-        parsed.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
-        vec![Wrt::States, Wrt::Forcing]
+        parsed.iter().map(ParsedBlock::wrt).collect::<Vec<_>>(),
+        vec![BlockWrt::Axis(Wrt::States), BlockWrt::Axis(Wrt::Forcing)]
     );
-    assert_eq!(parse_jacobian_blocks(&arr[1]).unwrap()[0].0, Wrt::Forcing);
+    assert_eq!(
+        parse_jacobian_blocks(&arr[1]).unwrap()[0].wrt(),
+        BlockWrt::Axis(Wrt::Forcing)
+    );
     assert!(jacobian_blocks(&file, None, &[Wrt::States, Wrt::States], None, true, 12).is_err());
     assert!(parse_jacobian_blocks(&json!([arr[1], arr[1]])).is_err());
     // the parsed entries are the differentiated ones (templates expanded)
@@ -164,7 +167,10 @@ fn several_axes_in_one_jacobians_entry() {
             es.iter().map(earthsci_astdiff::serialize_band).collect(),
         ))
     };
-    assert_eq!(ser(&parsed[1].1), ser(&direct));
+    let ParsedBlock::Axis(_, forcing_entries) = &parsed[1] else {
+        panic!("a single-axis block parses to first-order entries")
+    };
+    assert_eq!(ser(forcing_entries), ser(&direct));
     // a states block keeps structure, a forcing block carries columns
     let st = jacobian_block(&file, None, Wrt::States, true, 12).unwrap();
     assert!(st.get("structure").is_some() && st.get("columns").is_none());
