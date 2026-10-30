@@ -142,16 +142,20 @@ def jacobian_bands(
     return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing)
 
 
-def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None) -> list[JacEntry]:
+def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
     # The body of `jacobian_bands`, for callers (numeric assembly) that
-    # already hold the view's context and observed definitions.
+    # already hold the view's context and observed definitions. `seed` adds
+    # names to the inlining seed without making them targets: the
+    # second-order driver (second_order.py) differentiates these
+    # coefficients again w.r.t. its second axis, so an observed that moves
+    # only with that axis must be inlined too, or its sites stay hidden.
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
     if wrt != "time":
-        obs = inlinable_observed(obs, sv.equations, tset)
+        obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     entries: list[JacEntry] = []
     obs_names: list = [None]
     for eq in sv.equations:

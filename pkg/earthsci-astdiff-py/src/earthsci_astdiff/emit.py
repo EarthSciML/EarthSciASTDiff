@@ -11,11 +11,15 @@ from earthsci_ast.parse import _parse_expression as parse_expression
 from .bands import Band
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, jacobian_bands, jacobian_columns
+from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
 from .system import sysview
 
 
-def serialize_band(en: JacEntry) -> dict:
-    """One entry of the ``jacobians`` block, as a JSON-ready dict (spec §4)."""
+def serialize_band(en: JacEntry | JacEntry2) -> dict:
+    """One entry of the ``jacobians`` block, as a JSON-ready dict (spec §4;
+    a :class:`JacEntry2` adds ``col2`` / ``col2_idx``, §4.4)."""
+    if isinstance(en, JacEntry2):
+        return serialize_band2(en)
     b = en.band
     d = {
         "row": en.u,
@@ -155,16 +159,31 @@ def jacobian_block(
 
     ``wrt`` may also be a list of distinct axes: the result is then the list
     of blocks, one per axis in the given order (a model's `jacobians` entry
-    in its array form, spec §4)."""
+    in its array form, spec §4). A ``tuple`` ``(a1, a2)`` is an axis PAIR, a
+    block of second-order entries (:func:`jacobian_bands2`, §4.4), alone or
+    in such a list, where a two-name list is a pair too
+    (``["states", ("states", "states")]``)."""
     from .system import SysView, sysview
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    if isinstance(wrt, str):
-        return _jacobian_block(sv, wrt, forcing, cse, cse_min_nodes)
-    axes = [str(w) for w in wrt]
+    # One axis is a str (iterating it would split it into characters); a
+    # tuple is one axis pair.
+    if isinstance(wrt, (str, tuple)):
+        return _block_of(sv, _axis_key(wrt), forcing, cse, cse_min_nodes)
+    axes = [_axis_key(w) for w in wrt]
     if not axes or len(set(axes)) != len(axes):
         raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
-    return [_jacobian_block(sv, w, forcing, cse, cse_min_nodes) for w in axes]
+    return [_block_of(sv, w, forcing, cse, cse_min_nodes) for w in axes]
+
+
+def _axis_key(w):
+    return axis_pair(w) if isinstance(w, (tuple, list)) else str(w)
+
+
+def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int) -> dict:
+    if isinstance(w, tuple):
+        return jacobian_block2(sv, w, forcing, cse, cse_min_nodes)
+    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes)
 
 
 def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int) -> dict:
@@ -219,21 +238,26 @@ def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int) -> dic
 
 def parse_jacobian_block(block: dict):
     """Inverse of the block emission: expands `apply_expression_template`
-    references back, so the returned entries are always closed."""
+    references back, so the returned entries are always closed. A block
+    whose ``wrt`` is a pair holds second-order entries (§4.4): it returns
+    ``((a1, a2), [JacEntry2, ...])``."""
+    from dataclasses import replace
+
     from .bands import Band
     from .cse import expand_templates
 
-    wrt = block["wrt"]
-    entries = [parse_band(d) for d in block["entries"]]
+    pair = isinstance(block["wrt"], list)
+    wrt = axis_pair(block["wrt"]) if pair else block["wrt"]
+    parse = parse_band2 if pair else parse_band
+    entries = [parse(d) for d in block["entries"]]
     if "expression_templates" in block:
         reg = {
             str(n): parse_expression(t["body"]) for n, t in block["expression_templates"].items()
         }
         entries = [
-            JacEntry(
-                en.u,
-                en.v,
-                Band(
+            replace(
+                en,
+                band=Band(
                     en.band.rows,
                     en.band.ridx,
                     [expand_templates(c, reg) for c in en.band.cidx],
@@ -249,7 +273,8 @@ def parse_jacobian_block(block: dict):
 def parse_jacobian_blocks(x) -> list:
     """:func:`parse_jacobian_block` over a model's `jacobians` entry, which
     is either one block or a list of blocks with distinct `wrt` (spec §4);
-    returns one ``(wrt, entries)`` per block, in order."""
+    returns one ``(wrt, entries)`` per block, in order (``wrt`` a str, or a
+    tuple for a second-order pair)."""
     blocks = [x] if isinstance(x, dict) else list(x)
     out = [parse_jacobian_block(b) for b in blocks]
     ws = [w for w, _ in out]

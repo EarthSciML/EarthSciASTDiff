@@ -25,6 +25,7 @@ from .emit import _cellname, _eval_cidx, _product, check_column, column_names
 from .inline import inline_observed
 from .jacobian import _AXES, _jacobian_bands, jacobian_columns
 from .scalar_rules import plain_sum, reduction
+from .second_order import _bands2, axis_pair, structure2
 from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
 
@@ -346,4 +347,191 @@ def vjp_forcing(
             idx = tuple(c - 1 for c in cell)
             acc[idx] += flat[k]
             k += 1
+    return g
+
+
+# ── second order: the hvp contraction (second_order.jl, spec §4.4) ──────────
+
+
+class HVPEvaluator:
+    """A prepared second-order contraction for one axis pair, built once by
+    :func:`prepare_hvp`: the second-order bands (:func:`jacobian_bands2`)
+    and every band point's (row, column, second column) placement. Each
+    :func:`hvp` call only resolves the coefficients at the point — the
+    Julia reference's ``HVPEvaluator`` in this binding's correctness-surface
+    form.
+
+    Fields of note: ``wrt`` (the pair), ``entries``, ``structure``,
+    ``columns`` (the second axis's :func:`jacobian_columns` space on
+    ``"parameters"`` / ``"forcing"``, else ``None``), ``col2names`` (that
+    space's cell names, else ``None``) and ``colnames`` (``["t"]`` on a time
+    pair, else ``None``)."""
+
+    def __init__(self, sv: SysView, wrt, forcing=None):
+        a1, a2 = axis_pair(wrt)
+        ctx = ctx_of(sv)
+        obs = observed_defs(sv)
+        self.wrt = (a1, a2)
+        self._ctx = ctx
+        self._defaults = _default_values(sv, ctx, obs)
+        e1, self.entries = _bands2(sv, a1, a2, forcing)
+        self.structure = structure2(e1, self.entries, sv, a1)
+        if a2 in ("parameters", "forcing"):
+            self.columns = jacobian_columns(sv, wrt=a2, forcing=forcing)
+            self.col2names = column_names(self.columns)
+        else:
+            self.columns = None
+            self.col2names = None
+        self.colnames = ["t"] if a1 == "time" else None
+        col2set = set(self.col2names) if self.columns is not None else None
+        # (row, col, col2, coefficient with its index binding applied) per
+        # band point; a ghost column on either axis drops the point, except
+        # on the forcing axis, where it is an error (as for first order).
+        self._points: list[tuple[str, str, str, Expr]] = []
+        for en in self.entries:
+            b = en.band
+            coef0 = inline_observed(b.coef, obs)
+            for cell in _product(b.rows):
+                for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
+                    bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
+                    for k, (nm, _, _) in enumerate(b.contracted):
+                        bind[nm] = cc[k]
+                    fbind = {k2: float(v2) for k2, v2 in bind.items()}
+                    cidx = [_eval_cidx(c, fbind) for c in b.cidx]
+                    row = _cellname(en.u, cell)
+                    c1, c2 = cidx[: en.ncol], cidx[en.ncol :]
+                    col2 = _cellname(en.w, c2)
+                    if col2set is not None:
+                        if not check_column(col2 in col2set, col2, row, a2):
+                            continue  # parameter ghost read
+                    elif not _in_extent(ctx, en.w, c2):
+                        continue
+                    if a1 == "time":
+                        col = "t"
+                    elif _in_extent(ctx, en.v, c1):
+                        col = _cellname(en.v, c1)
+                    else:
+                        continue
+                    coef = substitute(coef0, dict(bind)) if bind else coef0
+                    self._points.append((row, col, col2, coef))
+
+    def _values(self, states, params, t):
+        dstates = dict(self._defaults[0])
+        dparams = dict(self._defaults[1])
+        dstates.update(states or {})
+        dparams.update(params or {})
+        env = _Env(dstates, dparams, t, self._ctx)
+        for row, col, col2, coef in self._points:
+            yield row, col, col2, float(_as_lit(_resolve(coef, env)))
+
+
+def _in_extent(ctx, v: str, cidx: list[int]) -> bool:
+    shape = ctx.shapes.get(v)
+    return shape is None or all(1 <= cidx[d] <= shape[d] for d in range(len(cidx)))
+
+
+def prepare_hvp(
+    obj, model_name: str | None = None, wrt=("states", "states"), forcing=None
+) -> HVPEvaluator:
+    """Build an :class:`HVPEvaluator` once — second-order differentiation,
+    column spaces and point placement — for repeated :func:`hvp` calls (one
+    per Rosenbrock step of an adjoint sweep)."""
+    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    return HVPEvaluator(sv, wrt, forcing)
+
+
+def _stage_pairs(pairs) -> list:
+    # One `(μ, w)` pair is a tuple whose first element is a dict; anything
+    # else is a collection of pairs.
+    if isinstance(pairs, tuple) and len(pairs) == 2 and isinstance(pairs[0], dict):
+        return [pairs]
+    return list(pairs)
+
+
+def _bound(d: dict, name: str, what: str) -> float:
+    v = d.get(name)
+    if v is None:
+        raise ValueError(f"{what} binds no `{name}`")
+    return v
+
+
+def hvp(
+    g,
+    obj,
+    pairs,
+    model_name: str | None = None,
+    wrt=None,
+    states: dict | None = None,
+    params: dict | None = None,
+    t: float = 0.0,
+    forcing=None,
+    form: str = "contract",
+):
+    """The second-order contraction at a point, as a scatter-add over the
+    second-order band points with no tensor formed::
+
+        g += ∇_{a2} Σᵢ μᵢᵀ J wᵢ          (pair (states, a2))
+        g += ∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t      (pair (time, a2); each wᵢ a scalar)
+
+    with ``J = ∂f/∂(a1)``. ``obj`` is an :class:`HVPEvaluator` (built once
+    with :func:`prepare_hvp`; its pair and forcing set apply) or anything
+    :func:`prepare_hvp` takes, prepared for this one call with ``wrt``
+    (default ``("states", "states")``). ``pairs`` is one ``(μ, w)`` tuple or
+    a collection of them (one per Rosenbrock stage): ``μ`` maps row (state
+    cell) names to values, ``w`` maps column names to values — or is a
+    number on a time pair. A name a band point needs that they do not bind
+    raises ``ValueError``.
+
+    ``g`` is a dict keyed by second-column name, or (on a ``"parameters"`` /
+    ``"forcing"`` second axis) a flat sequence over ``col2names``. It
+    ACCUMULATES — zero it first for a single product; a dict gains a key for
+    every second column a band point reaches, zero-valued or not.
+
+    ``form="contract"`` (default) runs ``g[col2] += coef2 · Σᵢ μᵢ[row]
+    wᵢ[col]`` over the points. On a ``("states", "states")`` pair
+    ``form="symmetric"`` uses the symmetry of ∇²(μᵀf) instead, ``g[col] +=
+    μ[row] · coef2 · w[col2]`` per stage (``g`` then keyed by the first
+    column). Returns ``g``."""
+    if isinstance(obj, HVPEvaluator):
+        if wrt is not None and axis_pair(wrt) != obj.wrt:
+            raise ValueError(f"the evaluator is on wrt = {obj.wrt}, not {wrt}")
+        hv = obj
+    else:
+        hv = prepare_hvp(obj, model_name, ("states", "states") if wrt is None else wrt, forcing)
+    if form not in ("contract", "symmetric"):
+        raise ValueError(f"form must be contract or symmetric, got {form}")
+    if form == "symmetric" and hv.wrt != ("states", "states"):
+        raise ValueError(f"form = symmetric needs a (states, states) pair, got {hv.wrt}")
+    if isinstance(g, dict):
+        slot = None
+    elif hv.col2names is None:
+        raise ValueError("on a states second axis g is a dict keyed by state cell name")
+    elif len(g) != len(hv.col2names):
+        raise ValueError(f"g has length {len(g)}, the second axis {len(hv.col2names)}")
+    else:
+        slot = {n: i for i, n in enumerate(hv.col2names)}
+    ps = _stage_pairs(pairs)
+    time = hv.wrt[0] == "time"
+    for mu, w in ps:
+        if not isinstance(mu, dict):
+            raise ValueError("μ must be a dict keyed by row name")
+        if time != (not isinstance(w, dict)):
+            raise ValueError(
+                "w must be a number on a time pair and a dict keyed by column name otherwise"
+            )
+    for row, col, col2, v in hv._values(states, params, t):
+        if form == "contract":
+            key = col2
+            m = 0.0
+            for mu, w in ps:
+                wc = w if time else _bound(w, col, "w")
+                m += _bound(mu, row, "μ") * wc
+            dv = v * m
+        else:
+            key = col
+            dv = sum(_bound(mu, row, "μ") * v * _bound(w, col2, "w") for mu, w in ps)
+        if slot is None:
+            g[key] = g.get(key, 0.0) + dv
+        else:
+            g[slot[key]] += dv
     return g
