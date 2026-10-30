@@ -616,7 +616,12 @@ pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
 pub fn parse_jacobian_block(
     block: &Value,
 ) -> Result<(Wrt, Vec<JacEntry>), crate::bands::BandError> {
-    let w = block.get("wrt").and_then(Value::as_str).unwrap_or("states");
+    // `wrt` is required, as in the reference: a block without one is not
+    // read as a state block.
+    let w = block
+        .get("wrt")
+        .and_then(Value::as_str)
+        .ok_or_else(|| perr("block without `wrt`"))?;
     let wrt = Wrt::parse(w).ok_or_else(|| perr(format!("unknown wrt `{w}`")))?;
     let mut tpl: HashMap<String, Expr> = HashMap::new();
     if let Some(ts) = block.get("expression_templates").and_then(Value::as_object) {

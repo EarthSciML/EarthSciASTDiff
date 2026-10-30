@@ -198,9 +198,10 @@ pub fn jacobian_bands(
 ///
 /// On the parameters and forcing axes every column index must be closed at
 /// build time (literals, folded metaparameters, `const` gathers, and the
-/// entry's row and contracted index names), and a forcing request whose
-/// right-hand sides read the forcing set but yield no band is an error
-/// rather than an empty list (spec §4.3).
+/// entry's row and contracted index names); an unclosed one is an error
+/// (spec §4.3). A model that reads the forcing set only where the derivative
+/// is identically zero (an `ifelse` condition, a piecewise-constant op) has
+/// an empty forcing list.
 pub fn jacobian_bands_with_forcing(
     file: &EsmFile,
     model_name: Option<&str>,
@@ -223,7 +224,6 @@ pub(crate) fn jacobian_bands_view(
     forcing: Option<&[String]>,
 ) -> Result<Vec<JacEntry>, BandError> {
     let targets = targets(sv, wrt, forcing, obs)?;
-    let target_list = targets.clone();
     let tset: HashSet<String> = targets.into_iter().collect();
     // Inline only the observed that can move with THIS `wrt`'s targets; the
     // rest have an identically-zero derivative and stay opaque reads. Time is
@@ -236,7 +236,6 @@ pub(crate) fn jacobian_bands_view(
         &pruned
     };
     let mut entries = Vec::new();
-    let mut read_target = false;
     let mut obs_names = None;
     for eq in sv.equations {
         let Some(u) = lhs_state(eq) else {
@@ -257,7 +256,6 @@ pub(crate) fn jacobian_bands_view(
             .filter(|v| tset.contains(v))
             .collect();
         hits.sort();
-        read_target |= !hits.is_empty();
         for v in &hits {
             for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
                 entries.push(JacEntry {
@@ -271,13 +269,6 @@ pub(crate) fn jacobian_bands_view(
     if wrt.has_columns() {
         for en in &entries {
             check_closed_columns(en)?;
-        }
-        if wrt == Wrt::Forcing && read_target && entries.is_empty() {
-            return Err(BandError(format!(
-                "the right-hand sides read the forcing set {target_list:?} but no \
-                 band was produced; an empty forcing block for a document that \
-                 reads forcing is refused rather than emitted"
-            )));
         }
     }
     Ok(entries)

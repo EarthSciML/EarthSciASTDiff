@@ -34,7 +34,8 @@ pub use jacobian::{
     JacEntry, Wrt,
 };
 pub use numeric::{
-    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, vjp, vjp_forcing,
+    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, prepare_jacobian, vjp,
+    vjp_forcing, JacobianEvaluator,
 };
 pub use program::{
     BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram, StorageScalar,

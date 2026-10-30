@@ -192,7 +192,8 @@ EarthSciAST implementation and is gated by the same goldens.
       `wrt: "parameters"` instead of being dropped at assembly. Blocks carry
       their `columns` (the canonical column ordinal) and a model's
       `"jacobians"` entry may be an array of blocks. `vjp_forcing!` applies
-      the transposed bands as a scatter-add into buffer-shaped accumulators.
+      the transposed bands as a scatter-add into buffer-shaped accumulators
+      (Python and Rust: `prepare_jacobian` once, then `vjp_forcing` per stage).
       Pinned by `forcing_bracket.{forcing,parameters}.*` goldens.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`

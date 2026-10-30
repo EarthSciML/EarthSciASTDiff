@@ -152,7 +152,9 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
-        "julia": "JacobianEvaluator"
+        "julia": "JacobianEvaluator",
+        "python": "JacobianEvaluator",
+        "rust": "JacobianEvaluator"
       }
     },
     {
@@ -217,7 +219,9 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "prepare_jacobian"
+        "julia": "prepare_jacobian",
+        "python": "prepare_jacobian",
+        "rust": "prepare_jacobian"
       }
     },
     {

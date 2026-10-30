@@ -10,7 +10,8 @@ use earthsci_ast::EsmFile;
 use earthsci_astdiff::{
     assemble_jacobian, assemble_jacobian_with_forcing, column_names, forcing_names, jacobian_bands,
     jacobian_bands_with_forcing, jacobian_block, jacobian_blocks, jacobian_columns,
-    parse_jacobian_blocks, stable_json, sysview, vjp, vjp_forcing, Wrt,
+    parse_jacobian_block, parse_jacobian_blocks, prepare_jacobian, stable_json, sysview, vjp,
+    vjp_forcing, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -280,8 +281,20 @@ fn refused_rather_than_silently_wrong() {
     let err =
         assemble_jacobian_with_forcing(&past, None, Wrt::Forcing, Some(&f), &env).unwrap_err();
     assert!(err.0.contains("no ghost skip"), "{}", err.0);
-    // the same read on the parameters axis (F is not data-fed here)
-    assert!(assemble_jacobian(&past, None, Wrt::Parameters, &env).is_err());
+    // the same read on the parameters axis (F is not data-fed here) is a
+    // ghost read, as on the state axis: i = 4 reads F[1,6]. F's scalar
+    // default is broadcast over its shape.
+    let p = assemble_jacobian(&past, None, Wrt::Parameters, &env).unwrap();
+    let keys: Vec<(String, String)> = p.keys().cloned().collect();
+    assert_eq!(
+        keys,
+        (1..=3)
+            .map(|i| (format!("c[{i}]"), format!("F[1,{}]", i + 2)))
+            .collect::<Vec<_>>()
+    );
+    for (i, c) in [0.1, 0.2, 0.3].iter().enumerate() {
+        assert_eq!(p[&keys[i]], *c);
+    }
     assert_eq!(
         assemble_jacobian_with_forcing(&ok, None, Wrt::Forcing, Some(&f), &env)
             .unwrap()
@@ -302,7 +315,7 @@ fn refused_rather_than_silently_wrong() {
             .len(),
         3
     );
-    // reads forcing, yields no band: refused, never an empty block
+    // reads forcing only where the derivative is 0: an empty block, no error
     let flr = bracket_doc(
         op(
             "*",
@@ -313,8 +326,27 @@ fn refused_rather_than_silently_wrong() {
         ),
         json!({}),
     );
-    let err = jacobian_bands_with_forcing(&flr, None, Wrt::Forcing, Some(&f)).unwrap_err();
-    assert!(err.0.contains("no band was produced"), "{}", err.0);
+    assert!(
+        jacobian_bands_with_forcing(&flr, None, Wrt::Forcing, Some(&f))
+            .unwrap()
+            .is_empty()
+    );
+    let cond = bracket_doc(
+        op(
+            "ifelse",
+            &[
+                op(">", &[ix("F", &[json!(1), json!("i")]), json!(0)]),
+                op("*", &[json!(-1), ix("c", &[json!("i")])]),
+                json!(0),
+            ],
+        ),
+        json!({}),
+    );
+    assert!(
+        jacobian_bands_with_forcing(&cond, None, Wrt::Forcing, Some(&f))
+            .unwrap()
+            .is_empty()
+    );
     // a model that does not read the forcing set at all has an empty block
     let none = bracket_doc(op("*", &[json!(-1), ix("c", &[json!("i")])]), json!({}));
     assert!(
@@ -322,4 +354,87 @@ fn refused_rather_than_silently_wrong() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn array_parameter_defaults_broadcast_or_zero_fill() {
+    // `K` carries a scalar default over shape [4], `Z` none at all: both
+    // evaluate (0.5 and 0.0 per cell), as in the Python binding.
+    let body = op(
+        "+",
+        &[
+            op("*", &[ix("K", &[json!("i")]), ix("c", &[json!("i")])]),
+            op("*", &[ix("Z", &[json!("i")]), ix("c", &[json!("i")])]),
+        ],
+    );
+    let file = bracket_doc(
+        body,
+        json!({
+            "K": {"type": "parameter", "shape": ["x"], "default": 0.5},
+            "Z": {"type": "parameter", "shape": ["x"]},
+        }),
+    );
+    let env = earthsci_astdiff::numeric::Env {
+        states: [("c".to_string(), json!([0.1, 0.2, 0.3, 0.4]))].into(),
+        params: HashMap::new(),
+        t: 0.0,
+    };
+    let j = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
+    for i in 1..=4 {
+        assert_eq!(j[&(format!("c[{i}]"), format!("c[{i}]"))], 0.5);
+    }
+    let p = assemble_jacobian(&file, None, Wrt::Parameters, &env).unwrap();
+    assert_eq!(p[&("c[2]".to_string(), "K[2]".to_string())], 0.2);
+    assert_eq!(p[&("c[3]".to_string(), "Z[3]".to_string())], 0.3);
+}
+
+#[test]
+fn prepared_evaluator_is_reused() {
+    let file = load("forcing_bracket");
+    let (env, _) = jvals_env("forcing_bracket.forcing");
+    let jac = prepare_jacobian(&file, None, Wrt::Forcing, None).unwrap();
+    assert_eq!(
+        jac.colnames,
+        column_names(
+            &jacobian_columns(&sysview(&file, None).unwrap(), Wrt::Forcing, None).unwrap()
+        )
+    );
+    assert_eq!(
+        jac.values(&env).unwrap(),
+        assemble_jacobian(&file, None, Wrt::Forcing, &env).unwrap()
+    );
+    let lambda: HashMap<String, f64> = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
+        .iter()
+        .enumerate()
+        .map(|(k, r)| (r.to_string(), 0.5 + k as f64))
+        .collect();
+    for t in [0.0, 0.37] {
+        let env = earthsci_astdiff::numeric::Env { t, ..env.clone() };
+        let mut want = vec![0.0; jac.colnames.len()];
+        vjp(&file, None, Wrt::Forcing, None, &env, &lambda, &mut want).unwrap();
+        let mut got = vec![0.0; jac.colnames.len()];
+        jac.vjp(&env, &lambda, &mut got).unwrap();
+        assert_eq!(got, want);
+        let mut acc: HashMap<String, Vec<f64>> = [
+            ("F".to_string(), vec![0.0; 10]),
+            ("G".to_string(), vec![0.0; 6]),
+        ]
+        .into();
+        jac.vjp_forcing(&env, &lambda, &mut acc).unwrap();
+        let flat: Vec<f64> = acc["F"].iter().chain(&acc["G"]).copied().collect();
+        assert_eq!(flat, want);
+    }
+    // only on the forcing axis
+    let jp = prepare_jacobian(&file, None, Wrt::Parameters, None).unwrap();
+    assert!(jp.vjp_forcing(&env, &lambda, &mut HashMap::new()).is_err());
+}
+
+#[test]
+fn a_block_without_wrt_is_refused() {
+    let file = load("forcing_bracket");
+    let mut block = jacobian_block(&file, None, Wrt::Forcing, true, 12).unwrap();
+    assert!(parse_jacobian_block(&block).is_ok());
+    block.as_object_mut().unwrap().remove("wrt");
+    let err = parse_jacobian_block(&block).unwrap_err();
+    assert!(err.0.contains("without `wrt`"), "{}", err.0);
 }
