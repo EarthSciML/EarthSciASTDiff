@@ -1,10 +1,9 @@
 """Band-calculus structure tests over the shared fixtures (fixture-level
 mirror of the Julia clip/contracted testsets)."""
+
 import earthsci_ast as ea
 import pytest
-
-from earthsci_astdiff import (BandError, jacobian_bands, jacobian_pattern,
-                              skey, stable_json)
+from earthsci_astdiff import BandError, jacobian_bands, jacobian_pattern, skey, stable_json
 from earthsci_astdiff.expr_helpers import ser_expr
 
 
@@ -40,15 +39,25 @@ def test_guards(valid_dir):
         "esm": "1.1.0",
         "metadata": {"name": "G"},
         "index_sets": {"x": {"kind": "interval", "size": 3}},
-        "models": {"G": {
-            "variables": {"u": {"type": "unknown", "shape": ["x"],
-                                "default": 0.5}},
-            "equations": [{
-                "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
-                "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
-                        "reduce": "min",
-                        "ranges": {"i": [1, 3], "j": [1, 3]},
-                        "expr": {"op": "index", "args": ["u", "j"]}}}]}}}
+        "models": {
+            "G": {
+                "variables": {"u": {"type": "unknown", "shape": ["x"], "default": 0.5}},
+                "equations": [
+                    {
+                        "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+                        "rhs": {
+                            "op": "faq",
+                            "args": [],
+                            "output_idx": ["i"],
+                            "reduce": "min",
+                            "ranges": {"i": [1, 3], "j": [1, 3]},
+                            "expr": {"op": "index", "args": ["u", "j"]},
+                        },
+                    }
+                ],
+            }
+        },
+    }
     file = ea.load_document(doc)
     with pytest.raises(BandError):
         jacobian_bands(file, "G")

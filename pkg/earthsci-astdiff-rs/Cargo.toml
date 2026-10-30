@@ -13,3 +13,9 @@ description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symb
 earthsci-ast = "0.6"
 indexmap = "2"
 serde_json = "1"
+
+[lints.clippy]
+# The sparsity and factorization code indexes matrices the way the math is
+# written (`p[i][j] = p[i][j] || p[k][j]` reads two rows at once), which an
+# iterator rewrite would obscure.
+needless_range_loop = "allow"

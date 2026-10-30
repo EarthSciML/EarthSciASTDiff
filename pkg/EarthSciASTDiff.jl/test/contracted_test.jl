@@ -39,17 +39,17 @@ using EarthSciASTDiff: Band, skey
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.7))
     res = assemble_jacobian(file; u = u)
     Jad = ad_jacobian(f!, u, p0, 0.0)
-    @test Matrix(res.J) ≈ Matrix(Jad) rtol = 1e-12
+    @test Matrix(res.J) ≈ Matrix(Jad) rtol = 1.0e-12
     @test res.pattern == (Jad .!= 0)
     # row 3 of z gathers column 5 twice: the two contracted points accumulate
     vm = Dict(n => i for (i, n) in enumerate(res.rownames))
-    @test res.J[vm["z[3]"], vm["u[5]"]] ≈ (0.3 + 0.1 * 1) + (0.3 + 0.1 * 2) rtol = 1e-14
+    @test res.J[vm["z[3]"], vm["u[5]"]] ≈ (0.3 + 0.1 * 1) + (0.3 + 0.1 * 2) rtol = 1.0e-14
     @test res.structure == :general
 
     # eval-CSE on/off agree (hoisting must bind contracted names too)
     jp = prepare_jacobian(file; eval_cse = false)
     Jp = copy(jp.prototype); jp(Jp, u, p0, 0.0)
-    @test Matrix(res.J) ≈ Matrix(Jp) rtol = 1e-14
+    @test Matrix(res.J) ≈ Matrix(Jp) rtol = 1.0e-14
 
     # serialize → parse round-trip carries the contracted dims
     doc = jacobian_document(file, "ContractedOps")
@@ -62,27 +62,49 @@ using EarthSciASTDiff: Band, skey
 end
 
 @testset "contracted-index guards" begin
-    mk(rhs) = EarthSciAST.load_document(Dict{String,Any}("esm" => "1.1.0",
-        "metadata" => Dict{String,Any}("name" => "G"),
-        "index_sets" => Dict{String,Any}(
-            "x" => Dict{String,Any}("kind" => "interval", "size" => 3)),
-        "models" => Dict{String,Any}("G" => Dict{String,Any}(
-            "variables" => Dict{String,Any}(
-                "u" => Dict{String,Any}("type" => "unknown", "shape" => Any["x"],
-                                        "default" => 0.5)),
-            "equations" => Any[Dict{String,Any}(
-                "lhs" => Dict{String,Any}("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                "rhs" => rhs)]))))
-    agg(; kw...) = Dict{String,Any}("op" => "faq", "args" => Any[],
+    mk(rhs) = EarthSciAST.load_document(
+        Dict{String, Any}(
+            "esm" => "1.1.0",
+            "metadata" => Dict{String, Any}("name" => "G"),
+            "index_sets" => Dict{String, Any}(
+                "x" => Dict{String, Any}("kind" => "interval", "size" => 3)
+            ),
+            "models" => Dict{String, Any}(
+                "G" => Dict{String, Any}(
+                    "variables" => Dict{String, Any}(
+                        "u" => Dict{String, Any}(
+                            "type" => "unknown", "shape" => Any["x"],
+                            "default" => 0.5
+                        )
+                    ),
+                    "equations" => Any[
+                        Dict{String, Any}(
+                            "lhs" => Dict{String, Any}("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                            "rhs" => rhs
+                        ),
+                    ]
+                )
+            )
+        )
+    )
+    agg(; kw...) = Dict{String, Any}(
+        "op" => "faq", "args" => Any[],
         "output_idx" => Any["i"],
-        "ranges" => Dict{String,Any}("i" => Any[1, 3], "j" => Any[1, 3]),
-        "expr" => Dict{String,Any}("op" => "index", "args" => Any["u", "j"]),
-        (String(k) => v for (k, v) in kw)...)
+        "ranges" => Dict{String, Any}("i" => Any[1, 3], "j" => Any[1, 3]),
+        "expr" => Dict{String, Any}("op" => "index", "args" => Any["u", "j"]),
+        (String(k) => v for (k, v) in kw)...
+    )
     # non-smooth semiring reductions have no bands
     @test_throws EarthSciASTDiff.BandError jacobian_bands(
-        mk(agg(reduce = "min")), "G")
+        mk(agg(reduce = "min")), "G"
+    )
     # a filter gate cannot be silently dropped from the derivative
     @test_throws EarthSciASTDiff.BandError jacobian_bands(
-        mk(agg(reduce = "+",
-               filter = Dict{String,Any}("op" => "<", "args" => Any["j", 3]))), "G")
+        mk(
+            agg(
+                reduce = "+",
+                filter = Dict{String, Any}("op" => "<", "args" => Any["j", 3])
+            )
+        ), "G"
+    )
 end

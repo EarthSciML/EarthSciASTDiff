@@ -6,20 +6,24 @@
 # `lower`/`upper`, … are never missed.
 
 lit(x::Integer) = IntExpr(Int64(x))
-lit(x::Real)    = NumExpr(Float64(x))
+lit(x::Real) = NumExpr(Float64(x))
 op(o, args...; kw...) = OpExpr(String(o), ASTExpr[args...]; kw...)
 
 iszero_lit(e) = (e isa NumExpr && e.value == 0.0) || (e isa IntExpr && e.value == 0)
-isone_lit(e)  = (e isa NumExpr && e.value == 1.0) || (e isa IntExpr && e.value == 1)
+isone_lit(e) = (e isa NumExpr && e.value == 1.0) || (e isa IntExpr && e.value == 1)
 
 "n-ary `+` that drops literal zeros and collapses to its single argument."
-add(args...) = (a = filter(!iszero_lit, collect(ASTExpr, args));
-                isempty(a) ? lit(0) : length(a) == 1 ? a[1] : op("+", a...))
+add(args...) = (
+    a = filter(!iszero_lit, collect(ASTExpr, args));
+    isempty(a) ? lit(0) : length(a) == 1 ? a[1] : op("+", a...)
+)
 
 "n-ary `*` that short-circuits on a literal zero and drops literal ones."
 mul(args...) = any(iszero_lit, args) ? lit(0) :
-               (a = filter(!isone_lit, collect(ASTExpr, args));
-                isempty(a) ? lit(1) : length(a) == 1 ? a[1] : op("*", a...))
+    (
+        a = filter(!isone_lit, collect(ASTExpr, args));
+        isempty(a) ? lit(1) : length(a) == 1 ? a[1] : op("*", a...)
+    )
 
 neg(x) = iszero_lit(x) ? lit(0) : op("-", x)
 
@@ -56,7 +60,7 @@ function Site(e::ASTExpr)
     if e isa VarExpr
         return Site(e, ckey(e), e.name, -1)
     elseif e isa OpExpr && e.op == "index" && !isempty(e.args) &&
-           e.args[1] isa VarExpr
+            e.args[1] isa VarExpr
         return Site(e, ckey(e), e.args[1].name, length(e.args) - 1)
     end
     return Site(e, ckey(e), "", -2)
@@ -80,7 +84,7 @@ object, so key equality already implies the prefilter's conditions.
 function is_site(e::ASTExpr, s::Site)::Bool
     if s.rank == -2                                 # unrecognized site shape:
         return (e isa VarExpr || (e isa OpExpr && e.op == "index")) &&
-               ckey(e) == s.key                     # plain key compare
+            ckey(e) == s.key                     # plain key compare
     end
     if e isa VarExpr
         return s.rank == -1 && e.name == s.name
@@ -101,7 +105,7 @@ numeric zero test: `x - x` occurs, both `ifelse` branches occur. False means
 the derivative is a structural zero and differentiation short-circuits
 (UFL-style `Zero` propagation).
 """
-occurs(e::ASTExpr, s::Site)::Bool = occurs(e, s, IdDict{OpExpr,Bool}())
+occurs(e::ASTExpr, s::Site)::Bool = occurs(e, s, IdDict{OpExpr, Bool}())
 
 """
     occurs(e, s::Site, memo::IdDict{OpExpr,Bool}) -> Bool
@@ -117,7 +121,7 @@ ReSEACT system's `jacobian_bands` time. Threading ONE memo through a whole `dsca
 call decides each node once, Θ(n) per site. Passing a fresh memo is exactly
 the old behavior, only cached within the one scan.
 """
-function occurs(e::ASTExpr, s::Site, memo::IdDict{OpExpr,Bool})::Bool
+function occurs(e::ASTExpr, s::Site, memo::IdDict{OpExpr, Bool})::Bool
     is_site(e, s) && return true
     e isa OpExpr || return false
     cached = get(memo, e, nothing)
@@ -137,4 +141,4 @@ occurs_var(e::ASTExpr, v::String) = v in free_variables(e)
 # folded, hence constant) expression. Post-load documents carry only
 # closed-form bounds; anything else is an authoring error surfaced here.
 _region_bound(b) = b isa ASTExpr ?
-    Int(round(evaluate_expr(b, Dict{String,Float64}()))) : Int(b)
+    Int(round(evaluate_expr(b, Dict{String, Float64}()))) : Int(b)

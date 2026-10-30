@@ -2,16 +2,22 @@
 (tests/goldens/*.jvals.json): the (row, col) key set must match EXACTLY and
 every value to 1e-10 relative (bit-equality across runtimes is unrealistic —
 evaluation order differs)."""
+
 import json
 
 import earthsci_ast as ea
 import pytest
-
 from earthsci_astdiff import assemble_jacobian
 
-NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv", "contracting_observed",
-         "tgrad_photolysis")
+NAMES = (
+    "bd_chem",
+    "adv_interior",
+    "contracted_ops",
+    "flux_form_adv",
+    "minmod_adv",
+    "contracting_observed",
+    "tgrad_photolysis",
+)
 
 
 def _cells_to_arrays(u: dict):
@@ -27,23 +33,31 @@ def _cells_to_arrays(u: dict):
         for c in cells[:-1]:
             cur = cur.setdefault(c, {})
         cur[cells[-1]] = v
+
     def to_list(d):
         if not isinstance(d, dict):
             return d
         n = max(d)
         return [to_list(d.get(i)) for i in range(1, n + 1)]
+
     return {k: to_list(v) for k, v in arrays.items()}
 
 
-@pytest.mark.parametrize("name,wrt", [(n, "states") for n in NAMES] +
-                         [("tgrad_photolysis", "time")])
+@pytest.mark.parametrize(
+    "name,wrt", [(n, "states") for n in NAMES] + [("tgrad_photolysis", "time")]
+)
 def test_values_golden(name, wrt, golden_dir, valid_dir):
     tag = f"{name}.time" if wrt == "time" else name
     g = json.loads((golden_dir / f"{tag}.jvals.json").read_text())
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
-    got = assemble_jacobian(file, next(iter(file.models)), wrt=wrt,
-                            states=_cells_to_arrays(g["u"]),
-                            params=g["params"], t=g["t"])
+    got = assemble_jacobian(
+        file,
+        next(iter(file.models)),
+        wrt=wrt,
+        states=_cells_to_arrays(g["u"]),
+        params=g["params"],
+        t=g["t"],
+    )
     want = {(r, c): v for r, c, v in g["entries"]}
     assert set(got) == set(want)
     for k, v in want.items():

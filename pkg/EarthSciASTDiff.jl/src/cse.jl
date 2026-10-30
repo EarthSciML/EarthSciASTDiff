@@ -25,12 +25,12 @@
 # quadratic full-subtree serialization.
 
 struct _Intern
-    ids::Dict{String,Int}    # shell key → id
+    ids::Dict{String, Int}    # shell key → id
     reps::Vector{ASTExpr}    # representative subtree per id
     nnodes::Vector{Int}      # full subtree node count per id
     counts::Vector{Int}      # total occurrences over everything interned
 end
-_Intern() = _Intern(Dict{String,Int}(), ASTExpr[], Int[], Int[])
+_Intern() = _Intern(Dict{String, Int}(), ASTExpr[], Int[], Int[])
 
 _placeholder(id::Int) = VarExpr("__cse⟦$id⟧")
 
@@ -98,8 +98,10 @@ candidate remains; the result is a reference DAG (acyclic by strict
 containment). Deterministic: ties between equally-sized candidates break by
 interning (first-encounter) order over the given expression order.
 """
-function cse_templates(exprs::Vector{ASTExpr}; min_nodes::Int = 12,
-                       prefix::String = "jt")
+function cse_templates(
+        exprs::Vector{ASTExpr}; min_nodes::Int = 12,
+        prefix::String = "jt"
+    )
     work = ASTExpr[exprs...]
     nin = length(work)
     names = String[]
@@ -125,8 +127,9 @@ function cse_templates(exprs::Vector{ASTExpr}; min_nodes::Int = 12,
         work = ASTExpr[_replace_id(e, it, best, repl)[1] for e in work]
         push!(work, body)   # the body joins the pool: later rounds may factor it
     end
-    templates = OrderedDict{String,ASTExpr}(
-        n => work[nin + k] for (k, n) in enumerate(names))
+    templates = OrderedDict{String, ASTExpr}(
+        n => work[nin + k] for (k, n) in enumerate(names)
+    )
     return templates, work[1:nin]
 end
 
@@ -138,12 +141,15 @@ Inverse of [`cse_templates`](@ref): substitute every zero-parameter
 (name → body `ASTExpr`), recursively (the registry is a DAG). Throws
 `ArgumentError` on a reference to a name the registry does not contain.
 """
-function expand_templates(e::ASTExpr, registry::AbstractDict{String,ASTExpr})::ASTExpr
+function expand_templates(e::ASTExpr, registry::AbstractDict{String, ASTExpr})::ASTExpr
     e isa OpExpr || return e
     if e.op == "apply_expression_template"
-        e.name !== nothing && haskey(registry, e.name) || throw(ArgumentError(
-            "apply_expression_template reference `$(e.name)` not in the block's " *
-            "expression_templates"))
+        e.name !== nothing && haskey(registry, e.name) || throw(
+            ArgumentError(
+                "apply_expression_template reference `$(e.name)` not in the block's " *
+                    "expression_templates"
+            )
+        )
         return expand_templates(registry[e.name], registry)
     end
     return map_children(x -> expand_templates(x, registry), e)

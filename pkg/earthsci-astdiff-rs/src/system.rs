@@ -4,8 +4,9 @@
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
-use earthsci_ast::{free_variables, Equation, EsmFile, Expr, ExpressionNode, Model,
-                   ModelVariable, VariableType};
+use earthsci_ast::{
+    free_variables, Equation, EsmFile, Expr, ExpressionNode, Model, ModelVariable, VariableType,
+};
 use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
@@ -19,7 +20,8 @@ pub struct SysView<'a> {
 }
 
 fn models(file: &EsmFile) -> Result<&IndexMap<String, Model>, BandError> {
-    file.models.as_ref()
+    file.models
+        .as_ref()
         .ok_or_else(|| BandError("document has no models".into()))
 }
 
@@ -27,20 +29,22 @@ pub fn only_model(file: &EsmFile) -> Result<&String, BandError> {
     let m = models(file)?;
     if m.len() != 1 {
         return Err(BandError(format!(
-            "document has {} models; pass model_name", m.len())));
+            "document has {} models; pass model_name",
+            m.len()
+        )));
     }
     Ok(m.keys().next().unwrap())
 }
 
 /// View a model of `file` for differentiation. `model_name` may be `None`
 /// when the file has exactly one model.
-pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>)
-                   -> Result<SysView<'a>, BandError> {
+pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysView<'a>, BandError> {
     let name = match model_name {
         Some(n) => n.to_string(),
         None => only_model(file)?.clone(),
     };
-    let model: &Model = models(file)?.get(&name)
+    let model: &Model = models(file)?
+        .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
     Ok(SysView {
         variables: &model.variables,
@@ -59,15 +63,18 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
     for (n, var) in sv.variables {
         if let Some(shape) = &var.shape {
             if !shape.is_empty() {
-                let dims: Result<Vec<i64>, BandError> = shape.iter().map(|x| {
-                    if let Ok(i) = x.parse::<i64>() {
-                        Ok(i)
-                    } else {
-                        ctx.index_sets.get(x).copied().ok_or_else(|| {
-                            BandError(format!("unknown index set `{x}` in shape"))
-                        })
-                    }
-                }).collect();
+                let dims: Result<Vec<i64>, BandError> = shape
+                    .iter()
+                    .map(|x| {
+                        if let Ok(i) = x.parse::<i64>() {
+                            Ok(i)
+                        } else {
+                            ctx.index_sets.get(x).copied().ok_or_else(|| {
+                                BandError(format!("unknown index set `{x}` in shape"))
+                            })
+                        }
+                    })
+                    .collect();
                 ctx.shapes.insert(n.clone(), dims?);
             }
         }
@@ -86,16 +93,16 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
 /// tag instead silently classifies every array state equation as
 /// non-differential (zero bands, no error) — the reference's faq_tag_test.jl.
 pub fn lhs_state(eq: &Equation) -> Option<String> {
-    let Expr::Operator(l) = &eq.lhs else { return None };
+    let Expr::Operator(l) = &eq.lhs else {
+        return None;
+    };
     if l.op == "faq" {
-        if let Some(body) = l.expr.as_deref() {
-            if let Expr::Operator(d) = body {
-                if d.op == "D" {
-                    if let Some(Expr::Operator(ix)) = d.args.first() {
-                        if ix.op == "index" {
-                            if let Some(Expr::Variable(u)) = ix.args.first() {
-                                return Some(u.clone());
-                            }
+        if let Some(Expr::Operator(d)) = l.expr.as_deref() {
+            if d.op == "D" {
+                if let Some(Expr::Operator(ix)) = d.args.first() {
+                    if ix.op == "index" {
+                        if let Some(Expr::Variable(u)) = ix.args.first() {
+                            return Some(u.clone());
                         }
                     }
                 }
@@ -115,15 +122,18 @@ pub fn lhs_state(eq: &Equation) -> Option<String> {
 /// ones [`lhs_state`] does not recognize (`D(index(u, 1))`), which no pass
 /// supports and none may silently skip.
 pub fn is_derivative(eq: &Equation) -> bool {
-    let Expr::Operator(l) = &eq.lhs else { return false };
-    l.op == "D" || (l.op == "faq"
-        && matches!(l.expr.as_deref(), Some(Expr::Operator(d)) if d.op == "D"))
+    let Expr::Operator(l) = &eq.lhs else {
+        return false;
+    };
+    l.op == "D"
+        || (l.op == "faq" && matches!(l.expr.as_deref(), Some(Expr::Operator(d)) if d.op == "D"))
 }
 
 /// The variable a non-derivative equation defines: a bare LHS (`y ~ …`) or
 /// an indexed one (`y[i…] ~ …`, lifted or pinned).
 pub(crate) fn defined_name(eq: &Equation) -> Option<String> {
-    lhs_definition(eq).cloned()
+    lhs_definition(eq)
+        .cloned()
         .or_else(|| indexed_definition(eq).map(|(n, _)| n.clone()))
 }
 
@@ -143,7 +153,9 @@ pub fn lhs_definition(eq: &Equation) -> Option<&String> {
 /// whose subscripts are not exactly the output indices (a partial or pinned
 /// definition such as `y[1] ~ …`, not rewritable).
 fn indexed_definition(eq: &Equation) -> Option<(&String, Option<Expr>)> {
-    let Expr::Operator(l) = &eq.lhs else { return None };
+    let Expr::Operator(l) = &eq.lhs else {
+        return None;
+    };
     let (faq, ix) = if l.op == "faq" {
         match l.expr.as_deref() {
             Some(Expr::Operator(ix)) if ix.op == "index" => (Some(l), ix),
@@ -155,23 +167,33 @@ fn indexed_definition(eq: &Equation) -> Option<(&String, Option<Expr>)> {
     if ix.op != "index" {
         return None;
     }
-    let Some(Expr::Variable(name)) = ix.args.first() else { return None };
-    let sub: Option<Vec<String>> = ix.args[1..].iter().map(|x| match x {
-        Expr::Variable(n) => Some(n.clone()),
-        _ => None,
-    }).collect();
-    let (Some(faq), Some(sub)) = (faq, sub) else { return Some((name, None)) };
+    let Some(Expr::Variable(name)) = ix.args.first() else {
+        return None;
+    };
+    let sub: Option<Vec<String>> = ix.args[1..]
+        .iter()
+        .map(|x| match x {
+            Expr::Variable(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    let (Some(faq), Some(sub)) = (faq, sub) else {
+        return Some((name, None));
+    };
     let distinct = sub.iter().collect::<HashSet<_>>().len() == sub.len();
     if faq.output_idx.as_ref() != Some(&sub) || !distinct {
         return Some((name, None));
     }
-    Some((name, Some(Expr::operator(ExpressionNode {
-        op: "faq".into(),
-        output_idx: Some(sub),
-        expr: Some(Box::new(eq.rhs.clone())),
-        ranges: faq.ranges.clone(),
-        ..Default::default()
-    }))))
+    Some((
+        name,
+        Some(Expr::operator(ExpressionNode {
+            op: "faq".into(),
+            output_idx: Some(sub),
+            expr: Some(Box::new(eq.rhs.clone())),
+            ranges: faq.ranges.clone(),
+            ..Default::default()
+        })),
+    ))
 }
 
 /// Observed-variable definitions, for inlining. esm 1.0.0 removed the
@@ -182,8 +204,7 @@ fn indexed_definition(eq: &Equation) -> Option<(&String, Option<Expr>)> {
 /// First definition wins; an arrayed observed that is defined piecewise or
 /// partially is rejected rather than left to become a solver slot.
 pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
-    let states: HashSet<String> = sv.equations.iter()
-        .filter_map(lhs_state).collect();
+    let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
     let mut defs = HashMap::new();
     let mut indexed: HashSet<String> = HashSet::new();
     for eq in sv.equations {
@@ -195,7 +216,9 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
                 None => continue,
             },
         };
-        let unknown = sv.variables.get(n)
+        let unknown = sv
+            .variables
+            .get(n)
             .is_some_and(|v| v.var_type == VariableType::Unknown);
         if states.contains(n) || !unknown {
             continue;
@@ -204,13 +227,15 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
             return Err(BandError(format!(
                 "arrayed observed `{n}`: defining LHS subscripts must be the \
                  distinct output indices (partial definitions are not \
-                 supported)")));
+                 supported)"
+            )));
         };
         if defs.contains_key(n) {
             if indexed.contains(n) || bare.is_none() {
                 return Err(BandError(format!(
                     "arrayed observed `{n}` is defined by more than one \
-                     equation (piecewise definitions are not supported)")));
+                     equation (piecewise definitions are not supported)"
+                )));
             }
             continue;
         }
@@ -226,10 +251,12 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
 /// ones `obs` ([`observed_defs`]; the 1.0.0 replacement for the 0.x `state`
 /// type; an algebraic unknown still counts as a slot). Sorted.
 pub fn view_states(sv: &SysView, obs: &HashMap<String, Expr>) -> Vec<String> {
-    let mut out: Vec<String> = sv.variables.iter()
-        .filter(|(n, v)| v.var_type == VariableType::Unknown
-                && !obs.contains_key(*n))
-        .map(|(n, _)| n.clone()).collect();
+    let mut out: Vec<String> = sv
+        .variables
+        .iter()
+        .filter(|(n, v)| v.var_type == VariableType::Unknown && !obs.contains_key(*n))
+        .map(|(n, _)| n.clone())
+        .collect();
     out.sort();
     out
 }
@@ -271,8 +298,11 @@ fn index_arg_names(acc: &mut HashSet<String>, e: &Expr) {
 /// subscript, whose value a column index needs at build time. Joint fixpoint.
 /// The seed MUST be this `wrt`'s targets: an emissions field is
 /// state-independent but not parameter-independent.
-pub fn inlinable_observed(obs: &HashMap<String, Expr>, equations: &[Equation],
-                          targets: &HashSet<String>) -> HashMap<String, Expr> {
+pub fn inlinable_observed(
+    obs: &HashMap<String, Expr>,
+    equations: &[Equation],
+    targets: &HashSet<String>,
+) -> HashMap<String, Expr> {
     let mut readers: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut work: Vec<&str> = Vec::new();
     for (n, e) in obs {
@@ -287,7 +317,8 @@ pub fn inlinable_observed(obs: &HashMap<String, Expr>, equations: &[Equation],
         }
     }
     let mut keep: HashSet<&str> = work.iter().copied().collect();
-    while let Some(m) = work.pop() {                  // (1) reader closure
+    while let Some(m) = work.pop() {
+        // (1) reader closure
         for &n in readers.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
             if keep.insert(n) {
                 work.push(n);
@@ -305,13 +336,17 @@ pub fn inlinable_observed(obs: &HashMap<String, Expr>, equations: &[Equation],
         for n in &added {
             index_arg_names(&mut acc, &obs[*n]);
         }
-        added = acc.iter()
+        added = acc
+            .iter()
             .filter_map(|n| obs.get_key_value(n).map(|(k, _)| k.as_str()))
-            .filter(|n| !keep.contains(n)).collect();
+            .filter(|n| !keep.contains(n))
+            .collect();
         if added.is_empty() {
             break;
         }
         keep.extend(added.iter().copied());
     }
-    keep.into_iter().map(|n| (n.to_string(), obs[n].clone())).collect()
+    keep.into_iter()
+        .map(|n| (n.to_string(), obs[n].clone()))
+        .collect()
 }

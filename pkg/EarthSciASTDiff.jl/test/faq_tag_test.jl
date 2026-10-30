@@ -20,28 +20,39 @@
 using EarthSciASTDiff: lhs_state, view_states
 
 @testset "faq tag: pointwise-lifted LHS is an array state equation" begin
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     # The shape `flatten` emits: faq{ output_idx: [i], expr: D(index(u, i)) }.
     lifted = EarthSciAST.expression_from_json(
-        O("op" => "faq", "args" => Any[], "output_idx" => Any["i"],
-          "ranges" => O("i" => Any[1, 4]),
-          "expr" => O("op" => "D", "wrt" => "t",
-                      "args" => Any[O("op" => "index", "args" => Any["u", "i"])])))
+        O(
+            "op" => "faq", "args" => Any[], "output_idx" => Any["i"],
+            "ranges" => O("i" => Any[1, 4]),
+            "expr" => O(
+                "op" => "D", "wrt" => "t",
+                "args" => Any[O("op" => "index", "args" => Any["u", "i"])]
+            )
+        )
+    )
     @test lhs_state((lhs = lifted, rhs = nothing)) == "u"
 
     # The plain scalar LHS still works.
     plain = EarthSciAST.expression_from_json(
-        O("op" => "D", "wrt" => "t", "args" => Any["u"]))
+        O("op" => "D", "wrt" => "t", "args" => Any["u"])
+    )
     @test lhs_state((lhs = plain, rhs = nothing)) == "u"
 
     # The pre-1.1.0 spelling reaching `expression_from_json` directly is
     # normalized to `faq` by EarthSciAST, so it is recognised too — the
     # deprecated-alias path, removed at esm 2.0.0.
     aliased = EarthSciAST.expression_from_json(
-        O("op" => "aggregate", "args" => Any[], "output_idx" => Any["i"],
-          "ranges" => O("i" => Any[1, 4]),
-          "expr" => O("op" => "D", "wrt" => "t",
-                      "args" => Any[O("op" => "index", "args" => Any["u", "i"])])))
+        O(
+            "op" => "aggregate", "args" => Any[], "output_idx" => Any["i"],
+            "ranges" => O("i" => Any[1, 4]),
+            "expr" => O(
+                "op" => "D", "wrt" => "t",
+                "args" => Any[O("op" => "index", "args" => Any["u", "i"])]
+            )
+        )
+    )
     @test aliased.op == "faq"
     @test lhs_state((lhs = aliased, rhs = nothing)) == "u"
 end
@@ -49,8 +60,10 @@ end
 @testset "faq tag: array models differentiate to a NON-EMPTY band set" begin
     # Every fixture whose states are arrays must produce bands. A tag
     # mismatch makes all of these silently empty.
-    for name in ("adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
-                 "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis")
+    for name in (
+            "adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
+            "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis",
+        )
         file = fixture("$name.esm")
         model = first(keys(file.models))
         sv = sysview(file, model)
@@ -62,19 +75,34 @@ end
 end
 
 @testset "faq tag: the deprecated alias differentiates identically" begin
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     body = O("op" => "*", "args" => Any[-0.5, O("op" => "index", "args" => Any["u", "i"])])
-    mk(tag, version) = EarthSciAST.load_document(O(
-        "esm" => version,
-        "metadata" => O("name" => "FaqAlias"),
-        "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
-        "models" => O("FaqAlias" => O(
-            "variables" => O("u" => O("type" => "unknown", "shape" => Any["x"],
-                                      "default" => 1.0)),
-            "equations" => Any[O(
-                "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                "rhs" => O("op" => tag, "args" => Any[], "output_idx" => Any["i"],
-                           "ranges" => O("i" => Any[1, 4]), "expr" => body))]))))
+    mk(tag, version) = EarthSciAST.load_document(
+        O(
+            "esm" => version,
+            "metadata" => O("name" => "FaqAlias"),
+            "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
+            "models" => O(
+                "FaqAlias" => O(
+                    "variables" => O(
+                        "u" => O(
+                            "type" => "unknown", "shape" => Any["x"],
+                            "default" => 1.0
+                        )
+                    ),
+                    "equations" => Any[
+                        O(
+                            "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                            "rhs" => O(
+                                "op" => tag, "args" => Any[], "output_idx" => Any["i"],
+                                "ranges" => O("i" => Any[1, 4]), "expr" => body
+                            )
+                        ),
+                    ]
+                )
+            )
+        )
+    )
 
     new_bands = jacobian_bands(mk("faq", "1.1.0"), "FaqAlias")
     # A 1.0.0 document spelling `aggregate` is LEGAL: that is the pre-1.1.0
@@ -87,7 +115,7 @@ end
     for (a, b) in zip(new_bands, old_bands)
         @test a.u == b.u && a.v == b.v && a.band.rows == b.band.rows
         @test stable_json(EarthSciAST.serialize_expression(a.band.coef)) ==
-              stable_json(EarthSciAST.serialize_expression(b.band.coef))
+            stable_json(EarthSciAST.serialize_expression(b.band.coef))
     end
 end
 
@@ -101,14 +129,16 @@ end
     @test !occursin("\"aggregate\"", stable_json(doc))
     # The draft `"jacobians"` block is not in `esm-schema.json`, so only the
     # model half is loadable; that half is what must survive the floor raise.
-    model_half = Dict{String,Any}(k => v for (k, v) in doc if k != "jacobians")
+    model_half = Dict{String, Any}(k => v for (k, v) in doc if k != "jacobians")
     @test EarthSciAST.load_document(model_half) isa EarthSciAST.EsmFile
 
     # The evaluation model — the document `prepare_jacobian` actually loads —
     # carries `faq` coefficient fields and must load without the version gate
     # firing.
-    ev, names = EarthSciASTDiff._evaluation_document(sysview(file, first(keys(file.models))),
-                                                     jacobian_bands(file, first(keys(file.models))))
+    ev, names = EarthSciASTDiff._evaluation_document(
+        sysview(file, first(keys(file.models))),
+        jacobian_bands(file, first(keys(file.models)))
+    )
     @test VersionNumber(ev["esm"]) >= v"1.1.0"
     @test !isempty(names)
     @test EarthSciAST.load_document(ev) isa EarthSciAST.EsmFile

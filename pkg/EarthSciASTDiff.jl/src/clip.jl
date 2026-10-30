@@ -84,11 +84,11 @@ const _CMP_OPS = ("<", "<=", ">", ">=")
 # integers around the rational root −β/α — record that single flip point
 # (the first i whose truth differs from i−1) as the interval-start cut.
 _cmp_truth(o::String, α::Int, β::Int, i::Int) =
-    o == "<"  ? α * i + β < 0  :
+    o == "<" ? α * i + β < 0 :
     o == "<=" ? α * i + β <= 0 :
-    o == ">"  ? α * i + β > 0  : α * i + β >= 0
+    o == ">" ? α * i + β > 0 : α * i + β >= 0
 
-function _breakpoints!(bp::Dict{String,Set{Int}}, e::ASTExpr, names)
+function _breakpoints!(bp::Dict{String, Set{Int}}, e::ASTExpr, names)
     e isa OpExpr || return
     if e.op in _CMP_OPS && length(e.args) == 2
         n = _sole_name(e, names)
@@ -113,7 +113,7 @@ end
 
 # Truth of `cond` over the box `env` (name → (lo, hi) inclusive), three-valued:
 # true / false when uniform, nothing when it cannot be decided statically.
-function _uniform(cond::ASTExpr, env::Dict{String,Tuple{Int,Int}})
+function _uniform(cond::ASTExpr, env::Dict{String, Tuple{Int, Int}})
     cond isa OpExpr || return nothing
     if cond.op in _CMP_OPS && length(cond.args) == 2
         n = _sole_name(cond, keys(env))
@@ -125,9 +125,9 @@ function _uniform(cond::ASTExpr, env::Dict{String,Tuple{Int,Int}})
         lo, hi = env[n]
         vlo = t[1] * lo + t[2]; vhi = t[1] * hi + t[2]
         a, b = minmax(vlo, vhi)
-        f = cond.op == "<"  ? (x -> x < 0)  :
+        f = cond.op == "<" ? (x -> x < 0) :
             cond.op == "<=" ? (x -> x <= 0) :
-            cond.op == ">"  ? (x -> x > 0)  : (x -> x >= 0)
+            cond.op == ">" ? (x -> x > 0) : (x -> x >= 0)
         return f(a) == f(b) ? f(a) : nothing
     elseif cond.op == "and"
         anynothing = false
@@ -155,7 +155,7 @@ end
 # Collapse every statically-decided `ifelse` in `e` over the box `env`, and
 # fold decided comparisons used as VALUES (`(i >= 2) * x`) to their 1/0
 # literal so `simplify` can absorb them.
-function _decide(e::ASTExpr, env::Dict{String,Tuple{Int,Int}})::ASTExpr
+function _decide(e::ASTExpr, env::Dict{String, Tuple{Int, Int}})::ASTExpr
     e isa OpExpr || return e
     if e.op == "ifelse" && length(e.args) == 3
         u = _uniform(e.args[1], env)
@@ -182,19 +182,19 @@ are emitted in ascending order per dimension (deterministic).
 """
 function clip_regions(body::ASTExpr, ridx, rows)
     names = String[r for r in ridx if r isa String]
-    isempty(names) && return [(collect(Tuple{Int,Int}, rows), body)]
-    bp = Dict{String,Set{Int}}()
+    isempty(names) && return [(collect(Tuple{Int, Int}, rows), body)]
+    bp = Dict{String, Set{Int}}()
     _breakpoints!(bp, body, names)
-    isempty(bp) && return [(collect(Tuple{Int,Int}, rows), body)]
+    isempty(bp) && return [(collect(Tuple{Int, Int}, rows), body)]
 
     # per-dimension subinterval lists (split only dims that have breakpoints)
-    dims = Vector{Vector{Tuple{Int,Int}}}()
-    dimname = Vector{Union{String,Nothing}}()
+    dims = Vector{Vector{Tuple{Int, Int}}}()
+    dimname = Vector{Union{String, Nothing}}()
     for (k, r) in enumerate(ridx)
         lo, hi = rows[k]
         if r isa String && haskey(bp, r)
             cuts = sort!([c for c in bp[r] if lo < c <= hi])
-            ivs = Tuple{Int,Int}[]
+            ivs = Tuple{Int, Int}[]
             a = lo
             for c in cuts
                 push!(ivs, (a, c - 1)); a = c
@@ -206,11 +206,12 @@ function clip_regions(body::ASTExpr, ridx, rows)
         end
     end
 
-    out = Vector{Tuple{Vector{Tuple{Int,Int}},ASTExpr}}()
+    out = Vector{Tuple{Vector{Tuple{Int, Int}}, ASTExpr}}()
     for cell in Iterators.product(dims...)
-        rows2 = collect(Tuple{Int,Int}, cell)
-        env = Dict{String,Tuple{Int,Int}}(
-            dimname[k] => rows2[k] for k in eachindex(rows2) if dimname[k] !== nothing)
+        rows2 = collect(Tuple{Int, Int}, cell)
+        env = Dict{String, Tuple{Int, Int}}(
+            dimname[k] => rows2[k] for k in eachindex(rows2) if dimname[k] !== nothing
+        )
         push!(out, (rows2, _decide(body, env)))
     end
     return out
@@ -250,7 +251,7 @@ serialization beats interning it node by node.)
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
     key(b) = (b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted)
-    buckets = Dict{Any,Vector{Int}}()
+    buckets = Dict{Any, Vector{Int}}()
     for (i, b) in enumerate(bs)
         push!(get!(buckets, key(b), Int[]), i)
     end
@@ -264,7 +265,7 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
             for ai in eachindex(idxs)
                 a = idxs[ai]
                 alive[a] || continue
-                for bi in (ai+1):length(idxs)
+                for bi in (ai + 1):length(idxs)
                     b = idxs[bi]
                     alive[b] || continue
                     ra, rb = out[a].rows, out[b].rows
@@ -274,7 +275,7 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
                         if ra[k] == rb[k]
                             continue
                         elseif d == 0 &&
-                               (ra[k][2] + 1 == rb[k][1] || rb[k][2] + 1 == ra[k][1])
+                                (ra[k][2] + 1 == rb[k][1] || rb[k][2] + 1 == ra[k][1])
                             d = k
                         else
                             ok = false; break
@@ -283,8 +284,10 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
                     (ok && d != 0) || continue
                     lo = min(ra[d][1], rb[d][1]); hi = max(ra[d][2], rb[d][2])
                     rows = copy(ra); rows[d] = (lo, hi)
-                    out[a] = Band(rows, out[a].ridx, out[a].cidx, out[a].coef,
-                                  out[a].contracted)
+                    out[a] = Band(
+                        rows, out[a].ridx, out[a].cidx, out[a].coef,
+                        out[a].contracted
+                    )
                     alive[b] = false
                     changed = true
                 end

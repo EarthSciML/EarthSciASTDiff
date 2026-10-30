@@ -3,20 +3,22 @@
 # Brute-force oracle for lu_fill: simulate structural Gaussian elimination.
 function brute_fill(P0::AbstractMatrix{Bool})
     P = Matrix{Bool}(P0); n = size(P, 1)
-    for k in 1:n, i in (k+1):n
+    for k in 1:n, i in (k + 1):n
         P[i, k] || continue
-        for j in (k+1):n
+        for j in (k + 1):n
             P[i, j] |= P[k, j]
         end
     end
-    P
+    return P
 end
 
 @testset "lu_fill" begin
     for _ in 1:20
         n = rand(3:8)
         P = rand(n, n) .< 0.35
-        for i in 1:n; P[i, i] = true; end        # nonzero diagonal (no pivoting)
+        for i in 1:n
+            P[i, i] = true
+        end        # nonzero diagonal (no pivoting)
         F = lu_fill(P)
         @test Matrix(F) == brute_fill(P)
         @test all(F .>= P)                        # fill only adds entries

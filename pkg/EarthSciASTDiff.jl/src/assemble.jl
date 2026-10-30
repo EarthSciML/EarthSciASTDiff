@@ -7,7 +7,7 @@ _cellname(v::String, cell) = isempty(cell) ? v : "$(v)[$(join(cell, ","))]"
 # `index(const, …)` gather (a `conn[]` connectivity table) is folded here
 # first, because the tree-walk's inline-const branch is a build-time resolve,
 # not a runtime read.
-function _fold_const_gathers(e::ASTExpr, bind::Dict{String,Float64})::ASTExpr
+function _fold_const_gathers(e::ASTExpr, bind::Dict{String, Float64})::ASTExpr
     e isa OpExpr || return e
     if e.op == "index" && e.args[1] isa OpExpr && (e.args[1]::OpExpr).op == "const"
         v = (e.args[1]::OpExpr).value
@@ -18,7 +18,7 @@ function _fold_const_gathers(e::ASTExpr, bind::Dict{String,Float64})::ASTExpr
     end
     return map_children(x -> _fold_const_gathers(x, bind), e)
 end
-_eval_cidx(c::ASTExpr, bind::Dict{String,Float64})::Int =
+_eval_cidx(c::ASTExpr, bind::Dict{String, Float64})::Int =
     Int(round(evaluate_expr(_fold_const_gathers(c, bind), bind)))
 
 # Every point of one band: `f(cell, cc, cidx)` per (row cell, contracted cell),
@@ -28,11 +28,14 @@ function _foreach_point(f, b::Band)
     rowcells = isempty(b.rows) ? [Int[]] :
         [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
     ccells = isempty(b.contracted) ? [Int[]] :
-        [collect(c) for c in
-         Iterators.product(((lo:hi) for (_, lo, hi) in b.contracted)...)]
+        [
+            collect(c) for c in
+            Iterators.product(((lo:hi) for (_, lo, hi) in b.contracted)...)
+        ]
     for cell in rowcells, cc in ccells
-        bind = Dict{String,Float64}(
-            r => Float64(cell[k2]) for (k2, r) in enumerate(b.ridx) if r isa String)
+        bind = Dict{String, Float64}(
+            r => Float64(cell[k2]) for (k2, r) in enumerate(b.ridx) if r isa String
+        )
         for (k2, (n, _, _)) in enumerate(b.contracted)
             bind[n] = Float64(cc[k2])
         end
@@ -43,11 +46,15 @@ end
 
 # Enumerate every (band, row cell) → (row name, col name) pair.
 function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
-    pairs = Vector{Tuple{Int,String,String,String}}()  # (band k, rowname, colname, jname-cell)
+    pairs = Vector{Tuple{Int, String, String, String}}()  # (band k, rowname, colname, jname-cell)
     for (k, en) in enumerate(entries)
         _foreach_point(en.band) do cell, cc, cidx
-            push!(pairs, (k, _cellname(en.u, cell), _cellname(en.v, cidx),
-                          _cellname("J_$k", vcat(cell, cc))))
+            push!(
+                pairs, (
+                    k, _cellname(en.u, cell), _cellname(en.v, cidx),
+                    _cellname("J_$k", vcat(cell, cc)),
+                )
+            )
         end
     end
     return pairs
@@ -61,7 +68,7 @@ function _colmap(vm0, p0, wrt::Symbol)
         return name -> name == "t" ? 1 : 0, 1, ["t"]
     elseif wrt == :states
         return name -> get(vm0, name, 0), length(vm0),
-               first.(sort(collect(vm0), by = last))
+            first.(sort(collect(vm0), by = last))
     else
         pnames = String[String(k) for k in keys(p0)]
         lut = Dict(n => i for (i, n) in enumerate(pnames))
@@ -97,24 +104,36 @@ function _source_layout(src, model_name, build_kwargs, layout, wrt::Symbol)
         return (length(u00), p0, vm0)
     end
     for f in (:u0, :var_map)
-        hasproperty(layout, f) || throw(ArgumentError(
-            "source_layout must carry (u0, var_map[, p]); `$f` is missing"))
+        hasproperty(layout, f) || throw(
+            ArgumentError(
+                "source_layout must carry (u0, var_map[, p]); `$f` is missing"
+            )
+        )
     end
     u0 = getproperty(layout, :u0)
     vm0 = getproperty(layout, :var_map)
     p0 = hasproperty(layout, :p) ? getproperty(layout, :p) : nothing
     n = length(u0)
-    length(vm0) == n || throw(ArgumentError(
-        "source_layout: length(u0) = $n but length(var_map) = $(length(vm0)). " *
-        "The layout must come from a `build_evaluator` of the same source with " *
-        "the same build_kwargs."))
+    length(vm0) == n || throw(
+        ArgumentError(
+            "source_layout: length(u0) = $n but length(var_map) = $(length(vm0)). " *
+                "The layout must come from a `build_evaluator` of the same source with " *
+                "the same build_kwargs."
+        )
+    )
     slots = sort!(collect(values(vm0)))
-    slots == 1:n || throw(ArgumentError(
-        "source_layout: var_map values are not a permutation of 1:$n, so it is " *
-        "not a state layout of this model."))
-    p0 === nothing && !(wrt in (:states, :time)) && throw(ArgumentError(
-        "source_layout: wrt = :$wrt indexes columns by parameter name, so the " *
-        "layout must carry `p` (the build_evaluator parameter NamedTuple)."))
+    slots == 1:n || throw(
+        ArgumentError(
+            "source_layout: var_map values are not a permutation of 1:$n, so it is " *
+                "not a state layout of this model."
+        )
+    )
+    p0 === nothing && !(wrt in (:states, :time)) && throw(
+        ArgumentError(
+            "source_layout: wrt = :$wrt indexes columns by parameter name, so the " *
+                "layout must carry `p` (the build_evaluator parameter NamedTuple)."
+        )
+    )
     return (n, p0, vm0)
 end
 
@@ -122,10 +141,13 @@ end
 # shows up here first, as a name that resolves nowhere.
 function _slot(map, name::String, what::String)
     j = get(map, name, 0)
-    j == 0 && throw(ArgumentError(
-        "`$name` is not in the $what model's variable map -- if `source_layout` " *
-        "was passed, it does not match a `build_evaluator` of this source with " *
-        "these build_kwargs."))
+    j == 0 && throw(
+        ArgumentError(
+            "`$name` is not in the $what model's variable map -- if `source_layout` " *
+                "was passed, it does not match a `build_evaluator` of this source with " *
+                "these build_kwargs."
+        )
+    )
     return j
 end
 
@@ -151,8 +173,10 @@ as a `SparseMatrixCSC{Bool}`. `input` is an `EsmFile` + model name pair
 `source_layout` skips this function's own rebuild of the source model — see
 [`prepare_jacobian`](@ref) for the keyword and its contract.
 """
-function jacobian_pattern(input; wrt::Symbol = :states, model_name = nothing,
-                          build_kwargs = NamedTuple(), source_layout = nothing)
+function jacobian_pattern(
+        input; wrt::Symbol = :states, model_name = nothing,
+        build_kwargs = NamedTuple(), source_layout = nothing
+    )
     sv, src = _sv_src(input, model_name)
     entries = jacobian_bands(sv; wrt = wrt)
     _, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
@@ -167,9 +191,11 @@ function jacobian_pattern(input; wrt::Symbol = :states, model_name = nothing,
         push!(I, r); push!(J, cs)
     end
     pattern = sparse(I, J, trues(length(I)), n, ncol, |)
-    return (pattern = pattern,
-            rownames = first.(sort(collect(vm0), by = last)),
-            colnames = colnames, entries = entries)
+    return (
+        pattern = pattern,
+        rownames = first.(sort(collect(vm0), by = last)),
+        colnames = colnames, entries = entries,
+    )
 end
 
 _sv_src(file::EarthSciAST.EsmFile, model_name) =
@@ -196,18 +222,18 @@ Prepared analytical Jacobian: call as `jac!(J, u, p, t)` where `J` is (a copy
 of) `jac.prototype`. Fields of note: `prototype::SparseMatrixCSC{Float64}`,
 `pattern::SparseMatrixCSC{Bool}`, `entries`, `colnames`, `structure`.
 """
-struct JacobianEvaluator{F,P}
+struct JacobianEvaluator{F, P}
     fJ!::F                        # derived-model RHS (fills band fields into duj)
     oop::Bool                     # true when `fJ!` is `f(u, p, t) -> du`
     uj::Vector{Float64}           # derived-model state buffer
     duj::Vector{Float64}
     umap::Vector{Int}             # uj[umap[i]] = u[i]
     p_default::P
-    scatter::Vector{Tuple{Int,Int}}  # (slot in duj, position in nzval)
+    scatter::Vector{Tuple{Int, Int}}  # (slot in duj, position in nzval)
     field_shapes::Vector{Vector{Int}} # band k → field shape (scatter plans)
-    slots::Dict{String,Int}          # derived-model name → slot in duj
-    prototype::SparseMatrixCSC{Float64,Int}
-    pattern::SparseMatrixCSC{Bool,Int}
+    slots::Dict{String, Int}          # derived-model name → slot in duj
+    prototype::SparseMatrixCSC{Float64, Int}
+    pattern::SparseMatrixCSC{Bool, Int}
     entries::Vector{JacEntry}
     rownames::Vector{String}
     colnames::Vector{String}
@@ -249,15 +275,21 @@ can delete that build by passing its layout:
     J = copy(jac.prototype)
     jac(J, u, p, t)              # fills J in place; stored zeros stay
 """
-function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
-                          build_kwargs = NamedTuple(), source_layout = nothing,
-                          eval_cse::Bool = true, eval_cse_min_nodes::Int = 12)
+function prepare_jacobian(
+        input; wrt::Symbol = :states, model_name = nothing,
+        build_kwargs = NamedTuple(), source_layout = nothing,
+        eval_cse::Bool = true, eval_cse_min_nodes::Int = 12
+    )
     sv, src = _sv_src(input, model_name)
     entries = jacobian_bands(sv; wrt = wrt)
-    doc, _ = _evaluation_document(sv, entries; cse = eval_cse,
-                                  cse_min_nodes = eval_cse_min_nodes)
-    fJ!, u0j, pj, _, vmj = build_evaluator(doc; model_name = "JacobianEval",
-                                           build_kwargs...)
+    doc, _ = _evaluation_document(
+        sv, entries; cse = eval_cse,
+        cse_min_nodes = eval_cse_min_nodes
+    )
+    fJ!, u0j, pj, _, vmj = build_evaluator(
+        doc; model_name = "JacobianEval",
+        build_kwargs...
+    )
     n, p0, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
     colslot, ncol, colnames = _colmap(vm0, p0, wrt)
 
@@ -267,7 +299,7 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     end
 
     strict = source_layout !== nothing
-    items = Tuple{Int,Int,Int}[]     # (duj slot, row, col)
+    items = Tuple{Int, Int, Int}[]     # (duj slot, row, col)
     for (k, rowname, colname, jname) in _scatter_pairs(sv, entries)
         cs = colslot(colname)
         r = _rowslot(vm0, rowname, cs, strict)
@@ -276,12 +308,14 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     end
     I = [it[2] for it in items]; J = [it[3] for it in items]
     pattern = sparse(I, J, trues(length(I)), n, ncol, |)
-    proto = SparseMatrixCSC(n, ncol, copy(pattern.colptr), copy(pattern.rowval),
-                            zeros(length(pattern.rowval)))
+    proto = SparseMatrixCSC(
+        n, ncol, copy(pattern.colptr), copy(pattern.rowval),
+        zeros(length(pattern.rowval))
+    )
     # nzval position of each (row, col): binary search the fixed pattern.
-    scatter = Tuple{Int,Int}[]
+    scatter = Tuple{Int, Int}[]
     for (slot, r, c) in items
-        rng = proto.colptr[c]:(proto.colptr[c+1]-1)
+        rng = proto.colptr[c]:(proto.colptr[c + 1] - 1)
         pos = rng[searchsortedfirst(view(proto.rowval, rng), r)]
         push!(scatter, (slot, pos))
     end
@@ -300,12 +334,14 @@ function prepare_jacobian(input; wrt::Symbol = :states, model_name = nothing,
     # way. Probed once, by method applicability, rather than by reaching into
     # the builder's return types.
     oop = !applicable(fJ!, zeros(1), zeros(1), pj, 0.0) &&
-          applicable(fJ!, zeros(1), pj, 0.0)
-    return JacobianEvaluator(fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
-                             pj, scatter, field_shapes,
-                             convert(Dict{String,Int}, vmj), proto, pattern, entries,
-                             first.(sort(collect(vm0), by = last)), colnames,
-                             structure, wrt)
+        applicable(fJ!, zeros(1), pj, 0.0)
+    return JacobianEvaluator(
+        fJ!, oop, zeros(length(u0j)), zeros(length(u0j)), umap,
+        pj, scatter, field_shapes,
+        convert(Dict{String, Int}, vmj), proto, pattern, entries,
+        first.(sort(collect(vm0), by = last)), colnames,
+        structure, wrt
+    )
 end
 
 # Evaluate every band field at (u, p, t); returns the derived-model `du`.
@@ -315,7 +351,7 @@ function _eval_fields!(jac::JacobianEvaluator, u::AbstractVector, p, t::Real)
     end
     pp = p === nothing ? jac.p_default : p
     return jac.oop ? jac.fJ!(jac.uj, pp, t) :
-                     (jac.fJ!(jac.duj, jac.uj, pp, t); jac.duj)
+        (jac.fJ!(jac.duj, jac.uj, pp, t); jac.duj)
 end
 
 function (jac::JacobianEvaluator)(J::SparseMatrixCSC, u::AbstractVector, p, t::Real)
@@ -336,22 +372,30 @@ end
 One-shot convenience over [`prepare_jacobian`](@ref): evaluate the analytical
 Jacobian at a point (defaults: the document's initial state and parameters).
 """
-function assemble_jacobian(input; wrt::Symbol = :states, u = nothing, p = nothing,
-                           t::Real = 0.0, model_name = nothing,
-                           build_kwargs = NamedTuple(), source_layout = nothing)
-    jac = prepare_jacobian(input; wrt = wrt, model_name = model_name,
-                           build_kwargs = build_kwargs, source_layout = source_layout)
+function assemble_jacobian(
+        input; wrt::Symbol = :states, u = nothing, p = nothing,
+        t::Real = 0.0, model_name = nothing,
+        build_kwargs = NamedTuple(), source_layout = nothing
+    )
+    jac = prepare_jacobian(
+        input; wrt = wrt, model_name = model_name,
+        build_kwargs = build_kwargs, source_layout = source_layout
+    )
     u00, p0 = if source_layout === nothing
         b = _build_eval(_sv_src(input, model_name)[2], model_name; build_kwargs...)
         (b[2], b[3])
     else
-        (getproperty(source_layout, :u0),
-         hasproperty(source_layout, :p) ? getproperty(source_layout, :p) : nothing)
+        (
+            getproperty(source_layout, :u0),
+            hasproperty(source_layout, :p) ? getproperty(source_layout, :p) : nothing,
+        )
     end
     uu = u === nothing ? u00 : u
     J = copy(jac.prototype)
     jac(J, uu, p === nothing ? p0 : p, t)
-    return (J = J, pattern = jac.pattern, rownames = jac.rownames,
-            colnames = jac.colnames, entries = jac.entries,
-            structure = jac.structure)
+    return (
+        J = J, pattern = jac.pattern, rownames = jac.rownames,
+        colnames = jac.colnames, entries = jac.entries,
+        structure = jac.structure,
+    )
 end

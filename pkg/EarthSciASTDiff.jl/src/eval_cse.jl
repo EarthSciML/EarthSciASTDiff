@@ -29,7 +29,7 @@ function _template_refs(e::ASTExpr, acc::Set{String} = Set{String}())
 end
 
 # Replace template references by their reads (name → read expression).
-function _deref(e::ASTExpr, readmap::Dict{String,ASTExpr})::ASTExpr
+function _deref(e::ASTExpr, readmap::Dict{String, ASTExpr})::ASTExpr
     e isa OpExpr || return e
     e.op == "apply_expression_template" && e.name !== nothing &&
         haskey(readmap, e.name) && return readmap[e.name]
@@ -77,24 +77,27 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
     # Per entry: index name → (lo, hi) box — row dims plus any free
     # contracted column dims (their names are just as free in the
     # coefficient, and the derived J_k field binds them the same way).
-    boxof = [begin
-                 d = Dict{String,Tuple{Int,Int}}(
-                     String(r) => en.band.rows[k]
-                     for (k, r) in enumerate(en.band.ridx) if r isa String)
-                 for (n, lo, hi) in en.band.contracted
-                     d[n] = (lo, hi)
-                 end
-                 d
-             end
-             for en in entries]
+    boxof = [
+        begin
+            d = Dict{String, Tuple{Int, Int}}(
+                String(r) => en.band.rows[k]
+                    for (k, r) in enumerate(en.band.ridx) if r isa String
+            )
+            for (n, lo, hi) in en.band.contracted
+                d[n] = (lo, hi)
+            end
+            d
+        end
+            for en in entries
+    ]
     namesk = [Set{String}(keys(b)) for b in boxof]
     allnames = isempty(namesk) ? Set{String}() : union(namesk...)
 
     # Which entries evaluate each template, transitively through the
     # reference DAG (a template read inside another template's body runs
     # wherever the outer one does).
-    refs_body = Dict{String,Set{String}}(n => _template_refs(templates[n]) for n in tnames)
-    uses = Dict{String,Set{Int}}(n => Set{Int}() for n in tnames)
+    refs_body = Dict{String, Set{String}}(n => _template_refs(templates[n]) for n in tnames)
+    uses = Dict{String, Set{Int}}(n => Set{Int}() for n in tnames)
     for (k, e) in enumerate(rewritten), n in _template_refs(e)
         push!(uses[n], k)
     end
@@ -110,7 +113,7 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
     live = [n for n in tnames if !isempty(uses[n])]
 
     # Free row-index names per template (transitive; sorted = the axis order).
-    S = Dict{String,Vector{String}}()
+    S = Dict{String, Vector{String}}()
     function s_of(n)
         haskey(S, n) && return S[n]
         s = Set{String}(intersect(free_variables(templates[n]), allnames))
@@ -129,9 +132,9 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
     end
 
     # Use boxes (deduplicated, ascending entry order) and per-axis extents.
-    boxes = Dict{String,Vector{Vector{Tuple{Int,Int}}}}()
+    boxes = Dict{String, Vector{Vector{Tuple{Int, Int}}}}()
     for n in live
-        bs = Vector{Vector{Tuple{Int,Int}}}(); seen = Set{String}()
+        bs = Vector{Vector{Tuple{Int, Int}}}(); seen = Set{String}()
         for k in sort!(collect(uses[n]))
             box = [boxof[k][x] for x in S[n]]
             key = string(box)
@@ -142,8 +145,8 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
 
     # Axis index sets: one per distinct extent, reusing an existing set of
     # exactly that size when the name is free.
-    axes = OrderedDict{String,Int}()
-    existing = Dict{String,Int}()
+    axes = OrderedDict{String, Int}()
+    existing = Dict{String, Int}()
     for (nm, s) in sv.index_sets
         s.size === nothing || (existing[String(nm)] = s.size)
     end
@@ -153,21 +156,22 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
         return nm
     end
 
-    readmap = Dict{String,ASTExpr}(
+    readmap = Dict{String, ASTExpr}(
         n => isempty(S[n]) ? VarExpr(n) :
-             op("index", VarExpr(n), (VarExpr(x) for x in S[n])...)
-        for n in live)
+            op("index", VarExpr(n), (VarExpr(x) for x in S[n])...)
+            for n in live
+    )
 
-    obs = OrderedDict{String,Any}()
+    obs = OrderedDict{String, Any}()
     # esm 1.0.0 moved a definition out of the variable and into the model's
     # equations, so a hoisted observed now comes back in TWO pieces: the
     # declaration in `obs` and its defining RHS in `obs_eqs`, which the caller
     # (emit.jl) pushes onto the document's `equations`. Same order as `obs`.
-    obs_eqs = Pair{String,Any}[]
+    obs_eqs = Pair{String, Any}[]
     for n in live
         body = _deref(templates[n], readmap)
         if isempty(S[n])
-            obs[n] = OrderedDict{String,Any}("type" => "unknown")
+            obs[n] = OrderedDict{String, Any}("type" => "unknown")
             push!(obs_eqs, n => _ser_expr(body))
             continue
         end
@@ -176,20 +180,30 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
         values = Any[0.0]
         for b in boxes[n]
             push!(regions, Any[Any[lo, hi] for (lo, hi) in b])
-            push!(values, OrderedDict{String,Any}(
-                "op" => "faq", "args" => Any[],
-                "output_idx" => Any[S[n]...],
-                "ranges" => OrderedDict{String,Any}(
-                    x => Any[b[j][1], b[j][2]] for (j, x) in enumerate(S[n])),
-                "expr" => _ser_expr(body)))
+            push!(
+                values, OrderedDict{String, Any}(
+                    "op" => "faq", "args" => Any[],
+                    "output_idx" => Any[S[n]...],
+                    "ranges" => OrderedDict{String, Any}(
+                        x => Any[b[j][1], b[j][2]] for (j, x) in enumerate(S[n])
+                    ),
+                    "expr" => _ser_expr(body)
+                )
+            )
         end
-        obs[n] = OrderedDict{String,Any}(
+        obs[n] = OrderedDict{String, Any}(
             "type" => "unknown",
-            "shape" => Any[axis_for(e) for e in exts])
-        push!(obs_eqs, n => OrderedDict{String,Any}(
-            "op" => "makearray", "args" => Any[],
-            "regions" => regions, "values" => values))
+            "shape" => Any[axis_for(e) for e in exts]
+        )
+        push!(
+            obs_eqs, n => OrderedDict{String, Any}(
+                "op" => "makearray", "args" => Any[],
+                "regions" => regions, "values" => values
+            )
+        )
     end
-    return (obs = obs, obs_eqs = obs_eqs, axes = axes,
-            coefs = ASTExpr[_deref(e, readmap) for e in rewritten])
+    return (
+        obs = obs, obs_eqs = obs_eqs, axes = axes,
+        coefs = ASTExpr[_deref(e, readmap) for e in rewritten],
+    )
 end

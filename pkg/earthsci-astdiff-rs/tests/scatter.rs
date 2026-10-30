@@ -4,8 +4,7 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout,
-    ScatterPlan, Wrt,
+    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt,
 };
 
 mod common;
@@ -36,8 +35,16 @@ fn plan_goldens() {
     for (name, tag, layout) in plan_layouts() {
         let plan = ScatterPlan::from_file(&load(name), None, &layout).unwrap();
         let golden = fs::read_to_string(
-            root().join("tests/goldens").join(format!("{name}.{tag}.plan.json"))).unwrap();
-        assert_eq!(stable_json(&plan.to_json()), golden, "plan golden diverges: {name}.{tag}");
+            root()
+                .join("tests/goldens")
+                .join(format!("{name}.{tag}.plan.json")),
+        )
+        .unwrap();
+        assert_eq!(
+            stable_json(&plan.to_json()),
+            golden,
+            "plan golden diverges: {name}.{tag}"
+        );
     }
 }
 
@@ -62,8 +69,11 @@ fn scattered_values_match_the_oracle() {
                     Some(rc) => {
                         let want = oracle.get(rc).copied().unwrap_or(0.0);
                         let tol = 1e-13 * want.abs().max(1.0);
-                        assert!((out[pos] - want).abs() <= tol,
-                                "{name}.{tag} L={l}: {rc:?} {} vs {want}", out[pos]);
+                        assert!(
+                            (out[pos] - want).abs() <= tol,
+                            "{name}.{tag} L={l}: {rc:?} {} vs {want}",
+                            out[pos]
+                        );
                         covered.insert(rc.clone());
                     }
                 }
@@ -77,13 +87,12 @@ fn scattered_values_match_the_oracle() {
 
 #[test]
 fn refusals() {
-    let refused = |name: &str, layout: Layout| {
-        ScatterPlan::from_file(&load(name), None, &layout).is_err()
-    };
+    let refused =
+        |name: &str, layout: Layout| ScatterPlan::from_file(&load(name), None, &layout).is_err();
     assert!(refused("adv_interior", Layout::LaneBlocks));
     assert!(refused("adv_interior", Layout::LaneSparseBlocks));
-    assert!(refused("minmod_adv", cb("x")));            // periodic wrap
-    assert!(refused("adv_react_2d", cb("lon")));        // scalar state
+    assert!(refused("minmod_adv", cb("x"))); // periodic wrap
+    assert!(refused("adv_react_2d", cb("lon"))); // scalar state
     assert!(refused("bd_chem", cb("nope")));
     let file = load("bd_chem");
     let sv = sysview(&file, None).unwrap();
@@ -115,7 +124,10 @@ fn refusals() {
         let real = ScatterPlan::build(&asv, &ae, &layout).unwrap();
         assert!(real.bind_entries(&asv, &ae, real.lanes()).is_ok());
         let bad = ScatterPlan::build(&asv, &mirrored, &layout).unwrap();
-        assert!(bad.bind_entries(&asv, &ae, bad.lanes()).is_err(), "{layout:?}");
+        assert!(
+            bad.bind_entries(&asv, &ae, bad.lanes()).is_err(),
+            "{layout:?}"
+        );
     }
     // scatter-time checks: wrong output length, wrong fields
     let (env, _) = jvals_env("bd_chem");
@@ -130,9 +142,11 @@ fn lane_templates_are_per_cell() {
     let file = load("bd_chem");
     let plan = ScatterPlan::from_file(&file, None, &Layout::LaneBlocks).unwrap();
     match &plan.kind {
-        earthsci_astdiff::PlanKind::LaneBlocks { block_vars, items, .. } => {
-            assert_eq!(items.len(), 6);                // one per band, any grid
-            assert_eq!(block_vars, &["C", "A", "B"]);  // Markowitz order
+        earthsci_astdiff::PlanKind::LaneBlocks {
+            block_vars, items, ..
+        } => {
+            assert_eq!(items.len(), 6); // one per band, any grid
+            assert_eq!(block_vars, &["C", "A", "B"]); // Markowitz order
         }
         _ => unreachable!(),
     }

@@ -7,8 +7,10 @@ use earthsci_ast::{EsmFile, Expr, VariableType};
 
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::inline::inline_observed_cached;
-use crate::system::{ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview,
-                    view_states, SysView};
+use crate::system::{
+    ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
+    SysView,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wrt {
@@ -44,8 +46,11 @@ pub struct JacEntry {
 /// One [`JacEntry`] is returned for each (row variable, column variable) pair
 /// that occurs in the model; the derivative is symbolic, so it does not depend
 /// on the point where it is later evaluated.
-pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
-                      -> Result<Vec<JacEntry>, BandError> {
+pub fn jacobian_bands(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+) -> Result<Vec<JacEntry>, BandError> {
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
@@ -54,16 +59,22 @@ pub fn jacobian_bands(file: &EsmFile, model_name: Option<&str>, wrt: Wrt)
 
 /// The body of [`jacobian_bands`], for callers (numeric assembly) that
 /// already hold the view, its context and its observed definitions.
-pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
-                                  obs: &HashMap<String, Expr>, wrt: Wrt)
-                                  -> Result<Vec<JacEntry>, BandError> {
+pub(crate) fn jacobian_bands_view(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+) -> Result<Vec<JacEntry>, BandError> {
     let targets: Vec<String> = match wrt {
         Wrt::Time => vec!["t".to_string()],
         Wrt::States => view_states(sv, obs),
         Wrt::Parameters => {
-            let mut t: Vec<String> = sv.variables.iter()
+            let mut t: Vec<String> = sv
+                .variables
+                .iter()
                 .filter(|(_, v)| v.var_type == VariableType::Parameter)
-                .map(|(n, _)| n.clone()).collect();
+                .map(|(n, _)| n.clone())
+                .collect();
             t.sort();
             t
         }
@@ -89,14 +100,16 @@ pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
             continue;
         };
         let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
-        let rhs = inline_observed_cached(&eq.rhs, obs, &mut obs_names)
-            .map_err(|e| BandError(e.0))?;
+        let rhs =
+            inline_observed_cached(&eq.rhs, obs, &mut obs_names).map_err(|e| BandError(e.0))?;
         // Structural occurrence gate, driven from the equation: intersect the
         // RHS's free variables with the target set (a per-equation scan of
         // every target is quadratic on scalar-lowered documents). Sorting the
         // hits keeps the sorted-target entry order.
-        let mut hits: Vec<String> = free_variables(&rhs).into_iter()
-            .filter(|v| tset.contains(v)).collect();
+        let mut hits: Vec<String> = free_variables(&rhs)
+            .into_iter()
+            .filter(|v| tset.contains(v))
+            .collect();
         hits.sort();
         for v in &hits {
             for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
@@ -114,8 +127,9 @@ pub(crate) fn jacobian_bands_view(sv: &SysView, ctx: &Ctx,
 /// The refusal for a derivative LHS that is not `D(u)` or the lifted
 /// `faq{D(index(u, i…))}` (shared with the evaluation document).
 pub(crate) fn unsupported_derivative(eq: &earthsci_ast::Equation) -> BandError {
-    BandError(format!("unsupported derivative LHS {} (a state's derivative is `D(u)` \
+    BandError(format!(
+        "unsupported derivative LHS {} (a state's derivative is `D(u)` \
                        or the lifted `faq{{D(index(u, i…))}}`)",
-                      serde_json::to_string(&crate::helpers::ser_expr(&eq.lhs))
-                          .expect("expression serializes")))
+        serde_json::to_string(&crate::helpers::ser_expr(&eq.lhs)).expect("expression serializes")
+    ))
 }

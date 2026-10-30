@@ -4,15 +4,16 @@
 (`earthsci_ast.simplify`), branch pass, a final algebraic pass, then literal
 normalization to the parse-canonical form (CONFORMANCE_SPEC §5.5.3.1 rule 1).
 """
+
 from __future__ import annotations
 
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
-from .simplify_port import simplify_jl as simplify
 
 from .expr_helpers import is_zero, op, skey
+from .simplify_port import simplify_jl as simplify
 
-_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
 def _skc(e: Expr, cache: dict[int, str]) -> str:
@@ -56,9 +57,14 @@ def _assume(e: Expr, ck: str, val: bool, cache: dict[int, str]) -> Expr:
 
 
 def canon_lit(e: Expr) -> Expr:
-    if (isinstance(e, float) and e == e and abs(e) != float("inf")
-            and float(e).is_integer() and _INT64_MIN <= e <= _INT64_MAX
-            and float(int(e)) == e):
+    if (
+        isinstance(e, float)
+        and e == e
+        and abs(e) != float("inf")
+        and float(e).is_integer()
+        and _INT64_MIN <= e <= _INT64_MAX
+        and float(int(e)) == e
+    ):
         return int(e)
     return e
 

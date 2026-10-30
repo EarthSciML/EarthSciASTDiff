@@ -14,9 +14,13 @@ pub fn simplify_branches(e: &Expr) -> Expr {
 }
 
 fn sbr(e: &Expr) -> Expr {
-    let Expr::Operator(_) = e else { return e.clone() };
+    let Expr::Operator(_) = e else {
+        return e.clone();
+    };
     let e2 = map_expr_children(e, &mut |c| sbr(c));
-    let Expr::Operator(n2) = &e2 else { unreachable!() };
+    let Expr::Operator(n2) = &e2 else {
+        unreachable!()
+    };
     if !(n2.op == "ifelse" && n2.args.len() == 3) {
         return e2;
     }
@@ -34,7 +38,9 @@ fn sbr(e: &Expr) -> Expr {
 }
 
 fn assume(e: &Expr, ck: &str, val: bool) -> Expr {
-    let Expr::Operator(n) = e else { return e.clone() };
+    let Expr::Operator(n) = e else {
+        return e.clone();
+    };
     if n.op == "ifelse" && n.args.len() == 3 && skey(&n.args[0]) == ck {
         return assume(&n.args[if val { 1 } else { 2 }], ck, val);
     }

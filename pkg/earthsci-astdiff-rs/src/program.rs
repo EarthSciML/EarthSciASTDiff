@@ -99,7 +99,10 @@ pub struct BuildOptions {
 
 impl Default for BuildOptions {
     fn default() -> Self {
-        BuildOptions { cse: true, cse_min_nodes: 12 }
+        BuildOptions {
+            cse: true,
+            cse_min_nodes: 12,
+        }
     }
 }
 
@@ -196,7 +199,9 @@ fn the_model(file: &EsmFile, model_name: Option<&str>) -> R<String> {
     }
     match &file.models {
         Some(m) if m.len() == 1 => Ok(m.keys().next().expect("one model").clone()),
-        _ => Err(JacError::Build("the document has several models (or none); name one".into())),
+        _ => Err(JacError::Build(
+            "the document has several models (or none); name one".into(),
+        )),
     }
 }
 
@@ -217,20 +222,30 @@ fn source_value(file: &EsmFile) -> R<Value> {
 /// the band fields (whose names `build` checked are not source variables)
 /// keep the derived ones. The model keeps its name, so the flattened names
 /// equal the source program's.
-fn compiled_document(src: &Value, model: &str, evaldoc: &Value, names: &[String],
-                     entries: &[JacEntry], fuse: bool)
-                     -> R<Value> {
+fn compiled_document(
+    src: &Value,
+    model: &str,
+    evaldoc: &Value,
+    names: &[String],
+    entries: &[JacEntry],
+    fuse: bool,
+) -> R<Value> {
     let mut src = src.clone();
     let derived = &evaldoc["models"]["JacobianEval"];
-    let src_vars = src["models"][model]["variables"].as_object().cloned().unwrap_or_default();
-    let bands: HashMap<&str, &JacEntry> =
-        names.iter().map(String::as_str).zip(entries).collect();
+    let src_vars = src["models"][model]["variables"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let bands: HashMap<&str, &JacEntry> = names.iter().map(String::as_str).zip(entries).collect();
     let mut vars = Map::new();
     for (n, d) in derived["variables"].as_object().into_iter().flatten() {
         let keep = src_vars.get(n).filter(|_| !bands.contains_key(n.as_str()));
         vars.insert(n.clone(), keep.unwrap_or(d).clone());
     }
-    let eqs: Vec<Value> = derived["equations"].as_array().into_iter().flatten()
+    let eqs: Vec<Value> = derived["equations"]
+        .as_array()
+        .into_iter()
+        .flatten()
         .flat_map(|eq| match lhs_band(eq, &bands) {
             Some((u, en)) if fuse => fused_band(u, en, eq),
             _ => vec![eq.clone()],
@@ -239,12 +254,19 @@ fn compiled_document(src: &Value, model: &str, evaldoc: &Value, names: &[String]
     let Value::Object(top) = &mut src else {
         return Err(JacError::Build("source document is not an object".into()));
     };
-    let mut isets = top.get("index_sets").and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut isets = top
+        .get("index_sets")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     for (n, s) in evaldoc["index_sets"].as_object().into_iter().flatten() {
         isets.entry(n.clone()).or_insert_with(|| s.clone());
     }
     top.insert("index_sets".into(), Value::Object(isets));
-    top.insert("models".into(), json!({model: {"variables": vars, "equations": eqs}}));
+    top.insert(
+        "models".into(),
+        json!({model: {"variables": vars, "equations": eqs}}),
+    );
     top.remove("coupling");
     top.remove("reaction_systems");
     // The band coefficients may carry `faq` nodes (esm 1.1.0).
@@ -257,8 +279,10 @@ fn compiled_document(src: &Value, model: &str, evaldoc: &Value, names: &[String]
 }
 
 /// The band entry a `D(J_k)` equation defines.
-fn lhs_band<'a>(eq: &'a Value, bands: &HashMap<&str, &'a JacEntry>)
-                -> Option<(&'a str, &'a JacEntry)> {
+fn lhs_band<'a>(
+    eq: &'a Value,
+    bands: &HashMap<&str, &'a JacEntry>,
+) -> Option<(&'a str, &'a JacEntry)> {
     let lhs = &eq["lhs"];
     if lhs.get("op").and_then(Value::as_str) != Some("D") {
         return None;
@@ -281,10 +305,13 @@ fn fused_band(name: &str, en: &JacEntry, eq: &Value) -> Vec<Value> {
     let rhs = &eq["rhs"];
     let value = &rhs["values"][1];
     let bounds = |r: &Value| -> Option<Vec<(i64, i64)>> {
-        r.as_array()?.iter().map(|b| Some((b[0].as_i64()?, b[1].as_i64()?))).collect()
+        r.as_array()?
+            .iter()
+            .map(|b| Some((b[0].as_i64()?, b[1].as_i64()?)))
+            .collect()
     };
-    let (Some(full), Some(region)) =
-        (bounds(&rhs["regions"][0]), bounds(&rhs["regions"][1])) else {
+    let (Some(full), Some(region)) = (bounds(&rhs["regions"][0]), bounds(&rhs["regions"][1]))
+    else {
         return vec![eq.clone()];
     };
     if rhs.get("op").and_then(Value::as_str) != Some("makearray")
@@ -298,14 +325,22 @@ fn fused_band(name: &str, en: &JacEntry, eq: &Value) -> Vec<Value> {
     if full == region {
         return vec![json!({"lhs": eq["lhs"], "rhs": value})];
     }
-    let idx: Vec<Value> = en.band.ridx.iter().filter_map(|r| match r {
-        RIdx::Name(s) => Some(json!(s)),
-        RIdx::Fixed(_) => None,                      // refused above
-    }).chain(en.band.contracted.iter().map(|(n, _, _)| json!(n))).collect();
-    let lhs = |ranges: &Value| json!({
+    let idx: Vec<Value> = en
+        .band
+        .ridx
+        .iter()
+        .filter_map(|r| match r {
+            RIdx::Name(s) => Some(json!(s)),
+            RIdx::Fixed(_) => None, // refused above
+        })
+        .chain(en.band.contracted.iter().map(|(n, _, _)| json!(n)))
+        .collect();
+    let lhs = |ranges: &Value| {
+        json!({
         "op": "faq", "args": [], "output_idx": idx, "ranges": ranges,
         "expr": {"op": "D", "wrt": "t", "args": [{"op": "index", "args":
-                 std::iter::once(json!(name)).chain(idx.iter().cloned()).collect::<Vec<_>>()}]}});
+                 std::iter::once(json!(name)).chain(idx.iter().cloned()).collect::<Vec<_>>()}]}})
+    };
     let mut out = vec![json!({"lhs": lhs(&value["ranges"]), "rhs": value})];
     // The complement, dimension by dimension: inside the region before `m`,
     // below or above it along `m`, the whole field after.
@@ -315,10 +350,23 @@ fn fused_band(name: &str, en: &JacEntry, eq: &Value) -> Vec<Value> {
             if side.0 > side.1 {
                 continue;
             }
-            let ranges: Map<String, Value> = idx.iter().enumerate().map(|(d, n)| {
-                let r = if d < m { region[d] } else if d == m { side } else { full[d] };
-                (n.as_str().expect("index names").to_string(), json!([r.0, r.1]))
-            }).collect();
+            let ranges: Map<String, Value> = idx
+                .iter()
+                .enumerate()
+                .map(|(d, n)| {
+                    let r = if d < m {
+                        region[d]
+                    } else if d == m {
+                        side
+                    } else {
+                        full[d]
+                    };
+                    (
+                        n.as_str().expect("index names").to_string(),
+                        json!([r.0, r.1]),
+                    )
+                })
+                .collect();
             let ranges = Value::Object(ranges);
             out.push(json!({"lhs": lhs(&ranges), "rhs": {
                 "op": "faq", "args": [], "output_idx": idx, "ranges": ranges, "expr": 0.0}}));
@@ -330,13 +378,20 @@ fn fused_band(name: &str, en: &JacEntry, eq: &Value) -> Vec<Value> {
 /// The band-field program of a compiled document: `native`, selected to
 /// write the band fields `<model>.J_k` only.
 fn compile(doc: &Value, model: &str, names: &[String]) -> R<RhsProgram> {
-    let popts = ProblemOptions { compiler: Some(Compiler::Native), ..Default::default() };
+    let popts = ProblemOptions {
+        compiler: Some(Compiler::Native),
+        ..Default::default()
+    };
     let prob = esm_problem(doc, (0.0, 1.0), popts)
         .map_err(|e| JacError::Build(format!("evaluation document: {e}")))?;
-    let whole = rhs_program(&prob)
-        .map_err(|e| JacError::Build(format!("evaluation document: {e}")))?;
+    let whole =
+        rhs_program(&prob).map_err(|e| JacError::Build(format!("evaluation document: {e}")))?;
     let writes = names.iter().map(|n| format!("{model}.{n}")).collect();
-    whole.select(&RhsSelection { writes: Some(writes), terms: None })
+    whole
+        .select(&RhsSelection {
+            writes: Some(writes),
+            terms: None,
+        })
         .map_err(|e| JacError::Build(format!("band-field selection: {e}")))
 }
 
@@ -345,8 +400,11 @@ impl JacobianProgram {
     /// to its states and compile the band fields. Refuses an empty band list:
     /// the calculus found no coupling at all, which for an operator with
     /// array states is the silent all-zero failure the plans also refuse.
-    pub fn build(file: &EsmFile, model_name: Option<&str>, opts: &BuildOptions)
-                 -> R<JacobianProgram> {
+    pub fn build(
+        file: &EsmFile,
+        model_name: Option<&str>,
+        opts: &BuildOptions,
+    ) -> R<JacobianProgram> {
         let model = the_model(file, model_name)?;
         let sv = sysview(file, Some(&model))?;
         let ctx = ctx_of(&sv)?;
@@ -355,7 +413,9 @@ impl JacobianProgram {
         if entries.is_empty() {
             return Err(JacError::Build(
                 "empty band list (an all-zero Jacobian is never a valid program — check the \
-                 band calculus against this document)".into()));
+                 band calculus against this document)"
+                    .into(),
+            ));
         }
         let (evaldoc, names) =
             evaluation_document_with(&sv, &entries, opts.cse, opts.cse_min_nodes, false)?;
@@ -363,7 +423,8 @@ impl JacobianProgram {
         // source declares: a source `J_k` would be both.
         if let Some(n) = names.iter().find(|n| sv.variables.contains_key(*n)) {
             return Err(JacError::Build(format!(
-                "the source model declares `{n}`, the name of a band field of its Jacobian")));
+                "the source model declares `{n}`, the name of a band field of its Jacobian"
+            )));
         }
         let src = source_value(file)?;
         let doc = compiled_document(&src, &model, &evaldoc, &names, &entries, true)?;
@@ -373,8 +434,11 @@ impl JacobianProgram {
         if lane_doc == doc {
             let _ = lane_rhs.set(Ok(rhs.clone()));
         }
-        let dims = sv.variables.iter()
-            .map(|(n, v)| (n.clone(), v.shape.clone().unwrap_or_default())).collect();
+        let dims = sv
+            .variables
+            .iter()
+            .map(|(n, v)| (n.clone(), v.shape.clone().unwrap_or_default()))
+            .collect();
         Ok(JacobianProgram {
             inner: Arc::new(ProgInner {
                 id: next_id(),
@@ -404,8 +468,14 @@ impl JacobianProgram {
         let inner = &*self.inner;
         inner.evaldoc.get_or_init(|| {
             let sv = sysview(&inner.file, Some(&inner.model)).expect("viewed at build");
-            evaluation_document(&sv, &inner.entries, inner.opts.cse, inner.opts.cse_min_nodes)
-                .expect("emitted at build").0
+            evaluation_document(
+                &sv,
+                &inner.entries,
+                inner.opts.cse,
+                inner.opts.cse_min_nodes,
+            )
+            .expect("emitted at build")
+            .0
         })
     }
 
@@ -438,39 +508,62 @@ impl JacobianProgram {
         let (pexec, ours, theirs, width, l) = match exec {
             Exec::Domain => {
                 let nl = scatter.lanes();
-                (PlanExec::Domain(inner.rhs.clone(), inner.rhs.clone()),
-                 Slots::tile(inner.rhs.layout()), Slots::tile(source.layout()), 1, nl)
+                (
+                    PlanExec::Domain(inner.rhs.clone(), inner.rhs.clone()),
+                    Slots::tile(inner.rhs.layout()),
+                    Slots::tile(source.layout()),
+                    1,
+                    nl,
+                )
             }
             Exec::Lanes { capacity } => {
                 if capacity == 0 {
                     return perr("a lane capacity of 0".into());
                 }
                 let kind = match &scatter.kind {
-                    PlanKind::LaneBlocks { .. } | PlanKind::LaneSparseBlocks { .. } =>
-                        LaneKind::Cells { sets: self.lane_sets(&scatter, None) },
-                    PlanKind::ColumnBanded { axis, .. } =>
-                        LaneKind::Columns { sets: self.lane_sets(&scatter, Some(axis)) },
-                    PlanKind::Csr { .. } =>
-                        return perr("Csr has no lane form; use Exec::Domain".into()),
+                    PlanKind::LaneBlocks { .. } | PlanKind::LaneSparseBlocks { .. } => {
+                        LaneKind::Cells {
+                            sets: self.lane_sets(&scatter, None),
+                        }
+                    }
+                    PlanKind::ColumnBanded { axis, .. } => LaneKind::Columns {
+                        sets: self.lane_sets(&scatter, Some(axis)),
+                    },
+                    PlanKind::Csr { .. } => {
+                        return perr("Csr has no lane form; use Exec::Domain".into())
+                    }
                 };
                 if kind.sets().is_empty() {
-                    return perr(format!("{kind:?} has no lane set (one lane would be the whole \
-                                         domain); use Exec::Domain"));
+                    return perr(format!(
+                        "{kind:?} has no lane set (one lane would be the whole \
+                                         domain); use Exec::Domain"
+                    ));
                 }
-                let base = inner.lane_rhs.get_or_init(|| {
-                    compile(&inner.lane_doc, &inner.model, &inner.names).map_err(|e| e.to_string())
-                }).as_ref().map_err(|e| JacError::Plan(e.clone()))?;
-                let lp = base.lanes(kind.clone(), capacity).map_err(|e| JacError::Plan(
-                    format!("the band fields do not lane as {kind:?}: {e}")))?;
+                let base = inner
+                    .lane_rhs
+                    .get_or_init(|| {
+                        compile(&inner.lane_doc, &inner.model, &inner.names)
+                            .map_err(|e| e.to_string())
+                    })
+                    .as_ref()
+                    .map_err(|e| JacError::Plan(e.clone()))?;
+                let lp = base.lanes(kind.clone(), capacity).map_err(|e| {
+                    JacError::Plan(format!("the band fields do not lane as {kind:?}: {e}"))
+                })?;
                 let o = Slots::lane(lp.layout());
                 // The source's lane layout follows from its tile layout (RFC
                 // U3 §6), so the source need not lane itself; the same rule
                 // applied to the band program must reproduce its lane layout.
                 if Slots::lanes_of(base.layout(), kind.sets(), capacity)
-                    .ok().as_ref() != Some(&o)
+                    .ok()
+                    .as_ref()
+                    != Some(&o)
                 {
-                    return perr("the lane layout rule disagrees with earthsci-ast's lane \
-                                 program".into());
+                    return perr(
+                        "the lane layout rule disagrees with earthsci-ast's lane \
+                                 program"
+                            .into(),
+                    );
                 }
                 let t = Slots::lanes_of(source.layout(), kind.sets(), capacity)
                     .map_err(JacError::Plan)?;
@@ -485,13 +578,17 @@ impl JacobianProgram {
                 continue;
             }
             let Some(t) = theirs.vars.get(name) else {
-                return perr(format!("the band fields read `{name}`, which the source program \
-                                     neither writes nor reads"));
+                return perr(format!(
+                    "the band fields read `{name}`, which the source program \
+                                     neither writes nor reads"
+                ));
             };
             if t.len != s.len {
-                return perr(format!("`{name}` holds {} values in the source program and {} in \
+                return perr(format!(
+                    "`{name}` holds {} values in the source program and {} in \
                                      the band program (a source from another build?)",
-                                    t.len, s.len));
+                    t.len, s.len
+                ));
             }
             gather.push((t.start, s.start - ours.u_len, s.len));
         }
@@ -500,7 +597,11 @@ impl JacobianProgram {
         let identity = ours.aux_len == theirs.u_len
             && gather.iter().map(|g| g.2).sum::<usize>() == ours.aux_len
             && gather.iter().all(|g| g.0 == g.1);
-        let aux_map = if identity { AuxMap::SourceU } else { AuxMap::Copy(gather) };
+        let aux_map = if identity {
+            AuxMap::SourceU
+        } else {
+            AuxMap::Copy(gather)
+        };
 
         // Parameters by name.
         let bprog = match &pexec {
@@ -508,17 +609,29 @@ impl JacobianProgram {
         };
         let ours_p = bprog.parameters();
         let theirs_p = source.parameters();
-        let p_map = if ours_p.iter().map(|p| &p.name).eq(theirs_p.iter().map(|p| &p.name)) {
+        let p_map = if ours_p
+            .iter()
+            .map(|p| &p.name)
+            .eq(theirs_p.iter().map(|p| &p.name))
+        {
             None
         } else {
-            let at: HashMap<&String, usize> =
-                theirs_p.iter().enumerate().map(|(i, p)| (&p.name, i)).collect();
+            let at: HashMap<&String, usize> = theirs_p
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (&p.name, i))
+                .collect();
             let mut m = Vec::with_capacity(ours_p.len());
             for p in ours_p {
                 match at.get(&p.name) {
                     Some(i) => m.push(*i),
-                    None => return perr(format!("parameter `{}` of the band program is not a \
-                                                 parameter of the source program", p.name)),
+                    None => {
+                        return perr(format!(
+                            "parameter `{}` of the band program is not a \
+                                                 parameter of the source program",
+                            p.name
+                        ))
+                    }
                 }
             }
             Some(m)
@@ -532,12 +645,19 @@ impl JacobianProgram {
         } else {
             let mut m = Vec::with_capacity(ours_f.len());
             for f in ours_f {
-                match theirs_f.iter()
-                    .position(|g| g.name == f.name && g.shape == f.shape && g.kind == f.kind) {
+                match theirs_f
+                    .iter()
+                    .position(|g| g.name == f.name && g.shape == f.shape && g.kind == f.kind)
+                {
                     Some(i) => m.push(i),
-                    None => return perr(format!("forcing slot `{}` {:?} ({:?}) of the band \
+                    None => {
+                        return perr(format!(
+                            "forcing slot `{}` {:?} ({:?}) of the band \
                                                  program is not a forcing slot of the source \
-                                                 program", f.name, f.shape, f.kind)),
+                                                 program",
+                            f.name, f.shape, f.kind
+                        ))
+                    }
                 }
             }
             Some(m)
@@ -548,28 +668,38 @@ impl JacobianProgram {
         let mut items = Vec::new();
         let field = |k: usize| -> R<&SlotInfo> {
             let nm = self.prefixed(&format!("J_{}", k + 1));
-            ours.vars.get(&nm).ok_or_else(|| JacError::Plan(format!("no band field `{nm}`")))
+            ours.vars
+                .get(&nm)
+                .ok_or_else(|| JacError::Plan(format!("no band field `{nm}`")))
         };
         // A domain plan addresses a state cell as its block start plus its
         // column-major flat index over the declared shape, so the source's
         // block must be dense over exactly that shape (no halo, offset box
         // or strides).
-        let shapes: HashMap<&str, Vec<usize>> = scatter.states.iter()
+        let shapes: HashMap<&str, Vec<usize>> = scatter
+            .states
+            .iter()
             .map(|(u, sh)| (u.as_str(), sh.iter().map(|&n| n.max(0) as usize).collect()))
             .collect();
         let domain = matches!(exec, Exec::Domain);
         let state = |u: &str, row: bool| -> R<&SlotInfo> {
             let nm = self.prefixed(u);
             match theirs.vars.get(&nm) {
-                Some(s) if domain && s.dense.as_ref() != shapes.get(u) =>
+                Some(s) if domain && s.dense.as_ref() != shapes.get(u) => {
                     Err(JacError::Plan(format!(
                         "`{nm}`'s block in the source program is not dense column-major over \
-                         its declared shape {:?} (storage {:?})", shapes.get(u), s.dense))),
+                         its declared shape {:?} (storage {:?})",
+                        shapes.get(u),
+                        s.dense
+                    )))
+                }
                 Some(s) if s.written || !row => Ok(s),
                 Some(_) => Err(JacError::Plan(format!(
-                    "band row `{nm}` is a state the source program reads but does not write"))),
+                    "band row `{nm}` is a state the source program reads but does not write"
+                ))),
                 None => Err(JacError::Plan(format!(
-                    "state `{nm}` is not in the source program (a source from another build?)"))),
+                    "state `{nm}` is not in the source program (a source from another build?)"
+                ))),
             }
         };
         // A lane layout is one template per item, `l` lanes wide: lane `ℓ` is
@@ -578,16 +708,22 @@ impl JacobianProgram {
         // whose axis is the last dimension (columns enumerate the others).
         let template = match &scatter.kind {
             PlanKind::LaneBlocks { .. } | PlanKind::LaneSparseBlocks { .. } => true,
-            PlanKind::ColumnBanded { cells, axis_dim, .. } =>
-                matches!(exec, Exec::Lanes { .. }) || *axis_dim + 1 == cells.len(),
+            PlanKind::ColumnBanded {
+                cells, axis_dim, ..
+            } => matches!(exec, Exec::Lanes { .. }) || *axis_dim + 1 == cells.len(),
             PlanKind::Csr { .. } => false,
         };
         let width = if template { width.max(l) } else { width };
         let fields: Vec<usize> = (0..scatter.bands.len())
-            .map(|k| field(k).map(|s| s.start)).collect::<R<_>>()?;
+            .map(|k| field(k).map(|s| s.start))
+            .collect::<R<_>>()?;
         let field = |k: usize| -> R<usize> { Ok(fields[k]) };
         match &scatter.kind {
-            PlanKind::LaneBlocks { block_vars, items: it, .. } if template => {
+            PlanKind::LaneBlocks {
+                block_vars,
+                items: it,
+                ..
+            } if template => {
                 let n = block_vars.len();
                 for &(k, off) in it {
                     let (r, c) = (off % n, off / n);
@@ -599,7 +735,12 @@ impl JacobianProgram {
                     });
                 }
             }
-            PlanKind::LaneSparseBlocks { block_vars, lu_pattern, items: it, .. } if template => {
+            PlanKind::LaneSparseBlocks {
+                block_vars,
+                lu_pattern,
+                items: it,
+                ..
+            } if template => {
                 for &(k, q) in it {
                     let (r, c) = lu_pattern[q];
                     items.push(Item {
@@ -610,7 +751,14 @@ impl JacobianProgram {
                     });
                 }
             }
-            PlanKind::ColumnBanded { cells, axis_dim, vars, kl, items: it, .. } if template => {
+            PlanKind::ColumnBanded {
+                cells,
+                axis_dim,
+                vars,
+                kl,
+                items: it,
+                ..
+            } if template => {
                 let nn = cells[*axis_dim] as usize;
                 for &(k, lev, off) in it {
                     let (r, c, d) = column_decode(off, nn, vars.len(), *kl, scatter_w(&scatter));
@@ -670,16 +818,21 @@ impl JacobianProgram {
             if ours.u_len.max(out_len) > u32::MAX as usize {
                 return perr("more than 2³² band-field or output slots".into());
             }
-            items.iter().map(|it| (it.slab as u32, it.out as u32)).collect()
+            items
+                .iter()
+                .map(|it| (it.slab as u32, it.out as u32))
+                .collect()
         } else {
             Vec::new()
         };
-        let single: Vec<bool> = (0..pairs.len()).map(|i| {
-            let o = pairs[i].1;
-            (i == 0 || pairs[i - 1].1 != o) && pairs.get(i + 1).is_none_or(|n| n.1 != o)
-        }).collect();
-        let (singles, pairs): (Vec<_>, Vec<_>) = pairs.into_iter().zip(single)
-            .partition(|(_, one)| *one);
+        let single: Vec<bool> = (0..pairs.len())
+            .map(|i| {
+                let o = pairs[i].1;
+                (i == 0 || pairs[i - 1].1 != o) && pairs.get(i + 1).is_none_or(|n| n.1 != o)
+            })
+            .collect();
+        let (singles, pairs): (Vec<_>, Vec<_>) =
+            pairs.into_iter().zip(single).partition(|(_, one)| *one);
         let pairs: Vec<(u32, u32)> = pairs.into_iter().map(|(q, _)| q).collect();
         let mut singles: Vec<(u32, u32)> = singles.into_iter().map(|(q, _)| q).collect();
         singles.sort_unstable();
@@ -704,7 +857,11 @@ impl JacobianProgram {
                 n_src_params: theirs_p.len(),
                 aux_map,
                 p_map,
-                src_forcing: if forcing_map.is_some() { theirs_f.to_vec() } else { Vec::new() },
+                src_forcing: if forcing_map.is_some() {
+                    theirs_f.to_vec()
+                } else {
+                    Vec::new()
+                },
                 forcing_map,
                 zeros: vec![0.0; ours.u_len].into(),
             }),
@@ -714,8 +871,13 @@ impl JacobianProgram {
     /// The lane sets of a lane plan: every dimension of the states' common
     /// shape, less `axis` for a column plan.
     fn lane_sets(&self, scatter: &ScatterPlan, axis: Option<&String>) -> Vec<String> {
-        let dims = scatter.states.iter().find(|(_, s)| !s.is_empty())
-            .and_then(|(u, _)| self.inner.dims.get(u)).cloned().unwrap_or_default();
+        let dims = scatter
+            .states
+            .iter()
+            .find(|(_, s)| !s.is_empty())
+            .and_then(|(u, _)| self.inner.dims.get(u))
+            .cloned()
+            .unwrap_or_default();
         dims.into_iter().filter(|d| Some(d) != axis).collect()
     }
 
@@ -740,10 +902,14 @@ impl JacobianProgram {
 
     fn check(&self, plan: &JacPlan, ws: &JacWorkspace) -> R<()> {
         if plan.inner.owner != self.inner.id {
-            return Err(JacError::Call("the plan was made by another program".into()));
+            return Err(JacError::Call(
+                "the plan was made by another program".into(),
+            ));
         }
         if ws.plan != plan.inner.id {
-            return Err(JacError::Call("the workspace was made for another plan".into()));
+            return Err(JacError::Call(
+                "the workspace was made for another plan".into(),
+            ));
         }
         Ok(())
     }
@@ -759,17 +925,28 @@ impl JacobianProgram {
     /// [`LaneProgram::eval_into`]. A domain plan takes `&[]` and 0. The band
     /// slab stays in `ws` for [`Self::apply`] and [`Self::apply_transpose`].
     #[allow(clippy::too_many_arguments)]
-    pub fn eval_into<T: StorageScalar>(&self, plan: &JacPlan, u: &[f64], aux: &[f64],
-                                       p: &[f64], t: f64, forcing: &ForcingSet,
-                                       cells: &[i32], n: usize, out: &mut [T],
-                                       ws: &mut JacWorkspace) -> R<()> {
+    pub fn eval_into<T: StorageScalar>(
+        &self,
+        plan: &JacPlan,
+        u: &[f64],
+        aux: &[f64],
+        p: &[f64],
+        t: f64,
+        forcing: &ForcingSet,
+        cells: &[i32],
+        n: usize,
+        out: &mut [T],
+        ws: &mut JacWorkspace,
+    ) -> R<()> {
         self.check(plan, ws)?;
         let pl = &*plan.inner;
         ws.evaluated = false;
         let len = |what: &str, want: usize, got: usize| -> R<()> {
             if want != got {
-                return Err(JacError::Call(format!("{what} has length {got}; the plan needs \
-                                                   {want}")));
+                return Err(JacError::Call(format!(
+                    "{what} has length {got}; the plan needs \
+                                                   {want}"
+                )));
             }
             Ok(())
         };
@@ -777,14 +954,26 @@ impl JacobianProgram {
         len("aux", pl.src_aux_len, aux.len())?;
         len("p", pl.n_src_params, p.len())?;
         len("out", pl.out_len, out.len())?;
-        let JacWorkspace { rhs, slab, aux: our_aux, p: our_p, acc, forcing: fcache, .. } = ws;
+        let JacWorkspace {
+            rhs,
+            slab,
+            aux: our_aux,
+            p: our_p,
+            acc,
+            forcing: fcache,
+            ..
+        } = ws;
         let zeros = &pl.zeros[..];
         let aux_in: &[f64] = match &pl.aux_map {
             AuxMap::SourceU => u,
             AuxMap::Copy(m) => {
                 let su = u.len();
                 for &(src, dst, n) in m {
-                    let from = if src < su { &u[src..src + n] } else { &aux[src - su..src - su + n] };
+                    let from = if src < su {
+                        &u[src..src + n]
+                    } else {
+                        &aux[src - su..src - su + n]
+                    };
                     our_aux[dst..dst + n].copy_from_slice(from);
                 }
                 our_aux
@@ -804,8 +993,11 @@ impl JacobianProgram {
             Some(m) => {
                 if fcache.as_ref().map(|c| c.0) != Some(forcing.epoch()) {
                     if forcing.slots() != &pl.src_forcing[..] {
-                        return Err(JacError::Call("the forcing set is not one for the source \
-                                                   program's slots".into()));
+                        return Err(JacError::Call(
+                            "the forcing set is not one for the source \
+                                                   program's slots"
+                                .into(),
+                        ));
                     }
                     let bufs = m.iter().map(|&j| Arc::from(forcing.buffer(j))).collect();
                     let base = match &pl.exec {
@@ -823,7 +1015,9 @@ impl JacobianProgram {
                 }
                 prog.eval_into(zeros, aux_in, p_in, t, f_in, slab, rhs)?;
             }
-            PlanExec::Lanes(lp, _) => lp.eval_into(zeros, aux_in, p_in, t, f_in, cells, n, slab, rhs)?,
+            PlanExec::Lanes(lp, _) => {
+                lp.eval_into(zeros, aux_in, p_in, t, f_in, cells, n, slab, rhs)?
+            }
         }
         let w = pl.width;
         for &(lo, hi) in &pl.zero {
@@ -871,8 +1065,11 @@ impl JacobianProgram {
     fn check_evaluated(&self, plan: &JacPlan, ws: &JacWorkspace) -> R<()> {
         self.check(plan, ws)?;
         if !ws.evaluated {
-            return Err(JacError::Call("no band slab: call eval_into first (a failed \
-                                       evaluation leaves none)".into()));
+            return Err(JacError::Call(
+                "no band slab: call eval_into first (a failed \
+                                       evaluation leaves none)"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -881,8 +1078,13 @@ impl JacobianProgram {
     /// `ws`, nothing assembled. `v` is the source's `u ++ aux` (every state a
     /// column may name), `y` its `u`. Each element is updated in `f64` in
     /// plan order and rounded once per contribution.
-    pub fn apply<T: StorageScalar>(&self, plan: &JacPlan, ws: &JacWorkspace, v: &[T],
-                                   y: &mut [T]) -> R<()> {
+    pub fn apply<T: StorageScalar>(
+        &self,
+        plan: &JacPlan,
+        ws: &JacWorkspace,
+        v: &[T],
+        y: &mut [T],
+    ) -> R<()> {
         self.check_evaluated(plan, ws)?;
         let pl = &*plan.inner;
         self.mf_lengths(pl, v.len(), y.len())?;
@@ -908,8 +1110,13 @@ impl JacobianProgram {
     /// `ḡ += Jᵀ·λ` over the band slab the last [`Self::eval_into`] left in
     /// `ws` (the `vjp_u` of an explicit or Rosenbrock stage). `λ` is the
     /// source's `u`, `ḡ` its `u ++ aux`; accumulated in `f64` in plan order.
-    pub fn apply_transpose(&self, plan: &JacPlan, ws: &JacWorkspace, lambda: &[f64],
-                           gbar: &mut [f64]) -> R<()> {
+    pub fn apply_transpose(
+        &self,
+        plan: &JacPlan,
+        ws: &JacWorkspace,
+        lambda: &[f64],
+        gbar: &mut [f64],
+    ) -> R<()> {
         self.check_evaluated(plan, ws)?;
         let pl = &*plan.inner;
         self.mf_lengths(pl, gbar.len(), lambda.len())?;
@@ -935,7 +1142,10 @@ impl JacobianProgram {
         if cols != pl.src_u_len + pl.src_aux_len || rows != pl.src_u_len {
             return Err(JacError::Call(format!(
                 "matrix-free vectors have lengths (columns {cols}, rows {rows}); the plan needs \
-                 ({}, {})", pl.src_u_len + pl.src_aux_len, pl.src_u_len)));
+                 ({}, {})",
+                pl.src_u_len + pl.src_aux_len,
+                pl.src_u_len
+            )));
         }
         Ok(())
     }
@@ -989,26 +1199,48 @@ impl<'a> Canon<'a> {
 
 /// The (row, column) state cells output position `pos` holds in a domain
 /// plan at lane capacity `l`, as (state, column-major flat cell).
-fn position_cells<'a>(s: &'a ScatterPlan, canon: &Canon<'a>, pos: usize, l: usize)
-                      -> ((&'a str, usize), (&'a str, usize)) {
+fn position_cells<'a>(
+    s: &'a ScatterPlan,
+    canon: &Canon<'a>,
+    pos: usize,
+    l: usize,
+) -> ((&'a str, usize), (&'a str, usize)) {
     match &s.kind {
         PlanKind::LaneBlocks { block_vars, .. } => {
             let n = block_vars.len();
             let (off, ln) = (pos / l, pos % l);
             ((&block_vars[off % n], ln), (&block_vars[off / n], ln))
         }
-        PlanKind::LaneSparseBlocks { block_vars, lu_pattern, .. } => {
+        PlanKind::LaneSparseBlocks {
+            block_vars,
+            lu_pattern,
+            ..
+        } => {
             let (r, c) = lu_pattern[pos / l];
             ((&block_vars[r], pos % l), (&block_vars[c], pos % l))
         }
-        PlanKind::ColumnBanded { cells, axis_dim, vars, kl, .. } => {
+        PlanKind::ColumnBanded {
+            cells,
+            axis_dim,
+            vars,
+            kl,
+            ..
+        } => {
             let nn = cells[*axis_dim] as usize;
             let (off, ln) = (pos / l, pos % l);
             let lev = off % nn;
             let (r, c, d) = column_decode(off, nn, vars.len(), *kl, scatter_w(s));
             let colev = (lev as i64 + d) as usize;
-            ((&vars[r], ScatterPlan::column_cell(cells, *axis_dim, lev, ln)),
-             (&vars[c], ScatterPlan::column_cell(cells, *axis_dim, colev, ln)))
+            (
+                (
+                    &vars[r],
+                    ScatterPlan::column_cell(cells, *axis_dim, lev, ln),
+                ),
+                (
+                    &vars[c],
+                    ScatterPlan::column_cell(cells, *axis_dim, colev, ln),
+                ),
+            )
         }
         PlanKind::Csr { rowptr, colind, .. } => {
             let row = rowptr.partition_point(|&x| x <= pos) - 1;
@@ -1042,40 +1274,73 @@ impl Slots {
         let mut vars = HashMap::new();
         for (blocks, written, base) in [(&t.u, true, 0), (&t.aux, false, t.u_len)] {
             for b in blocks {
-                let ext: Vec<usize> =
-                    b.storage.iter().map(|(lo, hi)| (hi - lo + 1).max(0) as usize).collect();
-                let dense = b.strides.iter().zip(&ext)
+                let ext: Vec<usize> = b
+                    .storage
+                    .iter()
+                    .map(|(lo, hi)| (hi - lo + 1).max(0) as usize)
+                    .collect();
+                let dense = b
+                    .strides
+                    .iter()
+                    .zip(&ext)
                     .try_fold(1usize, |st, (&s, &n)| (s == st || n <= 1).then_some(st * n))
                     .map(|_| ext);
-                vars.insert(b.name.clone(), SlotInfo {
-                    start: base + b.base, len: b.len(), written, dense,
-                });
+                vars.insert(
+                    b.name.clone(),
+                    SlotInfo {
+                        start: base + b.base,
+                        len: b.len(),
+                        written,
+                        dense,
+                    },
+                );
             }
         }
-        Slots { vars, u_len: t.u_len, aux_len: t.aux_len }
+        Slots {
+            vars,
+            u_len: t.u_len,
+            aux_len: t.aux_len,
+        }
     }
 
     /// The lane layout of a program with tile layout `t` laned over `sets`
     /// at `capacity` (RFC U3 §6): its blocks in order, each a column-major
     /// `[lane, other axes…]` block over the variable's axes outside `sets`.
-    fn lanes_of(t: &earthsci_ast::TileLayout, sets: &[String], capacity: usize)
-                -> Result<Slots, String> {
+    fn lanes_of(
+        t: &earthsci_ast::TileLayout,
+        sets: &[String],
+        capacity: usize,
+    ) -> Result<Slots, String> {
         let mut vars = HashMap::new();
         let mut lens = [0usize; 2];
         for (blocks, written, which) in [(&t.u, true, 0), (&t.aux, false, 1)] {
             for b in blocks {
                 if let Some(s) = sets.iter().find(|s| !b.sets.contains(s)) {
-                    return Err(format!("the source state `{}` does not carry the lane set \
-                                        `{s}`", b.name));
+                    return Err(format!(
+                        "the source state `{}` does not carry the lane set \
+                                        `{s}`",
+                        b.name
+                    ));
                 }
-                let ext: Vec<usize> = std::iter::once(capacity).chain(
-                    b.sets.iter().zip(&b.storage)
-                        .filter(|(s, _)| !sets.contains(s))
-                        .map(|(_, (lo, hi))| (hi - lo + 1).max(0) as usize)).collect();
+                let ext: Vec<usize> = std::iter::once(capacity)
+                    .chain(
+                        b.sets
+                            .iter()
+                            .zip(&b.storage)
+                            .filter(|(s, _)| !sets.contains(s))
+                            .map(|(_, (lo, hi))| (hi - lo + 1).max(0) as usize),
+                    )
+                    .collect();
                 let len = ext.iter().product::<usize>();
-                vars.insert(b.name.clone(), SlotInfo {
-                    start: lens[which], len, written, dense: Some(ext),
-                });
+                vars.insert(
+                    b.name.clone(),
+                    SlotInfo {
+                        start: lens[which],
+                        len,
+                        written,
+                        dense: Some(ext),
+                    },
+                );
                 lens[which] += len;
             }
         }
@@ -1085,7 +1350,11 @@ impl Slots {
                 s.start += lens[0];
             }
         }
-        Ok(Slots { vars, u_len: lens[0], aux_len: lens[1] })
+        Ok(Slots {
+            vars,
+            u_len: lens[0],
+            aux_len: lens[1],
+        })
     }
 
     fn lane(t: &earthsci_ast::LaneLayout) -> Slots {
@@ -1093,15 +1362,26 @@ impl Slots {
         let mut vars = HashMap::new();
         for (blocks, written, base) in [(&t.u, true, 0), (&t.aux, false, t.u_len)] {
             for b in blocks {
-                vars.insert(b.name.clone(), SlotInfo {
-                    start: base + b.offset * l,
-                    len: l * b.extents.iter().product::<usize>(),
-                    written,
-                    dense: Some(std::iter::once(l).chain(b.extents.iter().copied()).collect()),
-                });
+                vars.insert(
+                    b.name.clone(),
+                    SlotInfo {
+                        start: base + b.offset * l,
+                        len: l * b.extents.iter().product::<usize>(),
+                        written,
+                        dense: Some(
+                            std::iter::once(l)
+                                .chain(b.extents.iter().copied())
+                                .collect(),
+                        ),
+                    },
+                );
             }
         }
-        Slots { vars, u_len: t.u_len, aux_len: t.aux_len }
+        Slots {
+            vars,
+            u_len: t.u_len,
+            aux_len: t.aux_len,
+        }
     }
 }
 
@@ -1235,6 +1515,8 @@ impl JacWorkspace {
 
 impl fmt::Debug for JacWorkspace {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JacWorkspace").field("slab", &self.slab.len()).finish()
+        f.debug_struct("JacWorkspace")
+            .field("slab", &self.slab.len())
+            .finish()
     }
 }

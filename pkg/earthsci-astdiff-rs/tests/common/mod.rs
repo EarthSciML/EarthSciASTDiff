@@ -20,9 +20,15 @@ pub fn load(name: &str) -> earthsci_ast::EsmFile {
 /// The pinned point of `<name>.jvals.json` as an oracle `Env`, plus the
 /// golden itself.
 pub fn jvals_env(name: &str) -> (Env, Value) {
-    let g: Value = serde_json::from_str(&fs::read_to_string(
-        root().join("tests/goldens").join(format!("{name}.jvals.json")))
-        .unwrap()).unwrap();
+    let g: Value = serde_json::from_str(
+        &fs::read_to_string(
+            root()
+                .join("tests/goldens")
+                .join(format!("{name}.jvals.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     // cell-named state values → nested arrays
     let mut states: HashMap<String, Value> = HashMap::new();
     let mut cells: HashMap<String, Vec<(Vec<i64>, f64)>> = HashMap::new();
@@ -31,7 +37,9 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
         if let Some(br) = cellname.find('[') {
             let base = cellname[..br].to_string();
             let idx: Vec<i64> = cellname[br + 1..cellname.len() - 1]
-                .split(',').map(|x| x.parse().unwrap()).collect();
+                .split(',')
+                .map(|x| x.parse().unwrap())
+                .collect();
             cells.entry(base).or_default().push((idx, val));
         } else {
             states.insert(cellname.clone(), Value::from(val));
@@ -41,7 +49,8 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
         // nested arrays, 1-based cells, any rank
         let rank = pts[0].0.len();
         let shape: Vec<i64> = (0..rank)
-            .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap()).collect();
+            .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap())
+            .collect();
         fn full(shape: &[i64]) -> Value {
             match shape.split_first() {
                 None => Value::Null,
@@ -58,8 +67,12 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
         }
         states.insert(base, arr);
     }
-    let params: HashMap<String, Value> = g["params"].as_object().unwrap()
-        .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let params: HashMap<String, Value> = g["params"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     let env = Env {
         states,
         params,

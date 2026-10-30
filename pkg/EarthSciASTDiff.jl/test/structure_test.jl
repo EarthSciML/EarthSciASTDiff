@@ -34,8 +34,10 @@ end
     n = 12; ns = 3; nc = 4
     names = res.rownames
     # species-major layout: A[1..4], B[1..4], C[1..4] → cell-major permutation
-    cellmajor = [findfirst(==(sp * "[" * string(c) * "]"), names)
-                 for c in 1:nc for sp in ("A", "B", "C")]
+    cellmajor = [
+        findfirst(==(sp * "[" * string(c) * "]"), names)
+            for c in 1:nc for sp in ("A", "B", "C")
+    ]
     P = res.pattern[cellmajor, cellmajor]
     for i in 1:n, j in 1:n
         blk_i = (i - 1) ÷ ns; blk_j = (j - 1) ÷ ns

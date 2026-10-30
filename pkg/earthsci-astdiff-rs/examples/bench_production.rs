@@ -20,11 +20,13 @@ fn median<F: FnMut()>(mut f: F) -> f64 {
     for _ in 0..5 {
         f();
     }
-    let mut t: Vec<f64> = (0..50).map(|_| {
-        let s = Instant::now();
-        f();
-        s.elapsed().as_secs_f64()
-    }).collect();
+    let mut t: Vec<f64> = (0..50)
+        .map(|_| {
+            let s = Instant::now();
+            f();
+            s.elapsed().as_secs_f64()
+        })
+        .collect();
     t.sort_by(f64::total_cmp);
     t[25]
 }
@@ -34,8 +36,14 @@ fn us(x: f64) -> String {
 }
 
 pub fn bd_chem(n: usize) -> Value {
-    let mut d: Value = serde_json::from_str(&std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/valid/bd_chem.esm")).unwrap()).unwrap();
+    let mut d: Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/valid/bd_chem.esm"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     d["index_sets"]["z"]["size"] = json!(n);
     d
 }
@@ -43,8 +51,10 @@ pub fn bd_chem(n: usize) -> Value {
 pub fn column(nx: usize, nz: usize) -> Value {
     let ix = |v: &str, a: Value, b: Value| json!({"op": "index", "args": [v, a, b]});
     let kp1 = json!({"op": "+", "args": ["k", 1]});
-    let chem = |k: Value| json!({"op": "*", "args": [-1, "k1", ix("A", json!("i"), k.clone()),
-                                                   ix("B", json!("i"), k)]});
+    let chem = |k: Value| {
+        json!({"op": "*", "args": [-1, "k1", ix("A", json!("i"), k.clone()),
+                                                   ix("B", json!("i"), k)]})
+    };
     json!({
         "esm": "1.1.0",
         "metadata": {"name": "Column"},
@@ -83,8 +93,14 @@ fn source(file: &EsmFile) -> RhsProgram {
 }
 
 fn state(src: &RhsProgram) -> (Vec<f64>, Vec<f64>) {
-    let u = (0..src.n_states()).map(|i| 0.3 + 0.5 * ((i as f64) * 0.618).fract()).collect();
-    let p = src.parameters().iter().map(|s| s.default.unwrap_or(0.5)).collect();
+    let u = (0..src.n_states())
+        .map(|i| 0.3 + 0.5 * ((i as f64) * 0.618).fract())
+        .collect();
+    let p = src
+        .parameters()
+        .iter()
+        .map(|s| s.default.unwrap_or(0.5))
+        .collect();
     (u, p)
 }
 
@@ -106,66 +122,111 @@ fn domain(name: &str, file: &EsmFile, layout: Layout) {
     let f = src.default_forcing();
     let mut out = vec![0.0f64; plan.out_len()];
     let mut o32 = vec![0.0f32; plan.out_len()];
-    let ev = median(|| prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws)
-                    .unwrap());
-    let ev32 = median(|| prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut o32, &mut ws)
-                      .unwrap());
-    prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws).unwrap();
+    let ev = median(|| {
+        prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws)
+            .unwrap()
+    });
+    let ev32 = median(|| {
+        prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut o32, &mut ws)
+            .unwrap()
+    });
+    prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws)
+        .unwrap();
     let mut y = vec![0.0; u.len()];
     let ap = median(|| prog.apply(&plan, &ws, &u, &mut y).unwrap());
     let mut g = vec![0.0; u.len()];
     let at = median(|| prog.apply_transpose(&plan, &ws, &u, &mut g).unwrap());
     let rhs = rhs_time(&src, &u, &p);
-    println!("{name:<28} build+plan {build:>7.3} s | eval_into {} (f32 {}) | {:.2}× RHS {} | \
+    println!(
+        "{name:<28} build+plan {build:>7.3} s | eval_into {} (f32 {}) | {:.2}× RHS {} | \
               apply {} | apply_transpose {} ({:.2}× apply)",
-             us(ev), us(ev32), ev / rhs, us(rhs), us(ap), us(at), at / ap);
+        us(ev),
+        us(ev32),
+        ev / rhs,
+        us(rhs),
+        us(ap),
+        us(at),
+        at / ap
+    );
 }
 
 fn lanes(name: &str, file: &EsmFile, layout: Layout, cap: usize) {
     let src = source(file);
     let (u, p) = state(&src);
     let prog = JacobianProgram::build(file, None, &BuildOptions::default()).unwrap();
-    let plan = prog.plan(&layout, &src, Exec::Lanes { capacity: cap }).unwrap();
+    let plan = prog
+        .plan(&layout, &src, Exec::Lanes { capacity: cap })
+        .unwrap();
     let mut ws = prog.new_workspace(&plan);
     let f = src.default_forcing();
     let lay = src.layout();
     let ncell = lay.u[0].len();
     // every cell, batch by batch, its lane inputs gathered per batch
-    let batches: Vec<(Vec<i32>, Vec<f64>)> = (0..ncell).step_by(cap).map(|c0| {
-        let cells: Vec<i32> = (c0..(c0 + cap).min(ncell)).map(|c| c as i32 + 1).collect();
-        let mut lu = vec![0.0; lay.u.len() * cap];
-        for (s, b) in lay.u.iter().enumerate() {
-            for (l, c) in cells.iter().enumerate() {
-                lu[s * cap + l] = u[b.base + *c as usize - 1];
+    let batches: Vec<(Vec<i32>, Vec<f64>)> = (0..ncell)
+        .step_by(cap)
+        .map(|c0| {
+            let cells: Vec<i32> = (c0..(c0 + cap).min(ncell)).map(|c| c as i32 + 1).collect();
+            let mut lu = vec![0.0; lay.u.len() * cap];
+            for (s, b) in lay.u.iter().enumerate() {
+                for (l, c) in cells.iter().enumerate() {
+                    lu[s * cap + l] = u[b.base + *c as usize - 1];
+                }
             }
-        }
-        (cells, lu)
-    }).collect();
+            (cells, lu)
+        })
+        .collect();
     let mut out = vec![0.0f64; plan.out_len()];
     let ev = median(|| {
         for (cells, lu) in &batches {
-            prog.eval_into(&plan, lu, &[], &p, 0.5, &f, cells, cells.len(), &mut out, &mut ws)
-                .unwrap();
+            prog.eval_into(
+                &plan,
+                lu,
+                &[],
+                &p,
+                0.5,
+                &f,
+                cells,
+                cells.len(),
+                &mut out,
+                &mut ws,
+            )
+            .unwrap();
         }
     });
     let rhs = rhs_time(&src, &u, &p);
-    println!("{name:<28} lanes cap {cap:<4}            | eval_into {} over {} batches | {:.2}× RHS",
-             us(ev), batches.len(), ev / rhs);
+    println!(
+        "{name:<28} lanes cap {cap:<4}            | eval_into {} over {} batches | {:.2}× RHS",
+        us(ev),
+        batches.len(),
+        ev / rhs
+    );
 }
 
 fn main() {
-    let n: usize = std::env::args().nth(1).map(|s| s.parse().unwrap()).unwrap_or(6552);
+    let n: usize = std::env::args()
+        .nth(1)
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(6552);
     // `--write-docs DIR`: the benchmark documents, for scripts/bench-production.jl
     if let Some(dir) = std::env::args().skip_while(|a| a != "--write-docs").nth(1) {
-        let w = |name: &str, d: Value| std::fs::write(format!("{dir}/{name}.esm"),
-                                                    serde_json::to_string(&d).unwrap()).unwrap();
+        let w = |name: &str, d: Value| {
+            std::fs::write(
+                format!("{dir}/{name}.esm"),
+                serde_json::to_string(&d).unwrap(),
+            )
+            .unwrap()
+        };
         w("bd_chem", bd_chem(n));
         w("column", column((n / 72).max(1), 72));
     }
     let chem = earthsci_ast::load_document(&bd_chem(n)).unwrap();
     println!("B1: bd_chem, {n} cells × 3 species");
     domain("  LaneBlocks (domain)", &chem, Layout::LaneBlocks);
-    domain("  LaneSparseBlocks (domain)", &chem, Layout::LaneSparseBlocks);
+    domain(
+        "  LaneSparseBlocks (domain)",
+        &chem,
+        Layout::LaneSparseBlocks,
+    );
     domain("  Csr (domain)", &chem, Layout::Csr);
     lanes("  LaneBlocks", &chem, Layout::LaneBlocks, 256);
     lanes("  LaneSparseBlocks", &chem, Layout::LaneSparseBlocks, 256);
@@ -173,6 +234,10 @@ fn main() {
     let nx = (n / nz).max(1);
     let col = earthsci_ast::load_document(&column(nx, nz)).unwrap();
     println!("Column: {nx} columns × {nz} levels × 2 species, vertical exchange");
-    domain("  ColumnBanded (domain)", &col, Layout::ColumnBanded { axis: "z".into() });
+    domain(
+        "  ColumnBanded (domain)",
+        &col,
+        Layout::ColumnBanded { axis: "z".into() },
+    );
     domain("  Csr (domain)", &col, Layout::Csr);
 }

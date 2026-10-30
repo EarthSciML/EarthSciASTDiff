@@ -1,11 +1,9 @@
 """Per-op derivative rules against central finite differences of the
 package's own evaluator (mirrors the Julia scalar_rules_test.jl)."""
-import math
 
 import pytest
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as ex
-
 from earthsci_astdiff import DerivativeRuleError, Site, dscalar
 from earthsci_astdiff.expr_helpers import op
 
@@ -43,13 +41,25 @@ CASES = [
     ({"op": "acos", "args": ["x"]}, 0.4),
     ({"op": "atan", "args": ["x"]}, 0.8),
     ({"op": "abs", "args": ["x"]}, -0.7),
-    ({"op": "ifelse", "args": [{"op": "<", "args": ["x", 1.0]},
-                               {"op": "*", "args": [2.0, "x"]},
-                               {"op": "^", "args": ["x", 2]}]}, 0.4),
-    ({"op": "max", "args": [{"op": "*", "args": [2.0, "x"]},
-                            {"op": "*", "args": [3.0, "x"]}, 1.0]}, 0.8),
-    ({"op": "min", "args": [{"op": "*", "args": [2.0, "x"]},
-                            {"op": "exp", "args": ["x"]}]}, 0.3),
+    (
+        {
+            "op": "ifelse",
+            "args": [
+                {"op": "<", "args": ["x", 1.0]},
+                {"op": "*", "args": [2.0, "x"]},
+                {"op": "^", "args": ["x", 2]},
+            ],
+        },
+        0.4,
+    ),
+    (
+        {
+            "op": "max",
+            "args": [{"op": "*", "args": [2.0, "x"]}, {"op": "*", "args": [3.0, "x"]}, 1.0],
+        },
+        0.8,
+    ),
+    ({"op": "min", "args": [{"op": "*", "args": [2.0, "x"]}, {"op": "exp", "args": ["x"]}]}, 0.3),
 ]
 
 
@@ -64,11 +74,9 @@ def test_structural_zero_and_policies():
     assert dscalar(ex({"op": "*", "args": ["y", 3.0]}), Site.of("x")) == 0
     # comparisons and datetime.* are zero-derivative
     assert dscalar(ex({"op": "<", "args": ["x", 1.0]}), Site.of("x")) == 0
-    assert dscalar(ex({"op": "fn", "name": "datetime.year", "args": ["x"]}),
-                   Site.of("x")) == 0
+    assert dscalar(ex({"op": "fn", "name": "datetime.year", "args": ["x"]}), Site.of("x")) == 0
     # ... except julian_day, which is continuous: d/dt = 1/86400
-    jd = ex({"op": "fn", "name": "datetime.julian_day",
-             "args": [{"op": "*", "args": [3, "x"]}]})
+    jd = ex({"op": "fn", "name": "datetime.julian_day", "args": [{"op": "*", "args": [3, "x"]}]})
     assert evaluate(dscalar(jd, Site.of("x")), {"x": 0.7}) == pytest.approx(3 / 86400)
     # a datetime name outside esm-spec §9.2 has no rule
     with pytest.raises(DerivativeRuleError):
@@ -76,8 +84,7 @@ def test_structural_zero_and_policies():
     # a julian_day call of the wrong arity is a rule error, not silently
     # differentiated through its first argument
     with pytest.raises(DerivativeRuleError):
-        dscalar(ex({"op": "fn", "name": "datetime.julian_day", "args": ["x", "x"]}),
-                Site.of("x"))
+        dscalar(ex({"op": "fn", "name": "datetime.julian_day", "args": ["x", "x"]}), Site.of("x"))
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))
@@ -97,8 +104,9 @@ def test_interp_linear_slope():
 
 
 def test_interp_bilinear_partials():
-    tbl = ex({"op": "const", "args": [],
-              "value": [[1.0, 2.0, 4.0], [3.0, 5.0, 9.0], [4.0, 7.0, 13.0]]})
+    tbl = ex(
+        {"op": "const", "args": [], "value": [[1.0, 2.0, 4.0], [3.0, 5.0, 9.0], [4.0, 7.0, 13.0]]}
+    )
     axx = ex({"op": "const", "args": [], "value": [0.0, 1.0, 2.0]})
     axy = ex({"op": "const", "args": [], "value": [0.0, 10.0, 30.0]})
     e = op("fn", tbl, axx, axy, "x", "y", name="interp.bilinear")
@@ -109,11 +117,22 @@ def test_interp_bilinear_partials():
         return evaluate(e, {"x": x, "y": y})
 
     h = 1e-5
-    pts = [(0.4, 7.0), (1.5, 7.0), (0.4, 21.0), (1.5, 21.0),
-           (-1.0, 12.0), (3.0, 12.0), (0.7, -5.0), (0.7, 45.0),
-           (-1.0, -5.0), (3.0, 45.0)]
+    pts = [
+        (0.4, 7.0),
+        (1.5, 7.0),
+        (0.4, 21.0),
+        (1.5, 21.0),
+        (-1.0, 12.0),
+        (3.0, 12.0),
+        (0.7, -5.0),
+        (0.7, 45.0),
+        (-1.0, -5.0),
+        (3.0, 45.0),
+    ]
     for x, y in pts:
         assert evaluate(dx, {"x": x, "y": y}) == pytest.approx(
-            (f(x + h, y) - f(x - h, y)) / (2 * h), abs=1e-8)
+            (f(x + h, y) - f(x - h, y)) / (2 * h), abs=1e-8
+        )
         assert evaluate(dy, {"x": x, "y": y}) == pytest.approx(
-            (f(x, y + h) - f(x, y - h)) / (2 * h), abs=1e-8)
+            (f(x, y + h) - f(x, y - h)) / (2 * h), abs=1e-8
+        )

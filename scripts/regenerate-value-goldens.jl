@@ -10,10 +10,17 @@ root = normpath(joinpath(@__DIR__, ".."))
 # `<name>.time.jvals.json` (wrt = :time, the single column `t`) for the
 # fixtures in `TIME`, at the same pinned point.
 const TIME = ("tgrad_photolysis",)
-for (name, wrt) in Iterators.flatten((
-        ((n, :states) for n in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-                                "minmod_adv", "contracting_observed", "tgrad_photolysis")),
-        ((n, :time) for n in TIME)))
+for (name, wrt) in Iterators.flatten(
+        (
+            (
+                (n, :states) for n in (
+                        "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
+                        "minmod_adv", "contracting_observed", "tgrad_photolysis",
+                    )
+            ),
+            ((n, :time) for n in TIME),
+        )
+    )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     f!, u0, p0, _, vm = build_evaluator(file)
@@ -23,7 +30,7 @@ for (name, wrt) in Iterators.flatten((
     # The native compiler declines a derived model whose coefficients carry
     # a sum (`compiler_refused_rule`); the interpreter evaluates them.
     kw = name in ("contracted_ops", "contracting_observed") ?
-         (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
+        (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
     res = assemble_jacobian(file; wrt = wrt, u = u, t = t, kw...)
     rn, cn = res.rownames, res.colnames
     entries = Any[]
@@ -32,14 +39,17 @@ for (name, wrt) in Iterators.flatten((
         push!(entries, Any[rn[I[k]], cn[J[k]], V[k]])
     end
     sort!(entries; by = e -> (e[1], e[2]))
-    doc = OrderedDict{String,Any}(
+    doc = OrderedDict{String, Any}(
         "t" => t,
-        "u" => OrderedDict{String,Any}(rn[i] => u[i] for i in 1:n),
-        "params" => p0 === nothing ? OrderedDict{String,Any}() :
-                    OrderedDict{String,Any}(String(k) => v for (k, v) in pairs(p0)),
-        "entries" => entries)
-    path = joinpath(root, "tests", "goldens",
-                    wrt == :time ? "$name.time.jvals.json" : "$name.jvals.json")
+        "u" => OrderedDict{String, Any}(rn[i] => u[i] for i in 1:n),
+        "params" => p0 === nothing ? OrderedDict{String, Any}() :
+            OrderedDict{String, Any}(String(k) => v for (k, v) in pairs(p0)),
+        "entries" => entries
+    )
+    path = joinpath(
+        root, "tests", "goldens",
+        wrt == :time ? "$name.time.jvals.json" : "$name.jvals.json"
+    )
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(entries), " stored entries)")
 end

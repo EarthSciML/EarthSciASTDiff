@@ -39,8 +39,8 @@ function exponent(sizes, times)
     ok = [i for i in eachindex(sizes) if sizes[i] > 0 && times[i] > 0]
     length(ok) < 2 && return NaN
     x = [log(Float64(sizes[i])) for i in ok]; y = [log(times[i]) for i in ok]
-    xm = sum(x)/length(x); ym = sum(y)/length(y)
-    return sum((x .- xm) .* (y .- ym)) / max(sum((x .- xm).^2), eps())
+    xm = sum(x) / length(x); ym = sum(y) / length(y)
+    return sum((x .- xm) .* (y .- ym)) / max(sum((x .- xm) .^ 2), eps())
 end
 
 function report_ladder(label, sizes, times)
@@ -48,10 +48,14 @@ function report_ladder(label, sizes, times)
     say("$label   (size = RHS nodes)")
     say(@sprintf("  %10s %12s %10s", "size", "seconds", "s/node"))
     for i in eachindex(sizes)
-        say(@sprintf("  %10d %12.3f %10.2e", sizes[i], times[i],
-                     times[i]/max(sizes[i], 1)))
+        say(
+            @sprintf(
+                "  %10d %12.3f %10.2e", sizes[i], times[i],
+                times[i] / max(sizes[i], 1)
+            )
+        )
     end
-    say(@sprintf("  fitted exponent d log t / d log n = %.2f", exponent(sizes, times)))
+    return say(@sprintf("  fitted exponent d log t / d log n = %.2f", exponent(sizes, times)))
 end
 
 # ── synthetic mode ───────────────────────────────────────────────────────────
@@ -68,17 +72,27 @@ end
 # stop early where the site IS present.
 function synthetic_body(k::Int; target_region::Int = 1)
     i = VarExpr("i")
-    rd(nm, off) = OpExpr("index", ASTExpr[VarExpr(nm),
-                         off == 0 ? i : OpExpr("+", ASTExpr[i, IntExpr(off)])])
+    rd(nm, off) = OpExpr(
+        "index", ASTExpr[
+            VarExpr(nm),
+            off == 0 ? i : OpExpr("+", ASTExpr[i, IntExpr(off)]),
+        ]
+    )
     body = IntExpr(0)
     for r in 1:k
         nm = r == target_region ? "u" : "w"
-        cond = OpExpr("and", ASTExpr[
-            OpExpr(">=", ASTExpr[i, IntExpr(r)]),
-            OpExpr("<=", ASTExpr[i, IntExpr(r)])])
-        val = OpExpr("*", ASTExpr[
-            OpExpr("-", ASTExpr[rd(nm, 1), rd(nm, 0)]),
-            OpExpr("max", ASTExpr[rd(nm, 0), NumExpr(1e-30)])])
+        cond = OpExpr(
+            "and", ASTExpr[
+                OpExpr(">=", ASTExpr[i, IntExpr(r)]),
+                OpExpr("<=", ASTExpr[i, IntExpr(r)]),
+            ]
+        )
+        val = OpExpr(
+            "*", ASTExpr[
+                OpExpr("-", ASTExpr[rd(nm, 1), rd(nm, 0)]),
+                OpExpr("max", ASTExpr[rd(nm, 0), NumExpr(1.0e-30)]),
+            ]
+        )
         body = OpExpr("ifelse", ASTExpr[cond, val, body])
     end
     return body
@@ -93,8 +107,12 @@ function synthetic_bands(b::Int, site)
     out = ED.Band[]
     for j in 1:b
         coef = OpExpr("*", ASTExpr[IntExpr(1 + (j ÷ 2) % max(b ÷ 2, 1)), base])
-        push!(out, ED.Band(Tuple{Int,Int}[(j, j)], Union{String,Int}["i"],
-                           ASTExpr[VarExpr("i")], coef))
+        push!(
+            out, ED.Band(
+                Tuple{Int, Int}[(j, j)], Union{String, Int}["i"],
+                ASTExpr[VarExpr("i")], coef
+            )
+        )
     end
     return out
 end
@@ -117,8 +135,12 @@ function run_synthetic(ks)
         bands = synthetic_bands(k, site); push!(bs, length(bands))
         GC.gc()
         t = time(); ED.merge_bands(bands);                 push!(tm, time() - t)
-        say(@sprintf("k=%-6d nodes=%-9d dscalar=%8.3f s  simplify_branches=%8.3f s  merge_bands(%d)=%8.3f s",
-                     k, n, td[end], ts[end], bs[end], tm[end]))
+        say(
+            @sprintf(
+                "k=%-6d nodes=%-9d dscalar=%8.3f s  simplify_branches=%8.3f s  merge_bands(%d)=%8.3f s",
+                k, n, td[end], ts[end], bs[end], tm[end]
+            )
+        )
     end
     report_ladder("dscalar", sizes, td)
     report_ladder("simplify_branches", sizes, ts)
@@ -135,7 +157,13 @@ function load_system(esm, mp, incl, select)
     file = EA.load_path(esm; metaparameters = mp)
     flat = EA.promote_downstream_shapes(EA.algebraic_states_to_observeds(EA.flatten(file)))
     select === nothing && return flat
-    return Base.invokelatest(Main.eval, :(let flat = $flat; $(Meta.parse(select)); end))
+    return Base.invokelatest(
+        Main.eval, :(
+            let flat = $flat
+                $(Meta.parse(select))
+            end
+        )
+    )
 end
 
 function run_document(esm, mps, incl, select, wrt)
@@ -149,8 +177,12 @@ function run_document(esm, mps, incl, select, wrt)
         GC.gc()
         t = time(); entries = ED.jacobian_bands(src; wrt = wrt); dt = time() - t
         push!(sizes, n); push!(times, dt)
-        say(@sprintf("mp=%s  load=%.1f s  D-eqs=%d  rhs nodes=%d  jacobian_bands=%.2f s  bands=%d  peak rss=%.2f GiB",
-                     JSON3.write(mp), tload, length(deqs), n, dt, length(entries), rssgib()))
+        say(
+            @sprintf(
+                "mp=%s  load=%.1f s  D-eqs=%d  rhs nodes=%d  jacobian_bands=%.2f s  bands=%d  peak rss=%.2f GiB",
+                JSON3.write(mp), tload, length(deqs), n, dt, length(entries), rssgib()
+            )
+        )
     end
     report_ladder("jacobian_bands", sizes, times)
     return nothing
@@ -162,22 +194,35 @@ function main(args)
     i = 1
     while i <= length(args)
         a = args[i]
-        if a == "--synthetic";           synth = true; i += 1
-        elseif a == "--k";               ks = parse.(Int, split(args[i+1], ",")); i += 2
-        elseif a == "--esm";             esm = args[i+1]; i += 2
+        if a == "--synthetic"
+            synth = true; i += 1
+        elseif a == "--k"
+            ks = parse.(Int, split(args[i + 1], ",")); i += 2
+        elseif a == "--esm"
+            esm = args[i + 1]; i += 2
         elseif a == "--metaparameters"   # metaparameters are integers by spec
-            push!(mps, Dict{String,Int}(String(k) => Int(v)
-                                        for (k, v) in JSON3.read(args[i+1], Dict{String,Any})))
+            push!(
+                mps, Dict{String, Int}(
+                    String(k) => Int(v)
+                        for (k, v) in JSON3.read(args[i + 1], Dict{String, Any})
+                )
+            )
             i += 2
-        elseif a == "--include";         push!(incl, args[i+1]); i += 2
-        elseif a == "--select";          select = args[i+1]; i += 2
-        elseif a == "--wrt";             wrt = Symbol(args[i+1]); i += 2
-        else error("unknown argument $a")
+        elseif a == "--include"
+            push!(incl, args[i + 1]); i += 2
+        elseif a == "--select"
+            select = args[i + 1]; i += 2
+        elseif a == "--wrt"
+            wrt = Symbol(args[i + 1]); i += 2
+        else
+            error("unknown argument $a")
         end
     end
     synth && run_synthetic(ks)
-    esm === nothing || run_document(esm, isempty(mps) ? [Dict{String,Int}()] : mps,
-                                    incl, select, wrt)
+    esm === nothing || run_document(
+        esm, isempty(mps) ? [Dict{String, Int}()] : mps,
+        incl, select, wrt
+    )
     (synth || esm !== nothing) ||
         error("nothing to do: pass --synthetic and/or --esm PATH")
     return nothing

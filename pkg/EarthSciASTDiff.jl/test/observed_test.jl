@@ -13,29 +13,48 @@ using EarthSciASTDiff: _observed_defs, view_states, sysview, BandError
 
 @testset "arrayed observed: indexed definition is inlined" begin
     K = 3.0
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     _idx(v, i) = O("op" => "index", "args" => Any[v, i])
-    _faq(body) = O("op" => "faq", "args" => Any[], "output_idx" => Any["i"],
-                   "ranges" => O("i" => Any[1, 4]), "expr" => body)
-    doc(ylhs) = O("esm" => "1.1.0",
+    _faq(body) = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any["i"],
+        "ranges" => O("i" => Any[1, 4]), "expr" => body
+    )
+    doc(ylhs) = O(
+        "esm" => "1.1.0",
         "metadata" => O("name" => "ArrObs"),
         "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
-        "models" => O("ArrObs" => O(
-            "variables" => O(
-                "u" => O("type" => "unknown", "shape" => Any["x"], "default" => 0.5),
-                "y" => O("type" => "unknown", "shape" => Any["x"]),
-                "k" => O("type" => "parameter", "default" => K)),
-            "equations" => Any[
-                O("lhs" => ylhs,
-                  "rhs" => O("op" => "*", "args" => Any["k",
-                      O("op" => "^", "args" => Any[_idx("u", "i"), 2])])),
-                O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                  "rhs" => _faq(O("op" => "-", "args" => Any[_idx("y", "i")])))])))
+        "models" => O(
+            "ArrObs" => O(
+                "variables" => O(
+                    "u" => O("type" => "unknown", "shape" => Any["x"], "default" => 0.5),
+                    "y" => O("type" => "unknown", "shape" => Any["x"]),
+                    "k" => O("type" => "parameter", "default" => K)
+                ),
+                "equations" => Any[
+                    O(
+                        "lhs" => ylhs,
+                        "rhs" => O(
+                            "op" => "*", "args" => Any[
+                                "k",
+                                O("op" => "^", "args" => Any[_idx("u", "i"), 2]),
+                            ]
+                        )
+                    ),
+                    O(
+                        "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                        "rhs" => _faq(O("op" => "-", "args" => Any[_idx("y", "i")]))
+                    ),
+                ]
+            )
+        )
+    )
 
     mktempdir() do d
-        load(dd) = (path = joinpath(d, "arr_obs.esm");
-                    open(io -> JSON3.write(io, dd), path, "w");
-                    EarthSciAST.load_path(path))
+        load(dd) = (
+            path = joinpath(d, "arr_obs.esm");
+            open(io -> JSON3.write(io, dd), path, "w");
+            EarthSciAST.load_path(path)
+        )
 
         file = load(doc(_faq(_idx("y", "i"))))
         sv = sysview(file, "ArrObs")
@@ -48,8 +67,8 @@ using EarthSciASTDiff: _observed_defs, view_states, sysview, BandError
         f!, _, p, _, _ = build_evaluator(file)
         u = [0.3, 0.7, 1.1, 1.9]
         res = assemble_jacobian(file; u = u, p = p)
-        @test maximum(abs.(Matrix(res.J) .- Matrix(ad_jacobian(f!, u, p, 0.0)))) ≤ 1e-14
-        @test Matrix(res.J) ≈ Diagonal(-2K .* u) atol = 1e-14
+        @test maximum(abs.(Matrix(res.J) .- Matrix(ad_jacobian(f!, u, p, 0.0)))) ≤ 1.0e-14
+        @test Matrix(res.J) ≈ Diagonal(-2K .* u) atol = 1.0e-14
 
         # Pinned (`y[1] ~ …`): an observed, but with no whole-array form —
         # loud, not a silent state slot.

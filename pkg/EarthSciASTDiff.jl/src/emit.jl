@@ -21,15 +21,15 @@ function _sj(io::IO, x::AbstractDict)
         i > 1 && print(io, ',')
         _sj(io, k); print(io, ':'); _sj(io, x[k])
     end
-    print(io, '}')
+    return print(io, '}')
 end
-function _sj(io::IO, x::Union{AbstractVector,Tuple})
+function _sj(io::IO, x::Union{AbstractVector, Tuple})
     print(io, '[')
     for (i, v) in enumerate(x)
         i > 1 && print(io, ',')
         _sj(io, v)
     end
-    print(io, ']')
+    return print(io, ']')
 end
 _sj(io::IO, x) = print(io, JSON3.write(x))
 
@@ -39,13 +39,13 @@ _ser_expr(e::ASTExpr) = EarthSciAST.serialize_expression(e)
 
 function serialize_band(en::JacEntry)
     b = en.band
-    d = OrderedDict{String,Any}(
-        "row"     => en.u,
-        "col"     => en.v,
-        "rows"    => Any[Any[lo, hi] for (lo, hi) in b.rows],
+    d = OrderedDict{String, Any}(
+        "row" => en.u,
+        "col" => en.v,
+        "rows" => Any[Any[lo, hi] for (lo, hi) in b.rows],
         "row_idx" => Any[b.ridx...],
         "col_idx" => Any[_ser_expr(c) for c in b.cidx],
-        "coef"    => _ser_expr(b.coef),
+        "coef" => _ser_expr(b.coef),
     )
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
@@ -54,15 +54,19 @@ end
 
 function parse_band(d::AbstractDict)::JacEntry
     band = Band(
-        Tuple{Int,Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
-        Union{String,Int}[x isa AbstractString ? String(x) : Int(x)
-                          for x in d["row_idx"]],
+        Tuple{Int, Int}[(Int(r[1]), Int(r[2])) for r in d["rows"]],
+        Union{String, Int}[
+            x isa AbstractString ? String(x) : Int(x)
+                for x in d["row_idx"]
+        ],
         ASTExpr[expression_from_json(c) for c in d["col_idx"]],
         expression_from_json(d["coef"]),
         haskey(d, "contracted") ?
-            Tuple{String,Int,Int}[(String(c[1]), Int(c[2]), Int(c[3]))
-                                  for c in d["contracted"]] :
-            Tuple{String,Int,Int}[],
+            Tuple{String, Int, Int}[
+                (String(c[1]), Int(c[2]), Int(c[3]))
+                for c in d["contracted"]
+            ] :
+            Tuple{String, Int, Int}[],
     )
     return JacEntry(String(d["row"]), String(d["col"]), band)
 end
@@ -85,51 +89,71 @@ and the emitted coefficients reference them via `apply_expression_template`
 — the size control for limiter-heavy schemes. [`parse_jacobian_block`](@ref)
 expands the references back, so the round-trip is exact either way.
 """
-function jacobian_document(file::EarthSciAST.EsmFile, model_name; wrt::Symbol = :states,
-                           cse::Bool = true, cse_min_nodes::Int = 12)
+function jacobian_document(
+        file::EarthSciAST.EsmFile, model_name; wrt::Symbol = :states,
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
-    _attach_jacobians!(doc, sv, String(model_name); wrt = wrt,
-                       cse = cse, cse_min_nodes = cse_min_nodes)
+    _attach_jacobians!(
+        doc, sv, String(model_name); wrt = wrt,
+        cse = cse, cse_min_nodes = cse_min_nodes
+    )
     return doc
 end
 
-function jacobian_document(flat::EarthSciAST.FlattenedSystem;
-                           wrt::Symbol = :states, name::AbstractString = "Flattened",
-                           cse::Bool = true, cse_min_nodes::Int = 12)
+function jacobian_document(
+        flat::EarthSciAST.FlattenedSystem;
+        wrt::Symbol = :states, name::AbstractString = "Flattened",
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
     sv = sysview(flat)
     doc = _base_document(sv, String(name))
-    _attach_jacobians!(doc, sv, String(name); wrt = wrt,
-                       cse = cse, cse_min_nodes = cse_min_nodes)
+    _attach_jacobians!(
+        doc, sv, String(name); wrt = wrt,
+        cse = cse, cse_min_nodes = cse_min_nodes
+    )
     return doc
 end
 
-function _attach_jacobians!(doc, sv::SysView, model_name::String; wrt::Symbol,
-                            cse::Bool = true, cse_min_nodes::Int = 12)
+function _attach_jacobians!(
+        doc, sv::SysView, model_name::String; wrt::Symbol,
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
     entries = jacobian_bands(sv; wrt = wrt)
     structure = detect_structure(entries, sv)
     ser_entries = entries
-    templates = OrderedDict{String,ASTExpr}()
+    templates = OrderedDict{String, ASTExpr}()
     if cse
         coefs = ASTExpr[en.band.coef for en in entries]
         templates, rewritten = cse_templates(coefs; min_nodes = cse_min_nodes)
-        isempty(templates) || (ser_entries = JacEntry[
-            JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
-                                      en.band.cidx, rewritten[k],
-                                      en.band.contracted))
-            for (k, en) in enumerate(entries)])
+        isempty(templates) || (
+            ser_entries = JacEntry[
+                JacEntry(
+                    en.u, en.v, Band(
+                        en.band.rows, en.band.ridx,
+                        en.band.cidx, rewritten[k],
+                        en.band.contracted
+                    )
+                )
+                    for (k, en) in enumerate(entries)
+            ]
+        )
     end
-    block = OrderedDict{String,Any}(
-        "wrt"       => String(wrt),
-        "entries"   => Any[serialize_band(en) for en in ser_entries],
+    block = OrderedDict{String, Any}(
+        "wrt" => String(wrt),
+        "entries" => Any[serialize_band(en) for en in ser_entries],
         "structure" => String(structure),
     )
-    isempty(templates) || (block["expression_templates"] = OrderedDict{String,Any}(
-        name => OrderedDict{String,Any}("params" => Any[], "body" => _ser_expr(body))
-        for (name, body) in templates))
+    isempty(templates) || (
+        block["expression_templates"] = OrderedDict{String, Any}(
+            name => OrderedDict{String, Any}("params" => Any[], "body" => _ser_expr(body))
+                for (name, body) in templates
+        )
+    )
     plan = plan_factorization(entries, sv; structure = structure)
     plan === nothing || (block["factorization"] = serialize_plan(plan))
-    jb = get!(doc, "jacobians", OrderedDict{String,Any}())
+    jb = get!(doc, "jacobians", OrderedDict{String, Any}())
     jb[model_name] = block
     _raise_faq_floor!(doc)
     return doc
@@ -168,15 +192,21 @@ function parse_jacobian_block(block::AbstractDict)
     wrt = Symbol(block["wrt"])
     entries = JacEntry[parse_band(d) for d in block["entries"]]
     if haskey(block, "expression_templates")
-        reg = Dict{String,ASTExpr}(
+        reg = Dict{String, ASTExpr}(
             String(name) => expression_from_json(t["body"])
-            for (name, t) in block["expression_templates"])
+                for (name, t) in block["expression_templates"]
+        )
         entries = JacEntry[
-            JacEntry(en.u, en.v, Band(en.band.rows, en.band.ridx,
-                                      ASTExpr[expand_templates(c, reg) for c in en.band.cidx],
-                                      expand_templates(en.band.coef, reg),
-                                      en.band.contracted))
-            for en in entries]
+            JacEntry(
+                en.u, en.v, Band(
+                    en.band.rows, en.band.ridx,
+                    ASTExpr[expand_templates(c, reg) for c in en.band.cidx],
+                    expand_templates(en.band.coef, reg),
+                    en.band.contracted
+                )
+            )
+                for en in entries
+        ]
     end
     return wrt, entries
 end
@@ -194,8 +224,10 @@ end
 # kernel is the planned upgrade once this is a measured bottleneck.
 
 function _base_document(sv::SysView, name::String)
-    m = OrderedDict{String,Any}("variables" => OrderedDict{String,Any}(),
-                                "equations" => Any[])
+    m = OrderedDict{String, Any}(
+        "variables" => OrderedDict{String, Any}(),
+        "equations" => Any[]
+    )
     for n in sort!(collect(keys(sv.variables)))
         var = sv.variables[n]
         # esm 1.0.0 has TWO declared types. `state` / `observed` are gone, and
@@ -204,27 +236,34 @@ function _base_document(sv::SysView, name::String)
         # because an observed's definition is ALREADY an equation of `sv` and the
         # loop below copies every equation verbatim -- in 0.x it lived in the
         # variable and had to be serialized twice.
-        d = OrderedDict{String,Any}("type" =>
-            var.type == EarthSciAST.ParameterVariable ? "parameter" : "unknown")
+        d = OrderedDict{String, Any}(
+            "type" =>
+                var.type == EarthSciAST.ParameterVariable ? "parameter" : "unknown"
+        )
         var.shape === nothing || isempty(var.shape) || (d["shape"] = var.shape)
         var.default === nothing || (d["default"] = var.default)
         m["variables"][n] = d
     end
     for eq in sv.equations
-        push!(m["equations"], OrderedDict{String,Any}(
-            "lhs" => _ser_expr(eq.lhs), "rhs" => _ser_expr(eq.rhs)))
+        push!(
+            m["equations"], OrderedDict{String, Any}(
+                "lhs" => _ser_expr(eq.lhs), "rhs" => _ser_expr(eq.rhs)
+            )
+        )
     end
-    isets = OrderedDict{String,Any}(
-        String(n) => OrderedDict{String,Any}("kind" => "interval", "size" => s.size)
-        for (n, s) in sv.index_sets if s.size !== nothing)
-    return OrderedDict{String,Any}(
+    isets = OrderedDict{String, Any}(
+        String(n) => OrderedDict{String, Any}("kind" => "interval", "size" => s.size)
+            for (n, s) in sv.index_sets if s.size !== nothing
+    )
+    return OrderedDict{String, Any}(
         # 1.1.0, not 1.0.0: every document this file builds may carry `faq`
         # coefficient nodes, and `faq` arrives at esm 1.1.0. Declaring 1.0.0
         # makes the document unloadable (`[E_FAQ_VERSION_TOO_OLD]`).
         "esm" => "1.1.0",
-        "metadata" => OrderedDict{String,Any}("name" => name),
+        "metadata" => OrderedDict{String, Any}("name" => name),
         "index_sets" => isets,
-        "models" => OrderedDict{String,Any}(name => m))
+        "models" => OrderedDict{String, Any}(name => m)
+    )
 end
 
 # A literal-size axis index set of the derived document (shared with the
@@ -233,7 +272,7 @@ function _axis_name!(doc, sz::Int)
     isets = doc["index_sets"]
     nm = _jcax_name(n -> haskey(isets, n) && get(isets[n], "size", nothing) != sz, sz)
     haskey(isets, nm) ||
-        (isets[nm] = OrderedDict{String,Any}("kind" => "interval", "size" => sz))
+        (isets[nm] = OrderedDict{String, Any}("kind" => "interval", "size" => sz))
     return nm
 end
 
@@ -253,11 +292,15 @@ end
 # (minmod_adv's limiters, off by up to 16.0 at a second point) unless an
 # internal epoch hook is called on every write.
 function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry})
-    states = Set{String}(u for u in (lhs_state(eq) for eq in sv.equations)
-                         if u !== nothing)
-    defined = [lhs_state(eq) === nothing ? _defined_name(eq) : nothing
-               for eq in sv.equations]
-    reads = Dict{String,Vector{ASTExpr}}()     # observed → its definitions' RHS
+    states = Set{String}(
+        u for u in (lhs_state(eq) for eq in sv.equations)
+            if u !== nothing
+    )
+    defined = [
+        lhs_state(eq) === nothing ? _defined_name(eq) : nothing
+            for eq in sv.equations
+    ]
+    reads = Dict{String, Vector{ASTExpr}}()     # observed → its definitions' RHS
     for (eq, n) in zip(sv.equations, defined)
         (n === nothing || n in states) || push!(get!(reads, n, ASTExpr[]), eq.rhs)
     end
@@ -276,9 +319,12 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
     for (eq, ser, n) in zip(sv.equations, m["equations"], defined)
         u = lhs_state(eq)
         if u === nothing
-            _is_derivative(eq) && throw(BandError(
-                "unsupported derivative LHS $(JSON3.write(_ser_expr(eq.lhs))) (a state's " *
-                "derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"))
+            _is_derivative(eq) && throw(
+                BandError(
+                    "unsupported derivative LHS $(JSON3.write(_ser_expr(eq.lhs))) (a state's " *
+                        "derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                )
+            )
             if n !== nothing && haskey(reads, n) && !(n in live)
                 delete!(m["variables"], n)
                 continue
@@ -287,13 +333,17 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
         elseif !(u in done)
             push!(done, u)
             shape = get(ctx.shapes, u, Int[])
-            rhs = isempty(shape) ? 0.0 : OrderedDict{String,Any}(
-                "op" => "makearray", "args" => Any[],
-                "regions" => Any[Any[Any[1, n] for n in shape]],
-                "values" => Any[0.0])
-            push!(eqs, OrderedDict{String,Any}(
-                "lhs" => OrderedDict{String,Any}("op" => "D", "args" => Any[u], "wrt" => "t"),
-                "rhs" => rhs))
+            rhs = isempty(shape) ? 0.0 : OrderedDict{String, Any}(
+                    "op" => "makearray", "args" => Any[],
+                    "regions" => Any[Any[Any[1, n] for n in shape]],
+                    "values" => Any[0.0]
+                )
+            push!(
+                eqs, OrderedDict{String, Any}(
+                    "lhs" => OrderedDict{String, Any}("op" => "D", "args" => Any[u], "wrt" => "t"),
+                    "rhs" => rhs
+                )
+            )
         end
     end
     m["equations"] = eqs
@@ -308,8 +358,10 @@ end
 # buffers evaluate them once per cell per RHS call — the compile-time and
 # duplicate-work control for limiter-heavy (PPM-scale) coefficients.
 # Returns (document, band-state names).
-function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
-                              cse::Bool = true, cse_min_nodes::Int = 12)
+function _evaluation_document(
+        sv::SysView, entries::Vector{JacEntry};
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
@@ -319,7 +371,7 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
     if h !== nothing
         for (nm, sz) in h.axes
             doc["index_sets"][nm] =
-                OrderedDict{String,Any}("kind" => "interval", "size" => sz)
+                OrderedDict{String, Any}("kind" => "interval", "size" => sz)
         end
         for (nm, vd) in h.obs
             m["variables"][nm] = vd
@@ -329,8 +381,10 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
         # declaration order the corpus migration produced -- ordering is not
         # semantically load-bearing, but a stable one keeps diffs readable.
         for (nm, rhs) in h.obs_eqs
-            push!(m["equations"],
-                  OrderedDict{String,Any}("lhs" => nm, "rhs" => rhs))
+            push!(
+                m["equations"],
+                OrderedDict{String, Any}("lhs" => nm, "rhs" => rhs)
+            )
         end
     end
     names = String[]
@@ -341,44 +395,56 @@ function _evaluation_document(sv::SysView, entries::Vector{JacEntry};
         if isempty(shape_u) && isempty(cr)
             # an unknown that a D(.) equation targets IS an ODE state in 1.0.0;
             # the equation is pushed a few lines below.
-            m["variables"][nm] = OrderedDict{String,Any}("type" => "unknown", "default" => 0.0)
+            m["variables"][nm] = OrderedDict{String, Any}("type" => "unknown", "default" => 0.0)
             rhs = _ser_expr(coefs[k])
         else
             # The band field spans the row dims PLUS any free contracted
             # column dims — the scatter reads one slot per (row, contracted)
             # cell and ACCUMULATES into the column each cell gathers.
             ushape = isempty(shape_u) ? Any[] : Any[x for x in sv.variables[en.u].shape]
-            m["variables"][nm] = OrderedDict{String,Any}(
+            m["variables"][nm] = OrderedDict{String, Any}(
                 "type" => "unknown", "default" => 0.0,
-                "shape" => vcat(ushape, Any[_axis_name!(doc, hi) for (_, _, hi) in cr]))
+                "shape" => vcat(ushape, Any[_axis_name!(doc, hi) for (_, _, hi) in cr])
+            )
             free = [(k2, r) for (k2, r) in enumerate(b.ridx) if r isa String]
             aggnames = Any[Any[r for (_, r) in free]..., Any[n for (n, _, _) in cr]...]
             val = if isempty(aggnames)
                 _ser_expr(coefs[k])
             else
-                rngs = OrderedDict{String,Any}(
-                    r => Any[b.rows[k2][1], b.rows[k2][2]] for (k2, r) in free)
+                rngs = OrderedDict{String, Any}(
+                    r => Any[b.rows[k2][1], b.rows[k2][2]] for (k2, r) in free
+                )
                 for (n, lo, hi) in cr
                     rngs[n] = Any[lo, hi]
                 end
-                OrderedDict{String,Any}(
+                OrderedDict{String, Any}(
                     "op" => "faq", "args" => Any[],
                     "output_idx" => aggnames,
                     "ranges" => rngs,
-                    "expr" => _ser_expr(coefs[k]))
+                    "expr" => _ser_expr(coefs[k])
+                )
             end
-            rhs = OrderedDict{String,Any}(
+            rhs = OrderedDict{String, Any}(
                 "op" => "makearray", "args" => Any[],
                 "regions" => Any[
-                    vcat(Any[Any[1, n] for n in shape_u],
-                         Any[Any[1, hi] for (_, _, hi) in cr]),
-                    vcat(Any[Any[lo, hi] for (lo, hi) in b.rows],
-                         Any[Any[lo, hi] for (_, lo, hi) in cr])],
-                "values" => Any[0.0, val])
+                    vcat(
+                        Any[Any[1, n] for n in shape_u],
+                        Any[Any[1, hi] for (_, _, hi) in cr]
+                    ),
+                    vcat(
+                        Any[Any[lo, hi] for (lo, hi) in b.rows],
+                        Any[Any[lo, hi] for (_, lo, hi) in cr]
+                    ),
+                ],
+                "values" => Any[0.0, val]
+            )
         end
-        push!(m["equations"], OrderedDict{String,Any}(
-            "lhs" => OrderedDict{String,Any}("op" => "D", "args" => [nm], "wrt" => "t"),
-            "rhs" => rhs))
+        push!(
+            m["equations"], OrderedDict{String, Any}(
+                "lhs" => OrderedDict{String, Any}("op" => "D", "args" => [nm], "wrt" => "t"),
+                "rhs" => rhs
+            )
+        )
     end
     return doc, names
 end

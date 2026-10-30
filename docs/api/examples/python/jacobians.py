@@ -14,7 +14,12 @@ file = earthsci_ast.load_path(FIXTURES / "bd_chem.esm")
 entries = earthsci_astdiff.jacobian_bands(file)
 # One entry per (row variable, column variable) pair that occurs in the model.
 assert sorted({(en.u, en.v) for en in entries}) == [
-    ("A", "A"), ("A", "B"), ("A", "C"), ("B", "A"), ("B", "B"), ("C", "B"),
+    ("A", "A"),
+    ("A", "B"),
+    ("A", "C"),
+    ("B", "A"),
+    ("B", "B"),
+    ("C", "B"),
 ]
 view = earthsci_astdiff.sysview(file)
 # endregion
@@ -39,7 +44,7 @@ assert sorted(plan.block_vars) == ["A", "B", "C"]
 # region: assemble ops=assemble_jacobian
 values = earthsci_astdiff.assemble_jacobian(file, states={"A": [2.0] * 4})
 assert values[("A[1]", "A[1]")] == -0.04  # -k1
-assert values[("B[1]", "B[1]")] == -3.0   # -2 k2 B, with B = 0.5 by default
+assert values[("B[1]", "B[1]")] == -3.0  # -2 k2 B, with B = 0.5 by default
 # endregion
 
 

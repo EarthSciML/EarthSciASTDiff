@@ -1,14 +1,19 @@
 """Block emission against the Julia reference's block goldens
 (tests/goldens/*.block.json): byte-identical, factorization plan included."""
+
 import earthsci_ast as ea
 import pytest
+from earthsci_astdiff import jacobian_bands, jacobian_block, parse_jacobian_block, skey, stable_json
 
-from earthsci_astdiff import (jacobian_bands, jacobian_block,
-                              parse_jacobian_block, skey, stable_json)
-
-NAMES = ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
-         "minmod_adv", "contracting_observed",
-         "tgrad_photolysis")
+NAMES = (
+    "bd_chem",
+    "adv_interior",
+    "contracted_ops",
+    "flux_form_adv",
+    "minmod_adv",
+    "contracting_observed",
+    "tgrad_photolysis",
+)
 
 
 @pytest.mark.parametrize("name", NAMES)

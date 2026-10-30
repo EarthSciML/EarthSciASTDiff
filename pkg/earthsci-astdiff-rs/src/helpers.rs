@@ -121,8 +121,9 @@ fn write_stable(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
-        Value::Number(n) if !(n.is_i64() || n.is_u64()) =>
-            out.push_str(&canonical_float(n.as_f64().unwrap())),
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) => {
+            out.push_str(&canonical_float(n.as_f64().unwrap()))
+        }
         _ => out.push_str(&serde_json::to_string(v).unwrap()),
     }
 }
@@ -134,17 +135,28 @@ mod tests {
     #[test]
     fn canonical_float_matches_the_reference_layout() {
         // CONFORMANCE_SPEC §5.5.3.1's probe table, plus Julia `show` values
-        for (v, want) in [(1.0e-9, "1.0e-9"), (1.5e-5, "1.5e-5"),
-                          (0.000123456, "0.000123456"), (2.5, "2.5"),
-                          (999999.5, "999999.5"), (1000000.5, "1.0000005e6"),
-                          (123456789.25, "1.2345678925e8"), (0.0, "0.0"),
-                          (-0.0, "-0.0"), (1.0, "1.0"), (100.0, "100.0"),
-                          (1.0e6, "1.0e6"), (1.0e22, "1.0e22"), (0.0001, "0.0001"),
-                          (1.0e-5, "1.0e-5"), (-2.5e-7, "-2.5e-7"),
-                          (2440587.5, "2.4405875e6"),
-                          (7.27220521664304e-5, "7.27220521664304e-5"),
-                          (5e-324, "5.0e-324"),
-                          (1.7976931348623157e308, "1.7976931348623157e308")] {
+        for (v, want) in [
+            (1.0e-9, "1.0e-9"),
+            (1.5e-5, "1.5e-5"),
+            (0.000123456, "0.000123456"),
+            (2.5, "2.5"),
+            (999999.5, "999999.5"),
+            (1000000.5, "1.0000005e6"),
+            (123456789.25, "1.2345678925e8"),
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+            (1.0, "1.0"),
+            (100.0, "100.0"),
+            (1.0e6, "1.0e6"),
+            (1.0e22, "1.0e22"),
+            (0.0001, "0.0001"),
+            (1.0e-5, "1.0e-5"),
+            (-2.5e-7, "-2.5e-7"),
+            (2440587.5, "2.4405875e6"),
+            (7.27220521664304e-5, "7.27220521664304e-5"),
+            (5e-324, "5.0e-324"),
+            (1.7976931348623157e308, "1.7976931348623157e308"),
+        ] {
             assert_eq!(canonical_float(v), want, "for {v:e}");
         }
     }
@@ -173,13 +185,16 @@ pub struct Site {
 
 impl Site {
     pub fn of(e: &Expr) -> Site {
-        Site { expr: e.clone(), key: ckey(e) }
+        Site {
+            expr: e.clone(),
+            key: ckey(e),
+        }
     }
 }
 
 pub fn is_site(e: &Expr, s: &Site) -> bool {
-    let candidate = matches!(e, Expr::Variable(_))
-        || matches!(e, Expr::Operator(n) if n.op == "index");
+    let candidate =
+        matches!(e, Expr::Variable(_)) || matches!(e, Expr::Operator(n) if n.op == "index");
     candidate && ckey(e) == s.key
 }
 

@@ -1,6 +1,7 @@
 """Model-level driver (jacobian.jl): differentiate every ``D(u) = rhs``
 equation w.r.t. every state/parameter that structurally occurs in its RHS —
 or w.r.t. time itself (``wrt="time"``)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,8 +10,17 @@ from earthsci_ast.expression import free_variables
 
 from .bands import Band, BandError, bands, merge_bands, normalize_band
 from .inline import inline_observed
-from .system import (SysView, _var_type, ctx_of, inlinable_observed, is_derivative,
-                     lhs_state, observed_defs, sysview, view_states)
+from .system import (
+    SysView,
+    _var_type,
+    ctx_of,
+    inlinable_observed,
+    is_derivative,
+    lhs_state,
+    observed_defs,
+    sysview,
+    view_states,
+)
 
 
 @dataclass
@@ -24,8 +34,7 @@ class JacEntry:
     band: Band
 
 
-def jacobian_bands(obj, model_name: str | None = None,
-                   wrt: str = "states") -> list[JacEntry]:
+def jacobian_bands(obj, model_name: str | None = None, wrt: str = "states") -> list[JacEntry]:
     """Differentiate a model's right-hand side into a list of Jacobian bands.
 
     **Parameters**
@@ -55,8 +64,7 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str) -> list[JacEntry]:
     elif wrt == "states":
         targets = view_states(sv, obs)
     else:
-        targets = sorted(str(n) for n, var in sv.variables.items()
-                         if _var_type(var) == "parameter")
+        targets = sorted(str(n) for n, var in sv.variables.items() if _var_type(var) == "parameter")
     tset = set(targets)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
@@ -71,7 +79,8 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str) -> list[JacEntry]:
             if is_derivative(eq):
                 raise BandError(
                     f"unsupported derivative LHS {eq.lhs!r} (a state's derivative "
-                    "is `D(u)` or the lifted `faq{D(index(u, i…))}`)")
+                    "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                )
             continue
         shape_u = ctx.shapes.get(u, [])
         rhs = inline_observed(eq.rhs, obs, obs_names)
