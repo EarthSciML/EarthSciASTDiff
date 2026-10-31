@@ -15,16 +15,6 @@ _sfold(op, xs) = foldl((a, b) -> _sop(op, a, b), xs)
 
 _sand(cs) = length(cs) == 1 ? only(cs) : _sop("and", cs...)
 
-# The first of `base`, `base_`, `base__`, … not in `taken`, then taken.
-function _fresh!(taken::Set{String}, base::String)
-    nm = base
-    while nm in taken
-        nm *= "_"
-    end
-    push!(taken, nm)
-    return nm
-end
-
 # Every name of a derived document (§9.1): the variable and index-set names,
 # every `ranges` key, and every string its equations hold other than an `op`.
 function _doc_names(doc)::Set{String}
@@ -95,35 +85,105 @@ function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse
     return doc, m, ctx, _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
 end
 
-# Whether every point of `b` reads `ci` inside `shape`; `nothing` when an
-# index is not closed at build time (a gather through a table that is not
-# `const`), so the question has no build-time answer.
+# A band's index names (row names, then contracted names) and their ranges.
+function _index_box(b::Band)::Dict{String, Tuple{Int, Int}}
+    box = Dict{String, Tuple{Int, Int}}()
+    for (k, r) in enumerate(b.ridx)
+        r isa String && (box[r] = b.rows[k])
+    end
+    for (n, lo, hi) in b.contracted
+        box[n] = (lo, hi)
+    end
+    return box
+end
+
+# Bounds `(lo, hi, exact)` of an index expression over `box`, by interval
+# arithmetic over the integer `+`, `-`, `*` core; `nothing` outside it (a
+# `const` gather, a division, …). The bounds always enclose every value.
+# `exact` when they are also attained at corners of the box: an affine
+# expression reading each name at most once. Returns the names read too.
+function _index_bounds(e::ASTExpr, box)
+    if e isa IntExpr
+        return (Int(e.value), Int(e.value), true, String[])
+    elseif e isa NumExpr
+        isinteger(e.value) || return nothing
+        return (Int(e.value), Int(e.value), true, String[])
+    elseif e isa VarExpr
+        haskey(box, e.name) || return nothing
+        lo, hi = box[e.name]
+        return (lo, hi, true, [e.name])
+    elseif e isa OpExpr && e.op in ("+", "-", "*") && !isempty(e.args)
+        parts = [_index_bounds(a, box) for a in e.args]
+        any(isnothing, parts) && return nothing
+        lo, hi, ex, ns = parts[1]
+        ns = copy(ns)
+        if e.op == "-" && length(parts) == 1
+            return (-hi, -lo, ex, ns)
+        end
+        for (plo, phi, pex, pns) in parts[2:end]
+            if e.op == "+"
+                lo, hi = lo + plo, hi + phi
+            elseif e.op == "-"
+                lo, hi = lo - phi, hi - plo
+            else
+                # affine only while one factor is a constant
+                ex &= isempty(ns) || isempty(pns)
+                c = (lo * plo, lo * phi, hi * plo, hi * phi)
+                lo, hi = minimum(c), maximum(c)
+            end
+            ex &= pex
+            append!(ns, pns)
+        end
+        return (lo, hi, ex && allunique(ns), ns)
+    end
+    return nothing
+end
+
+# Whether every point of `b` reads `ci` inside `shape`; `nothing` when that
+# has no build-time answer: an index not closed (a gather through a table
+# that is not `const`), or a `where` guard not closed that a point outside
+# the extent depends on. Decided from the indices' bounds where they settle
+# it (§9.1's affine breakpoints), by walking the band's points otherwise.
 function _in_extent(b::Band, ci::Vector{ASTExpr}, shape::Vector{Int})
     isempty(ci) && return true
-    return try
-        _all_points(_rebuild(b; cidx = ci)) do _, _, c
-            all(d -> 1 <= c[d] <= shape[d], eachindex(c))
-        end
-    catch err
-        err isa InterruptException && rethrow()
-        nothing
+    box = _index_box(b)
+    any(((lo, hi),) -> lo > hi, values(box)) && return true   # no points
+    names = keys(box)
+    all(e -> _index_only(e, names), ci) || return nothing
+    bounds = [_index_bounds(e, box) for e in ci]
+    if !any(isnothing, bounds)
+        all(d -> 1 <= bounds[d][1] && bounds[d][2] <= shape[d], eachindex(ci)) &&
+            return true
+        # a corner outside the extent is a point of the band unless a guard
+        # may drop it
+        b.guard === nothing && all(x -> x[3], bounds) && return false
     end
+    inside(_, _, c) = all(d -> 1 <= c[d] <= shape[d], eachindex(c))
+    b.guard === nothing || _index_only(b.guard, names) ||
+        return _all_points(inside, _rebuild(b; cidx = ci, guard = nothing)) ? true : nothing
+    return _all_points(inside, _rebuild(b; cidx = ci))
+end
+
+# The forcing axis has no ghost read (§9.1): a point outside its buffer is
+# refused rather than dropped.
+function _forcing_ghost(v::String, ok)
+    why = ok === nothing ?
+        " or where that is not decidable at build time (an index or `where` guard not closed)" : ""
+    throw(
+        BandError(
+            "a point of a band reads forcing buffer `$v` outside its extent$why; " *
+                "a product document would drop it (esm-jacobian-spec.md §9.1)"
+        )
+    )
 end
 
 # §9.1's ghost rule for a read of column variable `v` at `ci` on axis `wrt`:
 # the in-extent conjuncts `G` to filter by, none when every point is in
-# extent (the region split then leaves the box whole). On the forcing axis
-# there is no ghost read: a point outside its buffer is refused.
+# extent (the region split then leaves the box whole).
 function _ghost_conjuncts(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
     ok = _in_extent(b, ci, shape)
     ok === true && return Tuple{Any, Set{String}}[]
-    wrt == :forcing && throw(
-        BandError(
-            "a point of a band reads forcing buffer `$v` outside its extent" *
-                (ok === nothing ? " or at an index not closed at build time" : "") *
-                "; a product document would drop it (esm-jacobian-spec.md §9.1)"
-        )
-    )
+    wrt == :forcing && _forcing_ghost(v, ok)
     out = Tuple{Any, Set{String}}[]
     for (d, e) in enumerate(ci)
         ns = Set{String}(free_variables(e))
@@ -134,17 +194,19 @@ function _ghost_conjuncts(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector
 end
 
 # A band with no index names has one point (none when its closed `where`
-# fails), and §9.2 has its column indices closed: whether that point reads
-# `v` inside its extent. A ghost is dropped, except on the forcing axis.
+# fails), and §9.2 has its column indices closed: whether that point exists
+# and reads `v` inside its extent. A ghost is dropped, except on the forcing
+# axis, where it is refused. Decided from the literal indices, no walk.
 function _point_in_extent(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
-    ok = _in_extent(b, ci, shape)
-    ok === nothing && throw(
+    all(e -> isempty(free_variables(e)), ci) || throw(
         BandError(
             "a band with no index names reads `$v` at an index not closed at build " *
                 "time (esm-jacobian-spec.md §9.2)"
         )
     )
-    ok || wrt != :forcing || _ghost_conjuncts(b, v, ci, shape, wrt)  # throws
+    _closed_point(b) || return false
+    ok = _in_extent(_rebuild(b; guard = nothing), ci, shape)::Bool
+    ok || wrt != :forcing || _forcing_ghost(v, ok)
     return ok
 end
 
@@ -153,7 +215,7 @@ end
 function _jnames(taken::Set{String}, b::Band, coef::ASTExpr, n::Int)
     local_taken = union(taken, _row_names(b), first.(b.contracted), _names_of((coef, b.cidx...)))
     b.guard === nothing || union!(local_taken, free_variables(b.guard))
-    return [_fresh!(local_taken, "_j$d") for d in 1:n]
+    return [_fresh!(local_taken, "_j$d", "_") for d in 1:n]
 end
 
 # The `faq` of one entry's term: `ranges` (the output names first, then the
@@ -195,9 +257,18 @@ _where_conj(b::Band) = b.guard === nothing ? Tuple{Any, Set{String}}[] :
     Tuple{Any, Set{String}}[(_ser_expr(b.guard), Set{String}(free_variables(b.guard)))]
 _names_of(es) = Set{String}(n for e in es for n in free_variables(e))
 
-# Whether a band with no index names has its one point: its closed `where`
-# guard holds.
-_closed_point(b::Band) = !_all_points((_...) -> false, b)
+# Whether a band with no index names has its one point: its `where` guard,
+# which §9.2 has closed, holds.
+function _closed_point(b::Band)
+    b.guard === nothing && return true
+    isempty(free_variables(b.guard)) || throw(
+        BandError(
+            "a band with no index names has a `where` guard not closed at build " *
+                "time (esm-jacobian-spec.md §9.2)"
+        )
+    )
+    return _eval_guard(b.guard, Dict{String, Float64}())
+end
 
 # ── Jv (§9.2) ───────────────────────────────────────────────────────────────
 
@@ -213,7 +284,7 @@ function _jvp_term(en::JacEntry, coef::ASTExpr, vin::String, ctx, wrt::Symbol)
         _term_faq(b, out, (), conj, body, bodynames)
     else
         # no index names: `where` and the column are closed, decided here
-        (_closed_point(b) && _point_in_extent(b, en.v, b.cidx, shape_v, wrt)) || return nothing
+        _point_in_extent(b, en.v, b.cidx, shape_v, wrt) || return nothing
         body
     end
     isempty(shape_u) && return val
@@ -272,8 +343,12 @@ function _hvp_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, a1::Symbol, a2::Sym
         ]
     )
     shape1 = get(ctx.shapes, en.v, Int[])
-    _has_names(b) || _point_in_extent(b, en.v, ci, shape1, a1) || return nothing
-    g = _ghost_conjuncts(b, en.v, ci, shape1, a1)
+    g = if _has_names(b)
+        _ghost_conjuncts(b, en.v, ci, shape1, a1)
+    else
+        _point_in_extent(b, en.v, ci, shape1, a1) || return nothing
+        Tuple{Any, Set{String}}[]
+    end
     return _scatter_term(
         b, coef, en.w, c2, get(ctx.shapes, en.w, Int[]), a2, g,
         _sop("*", _ser_expr(coef), m),
@@ -294,8 +369,12 @@ function _hvp_sym_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, taken)
         ]
     )
     shape2 = get(ctx.shapes, en.w, Int[])
-    _has_names(b) || _point_in_extent(b, en.w, c2, shape2, :states) || return nothing
-    g = _ghost_conjuncts(b, en.w, c2, shape2, :states)
+    g = if _has_names(b)
+        _ghost_conjuncts(b, en.w, c2, shape2, :states)
+    else
+        _point_in_extent(b, en.w, c2, shape2, :states) || return nothing
+        Tuple{Any, Set{String}}[]
+    end
     return _scatter_term(
         b, coef, en.v, ci, get(ctx.shapes, en.v, Int[]), :states, g, body,
         union(_names_of((coef, c2...)), _row_names(b)), taken
@@ -307,10 +386,13 @@ end
 # Each output's equation: the left fold of its entries' terms (§9.1).
 # `owner` yields `(k, the output variable entry k lands in)`.
 function _outputs!(m, sv, ctx, outs::OrderedDict{String, String}, term, owner)
+    landing = Dict{String, Vector{Int}}()
+    for (k, o) in owner
+        push!(get!(landing, o, Int[]), k)
+    end
     for (c, nm) in outs
         terms = Any[]
-        for (k, o) in owner
-            o == c || continue
+        for k in get(landing, c, Int[])
             t = term(k)
             t === nothing || push!(terms, t)
         end
@@ -325,8 +407,8 @@ function _jvp_document(
     )
     doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
     taken = _doc_names(doc)
-    vin = OrderedDict{String, String}(c => _fresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
-    out = OrderedDict{String, String}(r => _fresh!(taken, "_jvp_$r") for r in view_states(sv))
+    vin = OrderedDict{String, String}(c => _fresh!(taken, "_v_$c", "_") for c in _column_vars(sv, wrt, forcing))
+    out = OrderedDict{String, String}(r => _fresh!(taken, "_jvp_$r", "_") for r in view_states(sv))
     for (c, nm) in vin
         _declare!(m, sv, ctx, nm, c, nothing)
     end
@@ -343,8 +425,8 @@ function _vjp_document(
     )
     doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
     taken = _doc_names(doc)
-    lam = OrderedDict{String, String}(r => _fresh!(taken, "_lam_$r") for r in view_states(sv))
-    out = OrderedDict{String, String}(c => _fresh!(taken, "_vjp_$c") for c in _column_vars(sv, wrt, forcing))
+    lam = OrderedDict{String, String}(r => _fresh!(taken, "_lam_$r", "_") for r in view_states(sv))
+    out = OrderedDict{String, String}(c => _fresh!(taken, "_vjp_$c", "_") for c in _column_vars(sv, wrt, forcing))
     for (r, nm) in lam
         _declare!(m, sv, ctx, nm, r, nothing)
     end
@@ -377,11 +459,11 @@ function _hvp_document(
     mu = OrderedDict{String, String}[]
     w = OrderedDict{String, String}[]
     for i in 1:stages
-        push!(mu, OrderedDict{String, String}(r => _fresh!(taken, "_mu$(i)_$r") for r in states))
-        push!(w, OrderedDict{String, String}(c => _fresh!(taken, "_w$(i)_$c") for c in cols1))
+        push!(mu, OrderedDict{String, String}(r => _fresh!(taken, "_mu$(i)_$r", "_") for r in states))
+        push!(w, OrderedDict{String, String}(c => _fresh!(taken, "_w$(i)_$c", "_") for c in cols1))
     end
     cols2 = form == :contract ? _column_vars(sv, a2, forcing) : states
-    out = OrderedDict{String, String}(c => _fresh!(taken, "_hvp_$c") for c in cols2)
+    out = OrderedDict{String, String}(c => _fresh!(taken, "_hvp_$c", "_") for c in cols2)
     for i in 1:stages
         for (r, nm) in mu[i]
             _declare!(m, sv, ctx, nm, r, nothing)

@@ -428,16 +428,19 @@ _contributions(p::CsrPlan, _) = p.items
     BoundScatter
 
 A [`ScatterPlan`](@ref) checked against one source's band list at a lane
-capacity. `pairs` lists `(field, pos)`: the evaluation document's band-field
-cell `field` (a name of its variable map, `"J_k[…]"`) goes to the 1-based
-output position `pos`, `out[pos] += du[field]` in order after zeroing `out`
-(several fields may land on one position). `len` is the output length.
+capacity. `pairs` lists `(k, cell, pos)`, all 1-based: cell `cell` of band
+`k`'s field (column-major over the field's shape; the evaluation document's
+`fields[k]`, see [`evaluation_document`](@ref)) goes to output position
+`pos`, `out[pos] += field_k[cell]` in order after zeroing `out` (several
+cells may land on one position). `len` is the output length. Nothing here
+is a name, so a consumer resolves each band field to its evaluator slots
+once, at bind time, and the scatter itself is integer-indexed.
 """
 struct BoundScatter{P <: ScatterPlan}
     plan::P
     lanes::Int
     len::Int
-    pairs::Vector{Tuple{String, Int}}
+    pairs::Vector{Tuple{Int, Int, Int}}
 end
 
 # Every state cell name, in canonical order (the rows of a `Csr` plan).
@@ -509,7 +512,7 @@ function bind_plan(input, plan::ScatterPlan; lanes = nothing, model_name = nothi
     end
     targets = scatter_targets(plan; lanes = L)
     seen = Set{Tuple{Int, Int}}()
-    pairs = Tuple{String, Int}[]        # (band-field cell name, 1-based output position)
+    pairs = Tuple{Int, Int, Int}[]      # (band, field cell, output position), 1-based
     for (k, f, pos) in _contributions(plan, L)
         if haskey(want, (k, f))
             t = want[(k, f)]
@@ -524,8 +527,7 @@ function bind_plan(input, plan::ScatterPlan; lanes = nothing, model_name = nothi
             (k, f) in seen && _bind_error("band $(k + 1) field cell $f is scattered twice")
             push!(seen, (k, f))
         end                            # else: outside the band's region, so zero
-        c = Tuple(CartesianIndices(Tuple(plan.bands[k + 1][3]))[f + 1])
-        push!(pairs, (_cellname("J_$(k + 1)", c), pos + 1))
+        push!(pairs, (k + 1, f + 1, pos + 1))
     end
     for (kf, t) in want
         t === nothing || kf in seen || _bind_error(

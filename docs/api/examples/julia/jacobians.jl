@@ -3,6 +3,7 @@
 
 using EarthSciAST
 using EarthSciASTDiff
+using JSON3
 using SparseArrays: nnz
 
 const FIXTURES = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "tests", "valid"))
@@ -31,17 +32,28 @@ plan = plan_factorization(entries, view)
 @assert sort(plan.block_vars) == ["A", "B", "C"]
 # endregion
 
-# region: evaluate ops=evaluation_document,jvp_document,jac_prototype
+# region: evaluate ops=evaluation_document,jvp_document,jac_prototype,scatter_plan,bind_plan
 # EarthSciASTDiff evaluates nothing: it emits ESM documents that EarthSciAST
-# evaluates. The band fields J_k, as a derived model:
+# evaluates. The band fields J_k, as a derived model whose right-hand side,
+# run once, leaves every band value in `du`. `fields[k]` names entry k's field.
 doc, fields = evaluation_document(file)
-@assert haskey(doc["models"], "JacobianEval")
 @assert length(fields) == length(entries)
+prob = EarthSciAST.esm_problem(
+    JSON3.read(stable_json(doc)), (0.0, 1.0)
+)
+du = zero(prob.u0)
+prob.f!(du, prob.u0, prob.p, 0.0)            # at the document's initial state
+k = findfirst(en -> (en.u, en.v) == ("A", "A"), entries)
+@assert du[prob.var_map["JacobianEval.$(fields[k])[1]"]] == -0.04   # -k1
 # J·v as a derived model: inputs `_v_<C>`, outputs `_jvp_<R>`.
 jdoc, (model, v, jvp) = jvp_document(file)
 @assert model == "JvpEval"
 J = jac_prototype(file)                      # sparse matrix on the fixed pattern
 @assert size(J) == (12, 12) && nnz(J) == 24
+# A scatter plan places the band fields in your own storage (here CSR),
+# checked against the source before it is used.
+bound = bind_plan(file, scatter_plan(file, Csr()))
+@assert bound.len == 24
 # endregion
 
 # region: block ops=jacobian_document

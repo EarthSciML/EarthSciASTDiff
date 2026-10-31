@@ -198,3 +198,58 @@ end
     @test_throws ArgumentError hvp_document(file; stages = 0)
     @test_throws ArgumentError hvp_document(file; stages = 2, form = :dense)
 end
+
+@testset "product documents: build-time extent decisions" begin
+    using EarthSciASTDiff: _in_extent, _point_in_extent, _all_points, _rebuild
+    i, k = VarExpr("i"), VarExpr("k")
+    add(a, b) = OpExpr("+", ASTExpr[a, b]); sub(a, b) = OpExpr("-", ASTExpr[a, b])
+    mul(a, b) = OpExpr("*", ASTExpr[a, b])
+    one = NumExpr(1.0)
+    rows(lo, hi) = Band([(lo, hi)], Union{String, Int}["i"], ASTExpr[i], one)
+    walk(b, ci, n) = _all_points((_, _, c) -> all(1 .<= c .<= n), _rebuild(b; cidx = ci))
+    # the bounds decide what a walk of every point would, both ways
+    b = Band([(2, 7)], Union{String, Int}["i"], ASTExpr[i], one, [("k", 1, 3)])
+    for e in (
+            i, add(i, IntExpr(1)), sub(i, IntExpr(2)), add(i, k), sub(i, k),
+            mul(IntExpr(2), i), sub(mul(IntExpr(2), i), k), sub(i, i), add(i, i),
+        )
+        for n in (5, 8, 10, 13)
+            @test _in_extent(b, ASTExpr[e], [n]) === walk(b, ASTExpr[e], n)
+        end
+    end
+    # a guard that drops the out-of-extent corner: decided by the walk
+    gb = _rebuild(rows(1, 8); guard = OpExpr(">=", ASTExpr[i, IntExpr(2)]))
+    @test _in_extent(gb, ASTExpr[sub(i, IntExpr(1))], [8]) === true
+    @test _in_extent(rows(1, 8), ASTExpr[sub(i, IntExpr(1))], [8]) === false
+    # an index through a table that is not `const` has no build-time answer
+    gather = OpExpr("index", ASTExpr[VarExpr("tbl"), i])
+    @test _in_extent(rows(1, 8), ASTExpr[gather], [8]) === nothing
+    # a guard that is not closed cannot drop a point: only an all-inside box decides
+    ob = _rebuild(rows(1, 8); guard = OpExpr(">", ASTExpr[VarExpr("u"), NumExpr(0.0)]))
+    @test _in_extent(ob, ASTExpr[i], [8]) === true
+    @test _in_extent(ob, ASTExpr[add(i, IntExpr(1))], [8]) === nothing
+    # a real evaluation failure is not taken for "not closed"
+    tbl = OpExpr("const", ASTExpr[]; value = [1, 2, 3])
+    @test_throws BoundsError _in_extent(rows(1, 8), ASTExpr[OpExpr("index", ASTExpr[tbl, i])], [8])
+    # a band with no index names: an open column index is §9.2's refusal,
+    # not a raw evaluation error
+    nb = Band([(3, 3)], Union{String, Int}[3], ASTExpr[OpExpr("index", ASTExpr[VarExpr("tbl"), IntExpr(2)])], one)
+    @test_throws BandError _point_in_extent(nb, "v", nb.cidx, [8], :states)
+    lit = Band([(3, 3)], Union{String, Int}[3], ASTExpr[IntExpr(9)], one)
+    @test _point_in_extent(lit, "v", lit.cidx, [8], :states) === false
+    @test_throws BandError _point_in_extent(lit, "v", lit.cidx, [8], :forcing)
+    shut = _rebuild(lit; guard = OpExpr("<", ASTExpr[IntExpr(2), IntExpr(1)]))
+    @test _point_in_extent(shut, "v", shut.cidx, [8], :forcing) === false   # no point
+end
+
+@testset "jacobian_document of a flattened system declares its content's version" begin
+    flat = flatten(fixture("minmod_adv.esm"))
+    doc = jacobian_document(flat)
+    @test EarthSciASTDiff._has_units((doc["models"], doc["jacobians"]))
+    @test doc["esm"] == "1.2.0"
+    @test jacobian_document(flatten(fixture("bd_chem.esm")))["esm"] == "1.1.0"
+end
+
+@testset "jac_prototype keeps its docstring" begin
+    @test occursin("freshly zeroed sparse prototype", string(@doc jac_prototype))
+end

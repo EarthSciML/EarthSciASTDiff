@@ -33,12 +33,18 @@ const PLAN_LAYOUTS = [
     end
 end
 
-# A consumer's execution of a bound plan: zero `out`, then `+=` each band
-# field cell into its position, in plan order.
-function _run_plan(b::BoundScatter, field)
+# A consumer's execution of a bound plan: resolve each (band, field cell) to
+# its evaluator name once, as a consumer binds its slots, then zero `out` and
+# `+=` each cell into its position, in plan order.
+function _run_plan(b::BoundScatter, field, fields)
+    shapes = [Tuple(s) for (_, _, s) in b.plan.bands]
+    src = [
+        EarthSciASTDiff._cellname(fields[k], Tuple(CartesianIndices(shapes[k])[c]))
+            for (k, c, _) in b.pairs
+    ]
     out = zeros(b.len)
-    for (f, pos) in b.pairs
-        out[pos] += field(f)
+    for (i, (_, _, pos)) in enumerate(b.pairs)
+        out[pos] += field(src[i])
     end
     return out
 end
@@ -53,14 +59,14 @@ end
         res = doc_jacobian(file; u = u, p = p0, build_kwargs = _hkw(name))
         J = res.J
         slot = Dict(n => i for (i, n) in enumerate(res.rownames))
-        doc, _ = evaluation_document(file)
+        doc, fields = evaluation_document(file)
         ev = _doc_evaluator(doc, "JacobianEval"; build_kwargs = _hkw(name))
         field = _doc_call(ev, _doc_source(file, nothing, _hkw(name)), u, p0, 0.0, Dict())
         plan = scatter_plan(file, layout)
         nl = _nlanes(plan)
         for L in unique([nl, nl + 3])
             b = bind_plan(file, plan; lanes = L)
-            out = _run_plan(b, field)
+            out = _run_plan(b, field, fields)
             tg = scatter_targets(plan; lanes = L)
             @test length(tg) == length(out) == b.len
             ok = true; covered = Set{Tuple{Int, Int}}()
@@ -79,7 +85,7 @@ end
             @test issubset(Set(zip(I, Jc)), covered)
             # padding lanes never change a real lane's value
             if L > nl
-                o0 = _run_plan(bind_plan(file, plan; lanes = nl), field)
+                o0 = _run_plan(bind_plan(file, plan; lanes = nl), field, fields)
                 t0 = scatter_targets(plan; lanes = nl)
                 v0 = Dict(t => o0[i] for (i, t) in enumerate(t0) if t !== nothing)
                 @test all(out[i] === v0[t] for (i, t) in enumerate(tg) if t !== nothing)
