@@ -184,11 +184,16 @@ end
 
 function _block_order(layout, entries, sv, states)
     # A lane template reads one field cell per lane; a contracted band's
-    # field has a cell per contracted point too, which it would drop.
+    # field has a cell per contracted point too, which it would drop, and a
+    # guarded band's points differ from lane to lane.
     for (k, en) in enumerate(entries)
         isempty(en.band.contracted) || _plan_error(
             layout,
             "band $k ($(en.u) ← $(en.v)) has contracted dimensions"
+        )
+        en.band.guard === nothing || _plan_error(
+            layout,
+            "band $k ($(en.u) ← $(en.v)) has a `where` guard"
         )
     end
     st = detect_structure(entries, sv)
@@ -259,6 +264,10 @@ function _build_plan(layout::ColumnBanded, entries, sv, ctx, states, bands)
         isempty(b.contracted) || _plan_error(
             layout,
             "band $k ($(en.u) ← $(en.v)) has contracted dimensions"
+        )
+        b.guard === nothing || _plan_error(
+            layout,
+            "band $k ($(en.u) ← $(en.v)) has a `where` guard"
         )
         for (m, (c, r)) in enumerate(zip(b.cidx, b.ridx))
             cls = _offset_class(c, r)

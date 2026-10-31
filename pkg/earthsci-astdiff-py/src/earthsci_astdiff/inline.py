@@ -289,3 +289,19 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh, scope: frozenset)
             f"index into observed `{name}` whose definition is not an faq, makearray or const"
         )
     return map_children(e, lambda x: _inline_once(x, obs, fresh, scope))
+
+
+def subst_free(e: Expr, m: dict) -> Expr:
+    """Substitution that does not descend into a faq for the names it binds
+    (bands.jl ``_subst_free``)."""
+    if isinstance(e, str):
+        return m.get(e, e)
+    if not isinstance(e, ExprNode):
+        return e
+    if e.op == "faq":
+        bound = binders(e)
+        if any(n in m for n in bound):
+            m = {k: v for k, v in m.items() if k not in bound}
+            if not m:
+                return e
+    return map_children(e, lambda x: subst_free(x, m))

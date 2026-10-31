@@ -6,7 +6,7 @@ Rosenbrock step contains J(uₙ) explicitly, so its discrete adjoint needs
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from earthsci_ast.expression import free_variables
 from earthsci_ast.parse import _parse_expression as parse_expression
@@ -26,6 +26,7 @@ from .bands import (
 from .clip import clip_regions
 from .expr_helpers import is_zero, ser_expr
 from .jacobian import JacEntry, _check_closed, _FirstOrder, _json, _targets
+from .reductions import conj, one_hot
 from .scalar_rules import dscalar
 from .simplify_branches import simp
 from .structure import _offset_class
@@ -128,14 +129,15 @@ def _coef_bands(b: Band, w: str, ctx: Ctx) -> list[Band]:
         for s in sorted_sites(body, w):
             if isinstance(s.expr, str) and is_array(ctx, w):
                 raise BandError(f"whole-array reference to `{w}` in a band coefficient")
-            c2, d, extra = _lift_nested(
+            c2, d, extra, g = _lift_nested(
                 nested, s, body, _site_cidx(s), dscalar(body, s), ctx, outer, taken
             )
             coef = simp(d)
             if is_zero(coef):
                 continue
+            c2, coef, contracted = one_hot(c2, coef, list(b.contracted) + extra, b.ridx, w, ctx)
             out.append(
-                Band(rows2, list(b.ridx), list(b.cidx) + c2, coef, list(b.contracted) + extra)
+                Band(rows2, list(b.ridx), list(b.cidx) + c2, coef, contracted, conj(b.guard, g))
             )
     return out
 
@@ -194,6 +196,8 @@ def serialize_band2(en: JacEntry2) -> dict:
     }
     if b.contracted:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
+    if b.guard is not None:
+        d["where"] = ser_expr(b.guard)
     return d
 
 
@@ -208,7 +212,7 @@ def parse_band2(d: dict) -> JacEntry2:
         en.u,
         en.v,
         str(d["col2"]),
-        Band(b.rows, b.ridx, list(b.cidx) + c2, b.coef, b.contracted),
+        replace(b, cidx=list(b.cidx) + c2),
         len(b.cidx),
     )
 

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use earthsci_ast::EsmFile;
+use earthsci_ast::{EsmFile, Expr};
 use earthsci_astdiff::{
     assemble_jacobian, assemble_jacobian_with_forcing, column_names, forcing_names, jacobian_bands,
     jacobian_bands_with_forcing, jacobian_block, jacobian_blocks, jacobian_columns,
@@ -232,8 +232,10 @@ fn vjp_is_the_transposed_scatter() {
 #[test]
 fn refused_rather_than_silently_wrong() {
     let f = s(&["F"]);
-    // a column index that reads a parameter cannot be placed at build time
-    let bad = bracket_doc(
+    // a column index that reads a parameter is integer-valued, so piecewise
+    // constant: its dimension becomes one-hot over the buffer's extent, every
+    // point of which is a placeable column (spec §3.5)
+    let hot = bracket_doc(
         op(
             "*",
             &[
@@ -243,8 +245,11 @@ fn refused_rather_than_silently_wrong() {
         ),
         json!({"off": {"type": "parameter", "default": 1}}),
     );
-    let err = jacobian_bands_with_forcing(&bad, None, Wrt::Forcing, Some(&f)).unwrap_err();
-    assert!(err.0.contains("not closed at build time"), "{}", err.0);
+    let en = jacobian_bands_with_forcing(&hot, None, Wrt::Forcing, Some(&f)).unwrap();
+    assert_eq!(en.len(), 1);
+    let names: Vec<&str> = en[0].band.contracted.iter().map(|c| c.0.as_str()).collect();
+    assert_eq!(names, ["_oh2"]);
+    assert!(matches!(&en[0].band.cidx[1], Expr::Variable(n) if n == "_oh2"));
     // a literal offset is closed
     let ok = bracket_doc(
         op(

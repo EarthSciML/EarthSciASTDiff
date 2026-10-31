@@ -13,7 +13,7 @@ use serde_json::Value;
 mod common;
 use common::{load, root};
 
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 10] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -22,6 +22,8 @@ const NAMES: [&str; 8] = [
     "contracting_observed",
     "tgrad_photolysis",
     "forcing_bracket",
+    "filtered_scan",
+    "semiring_reduce",
 ];
 /// Per-(fixture, axis) goldens beyond the states axis: `<name>.<axis>.*`
 /// (`wrt = time`, spec §4.2; `wrt = forcing` / `parameters`, spec §4.3).
@@ -74,6 +76,14 @@ fn block_goldens() {
             stable_json(&block),
             golden(&format!("{name}.block.json")),
             "block golden diverges: {name}"
+        );
+        // the round trip is exact (a `where` guard included)
+        let (w, back) = parse_jacobian_block(&block).unwrap();
+        assert_eq!(w, Wrt::States);
+        assert_eq!(
+            stable_json(&Value::Array(back.iter().map(serialize_band).collect())),
+            golden(&format!("{name}.bands.json")),
+            "block round trip: {name}"
         );
     }
 }

@@ -3,21 +3,28 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
-use earthsci_ast::free_variables;
 use earthsci_ast::substitute;
 use earthsci_ast::{Expr, ExpressionNode, RegionBound};
 
 use crate::branches::{canon_lits, simp};
 use crate::clip::{clip_regions, RIdx};
-use crate::helpers::{add, is_zero, map_expr_children, mul, op, skey, Site};
+use crate::helpers::{add, free_vars, is_zero, map_expr_children, mul, op, skey, Site};
 use crate::inline::{all_names, binders};
-use crate::rules::{dscalar, plain_sum, reduction, DerivativeRuleError};
+use crate::reductions::{
+    conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard, window_weight,
+};
+use crate::rules::{dscalar, DerivativeRuleError};
 use crate::simplify_port::simplify_jl;
 
 /// One rectangular region of a Jacobian block: the rows it covers
 /// (`rows`, 1-based inclusive ranges, named by `ridx`), the column-index
 /// expressions (`cidx`) and the coefficient expression (`coef`). `contracted`
 /// lists extra column dimensions that accumulate (summed) at assembly.
+/// `guard` is an exact point predicate (the entry's `where` field) over the
+/// row and contracted index names, literals and `const` gathers: a point
+/// contributes iff it holds. What a filtered faq node's non-rectangular
+/// window (`gk < gke`) leaves after its box is split at affine breakpoints;
+/// `None` for every rectangular band.
 #[derive(Clone, Debug)]
 pub struct Band {
     pub rows: Vec<(i64, i64)>,
@@ -25,6 +32,7 @@ pub struct Band {
     pub cidx: Vec<Expr>,
     pub coef: Expr,
     pub contracted: Vec<(String, i64, i64)>,
+    pub guard: Option<Expr>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -35,7 +43,8 @@ pub struct Ctx {
 }
 
 /// An expression has a form the band calculus cannot differentiate (for
-/// example a filtered `faq` node or a non-`"+"` semiring).
+/// example a joined `faq` node, the `bool_and_or` semiring, or a `max` over
+/// two contracted indices).
 #[derive(Debug)]
 pub struct BandError(pub String);
 
@@ -125,11 +134,34 @@ pub fn is_array_expr(e: &Expr, ctx: &Ctx) -> bool {
 /// bound twice on the way down, or over different ranges at different
 /// occurrences. Position-aware: a sum elsewhere in the body does not affect
 /// a site outside it.
-pub(crate) type Nested = HashMap<String, HashMap<String, Option<RangeSpec>>>;
+/// Each site under a sum also keeps the filters of the sums around it
+/// (`filters`): the same list at every such occurrence, or `None` (mixed) —
+/// compared by keys taken once per filter (`fkeys`), so an occurrence costs
+/// no re-serialization of its filters.
+#[derive(Default)]
+pub(crate) struct Nested {
+    ranges: HashMap<String, HashMap<String, Option<RangeSpec>>>,
+    filters: HashMap<String, Option<Vec<Expr>>>,
+    fkeys: HashMap<String, Vec<String>>,
+}
+
+/// The filters of the sums enclosing a walk position, with their keys.
+#[derive(Default)]
+struct FilterStack {
+    exprs: Vec<Expr>,
+    keys: Vec<String>,
+}
 
 pub(crate) fn nested_sums(e: &Expr, v: &str, outer: &[String]) -> Nested {
-    let mut acc = HashMap::new();
-    nested_walk(e, v, outer, &mut Vec::new(), &mut acc);
+    let mut acc = Nested::default();
+    nested_walk(
+        e,
+        v,
+        outer,
+        &mut Vec::new(),
+        &mut FilterStack::default(),
+        &mut acc,
+    );
     acc
 }
 
@@ -138,6 +170,7 @@ fn nested_walk(
     v: &str,
     outer: &[String],
     stack: &mut Vec<(String, RangeSpec)>,
+    fstack: &mut FilterStack,
     acc: &mut Nested,
 ) {
     let is_site = match e {
@@ -151,7 +184,19 @@ fn nested_walk(
         if stack.is_empty() {
             return;
         }
-        let d = acc.entry(Site::of(e).key).or_default();
+        let key = Site::of(e).key;
+        match acc.filters.get_mut(&key) {
+            None => {
+                acc.filters.insert(key.clone(), Some(fstack.exprs.clone()));
+                acc.fkeys.insert(key.clone(), fstack.keys.clone());
+            }
+            Some(f) => {
+                if f.is_some() && acc.fkeys[&key] != fstack.keys {
+                    *f = None;
+                }
+            }
+        }
+        let d = acc.ranges.entry(key).or_default();
         let mut seen: HashSet<&String> = HashSet::new();
         for (nm, r) in stack.iter() {
             let amb = outer.contains(nm)
@@ -164,6 +209,7 @@ fn nested_walk(
     }
     let Expr::Operator(n) = e else { return };
     let depth = stack.len();
+    let fdepth = fstack.exprs.len();
     if n.op == "faq" && n.output_idx.as_ref().is_none_or(|o| o.is_empty()) {
         if let Some(rs) = &n.ranges {
             let mut ks: Vec<&String> = rs.keys().collect();
@@ -171,17 +217,20 @@ fn nested_walk(
             for k in ks {
                 stack.push((k.clone(), rs[k].clone()));
             }
+            if let Some(f) = &n.filter {
+                fstack.keys.push(skey(f));
+                fstack.exprs.push((**f).clone());
+            }
         }
     }
-    n.map_children(&mut |c: &Expr| {
-        nested_walk(c, v, outer, stack, acc);
-        c.clone()
-    });
+    n.for_each_child(&mut |c: &Expr| nested_walk(c, v, outer, stack, fstack, acc));
     stack.truncate(depth);
+    fstack.exprs.truncate(fdepth);
+    fstack.keys.truncate(fdepth);
 }
 
 /// Substitution that does not descend into a faq for the names it binds.
-fn subst_free(e: &Expr, m: &HashMap<String, Expr>) -> Expr {
+pub(crate) fn subst_free(e: &Expr, m: &HashMap<String, Expr>) -> Expr {
     match e {
         Expr::Variable(nm) => m.get(nm).cloned().unwrap_or_else(|| e.clone()),
         Expr::Operator(n) => {
@@ -208,8 +257,9 @@ fn subst_free(e: &Expr, m: &HashMap<String, Expr>) -> Expr {
 /// A site under a nested sum whose column reads the sum's index: that index
 /// becomes a CONTRACTED column dimension of the band, renamed apart in
 /// `cidx` and in the coefficient's free occurrences (bands.jl
-/// `_lift_nested`). `nested` and the lazily filled `taken` (the body's
-/// names) are per body, not per site.
+/// `_lift_nested`). The sums' index-only filter conjuncts over a lifted
+/// name become the band's guard ([`nested_guard`]). `nested` and the lazily
+/// filled `taken` (the body's names) are per body, not per site.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn lift_nested(
     nested: &Nested,
@@ -220,17 +270,17 @@ pub(crate) fn lift_nested(
     ctx: &Ctx,
     outer: &[String],
     taken: &mut Option<HashSet<String>>,
-) -> R<(Vec<Expr>, Expr, Vec<(String, i64, i64)>)> {
-    let Some(d) = nested.get(&s.key) else {
-        return Ok((cidx, coef, vec![]));
+) -> R<Lifted> {
+    let Some(d) = nested.ranges.get(&s.key) else {
+        return Ok((cidx, coef, vec![], None));
     };
     let mut read: HashSet<String> = HashSet::new();
     for c in &cidx {
-        read.extend(free_variables(c));
+        read.extend(free_vars(c));
     }
     let mut names: Vec<&String> = d.keys().filter(|n| read.contains(*n)).collect();
     if names.is_empty() {
-        return Ok((cidx, coef, vec![]));
+        return Ok((cidx, coef, vec![], None));
     }
     names.sort();
     let taken = taken.get_or_insert_with(|| {
@@ -241,7 +291,7 @@ pub(crate) fn lift_nested(
     let mut ren: HashMap<String, Expr> = HashMap::new();
     let mut chosen: HashSet<String> = HashSet::new();
     let mut extra = Vec::new();
-    for nm in names {
+    for &nm in &names {
         let Some(r) = &d[nm] else {
             return Err(BandError(format!(
                 "a column reads `{nm}`, which the sums around it bind \
@@ -258,8 +308,50 @@ pub(crate) fn lift_nested(
         ren.insert(nm.clone(), Expr::Variable(f.clone()));
         extra.push((f, lo, hi));
     }
+    let lifted: Vec<String> = names.into_iter().cloned().collect();
+    let guard = match nested.filters.get(&s.key) {
+        Some(Some(fs)) => nested_guard(fs, d, &lifted, outer, &ren),
+        _ => None,
+    };
     let cidx = cidx.iter().map(|c| substitute(c, &ren)).collect();
-    Ok((cidx, subst_free(&coef, &ren), extra))
+    Ok((cidx, subst_free(&coef, &ren), extra, guard))
+}
+
+/// [`lift_nested`]'s result: column indices, coefficient, the lifted
+/// contracted dimensions and the guard.
+pub(crate) type Lifted = (Vec<Expr>, Expr, Vec<(String, i64, i64)>, Option<Expr>);
+
+/// The index-only conjuncts of the filters around a site that read a lifted
+/// name — and no name a sum around it still binds — renamed like the
+/// column: the band's guard (bands.jl `_nested_guard`). The coefficient
+/// keeps them too (as the remaining sum's filter, or as an `ifelse` once
+/// every bound name is lifted), so the guard only makes the pattern exact;
+/// a site under different filters at different occurrences gets none.
+fn nested_guard(
+    filters: &[Expr],
+    d: &HashMap<String, Option<RangeSpec>>,
+    lifted: &[String],
+    outer: &[String],
+    ren: &HashMap<String, Expr>,
+) -> Option<Expr> {
+    let ok: HashSet<&String> = outer.iter().chain(lifted.iter()).collect();
+    let mut gs = Vec::new();
+    for f in filters {
+        for c in conjuncts(f) {
+            let fv = free_vars(&c);
+            if !lifted.iter().any(|n| fv.contains(n)) {
+                continue;
+            }
+            if !fv.iter().all(|n| ok.contains(n)) {
+                continue;
+            }
+            if fv.iter().any(|n| d.contains_key(n) && !lifted.contains(n)) {
+                continue;
+            }
+            gs.push(substitute(&c, ren));
+        }
+    }
+    conj_list(gs)
 }
 
 pub(crate) fn site_cidx(s: &Site) -> Vec<Expr> {
@@ -275,7 +367,7 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
         let nested = nested_sums(rhs, v, &[]);
         let mut taken = None;
         for s in sorted_sites(rhs, v) {
-            let (cidx, d, extra) = lift_nested(
+            let (cidx, d, extra, g) = lift_nested(
                 &nested,
                 &s,
                 rhs,
@@ -289,18 +381,38 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
             if is_zero(&coef) {
                 continue;
             }
-            out.push(Band {
-                rows: vec![],
-                ridx: vec![],
-                cidx,
-                coef,
-                contracted: extra,
-            });
+            push_band(&mut out, vec![], vec![], cidx, coef, extra, g, v, ctx)?;
         }
         return Ok(out);
     }
     bands_array(&mut out, rhs, v, ctx, shape_u, &[Expr::Integer(1)])?;
     Ok(out)
+}
+
+/// Push one band, its value-reading column dimensions made one-hot first
+/// (bands.jl `_push_band!`).
+#[allow(clippy::too_many_arguments)]
+fn push_band(
+    out: &mut Vec<Band>,
+    rows: Vec<(i64, i64)>,
+    ridx: Vec<RIdx>,
+    cidx: Vec<Expr>,
+    coef: Expr,
+    contracted: Vec<(String, i64, i64)>,
+    guard: Option<Expr>,
+    v: &str,
+    ctx: &Ctx,
+) -> R<()> {
+    let (cidx, coef, contracted) = one_hot(cidx, coef, contracted, &ridx, v, ctx)?;
+    out.push(Band {
+        rows,
+        ridx,
+        cidx,
+        coef,
+        contracted,
+        guard,
+    });
+    Ok(())
 }
 
 fn scalar_bands(
@@ -323,7 +435,7 @@ fn scalar_bands(
         let nested = nested_sums(&body, v, &outer);
         let mut taken = None;
         for s in sorted_sites(&body, v) {
-            let (cidx, d, extra) = lift_nested(
+            let (cidx, d, extra, g) = lift_nested(
                 &nested,
                 &s,
                 &body,
@@ -339,13 +451,17 @@ fn scalar_bands(
             if is_zero(&coef) {
                 continue;
             }
-            out.push(Band {
-                rows: rows2.clone(),
-                ridx: ridx.to_vec(),
+            push_band(
+                out,
+                rows2.clone(),
+                ridx.to_vec(),
                 cidx,
                 coef,
-                contracted: extra,
-            });
+                extra,
+                g,
+                v,
+                ctx,
+            )?;
         }
     }
     Ok(())
@@ -382,6 +498,7 @@ fn bands_array(
                 .collect(),
             coef: mul(scale.to_vec()),
             contracted: vec![],
+            guard: None,
         });
         return Ok(());
     }
@@ -392,13 +509,16 @@ fn bands_array(
                 bands_array(out, x, v, ctx, shape_u, scale)?;
             }
         }
+        "-" if n.args.len() == 1 => {
+            let mut sc = scale.to_vec();
+            sc.push(Expr::Integer(-1));
+            bands_array(out, &n.args[0], v, ctx, shape_u, &sc)?;
+        }
         "-" => {
             bands_array(out, &n.args[0], v, ctx, shape_u, scale)?;
-            if n.args.len() == 2 {
-                let mut sc = scale.to_vec();
-                sc.push(Expr::Integer(-1));
-                bands_array(out, &n.args[1], v, ctx, shape_u, &sc)?;
-            }
+            let mut sc = scale.to_vec();
+            sc.push(Expr::Integer(-1));
+            bands_array(out, &n.args[1], v, ctx, shape_u, &sc)?;
         }
         "neg" => {
             let mut sc = scale.to_vec();
@@ -476,6 +596,16 @@ fn bands_array(
     Ok(())
 }
 
+/// A faq node at array level (bands.jl `_bands_faq!`). Each site of its body
+/// differentiates as a term of the node's reduction over its window
+/// (reductions.rs): the derivative is weighted per term ([`window_weight`]),
+/// and the filter's index-only conjuncts split the band box
+/// ([`split_guard`]) while its value-dependent conjuncts gate the
+/// coefficient. Per box piece, a site whose column reads no contracted name
+/// yields one band whose coefficient sums the weighted derivative over the
+/// piece's contraction (filtered by the residual guard's contracted
+/// conjuncts; its row-only conjuncts guard the band); a gathered column
+/// yields a band with contracted dimensions and the whole residual guard.
 fn bands_faq(
     out: &mut Vec<Band>,
     n: &ExpressionNode,
@@ -490,13 +620,7 @@ fn bands_faq(
             "singleton `1` output_idx entries not supported yet".into(),
         ));
     }
-    if n.filter.is_some() {
-        return Err(BandError(
-            "filtered faq nodes not supported (the filter gate would be \
-             dropped from the derivative)"
-                .into(),
-        ));
-    }
+    let red = reduce_op(n).map_err(BandError)?;
     let empty = HashMap::new();
     let ranges = n.ranges.as_ref().unwrap_or(&empty);
     let mut cnames: Vec<String> = ranges
@@ -505,20 +629,14 @@ fn bands_faq(
         .cloned()
         .collect();
     cnames.sort();
-    if !plain_sum(n) {
-        return Err(BandError(format!(
-            "{} (non-smooth semiring reductions have no bands)",
-            reduction(n)
-        )));
-    }
-    let mut crange = Vec::new();
+    let mut crange0 = Vec::new();
     for nm in &cnames {
         let (lo, hi) = range_of(&ranges[nm], ctx)?;
-        crange.push((nm.clone(), lo, hi));
+        crange0.push((nm.clone(), lo, hi));
     }
-    let mut rows = Vec::new();
+    let mut rows0 = Vec::new();
     for (k, nm) in oidx.iter().enumerate() {
-        rows.push(match ranges.get(nm) {
+        rows0.push(match ranges.get(nm) {
             Some(r) => range_of(r, ctx)?,
             None => (1, shape_u[k]),
         });
@@ -529,79 +647,161 @@ fn bands_faq(
         .ok_or_else(|| BandError("faq without body".into()))?;
     let ridx: Vec<RIdx> = oidx.iter().map(|s| RIdx::Name(s.clone())).collect();
     let outer: Vec<String> = oidx.iter().chain(cnames.iter()).cloned().collect();
-    for (rows2, body2) in clip_regions(body, &ridx, &rows) {
-        let nested = nested_sums(&body2, v, &outer);
-        let mut taken = None;
-        for s in sorted_sites(&body2, v) {
-            if matches!(&s.expr, Expr::Variable(_)) && is_array(ctx, v) {
-                return Err(BandError(format!(
-                    "whole-array reference to `{v}` inside a faq body"
-                )));
-            }
-            let (cidx, d, extra) = lift_nested(
-                &nested,
-                &s,
-                &body2,
-                site_cidx(&s),
-                dscalar(&body2, &s)?,
-                ctx,
-                &outer,
-                &mut taken,
-            )?;
-            if crange.is_empty() {
-                let mut fac = vec![d];
-                fac.extend(scale.iter().cloned());
-                let coef = simp(&mul(fac));
-                if !is_zero(&coef) {
-                    out.push(Band {
-                        rows: rows2.clone(),
-                        ridx: ridx.clone(),
-                        cidx,
-                        coef,
-                        contracted: extra,
-                    });
-                }
-            } else if !crange
-                .iter()
-                .any(|(nm, _, _)| cidx.iter().any(|c| free_variables(c).contains(nm)))
-            {
-                // column independent of the contraction: symbolic sum coef
-                let mut rngs = HashMap::new();
-                for (nm, lo, hi) in &crange {
-                    rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
-                }
-                let red = Expr::operator(ExpressionNode {
-                    op: "faq".into(),
-                    output_idx: Some(vec![]),
-                    reduce: Some("+".into()),
-                    expr: Some(Box::new(d)),
-                    ranges: Some(rngs),
-                    ..Default::default()
-                });
-                let mut fac = vec![red];
-                fac.extend(scale.iter().cloned());
-                let coef = simp(&mul(fac));
-                if !is_zero(&coef) {
-                    out.push(Band {
-                        rows: rows2.clone(),
-                        ridx: ridx.clone(),
-                        cidx,
-                        coef,
-                        contracted: extra,
-                    });
-                }
+    let (mut gidx, mut gval) = (Vec::new(), Vec::new());
+    if let Some(f) = &n.filter {
+        for c in conjuncts(f) {
+            if index_only(&c, &outer) {
+                gidx.push(c);
             } else {
-                let mut fac = vec![d];
-                fac.extend(scale.iter().cloned());
-                let coef = simp(&mul(fac));
-                if !is_zero(&coef) {
-                    out.push(Band {
-                        rows: rows2.clone(),
-                        ridx: ridx.clone(),
+                gval.push(c);
+            }
+        }
+    }
+    type Piece = (Vec<(i64, i64)>, Vec<(String, i64, i64)>, Option<Expr>);
+    let pieces: Vec<Piece> = match conj_list(gidx) {
+        None => vec![(rows0, crange0, None)],
+        Some(g) => {
+            let no = oidx.len();
+            let bx: Vec<(i64, i64)> = rows0
+                .iter()
+                .copied()
+                .chain(crange0.iter().map(|(_, lo, hi)| (*lo, *hi)))
+                .collect();
+            split_guard(&g, &outer, &bx)
+                .into_iter()
+                .map(|(cell, g)| {
+                    let cr = cnames
+                        .iter()
+                        .enumerate()
+                        .map(|(k, nm)| (nm.clone(), cell[no + k].0, cell[no + k].1))
+                        .collect();
+                    (cell[..no].to_vec(), cr, g)
+                })
+                .collect()
+        }
+    };
+    let vfilt = conj_list(gval);
+    for (rows_p, crange, guard) in pieces {
+        for (rows2, body2) in clip_regions(body, &ridx, &rows_p) {
+            let nested = nested_sums(&body2, v, &outer);
+            let mut taken = None;
+            for s in sorted_sites(&body2, v) {
+                if matches!(&s.expr, Expr::Variable(_)) && is_array(ctx, v) {
+                    return Err(BandError(format!(
+                        "whole-array reference to `{v}` inside a faq body"
+                    )));
+                }
+                let (cidx, d, extra, g) = lift_nested(
+                    &nested,
+                    &s,
+                    &body2,
+                    site_cidx(&s),
+                    dscalar(&body2, &s)?,
+                    ctx,
+                    &outer,
+                    &mut taken,
+                )?;
+                let mut d = window_weight(red, n, &cnames, d).map_err(BandError)?;
+                if let Some(vf) = &vfilt {
+                    if !is_zero(&d) {
+                        d = op("ifelse", vec![vf.clone(), d, Expr::Integer(0)]);
+                    }
+                }
+                if crange.is_empty() {
+                    let mut fac = vec![d];
+                    fac.extend(scale.iter().cloned());
+                    let coef = simp(&mul(fac));
+                    if is_zero(&coef) {
+                        continue;
+                    }
+                    let guard = conj(guard.clone(), g);
+                    push_band(
+                        out,
+                        rows2.clone(),
+                        ridx.clone(),
                         cidx,
                         coef,
-                        contracted: [crange.clone(), extra].concat(),
+                        extra,
+                        guard,
+                        v,
+                        ctx,
+                    )?;
+                } else if !crange
+                    .iter()
+                    .any(|(nm, _, _)| cidx.iter().any(|c| free_vars(c).contains(nm)))
+                {
+                    // The column is independent of every contracted index: a
+                    // plain band whose coefficient is the (scalar)
+                    // `reduce: "+"` of the site derivative over the
+                    // contraction. A guard conjunct reading a contracted
+                    // name — the piece's own, or a nested sum's filter tied
+                    // to it (`Σ_k Σ_{j≤k}`) — is no condition on the band's
+                    // point: it filters that sum.
+                    let (mut gc, mut gr) = (Vec::new(), Vec::new());
+                    if let Some(gd) = &conj(guard.clone(), g) {
+                        for c in conjuncts(gd) {
+                            let fv = free_vars(&c);
+                            if cnames.iter().any(|nm| fv.contains(nm)) {
+                                gc.push(c);
+                            } else {
+                                gr.push(c);
+                            }
+                        }
+                    }
+                    let mut rngs = HashMap::new();
+                    for (nm, lo, hi) in &crange {
+                        rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
+                    }
+                    let red_sum = Expr::operator(ExpressionNode {
+                        op: "faq".into(),
+                        output_idx: Some(vec![]),
+                        reduce: Some("+".into()),
+                        expr: Some(Box::new(d)),
+                        ranges: Some(rngs),
+                        filter: conj_list(gc).map(Box::new),
+                        ..Default::default()
                     });
+                    let mut fac = vec![red_sum];
+                    fac.extend(scale.iter().cloned());
+                    let coef = simp(&mul(fac));
+                    if is_zero(&coef) {
+                        continue;
+                    }
+                    let guard = conj_list(gr);
+                    push_band(
+                        out,
+                        rows2.clone(),
+                        ridx.clone(),
+                        cidx,
+                        coef,
+                        extra,
+                        guard,
+                        v,
+                        ctx,
+                    )?;
+                } else {
+                    // A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a
+                    // band with free contracted column dimensions; entries
+                    // landing on one column accumulate at assembly.
+                    let mut fac = vec![d];
+                    fac.extend(scale.iter().cloned());
+                    let coef = simp(&mul(fac));
+                    if is_zero(&coef) {
+                        continue;
+                    }
+                    let contracted = [crange.clone(), extra].concat();
+                    let guard = conj(guard.clone(), g);
+                    push_band(
+                        out,
+                        rows2.clone(),
+                        ridx.clone(),
+                        cidx,
+                        coef,
+                        contracted,
+                        guard,
+                        v,
+                        ctx,
+                    )?;
                 }
             }
         }
@@ -721,12 +921,13 @@ fn bands_makearray(
                         rows2.push((*lo, *lo));
                     }
                 }
-                let (coef, cidx) = if subst.is_empty() {
-                    (b.coef.clone(), b.cidx.clone())
+                let (coef, cidx, guard) = if subst.is_empty() {
+                    (b.coef.clone(), b.cidx.clone(), b.guard.clone())
                 } else {
                     (
                         substitute(&b.coef, &subst),
                         b.cidx.iter().map(|c| substitute(c, &subst)).collect(),
+                        b.guard.as_ref().map(|g| substitute(g, &subst)),
                     )
                 };
                 out.push(Band {
@@ -735,6 +936,7 @@ fn bands_makearray(
                     cidx,
                     coef,
                     contracted: b.contracted.clone(),
+                    guard,
                 });
             }
         } else {
@@ -813,6 +1015,10 @@ pub fn normalize_band(b: &Band) -> Band {
             .collect(),
         coef: simp(&substitute(&b.coef, &subst)),
         contracted,
+        guard: b
+            .guard
+            .as_ref()
+            .map(|g| canon_lits(&simplify_jl(&substitute(g, &subst)))),
     }
 }
 
@@ -826,6 +1032,7 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
             b.cidx.iter().map(skey).collect::<Vec<_>>(),
             skey(&b.coef),
             b.contracted.clone(),
+            b.guard.as_ref().map(skey),
         )
     };
     let ks: Vec<_> = bs.iter().map(key).collect();

@@ -261,10 +261,14 @@ end
 end
 
 @testset "forcing: refused rather than silently wrong" begin
-    # a column index that reads a parameter cannot be placed at build time
+    # a column index that reads a parameter is integer-valued, so piecewise
+    # constant: its dimension becomes one-hot over the buffer's extent, every
+    # point of which is a placeable column (spec §3.5)
     off = Dict{String, Any}("off" => Dict{String, Any}("type" => "parameter", "default" => 1))
-    bad = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", "off"))); extra = off)
-    @test_throws BandError jacobian_bands(bad, "B"; wrt = :forcing, forcing = ["F"])
+    hot = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", "off"))); extra = off)
+    en = only(jacobian_bands(hot, "B"; wrt = :forcing, forcing = ["F"]))
+    @test [n for (n, _, _) in en.band.contracted] == ["_oh2"]
+    @test en.band.cidx[2] == EarthSciAST.VarExpr("_oh2")
     # a literal offset is closed
     ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
     @test length(jacobian_bands(ok, "B"; wrt = :forcing, forcing = ["F"])) == 1

@@ -4,7 +4,8 @@ performance one.
 The Julia reference compiles a derived evaluation model through its
 tree-walk; here each band coefficient is evaluated per (row, contracted)
 cell by resolving every read (state/parameter/`t`/const-table gathers and
-scalar ``reduce: "+"`` faq nodes) to a literal and handing the closed tree
+scalar faq reductions — ``+`` / ``*`` / ``max`` / ``min``, filtered or
+not) to a literal and handing the closed tree
 to the official ``numpy_interpreter`` evaluator — so operator semantics
 (ifelse, min/max, ``fn`` lookups) stay the runtime's own. Complexity is
 O(cells × coefficient size) per call; use the Julia binding for production
@@ -21,10 +22,17 @@ from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.substitute import substitute
 
 from .bands import _range_of
-from .emit import _cellname, _eval_cidx, _product, check_column, column_names
+from .emit import (
+    _cellname,
+    _product,
+    check_column,
+    check_state_column,
+    column_names,
+    foreach_point,
+)
 from .inline import inline_observed
 from .jacobian import _AXES, _jacobian_bands, jacobian_columns
-from .scalar_rules import plain_sum, reduction
+from .reductions import reduce_op
 from .second_order import _bands2, axis_pair, structure2
 from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
@@ -86,21 +94,43 @@ def _resolve(e: Expr, env: _Env) -> Expr:
             return v
         raise EvalError(f"index into unsupported target `{t}`")
     if e.op == "faq":
-        if e.output_idx:
-            raise EvalError("array-producing faq in scalar coefficient")
-        if not plain_sum(e):
-            raise EvalError(f"{reduction(e)} in scalar coefficient")
-        names = sorted(str(n) for n in (e.ranges or {}))
-        boxes = []
-        for n in names:
-            lo, hi = _range_of(e.ranges[n], env.ctx)
-            boxes.append(range(lo, hi + 1))
-        total = 0.0
-        for cell in product(*boxes):
-            body = substitute(e.expr, {n: cell[k] for k, n in enumerate(names)})
-            total += float(_as_lit(_resolve(body, env)))
-        return total
+        return _reduce(e, env)
     return map_children(e, lambda x: _resolve(x, env))
+
+
+_EMPTY = {"+": 0.0, "*": 1.0, "max": float("-inf"), "min": float("inf")}
+
+
+def _reduce(e: ExprNode, env: _Env) -> float:
+    """A scalar faq reduction (esm-spec semantics): ``+`` / ``*`` / ``max`` /
+    ``min`` (a ``semiring`` spelled as its ⊕) over the window in ascending
+    order, a term whose filter is false skipped; an empty window is the
+    reduction's identity (0, 1, -inf, +inf)."""
+    if e.output_idx:
+        raise EvalError("array-producing faq in scalar coefficient")
+    red = reduce_op(e, EvalError)
+    names = sorted(str(n) for n in (e.ranges or {}))
+    boxes = []
+    for n in names:
+        lo, hi = _range_of(e.ranges[n], env.ctx)
+        boxes.append(range(lo, hi + 1))
+    acc = _EMPTY[red]
+    # ascending (lexicographic over the sorted names); a max/min tie keeps
+    # the earlier term, which only matters for the derivative, not the value
+    for cell in product(*boxes):
+        m = {n: cell[k] for k, n in enumerate(names)}
+        if e.filter is not None and float(_as_lit(_resolve(substitute(e.filter, m), env))) == 0:
+            continue
+        x = float(_as_lit(_resolve(substitute(e.expr, m), env)))
+        if red == "+":
+            acc += x
+        elif red == "*":
+            acc *= x
+        elif red == "max":
+            acc = max(acc, x)
+        else:
+            acc = min(acc, x)
+    return acc
 
 
 def _as_lit(e: Expr) -> float:
@@ -171,6 +201,7 @@ class JacobianEvaluator:
             self.columns = None
             self.colnames = ["t"] if wrt == "time" else None
         colset = set(self.colnames) if self.columns is not None else None
+        states = set(view_states(sv, obs))
         # (row name, column name, coefficient with its index binding applied)
         # per band point. Pruning leaves target-independent observed as
         # opaque reads in the coefficients; resolve them from their own
@@ -180,24 +211,16 @@ class JacobianEvaluator:
         for en in self.entries:
             b = en.band
             coef0 = inline_observed(b.coef, obs)
-            vshape = ctx.shapes.get(en.v)
-            for cell in _product(b.rows):
-                for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                    bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
-                    for k, (nm, _, _) in enumerate(b.contracted):
-                        bind[nm] = cc[k]
-                    fbind = {k2: float(v2) for k2, v2 in bind.items()}
-                    cidx = [_eval_cidx(c, fbind) for c in b.cidx]
-                    row, col = _cellname(en.u, cell), _cellname(en.v, cidx)
-                    if colset is not None:
-                        if not check_column(col in colset, col, row, wrt):
-                            continue  # parameter ghost read: no column
-                    elif vshape is not None and any(
-                        not (1 <= cidx[d] <= vshape[d]) for d in range(len(cidx))
-                    ):
+            for cell, _, bind, cidx in foreach_point(b):
+                row, col = _cellname(en.u, cell), _cellname(en.v, cidx)
+                if colset is not None:
+                    if not check_column(col in colset, col, row, wrt):
+                        continue  # parameter ghost read: no column
+                elif wrt == "states":
+                    if not check_state_column(states, ctx.shapes, en.v, cidx, col, row):
                         continue  # ghost/boundary read: no column
-                    coef = substitute(coef0, dict(bind)) if bind else coef0
-                    self._points.append((row, col, coef))
+                coef = substitute(coef0, dict(bind)) if bind else coef0
+                self._points.append((row, col, coef))
 
     def _env(self, states, params, t) -> _Env:
         dstates = dict(self._defaults[0])
@@ -384,6 +407,7 @@ class HVPEvaluator:
             self.col2names = None
         self.colnames = ["t"] if a1 == "time" else None
         col2set = set(self.col2names) if self.columns is not None else None
+        states = set(view_states(sv, obs))
         # (row, col, col2, coefficient with its index binding applied) per
         # band point; a ghost column on either axis drops the point, except
         # on the forcing axis, where it is an error (as for first order).
@@ -391,29 +415,22 @@ class HVPEvaluator:
         for en in self.entries:
             b = en.band
             coef0 = inline_observed(b.coef, obs)
-            for cell in _product(b.rows):
-                for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                    bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
-                    for k, (nm, _, _) in enumerate(b.contracted):
-                        bind[nm] = cc[k]
-                    fbind = {k2: float(v2) for k2, v2 in bind.items()}
-                    cidx = [_eval_cidx(c, fbind) for c in b.cidx]
-                    row = _cellname(en.u, cell)
-                    c1, c2 = cidx[: en.ncol], cidx[en.ncol :]
-                    col2 = _cellname(en.w, c2)
-                    if col2set is not None:
-                        if not check_column(col2 in col2set, col2, row, a2):
-                            continue  # parameter ghost read
-                    elif not _in_extent(ctx, en.w, c2):
-                        continue
-                    if a1 == "time":
-                        col = "t"
-                    elif _in_extent(ctx, en.v, c1):
-                        col = _cellname(en.v, c1)
-                    else:
-                        continue
-                    coef = substitute(coef0, dict(bind)) if bind else coef0
-                    self._points.append((row, col, col2, coef))
+            for cell, _, bind, cidx in foreach_point(b):
+                row = _cellname(en.u, cell)
+                c1, c2 = cidx[: en.ncol], cidx[en.ncol :]
+                col2 = _cellname(en.w, c2)
+                col = "t" if a1 == "time" else _cellname(en.v, c1)
+                # both columns resolve (or are refused) before either skips
+                ok2 = (
+                    check_column(col2 in col2set, col2, row, a2)
+                    if col2set is not None
+                    else check_state_column(states, ctx.shapes, en.w, c2, col2, row)
+                )
+                ok1 = a1 == "time" or check_state_column(states, ctx.shapes, en.v, c1, col, row)
+                if not (ok1 and ok2):
+                    continue  # a ghost read on either axis
+                coef = substitute(coef0, dict(bind)) if bind else coef0
+                self._points.append((row, col, col2, coef))
 
     def _values(self, states, params, t):
         dstates = dict(self._defaults[0])
@@ -423,11 +440,6 @@ class HVPEvaluator:
         env = _Env(dstates, dparams, t, self._ctx)
         for row, col, col2, coef in self._points:
             yield row, col, col2, float(_as_lit(_resolve(coef, env)))
-
-
-def _in_extent(ctx, v: str, cidx: list[int]) -> bool:
-    shape = ctx.shapes.get(v)
-    return shape is None or all(1 <= cidx[d] <= shape[d] for d in range(len(cidx)))
 
 
 def prepare_hvp(

@@ -94,17 +94,9 @@ end
         "expr" => Dict{String, Any}("op" => "index", "args" => Any["u", "j"]),
         (String(k) => v for (k, v) in kw)...
     )
-    # non-smooth semiring reductions have no bands
+    # a boolean semiring has no derivative rule (spec §3.5); a filter and a
+    # max/min/* reduction do (reductions_test.jl)
     @test_throws EarthSciASTDiff.BandError jacobian_bands(
-        mk(agg(reduce = "min")), "G"
-    )
-    # a filter gate cannot be silently dropped from the derivative
-    @test_throws EarthSciASTDiff.BandError jacobian_bands(
-        mk(
-            agg(
-                reduce = "+",
-                filter = Dict{String, Any}("op" => "<", "args" => Any["j", 3])
-            )
-        ), "G"
+        mk(agg(semiring = "bool_and_or")), "G"
     )
 end

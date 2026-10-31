@@ -19,6 +19,7 @@ use crate::clip::{clip_regions, RIdx};
 use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
 use crate::helpers::{is_zero, ser_expr};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
+use crate::reductions::{conj, one_hot};
 use crate::rules::dscalar;
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
@@ -183,7 +184,7 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
                     "whole-array reference to `{w}` in a band coefficient"
                 )));
             }
-            let (c2, d, extra) = lift_nested(
+            let (c2, d, extra, g) = lift_nested(
                 &nested,
                 &s,
                 &body,
@@ -197,12 +198,21 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
             if is_zero(&coef) {
                 continue;
             }
+            let (c2, coef, contracted) = one_hot(
+                c2,
+                coef,
+                [b.contracted.clone(), extra].concat(),
+                &b.ridx,
+                w,
+                ctx,
+            )?;
             out.push(Band {
                 rows: rows2.clone(),
                 ridx: b.ridx.clone(),
                 cidx: [b.cidx.clone(), c2].concat(),
                 coef,
-                contracted: [b.contracted.clone(), extra].concat(),
+                contracted,
+                guard: conj(b.guard.clone(), g),
             });
         }
     }

@@ -1,6 +1,8 @@
 //! Expression constructors, structural keys, and the differentiation site
 //! (mirror of the reference's expr_helpers).
 
+use std::collections::HashSet;
+
 use earthsci_ast::canonical_json;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
@@ -176,6 +178,47 @@ pub fn ckey(e: &Expr) -> String {
     canonical_json(e).expect("scalar-core canonical form")
 }
 
+/// A site's identity key (expr_helpers.jl `_site_key`): the canonical JSON,
+/// or — for an `index` node whose subscripts hold an array op the canonical
+/// form refuses (a level search `u[κ]` with κ a min-faq, spec §3.5) — `~`
+/// followed by its stable JSON, which sorts after every canonical key.
+pub fn site_key(e: &Expr) -> String {
+    match canonical_json(e) {
+        Ok(k) => k,
+        Err(_) => format!("~{}", skey(e)),
+    }
+}
+
+/// The free variables of `e` with every node's own binders subtracted at
+/// that node (a faq's ranges and output indices, an integral's variable),
+/// plus any `wrt` — EarthSciAST.jl's `free_variables`. (`earthsci_ast`'s
+/// `free_variables` subtracts no binder.)
+pub fn free_vars(e: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    match e {
+        Expr::Variable(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Operator(n) => {
+            n.for_each_child(&mut |c: &Expr| out.extend(free_vars(c)));
+            if let Some(v) = &n.int_var {
+                out.remove(v);
+            }
+            for k in n.ranges.iter().flat_map(|r| r.keys()) {
+                out.remove(k);
+            }
+            for k in n.output_idx.iter().flatten() {
+                out.remove(k);
+            }
+            if let Some(w) = &n.wrt {
+                out.insert(w.clone());
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// A bare variable reference or one symbolic `index(v, i…)` cell.
 #[derive(Clone, Debug)]
 pub struct Site {
@@ -187,7 +230,7 @@ impl Site {
     pub fn of(e: &Expr) -> Site {
         Site {
             expr: e.clone(),
-            key: ckey(e),
+            key: site_key(e),
         }
     }
 }
@@ -195,7 +238,7 @@ impl Site {
 pub fn is_site(e: &Expr, s: &Site) -> bool {
     let candidate =
         matches!(e, Expr::Variable(_)) || matches!(e, Expr::Operator(n) if n.op == "index");
-    candidate && ckey(e) == s.key
+    candidate && site_key(e) == s.key
 }
 
 /// Structural occurrence — THE sparsity primitive (never a zero test).

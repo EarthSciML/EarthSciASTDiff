@@ -13,6 +13,7 @@ pub mod inline;
 pub mod jacobian;
 pub mod numeric;
 pub mod program;
+pub mod reductions;
 pub mod rules;
 pub mod scatter;
 pub mod second_order;
@@ -23,10 +24,12 @@ pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 pub use branches::{canon_lits, simp, simplify_branches};
 pub use clip::{clip_regions, RIdx};
 pub use emit::{
-    block_diagonal_lu, cse_templates, detect_structure, evaluation_document, jacobian_block,
-    jacobian_block_with_forcing, jacobian_blocks, lu_fill, markowitz_ordering, parse_band,
-    parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks, serialize_band, BlockLu,
-    BlockWrt, ParsedBlock,
+    block_diagonal_lu, column_block_plan, column_lines, cse_templates, detect_structure,
+    detect_structure_along, evaluation_document, jacobian_block, jacobian_block_with,
+    jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with, lu_fill,
+    markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
+    parse_jacobian_blocks, serialize_band, BlockLu, BlockOptions, BlockWrt, ColumnLines,
+    ParsedBlock,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};

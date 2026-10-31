@@ -65,16 +65,12 @@ Derivative of the scalar expression `e` with respect to site `s`, as a new
 ESM expression. Structural rules only; a subtree in which `s` does not occur
 differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
-filtered or semiring `faq` nodes in scalar position, unknown closed
+joined or value-invention `faq` nodes in scalar position, unknown closed
 functions).
 """
 dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr, Bool}())
 
-# Whether faq node `e` reduces by ordinary `+`. A `semiring` supersedes
-# `reduce` (EarthSciAST: absent ⇒ "sum_product"), so `reduce` alone is not
-# enough: a `max_product` node with no `reduce` is a max, not a sum.
-_plain_sum(e::OpExpr)::Bool = e.semiring === nothing ?
-    (e.reduce === nothing || e.reduce == "+") : e.semiring == "sum_product"
+# A faq node's reduction, for messages (`_reduce_op` decides it, reductions.jl).
 _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" :
     "semiring=`$(e.semiring)`"
 
@@ -88,27 +84,21 @@ _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" 
 #     the band emitter turns it into a contracted column dimension (§4,
 #     `_lift_nested` in bands.jl). Bound indices the column does not read
 #     are still summed.
-# A filter, a join or a non-`"+"` reduction has no rule (spec §3.5).
+# A `max`, `min` or `*` reduction differentiates the same way once each
+# term's derivative is weighted by what the reduction does with it
+# (`_window_weight`, reductions.jl), and the result is a `+` sum. A filter
+# keeps its window — the remaining sum's filter, or an `ifelse` once every
+# bound index is left free — and its own Dirac term is dropped. A join or a
+# value-invention node has no rule (spec §3.5).
 function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
-    e.filter === nothing || throw(
-        DerivativeRuleError(
-            "filtered faq nodes are not differentiated (the filter gate would " *
-                "be dropped from the derivative)"
-        )
-    )
-    e.join === nothing || throw(
-        DerivativeRuleError(
-            "joined faq nodes are not differentiated"
-        )
-    )
-    _plain_sum(e) || throw(
-        DerivativeRuleError(
-            "$(_reduction(e)) (non-smooth semiring reductions have no rule)"
-        )
-    )
+    red = _reduce_op(e, DerivativeRuleError)
     db = dscalar(e.expr_body, s, occ)
     iszero_lit(db) && return lit(0)
     ranges = e.ranges === nothing ? Dict{String, Any}() : e.ranges
+    db = _window_weight(red, e, sort!(String.(collect(keys(ranges)))), db, DerivativeRuleError)
+    # A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+    plus(kw...) = red == "+" ? EarthSciAST.reconstruct(e; expr_body = db, kw...) :
+        EarthSciAST.reconstruct(e; expr_body = db, reduce = "+", semiring = nothing, kw...)
     read = Set{String}()
     if s.expr isa OpExpr
         for x in s.expr.args[2:end]
@@ -116,9 +106,9 @@ function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
         end
     end
     summed = Dict{String, Any}(n => r for (n, r) in ranges if !(n in read))
-    length(summed) == length(ranges) && return EarthSciAST.reconstruct(e; expr_body = db)
-    isempty(summed) && return db
-    return EarthSciAST.reconstruct(e; expr_body = db, ranges = summed)
+    length(summed) == length(ranges) && return plus()
+    isempty(summed) && return e.filter === nothing ? db : op("ifelse", e.filter, db, lit(0))
+    return plus(ranges = summed)
 end
 
 # `occ` is the occurrence memo threaded through ONE derivative scan (see

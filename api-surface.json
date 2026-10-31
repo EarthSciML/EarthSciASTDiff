@@ -43,6 +43,26 @@
       }
     },
     {
+      "name": "column_block_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ColumnBlockPlan",
+        "python": "ColumnBlockPlan",
+        "rust": "ColumnLines"
+      }
+    },
+    {
+      "name": "column_lines",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "column_lines",
+        "python": "column_lines",
+        "rust": "column_lines"
+      }
+    },
+    {
       "name": "cse_templates",
       "kind": "function",
       "tier": "stable",

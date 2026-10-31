@@ -33,13 +33,15 @@ const _: () = {
     sendable::<HvpWorkspace>();
 };
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 6] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 8] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
     ("forcing_bracket", (Wrt::States, Wrt::Forcing)),
     ("forcing_bracket", (Wrt::Time, Wrt::States)),
     ("minmod_adv", SS),
+    ("filtered_scan", SS),
+    ("semiring_reduce", SS),
 ];
 
 fn tag((a1, a2): (Wrt, Wrt)) -> String {
@@ -357,7 +359,8 @@ fn refusals() {
     assert!(ht
         .hvp(&env, &short, HvpForm::Contract, &mut BTreeMap::new())
         .is_err());
-    // a second column read through a parameter offset cannot be placed
+    // a second column read through a parameter offset is one-hot over the
+    // buffer's extent (spec §3.5), every point a placeable column
     let ix = |v: &str, i: &[Value]| {
         let mut args = vec![json!(v)];
         args.extend(i.iter().cloned());
@@ -389,10 +392,13 @@ fn refusals() {
         }},
     });
     let doc = earthsci_ast::load_document(&doc).expect("document loads");
-    let err =
+    let e2 =
         jacobian_bands2_with_forcing(&doc, None, (Wrt::States, Wrt::Forcing), Some(&s(&["F"])))
-            .unwrap_err();
-    assert!(err.0.contains("not closed at build time"), "{}", err.0);
+            .unwrap();
+    assert!(!e2.is_empty());
+    assert!(e2
+        .iter()
+        .all(|en| en.band.contracted.iter().any(|c| c.0.starts_with("_oh"))));
 }
 
 // ---------------------------------------------------------------------------

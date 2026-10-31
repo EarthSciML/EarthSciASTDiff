@@ -6,6 +6,7 @@ root = normpath(joinpath(@__DIR__, ".."))
 for name in (
         "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
         "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+        "filtered_scan", "semiring_reduce",
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -78,6 +79,8 @@ for (name, wrt) in (
         ("forcing_bracket", (:states, :forcing)),
         ("forcing_bracket", (:time, :states)),
         ("minmod_adv", (:states, :states)),
+        ("filtered_scan", (:states, :states)),
+        ("semiring_reduce", (:states, :states)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -102,6 +105,8 @@ for (name, tag, layout) in (
         ("minmod_adv", "csr", Csr()),
         ("contracted_ops", "csr", Csr()),
         ("contracting_observed", "csr", Csr()),
+        ("filtered_scan", "csr", Csr()),
+        ("semiring_reduce", "csr", Csr()),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     ppath = joinpath(root, "tests", "goldens", "$name.$tag.plan.json")

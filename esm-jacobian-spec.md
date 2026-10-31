@@ -64,7 +64,10 @@ pattern. Only genuinely value-dependent branches (limiters) remain unioned.
 **site** `s`. A site is a bare variable reference or an `index(v, i…)` node;
 two nodes denote the same site iff their canonical forms (RFC §5.4) are
 equal. `d[s, s] = 1`; `d[e, s] = 0` whenever `s` does not occur in `e`
-(structural short-circuit).
+(structural short-circuit). An `index` node whose subscripts hold an array
+operator the canonical form refuses (a level search used as a subscript,
+§3.5) is keyed by `~` followed by its §5 deterministic JSON instead; sites
+are visited in ascending key order, which fixes entry order.
 
 ### 3.1 Smooth core
 
@@ -121,38 +124,108 @@ column indices are independent of every contracted name yields an ordinary
 band whose `coef` is the scalar `reduce: "+"` of the site derivative over
 the contraction; a site whose column indices reference a contracted name (a
 gathered column) yields a band with `contracted` dimensions (§4), whose
-points accumulate. Filtered faq nodes and relational joins are NOT
-differentiated — producers MUST fail rather than drop the gate.
+points accumulate. Relational joins and value-invention nodes (`distinct`,
+`key`) and the `bool_and_or` semiring are NOT differentiated — producers MUST
+fail. A faq node's reduction ⊕ is its `semiring`'s when it has one
+(`sum_product` → `+`, `max_product` and `max_sum` → `max`, `min_sum` →
+`min`; its ⊗ is already written out in the body), otherwise its `reduce`
+(absent → `+`).
 
-The same holds for a scalar `+`-reducing faq node NESTED in a
-differentiated expression (Σ_k g inside f(…)) — the form a read of a
-contracting observed takes. A faq node reduces by `+` when its `semiring` is
-`"sum_product"`, or when it has no `semiring` and its `reduce` is absent or
-`"+"`; a `semiring` supersedes `reduce`. A read `F[e…]` of an observed
-defined by a faq node whose ranges bind indices beyond its `output_idx` MUST
-inline to a scalar faq node over those contracted indices, carrying
-`reduce`, `semiring` and `filter`. Inlining the bare body instead drops the
-sum, and a faq around the reading site that binds the same name captures the
-leftover index. All inlining substitution MUST be capture-avoiding, and no
-nested faq node may bind a name a faq enclosing it already binds: producers
-rename such a binder apart (the reference uses `_c<n>_<name>`, the smallest
-`n` clear of every name in the document, which keeps repeated reads of one
-observed structurally equal). A name a faq around the reading site binds is
-that index, never a read of an observed with the same name. The nested sum
-is linear, so its derivative is the sum of its body's derivatives: for a
-site whose column does not read a bound index, the coefficient keeps that
-sum; for a site whose column does read one (`u[i,k]` under Σ_k), that index
-becomes a `contracted` dimension of the band (§4), renamed apart from the
-sum's own bound name, since the coefficient may still contain the sum (the
-chain rule through f(Σ_k …)). Producers MUST fail when a column reads a name
-the sums around its site bind ambiguously (twice on the way down, over two
-different ranges at different occurrences of the site, or shadowing the
-band's own row or contraction index). A filtered or non-`+` nested sum is
-reserved, as above. Fixture: `contracting_observed.esm`.
+**Filters and non-`+` reductions.** A `filter` is a gate whose Dirac term is
+dropped, exactly like an `ifelse` condition (§3.2): the derivative of a
+reduction over the window `W(o) = {c : φ(o, c)}` is a `+` over the same
+window of each term's derivative `d(o, c) = d[b(o, c), s]`, weighted by what
+⊕ does with that term:
 
-Reserved (producers MUST fail rather than guess): non-`"+"` semiring
-reductions, filtered faq nodes, `argmin`/`argmax`, singleton `1` output
-indices, `reshape`/`transpose`/`concat` operands.
+| ⊕ | weighted term |
+|---|---|
+| `+` | `d` |
+| `max` | `ifelse(and(b >= M, b > M<), d, 0)` |
+| `min` | `ifelse(and(b <= M, b < M<), d, 0)` |
+| `*` | `d · E` |
+
+where `M = ⊕_{c' ∈ W(o)} b(o, c')` is the node's own reduction,
+`M< = ⊕_{c' ∈ W(o), c' < c} b(o, c')` the reduction over the earlier terms
+(the semiring identity, `∓∞`, on an empty window), and
+`E = Π_{c' ∈ W(o), c' ≠ c} b(o, c')` the exclusion product — never a division,
+so a zero factor is exact. `M`, `M<` and `E` are scalar faq nodes with the
+node's `ranges` and `filter` over the contracted names renamed apart: each
+name `c` becomes `c_p` (`_p` appended again until clear of every name in the
+node), and `M<` conjoins `c_p < c`, `E` conjoins `c_p != c` (`or` of one
+`!=` per name for several). `M` and `M<` select the FIRST extremal term in
+ascending contraction order — the §3.2 left-fold tie rule, which the
+normative ascending accumulation order of esm-spec §4.3.1 makes the fold's
+own; a reverse scan's tie still resolves to the lowest index (an a.e.
+choice). A `max` or `min` over more than one contracted name has no single
+ascending order and MUST be refused. A one-point window (no contracted name)
+weighs `d` alone. The weighted terms then differentiate as a `+` contraction:
+
+- the filter's **index-only** conjuncts — those reading only the node's
+  output and contracted names, literals, folded metaparameters and `const`
+  gathers — are decided exactly: the band box (rows and contracted ranges)
+  is split at their affine breakpoints with every one-value name pinned
+  first (the §2 region clipping), cells where they are false are dropped,
+  and what no box can express (a triangular window `gk < gke`) becomes the
+  entry's `where` guard (§4). A gathered site's entry takes the whole
+  residual guard; a site whose column reads no contracted name keeps the
+  residual's contracted conjuncts as the `filter` of its coefficient sum and
+  takes the rest as its `where`;
+- the filter's **value-dependent** conjuncts stay in the coefficient as
+  `ifelse(φ, d, 0)`, and the pattern is the whole window (§2's branch union).
+
+The same holds for a scalar faq node NESTED in a differentiated expression
+(Σ_k g inside f(…)) — the form a read of a contracting observed takes. A
+read `F[e…]` of an observed defined by a faq node whose ranges bind indices
+beyond its `output_idx` MUST inline to a scalar faq node over those
+contracted indices, carrying `reduce`, `semiring` and `filter`. Inlining the
+bare body instead drops the sum, and a faq around the reading site that
+binds the same name captures the leftover index. All inlining substitution
+MUST be capture-avoiding, and no nested faq node may bind a name a faq
+enclosing it already binds: producers rename such a binder apart (the
+reference uses `_c<n>_<name>`, the smallest `n` clear of every name in the
+document, which keeps repeated reads of one observed structurally equal). A
+name a faq around the reading site binds is that index, never a read of an
+observed with the same name. The derivative of the nested node is the `+`
+of its weighted terms above, with its own filter kept: for a site whose
+column does not read a bound index, the coefficient keeps the sum (a
+`reduce: "+"` node, `semiring` dropped); for a site whose column does read
+one (`u[i,k]` under Σ_k), that index is left free — the sum over the other
+indices keeps the filter, and once every index is free the filter becomes
+`ifelse(φ, ·, 0)` — and becomes a `contracted` dimension of the band (§4),
+renamed apart from the sum's own bound name (`<name>_j`, `_j` appended until
+clear), since the coefficient may still contain the sum (the chain rule
+through f(Σ_k …)). The index-only conjuncts of the filters around the site
+that read such a lifted index — and no index a sum around it still binds —
+are also the entry's `where` guard, renamed alike, unless the site occurs
+under different filters at different occurrences. A guard conjunct that
+also reads an index the enclosing node contracts but the entry does not
+carry as a `contracted` dimension (`Σ_k Σ_{j≤k}` with a column `u[j]`)
+filters the entry's sum over that index instead, never the `where` guard,
+which may read only the entry's own row and contracted names. Producers
+MUST fail when a column reads a name the sums around its site bind
+ambiguously (twice on the way down, over two different ranges at different
+occurrences of the site, or shadowing the band's own row or contraction
+index). Fixtures:
+`contracting_observed.esm`, `filtered_scan.esm`, `semiring_reduce.esm`.
+
+**Value-indexed reads.** A column index that reads anything but the entry's
+own row and contracted index names (a level search `κ = min{k : …}` used as
+`x[κ + d]`, a parameter offset) is integer-valued, hence piecewise constant
+— the `floor` rule of §3.2 — so its own derivative is 0, and the read is the
+one-hot sum `Σ_k [k == κ + d]·x[k]`. Each such column dimension `k` (1-based)
+becomes a `contracted` dimension named `_oh<k>` (`_j` appended until clear of
+every name in the entry) over the static extent of that axis of the column
+variable, its index expression moves into the coefficient as
+`ifelse(_oh<k> == e, coef, 0)`, and the pattern is the structural union: every
+cell of the axis. A level search's own derivative needs no rule: its body is
+an index name, and its filter's Dirac term is dropped.
+
+Reserved (producers MUST fail rather than guess): joins, value-invention
+`faq` nodes, the `bool_and_or` semiring, `argmin`/`argmax`, a `max` or `min`
+over more than one contracted index, singleton `1` output indices,
+`reshape`/`transpose`/`concat` operands. A causal self-reference recurrence
+(esm-spec §4.3.1.1) is not yet differentiated: the inliner finds no
+fixpoint and fails.
 
 ## 4. The `"jacobians"` top-level block
 
@@ -209,9 +282,17 @@ row)/∂(col)`:
   ordinary entry whose `coef` is a scalar `reduce: "+"` faq node over the
   contraction — keeping the entry count independent of the contraction
   extent.
+- `where` (optional) — an exact point predicate: a boolean Expression over
+  the entry's `row_idx` and `contracted` names, literals, folded
+  metaparameters and `const` gathers, never a state, parameter or forcing
+  value. A point contributes iff it holds. Produced by a filtered faq
+  node's window that no box can express (§3.5: the triangular `gk < gke` of
+  a level scan); producers SHOULD split boxes at affine breakpoints first,
+  so a rectangular window never needs one. Absent for every other entry.
 
 **Meaning.** For every index point `r` in `rows` AND every point `c` of the
-`contracted` box (the empty product when absent),
+`contracted` box (the empty product when absent) at which `where(r, c)`
+holds (every point when it is absent),
 
 ```
 J[ row[r], col[col_idx(r, c)] ] += coef(r, c)
@@ -227,8 +308,16 @@ is no ghost read: a column that does not resolve to a cell of `col` is an
 error, and a consumer MUST refuse the block rather than skip the point.
 
 `structure` (optional, derived): `"block_diagonal"` | `"banded"` |
-`"general"` — a *classification* of the exact pattern for consumers choosing
-a matrix type; the pattern itself is always recoverable from the entries.
+`"general"` | `"column_block"` — a *classification* of the exact pattern for
+consumers choosing a matrix type; the pattern itself is always recoverable
+from the entries. `"column_block"` is reported only when the producer is
+told a column axis (an index-set name, e.g. by an integrator's locality
+pass: a name carries no vertical meaning by itself), in place of `"banded"`
+or `"general"`, when every coupling stays within one LINE along it: every
+entry couples two array states of one common shape that holds the axis
+once, and at every point the column equals the row in every other
+dimension (a point past the axis's extent is a ghost read). Its §6 plan
+names the per-line pattern.
 Omitted, with `factorization`, on the `parameters` and `forcing` axes: the
 classes describe square matrices.
 
@@ -535,7 +624,15 @@ Fixture corpus in `tests/` of this repository:
    parameter `T[z]`, opaque on the state pair) and `minmod_adv.esm` (a
    limiter kink: empty); `["states", "parameters"]` on `arrhenius_chem.esm`;
    `["states", "forcing"]` and `["time", "states"]` on
-   `forcing_bracket.esm`.
+   `forcing_bracket.esm`; `["states", "states"]` on `filtered_scan.esm` and
+   `semiring_reduce.esm` (below). The §3.5 window fixtures: `filtered_scan.esm`
+   (inclusive forward and exclusive reverse scans, a filtered contracting
+   observed read through a nested sum, a window with an index conjunct and
+   a value conjunct, reseact's `Mz` level scan `gk < gke` over `(gi, gke)`
+   rows — `where` guards — and a window clipped by a constant, which splits
+   the box instead) and `semiring_reduce.esm` (a running `max`, a nested
+   `min` observed, a suffix product, a `max_product` semiring, and a level
+   search used as a subscript — one-hot).
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
@@ -579,6 +676,27 @@ The first defined type:
 The field is advisory: a consumer MAY ignore it and factorize however it
 likes. A producer MUST NOT emit a `factorization` whose `lu_pattern` is not
 a fill-correct superset of `pattern`.
+
+A `"column_block"` structure (§4) carries a line-by-line plan:
+
+```json
+"factorization": {
+  "type": "column_block", "axis": "lev", "line_length": 72,
+  "block_vars": ["NO", "O3"], "pattern": "lower", "bandwidth": [71, 0]
+}
+```
+
+- `axis` / `line_length` — the column axis and its extent: the matrix is one
+  `(length(block_vars) · line_length)`-square block per line.
+- `block_vars` — the state variables of the line block, sorted.
+- `bandwidth` — `[kl, ku]`, the largest distance below / above the diagonal
+  any entry point reaches along the axis (a variable-to-variable coupling
+  at one level is distance 0).
+- `pattern` — the name of that coupling: `"dense"` (`kl = ku =
+  line_length − 1`), `"lower"` (`ku = 0`, `kl = line_length − 1`), `"upper"`
+  (the mirror), else `"banded"` — so a solver can pick a column solver
+  (a banded LU, a triangular sweep, a dense LU) without reading the
+  entries.
 
 ## 7. Out of scope (this draft)
 

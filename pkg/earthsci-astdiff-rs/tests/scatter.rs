@@ -27,6 +27,8 @@ fn plan_layouts() -> Vec<(&'static str, &'static str, Layout)> {
         ("minmod_adv", "csr", Layout::Csr),
         ("contracted_ops", "csr", Layout::Csr),
         ("contracting_observed", "csr", Layout::Csr),
+        ("filtered_scan", "csr", Layout::Csr),
+        ("semiring_reduce", "csr", Layout::Csr),
     ]
 }
 
@@ -107,6 +109,40 @@ fn refusals() {
     con[0].band.contracted = vec![("kk".into(), 1, 3)];
     assert!(ScatterPlan::build(&sv, &con, &Layout::LaneBlocks).is_err());
     assert!(ScatterPlan::build(&sv, &con, &Layout::LaneSparseBlocks).is_err());
+    // a guarded band's points differ from lane to lane: the lane and column
+    // layouts refuse it, the CSR plan takes the guarded point set
+    let mut gd = jacobian_bands(&file, None, Wrt::States).unwrap();
+    let r = match &gd[0].band.ridx[0] {
+        earthsci_astdiff::RIdx::Name(n) => n.clone(),
+        other => panic!("{other:?}"),
+    };
+    gd[0].band.guard = Some(earthsci_ast::Expr::operator(earthsci_ast::ExpressionNode {
+        op: ">".into(),
+        args: vec![
+            earthsci_ast::Expr::Variable(r),
+            earthsci_ast::Expr::Integer(1),
+        ],
+        ..Default::default()
+    }));
+    assert!(ScatterPlan::build(&sv, &gd, &Layout::LaneBlocks).is_err());
+    assert!(ScatterPlan::build(&sv, &gd, &Layout::LaneSparseBlocks).is_err());
+    assert!(ScatterPlan::build(&sv, &gd, &cb("z")).is_err());
+    let pg = ScatterPlan::build(&sv, &gd, &Layout::Csr).unwrap();
+    let p0 = ScatterPlan::build(
+        &sv,
+        &jacobian_bands(&file, None, Wrt::States).unwrap(),
+        &Layout::Csr,
+    )
+    .unwrap();
+    let nitems = |p: &ScatterPlan| match &p.kind {
+        earthsci_astdiff::PlanKind::Csr { items, .. } => items.len(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        nitems(&pg) + 1,
+        nitems(&p0),
+        "the one excluded point (row 1)"
+    );
     // binding: a plan from another document, a short capacity
     let adv = load("adv_interior");
     let other = ScatterPlan::from_file(&adv, None, &Layout::Csr).unwrap();
