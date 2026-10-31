@@ -10,7 +10,10 @@ OrderedCollections = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
 [compat]
-EarthSciAST = "0.4, 0.5, 0.6"
+# EarthSciAST: tested at both ends of the range by conformance.yml; raise the
+# floor only to a published release. 0.4 and 0.5 no longer precompile (their
+# registered compat admits JSONSchema 1.6, which they fail against).
+EarthSciAST = "0.6"
 JSON3 = "1"
 OrderedCollections = "1, 2.0"
 SparseArrays = "1.10"

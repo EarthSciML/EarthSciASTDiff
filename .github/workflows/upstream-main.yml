@@ -1,0 +1,131 @@
+# Early warning: every binding against EarthSciAST `main`, checked out as a
+# SIBLING (the same layout as a local checkout, which the Rust `patch` below
+# and the Python tests/conftest.py fallback both assume). The failures this
+# catches (the `faq` tag rename, the esm 1.0.0 variable model) arrive from
+# EarthSciAST without any change here, so the weekly run matters as much as
+# the PR trigger; a failed weekly run opens (or comments on) an issue.
+#
+# This does NOT gate a release: conformance.yml, which tests the published
+# EarthSciAST releases the manifests admit, does. Code that needs an
+# EarthSciAST feature not yet released passes here and fails there, which is
+# the point: release EarthSciAST first, then raise the floor.
+name: Upstream (EarthSciAST main)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      earthsci-ast-ref:
+        description: EarthSciAST ref to test against
+        default: main
+
+env:
+  EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref || 'main' }}
+
+jobs:
+  julia:
+    name: Julia (reference), EarthSciAST ${{ inputs.earthsci-ast-ref || 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v3
+      # Manifest.toml is gitignored, so `Pkg.develop` is what points the test
+      # environment at the sibling EarthSciAST rather than the registry.
+      - name: Test
+        run: |
+          julia --project=EarthSciASTDiff/pkg/EarthSciASTDiff.jl -e '
+            using Pkg
+            Pkg.develop(path="EarthSciAST/pkg/EarthSciAST.jl")
+            Pkg.test()'
+
+  python:
+    name: Python, EarthSciAST ${{ inputs.earthsci-ast-ref || 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e EarthSciAST/pkg/earthsci-ast-py pytest
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-py
+        run: python -m pytest tests -q
+
+  rust:
+    name: Rust, EarthSciAST ${{ inputs.earthsci-ast-ref || 'main' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ env.EARTHSCI_AST_REF }}
+          path: EarthSciAST
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+      # Cargo.toml depends on the crates.io earthsci-ast (so the crate can be
+      # published); patch in the sibling checkout to test against the ref.
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+        env:
+          PATCH: patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"
+        run: |
+          set -euo pipefail
+          # A patch whose version falls outside Cargo.toml's requirement is
+          # silently unused, and the tests would run against crates.io instead.
+          if ! cargo tree --config "$PATCH" -i earthsci-ast -e normal --depth 0 | grep -q 'EarthSciAST/pkg/earthsci-ast-rs'; then
+            echo "::error::EarthSciAST ${{ env.EARTHSCI_AST_REF }} does not satisfy Cargo.toml's earthsci-ast requirement; bump it."
+            exit 1
+          fi
+          cargo test --config "$PATCH"
+
+  report:
+    name: Report a failed weekly run
+    needs: [julia, python, rust]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: |
+          set -euo pipefail
+          title="Upstream: EarthSciAST main breaks conformance"
+          n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          body="The weekly run against EarthSciAST \`main\` failed: $RUN"
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

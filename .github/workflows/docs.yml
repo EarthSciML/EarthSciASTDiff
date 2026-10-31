@@ -67,7 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # The Julia and Rust packages (and their docs examples) depend on a
-      # SIBLING EarthSciAST checkout at ../EarthSciAST, as in conformance.yml.
+      # SIBLING EarthSciAST checkout at ../EarthSciAST, as in upstream-main.yml.
       # actions/checkout cannot write outside the workspace, so check it out
       # inside and link it into place.
       - uses: actions/checkout@v7

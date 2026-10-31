@@ -1,14 +1,21 @@
 # Cross-language conformance: every binding against the shared fixtures
-# (tests/valid) and goldens (tests/goldens), built against EarthSciAST `main`
-# checked out as a SIBLING — the same layout as a local checkout, which the
-# Rust path dependency (pkg/earthsci-astdiff-rs/Cargo.toml) and the Python
-# conftest fallback both assume.
+# (tests/valid) and goldens (tests/goldens), built against the PUBLISHED
+# EarthSciAST releases its manifest admits — what a user who installs this
+# package actually gets. This is the release gate (release-register.yml calls
+# it); testing against EarthSciAST `main` is upstream-main.yml's job, an early
+# warning that does not gate anything.
 #
-# The weekly schedule is the point as much as the PR trigger: the failures
-# this catches (the `faq` tag rename, the esm 1.0.0 variable model) arrive
-# from EarthSciAST without any change here. Each binding's faq-tag test
-# asserts a NON-EMPTY band list on every array fixture, so such a change fails
-# loudly here instead of silently producing an all-zero Jacobian.
+# Each binding is tested at both ends of its declared range: the LOWEST
+# release inside it, so the floor in the manifest is a tested fact, and the
+# LATEST, what a fresh install resolves to. scripts/earthsci-ast-versions.py
+# reads the three manifests and the three registries and hands each job its
+# matrix; when the two ends are the same release the binding runs once. A
+# manifest whose range no published release satisfies fails the `resolve`
+# job: release EarthSciAST first, then raise the floor here.
+#
+# Each binding's faq-tag test asserts a NON-EMPTY band list on every array
+# fixture, so an upstream change that empties the bands fails loudly instead
+# of silently producing an all-zero Jacobian.
 name: Conformance
 
 on:
@@ -18,98 +25,100 @@ on:
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
-    inputs:
-      earthsci-ast-ref:
-        description: EarthSciAST ref to test against
-        default: main
-  # Also a release gate: release-register.yml calls it before registering.
   workflow_call:
-    inputs:
-      earthsci-ast-ref:
-        description: EarthSciAST ref to test against
-        default: main
-        type: string
-
-env:
-  EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref || 'main' }}
 
 jobs:
-  julia:
-    name: Julia (reference)
+  resolve:
+    name: Resolve EarthSciAST releases
     runs-on: ubuntu-latest
+    outputs:
+      julia: ${{ steps.versions.outputs.julia }}
+      python: ${{ steps.versions.outputs.python }}
+      rust: ${{ steps.versions.outputs.rust }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          path: EarthSciASTDiff
+          python-version: "3.12"
+      - id: versions
+        run: python scripts/earthsci-ast-versions.py --github-output
+
+  julia:
+    name: Julia (reference), EarthSciAST ${{ matrix.label }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.julia) }}
+    steps:
       - uses: actions/checkout@v7
-        with:
-          repository: EarthSciML/EarthSciAST
-          ref: ${{ env.EARTHSCI_AST_REF }}
-          path: EarthSciAST
       - uses: julia-actions/setup-julia@v3
         with:
           version: "1"
       - uses: julia-actions/cache@v3
-      # Manifest.toml is gitignored, so `Pkg.develop` is what points the test
-      # environment at the sibling EarthSciAST rather than the registry.
+      # Manifest.toml is gitignored, so the `add` resolves EarthSciAST to
+      # exactly this release (from General) for the test environment; Pkg
+      # refuses one outside [compat].
       - name: Test
+        env:
+          EARTHSCI_AST_VERSION: ${{ matrix.version }}
         run: |
-          julia --project=EarthSciASTDiff/pkg/EarthSciASTDiff.jl -e '
+          julia --project=pkg/EarthSciASTDiff.jl -e '
             using Pkg
-            Pkg.develop(path="EarthSciAST/pkg/EarthSciAST.jl")
+            Pkg.add(name="EarthSciAST", version=ENV["EARTHSCI_AST_VERSION"])
+            Pkg.status("EarthSciAST")
             Pkg.test()'
 
   python:
-    name: Python
+    name: Python, EarthSciAST ${{ matrix.label }}
+    needs: resolve
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.python) }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: EarthSciASTDiff
-      - uses: actions/checkout@v7
-        with:
-          repository: EarthSciML/EarthSciAST
-          ref: ${{ env.EARTHSCI_AST_REF }}
-          path: EarthSciAST
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
+      # Installing the package itself alongside the pinned release makes pip
+      # check the pin against pyproject.toml's requirement.
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e EarthSciAST/pkg/earthsci-ast-py pytest
+          python -m pip install -e pkg/earthsci-astdiff-py "earthsci-ast==${{ matrix.version }}" pytest
+          python -m pip show earthsci-ast
       - name: Test
-        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-py
+        working-directory: pkg/earthsci-astdiff-py
         run: python -m pytest tests -q
 
   rust:
-    name: Rust
+    name: Rust, EarthSciAST ${{ matrix.label }}
+    needs: resolve
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.rust) }}
+    defaults:
+      run:
+        working-directory: pkg/earthsci-astdiff-rs
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: EarthSciASTDiff
-      - uses: actions/checkout@v7
-        with:
-          repository: EarthSciML/EarthSciAST
-          ref: ${{ env.EARTHSCI_AST_REF }}
-          path: EarthSciAST
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
-      # Cargo.toml depends on the crates.io earthsci-ast (so the crate can be
-      # published); patch in the sibling checkout to test against the ref.
+          workspaces: pkg/earthsci-astdiff-rs
+          key: earthsci-ast-${{ matrix.version }}
+      # No Cargo.lock is committed (this is a library); lock the crates.io
+      # earthsci-ast to exactly this release. Cargo refuses one outside
+      # Cargo.toml's requirement.
       - name: Test
-        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-rs
-        env:
-          PATCH: patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"
         run: |
           set -euo pipefail
-          # A patch whose version falls outside Cargo.toml's requirement is
-          # silently unused, and the tests would run against crates.io instead.
-          if ! cargo tree --config "$PATCH" -i earthsci-ast -e normal --depth 0 | grep -q 'EarthSciAST/pkg/earthsci-ast-rs'; then
-            echo "::error::EarthSciAST ${{ env.EARTHSCI_AST_REF }} does not satisfy Cargo.toml's earthsci-ast requirement; bump it."
-            exit 1
-          fi
-          cargo test --config "$PATCH"
+          cargo generate-lockfile
+          cargo update -p earthsci-ast --precise "${{ matrix.version }}"
+          cargo tree -i earthsci-ast -e normal --depth 0
+          cargo test --locked

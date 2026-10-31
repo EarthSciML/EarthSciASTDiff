@@ -8,8 +8,13 @@ Do not put "Co-Authored-By: Claude ..." in any commit messages. Claude is an LLM
 # Julia (reference implementation)
 julia --project=pkg/EarthSciASTDiff.jl -e 'using Pkg; Pkg.test()'
 
-# Cross-language conformance (currently Julia-only)
+# Cross-language conformance (Julia, Python, Rust) against whatever
+# EarthSciAST each environment resolves
 ./scripts/test-conformance.sh
+
+# The EarthSciAST releases CI tests each binding against (lowest and latest
+# inside each manifest's range; Python 3.11+)
+python3 scripts/earthsci-ast-versions.py
 
 # Regenerate band goldens after an INTENDED rule/format change
 julia --project=pkg/EarthSciASTDiff.jl scripts/regenerate-goldens.jl
@@ -43,7 +48,17 @@ the Julia behavior; never switch the band calculus back to
 sibling EarthSciAST checkout when it is not installed (see tests/conftest.py).
 
 Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
-`earthsci-ast` dependency is a sibling-checkout path dep in Cargo.toml.
+`earthsci-ast` dependency is a crates.io version range in Cargo.toml, patched
+to a sibling checkout only for testing against EarthSciAST `main`.
+
+Dependency on EarthSciAST: each manifest (Julia `[compat]`, Cargo, PEP 508)
+declares a version RANGE of published releases. conformance.yml — the release
+gate — tests every binding at the lowest and the latest release in its range
+(`scripts/earthsci-ast-versions.py`); upstream-main.yml tests against
+EarthSciAST `main` as an early warning and gates nothing. So never raise a
+floor to an unreleased EarthSciAST version: a change that needs an unreleased
+upstream feature waits for that EarthSciAST release (or skips the dependent
+tests with a version check until it lands).
 Two Rust-specific parity traps are already handled — Julia `fld` is floor
 division (NOT `div_euclid`, which differs for negative divisors), and
 `simplify_port.rs` carries the same Julia-simplify port as Python.

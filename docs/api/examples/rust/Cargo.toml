@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 earthsci-astdiff = { path = "../../../../pkg/earthsci-astdiff-rs" }
-# EarthSciAST is a sibling checkout (../EarthSciAST), as in conformance.yml.
+# EarthSciAST is a sibling checkout (../EarthSciAST), as in upstream-main.yml.
 earthsci-ast = { path = "../../../../../EarthSciAST/pkg/earthsci-ast-rs" }
 serde_json = "1"
 

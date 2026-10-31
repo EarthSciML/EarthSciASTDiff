@@ -104,6 +104,42 @@ the shared tooling in [EarthSciML/earthsci.dev](https://github.com/EarthSciML/ea
 with `python3 <earthsci.dev>/tools/api_docs/render.py --repo-root .` (see that repo's
 `tools/api_docs/README.md`).
 
+## Dependency on EarthSciAST
+
+Every binding depends on a range of **published** EarthSciAST releases, never
+on a path or a git branch:
+
+| Binding | Manifest | Range |
+|---|---|---|
+| Julia | `pkg/EarthSciASTDiff.jl/Project.toml` `[compat]` | `EarthSciAST = "0.6"` |
+| Rust | `pkg/earthsci-astdiff-rs/Cargo.toml` | `earthsci-ast = ">=0.5, <0.7"` |
+| Python | `pkg/earthsci-astdiff-py/pyproject.toml` | `earthsci-ast>=0.4,<0.7` |
+
+CI tests what those ranges promise:
+
+- **[Conformance](.github/workflows/conformance.yml)** — the release gate.
+  Each binding runs against the **lowest** and the **latest** published
+  release inside its range, so the floor is tested rather than assumed and
+  the latest is what a fresh install gets.
+  [`scripts/earthsci-ast-versions.py`](scripts/earthsci-ast-versions.py)
+  reads the manifests and the registries (General, crates.io, PyPI) to pick
+  them, and a binding whose two ends coincide runs once.
+- **[Upstream (EarthSciAST main)](.github/workflows/upstream-main.yml)** — an
+  early warning. The same suites run against EarthSciAST `main`, checked out
+  as a sibling, on every PR and weekly; a failed weekly run opens an issue.
+  It does not gate a release.
+
+A change that needs an EarthSciAST feature not yet released therefore passes
+the upstream check and fails conformance. The order is: release EarthSciAST,
+raise the floor here, then release this package. Upper bounds move when a new
+EarthSciAST minor release passes (Dependabot proposes the bump).
+
+To test locally against an EarthSciAST checkout at `../EarthSciAST`: Julia
+`Pkg.develop(path="../EarthSciAST/pkg/EarthSciAST.jl")` in a scratch
+environment; Python picks it up automatically when `earthsci_ast` is not
+installed (`tests/conftest.py`); Rust
+`cargo test --config 'patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"'`.
+
 ## Specification
 
 The `"jacobians"` block format, the per-operator derivative semantics
@@ -128,6 +164,7 @@ tests/
   goldens/                   band-list goldens (deterministic JSON)
 scripts/
   test-conformance.sh        cross-language conformance runner
+  earthsci-ast-versions.py   EarthSciAST releases CI tests (lowest, latest)
 ```
 
 Planned bindings follow EarthSciAST's naming: `earthsci-astdiff-py`,

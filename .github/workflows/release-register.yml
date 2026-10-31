@@ -36,9 +36,10 @@ jobs:
   conformance:
     needs: release-analysis
     if: needs.release-analysis.outputs.needs_release == 'true'
+    # Against the published EarthSciAST releases the manifests admit (both
+    # ends of each range), never EarthSciAST `main`: what is registered must
+    # work with what a user can install.
     uses: ./.github/workflows/conformance.yml
-    with:
-      earthsci-ast-ref: main
     secrets: inherit
 
   register-julia:
