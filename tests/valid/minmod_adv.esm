@@ -5,7 +5,7 @@
             "size": 16
         }
     },
-    "esm": "1.1.0",
+    "esm": "1.2.0",
     "models": {
         "AdvectionMinmodTVD": {
             "variables": {
@@ -1317,13 +1317,7 @@
                 },
                 {
                     "lhs": "dx",
-                    "rhs": {
-                        "args": [
-                            1,
-                            16
-                        ],
-                        "op": "/"
-                    }
+                    "rhs": {"op": "/", "args": [{"op": "const", "args": [], "value": 1, "units": "m"}, 16]}
                 }
             ],
             "tests": [
