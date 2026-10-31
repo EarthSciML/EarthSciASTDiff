@@ -36,10 +36,13 @@ def sysview(obj, model_name: str | None = None) -> SysView:
 
     **Parameters**
 
-    - ``obj`` — an ``EsmFile`` or a flattened system.
+    - ``obj`` — an ``EsmFile``, a flattened system, or a :class:`SysView`
+      (returned as is, ``model_name`` ignored).
     - ``model_name`` — which model of an ``EsmFile``; may be omitted when the
       file has exactly one.
     """
+    if isinstance(obj, SysView):
+        return obj
     if isinstance(obj, EsmFile):
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)

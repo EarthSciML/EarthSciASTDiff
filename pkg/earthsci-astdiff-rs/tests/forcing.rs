@@ -15,9 +15,7 @@ use earthsci_astdiff::{
 use serde_json::{json, Value};
 
 mod common;
-use common::oracle::{
-    assemble_jacobian, assemble_jacobian_with_forcing, prepare_jacobian, vjp, vjp_forcing, Env,
-};
+use common::docvals::{doc_jacobian, doc_vjp, Env};
 use common::{jvals_env, load, root};
 
 fn s(v: &[&str]) -> Vec<String> {
@@ -123,7 +121,7 @@ fn the_bracket_shape() {
 fn array_parameter_columns_are_real() {
     let file = load("forcing_bracket");
     let (env, _) = jvals_env("forcing_bracket.parameters");
-    let j = assemble_jacobian(&file, None, Wrt::Parameters, &env).unwrap();
+    let j = doc_jacobian(&file, None, Wrt::Parameters, None, &env).unwrap();
     for i in 1..=4 {
         let v = j
             .get(&(format!("c[{i}]"), format!("E[{i}]")))
@@ -179,7 +177,7 @@ fn several_axes_in_one_jacobians_entry() {
 }
 
 #[test]
-fn vjp_is_the_transposed_scatter() {
+fn vjp_document_is_the_transpose() {
     let file = load("forcing_bracket");
     let (env, _) = jvals_env("forcing_bracket.forcing");
     let sv = sysview(&file, None).unwrap();
@@ -192,41 +190,20 @@ fn vjp_is_the_transposed_scatter() {
         .collect();
     for wrt in [Wrt::Forcing, Wrt::Parameters] {
         let names = column_names(&jacobian_columns(&sv, wrt, None).unwrap());
-        let j = assemble_jacobian(&file, None, wrt, &env).unwrap();
+        let j = doc_jacobian(&file, None, wrt, None, &env).unwrap();
         let mut want = vec![0.0; names.len()];
         for ((r, c), v) in &j {
             let k = names.iter().position(|n| n == c).expect("column in space");
             want[k] += v * lambda[r];
         }
-        let mut g = vec![0.0; names.len()];
-        vjp(&file, None, wrt, None, &env, &lambda, &mut g).unwrap();
-        for (a, b) in g.iter().zip(&want) {
+        let g = doc_vjp(&file, None, wrt, None, &env, &lambda).unwrap();
+        assert_eq!(g.len(), names.len());
+        for (k, b) in want.iter().enumerate() {
+            let a = g[&names[k]];
             assert!(
                 (a - b).abs() <= 1e-13 * b.abs().max(1.0),
                 "{wrt:?}: {a} vs {b}"
             );
-        }
-        // accumulates
-        vjp(&file, None, wrt, None, &env, &lambda, &mut g).unwrap();
-        for (a, b) in g.iter().zip(&want) {
-            assert!((a - 2.0 * b).abs() <= 1e-13 * b.abs().max(1.0));
-        }
-        // a wrong-length ḡ is refused
-        assert!(vjp(&file, None, wrt, None, &env, &lambda, &mut [0.0; 3]).is_err());
-        if wrt == Wrt::Forcing {
-            // buffer-shaped accumulators, column-major like the ordinal
-            let mut acc: HashMap<String, Vec<f64>> = [
-                ("F".to_string(), vec![0.0; 10]),
-                ("G".to_string(), vec![0.0; 6]),
-            ]
-            .into();
-            vjp_forcing(&file, None, None, &env, &lambda, &mut acc).unwrap();
-            let flat: Vec<f64> = acc["F"].iter().chain(&acc["G"]).copied().collect();
-            for (a, b) in flat.iter().zip(&want) {
-                assert!((a - b).abs() <= 1e-13 * b.abs().max(1.0));
-            }
-            let mut missing: HashMap<String, Vec<f64>> = [("F".to_string(), vec![0.0; 10])].into();
-            assert!(vjp_forcing(&file, None, None, &env, &lambda, &mut missing).is_err());
         }
     }
 }
@@ -291,13 +268,12 @@ fn refused_rather_than_silently_wrong() {
         params: HashMap::new(),
         t: 0.0,
     };
-    let err =
-        assemble_jacobian_with_forcing(&past, None, Wrt::Forcing, Some(&f), &env).unwrap_err();
-    assert!(err.0.contains("no ghost skip"), "{}", err.0);
+    let err = doc_jacobian(&past, None, Wrt::Forcing, Some(&f), &env).unwrap_err();
+    assert!(err.0.contains("outside its extent"), "{}", err.0);
     // the same read on the parameters axis (F is not data-fed here) is a
     // ghost read, as on the state axis: i = 4 reads F[1,6]. F's scalar
     // default is broadcast over its shape.
-    let p = assemble_jacobian(&past, None, Wrt::Parameters, &env).unwrap();
+    let p = doc_jacobian(&past, None, Wrt::Parameters, None, &env).unwrap();
     let keys: Vec<(String, String)> = p.keys().cloned().collect();
     assert_eq!(
         keys,
@@ -309,7 +285,7 @@ fn refused_rather_than_silently_wrong() {
         assert_eq!(p[&keys[i]], *c);
     }
     assert_eq!(
-        assemble_jacobian_with_forcing(&ok, None, Wrt::Forcing, Some(&f), &env)
+        doc_jacobian(&ok, None, Wrt::Forcing, Some(&f), &env)
             .unwrap()
             .len(),
         4
@@ -323,7 +299,7 @@ fn refused_rather_than_silently_wrong() {
         json!({}),
     );
     assert_eq!(
-        assemble_jacobian(&ghost, None, Wrt::States, &env)
+        doc_jacobian(&ghost, None, Wrt::States, None, &env)
             .unwrap()
             .len(),
         3
@@ -370,9 +346,10 @@ fn refused_rather_than_silently_wrong() {
 }
 
 #[test]
-fn array_parameter_defaults_broadcast_or_zero_fill() {
-    // `K` carries a scalar default over shape [4], `Z` none at all: both
-    // evaluate (0.5 and 0.0 per cell), as in the Python binding.
+fn array_parameter_defaults_broadcast() {
+    // `K` and `Z` carry scalar defaults over shape [4] (0.5 and 0.0 per
+    // cell). A shaped parameter with no default at all is EarthSciAST's
+    // build error (esm-spec §10.10), not a zero.
     let body = op(
         "+",
         &[
@@ -384,7 +361,7 @@ fn array_parameter_defaults_broadcast_or_zero_fill() {
         body,
         json!({
             "K": {"type": "parameter", "shape": ["x"], "default": 0.5},
-            "Z": {"type": "parameter", "shape": ["x"]},
+            "Z": {"type": "parameter", "shape": ["x"], "default": 0.0},
         }),
     );
     let env = Env {
@@ -392,54 +369,13 @@ fn array_parameter_defaults_broadcast_or_zero_fill() {
         params: HashMap::new(),
         t: 0.0,
     };
-    let j = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
+    let j = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
     for i in 1..=4 {
         assert_eq!(j[&(format!("c[{i}]"), format!("c[{i}]"))], 0.5);
     }
-    let p = assemble_jacobian(&file, None, Wrt::Parameters, &env).unwrap();
+    let p = doc_jacobian(&file, None, Wrt::Parameters, None, &env).unwrap();
     assert_eq!(p[&("c[2]".to_string(), "K[2]".to_string())], 0.2);
     assert_eq!(p[&("c[3]".to_string(), "Z[3]".to_string())], 0.3);
-}
-
-#[test]
-fn prepared_evaluator_is_reused() {
-    let file = load("forcing_bracket");
-    let (env, _) = jvals_env("forcing_bracket.forcing");
-    let jac = prepare_jacobian(&file, None, Wrt::Forcing, None).unwrap();
-    assert_eq!(
-        jac.colnames,
-        column_names(
-            &jacobian_columns(&sysview(&file, None).unwrap(), Wrt::Forcing, None).unwrap()
-        )
-    );
-    assert_eq!(
-        jac.values(&env).unwrap(),
-        assemble_jacobian(&file, None, Wrt::Forcing, &env).unwrap()
-    );
-    let lambda: HashMap<String, f64> = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
-        .iter()
-        .enumerate()
-        .map(|(k, r)| (r.to_string(), 0.5 + k as f64))
-        .collect();
-    for t in [0.0, 0.37] {
-        let env = Env { t, ..env.clone() };
-        let mut want = vec![0.0; jac.colnames.len()];
-        vjp(&file, None, Wrt::Forcing, None, &env, &lambda, &mut want).unwrap();
-        let mut got = vec![0.0; jac.colnames.len()];
-        jac.vjp(&env, &lambda, &mut got).unwrap();
-        assert_eq!(got, want);
-        let mut acc: HashMap<String, Vec<f64>> = [
-            ("F".to_string(), vec![0.0; 10]),
-            ("G".to_string(), vec![0.0; 6]),
-        ]
-        .into();
-        jac.vjp_forcing(&env, &lambda, &mut acc).unwrap();
-        let flat: Vec<f64> = acc["F"].iter().chain(&acc["G"]).copied().collect();
-        assert_eq!(flat, want);
-    }
-    // only on the forcing axis
-    let jp = prepare_jacobian(&file, None, Wrt::Parameters, None).unwrap();
-    assert!(jp.vjp_forcing(&env, &lambda, &mut HashMap::new()).is_err());
 }
 
 #[test]

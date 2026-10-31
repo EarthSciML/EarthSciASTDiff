@@ -41,6 +41,20 @@ assert sorted(plan.block_vars) == ["A", "B", "C"]
 # endregion
 
 
+# region: evaluate ops=evaluation_document,jvp_document
+# EarthSciASTDiff evaluates nothing: it emits the band fields `J_k` as a derived
+# ESM model that EarthSciAST evaluates.
+doc, fields = earthsci_astdiff.evaluation_document(file)
+assert "JacobianEval" in doc["models"]
+assert len(fields) == len(entries)
+# `J v` likewise: write `v` into the inputs io["v"], read `J v` from the
+# derivatives of the outputs io["jvp"].
+jdoc, io = earthsci_astdiff.jvp_document(file)
+assert io["model"] in jdoc["models"]
+assert io["v"]["A"] == "_v_A" and io["jvp"]["A"] == "_jvp_A"
+# endregion
+
+
 # region: block ops=jacobian_block
 block = earthsci_astdiff.jacobian_block(file)
 assert block["structure"] == "block_diagonal"

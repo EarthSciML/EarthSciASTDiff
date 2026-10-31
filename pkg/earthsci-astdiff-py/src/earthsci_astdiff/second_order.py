@@ -92,7 +92,7 @@ def jacobian_bands2(
     index must be closed at build time (spec §4.3), else :class:`BandError`.
     """
     a1, a2 = axis_pair(wrt)
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     return _bands2(sv, a1, a2, forcing)[1]
 
 

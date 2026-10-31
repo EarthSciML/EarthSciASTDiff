@@ -48,10 +48,11 @@ division (NOT `div_euclid`, which differs for negative divisors), and
 No binding evaluates anything: the values are EarthSciAST's, from the
 emitted documents. Rust's `points.rs` is the structural point walk (band
 point → row/column cell) the patterns and scatter plans share. The bindings'
-value tests run a TEST-ONLY oracle against the Julia value goldens
-(`pkg/earthsci-astdiff-rs/tests/common/oracle.rs`,
-`pkg/earthsci-astdiff-py/tests/bandvals.py`) until they emit the product
-documents — never move it back into the package.
+value tests get every number by running the emitted documents through
+EarthSciAST's interpreter (`pkg/earthsci-astdiff-rs/tests/common/docvals.rs`,
+`pkg/earthsci-astdiff-py/tests/docvals.py`, mirroring Julia's
+`test/docvals.jl`); never add a value evaluator back to a package, nor a
+test oracle that evaluates band coefficients itself.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

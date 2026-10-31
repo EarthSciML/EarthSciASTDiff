@@ -35,8 +35,7 @@ that will merge into EarthSciAST's `esm-spec.md`). Layout mirrors EarthSciAST:
 holds shared fixtures + goldens that all future bindings must match.
 
 Python binding (`pkg/earthsci-astdiff-py/src/earthsci_astdiff/`): a module-
-for-module mirror of the Julia source map below (except `scatter.jl`, not yet
-ported: the `*.plan.json` goldens are checked by Julia and Rust only), plus `simplify_port.py` — a
+for-module mirror of the Julia source map below, plus `simplify_port.py` — a
 faithful port of the Julia reference's `EarthSciAST.simplify` (the bindings'
 own simplifiers differ in commutative-argument handling, and the goldens pin
 the Julia behavior; never switch the band calculus back to
@@ -51,10 +50,11 @@ division (NOT `div_euclid`, which differs for negative divisors), and
 No binding evaluates anything: the values are EarthSciAST's, from the
 emitted documents. Rust's `points.rs` is the structural point walk (band
 point → row/column cell) the patterns and scatter plans share. The bindings'
-value tests run a TEST-ONLY oracle against the Julia value goldens
-(`pkg/earthsci-astdiff-rs/tests/common/oracle.rs`,
-`pkg/earthsci-astdiff-py/tests/bandvals.py`) until they emit the product
-documents — never move it back into the package.
+value tests get every number by running the emitted documents through
+EarthSciAST's interpreter (`pkg/earthsci-astdiff-rs/tests/common/docvals.rs`,
+`pkg/earthsci-astdiff-py/tests/docvals.py`, mirroring Julia's
+`test/docvals.jl`); never add a value evaluator back to a package, nor a
+test oracle that evaluates band coefficients itself.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

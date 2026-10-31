@@ -27,8 +27,10 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "bind_plan"
-      }
+        "julia": "bind_plan",
+        "python": "bind_plan"
+      },
+      "notes": "The bound plan's `pairs` follow each language's own indexing: Julia gives `(band, field cell, position)` triples, all 1-based; Rust (`ScatterPlan::bind`) the same triples, all 0-based; Python `(band-field cell name, position)` pairs with a 0-based position. The plan file itself (`*.plan.json`) is 0-based in every binding (spec \u00a78). A loop ported between bindings must shift positions accordingly."
     },
     {
       "name": "block_diagonal_plan",
@@ -106,6 +108,7 @@
       "tier": "stable",
       "bindings": {
         "julia": "evaluation_document",
+        "python": "evaluation_document",
         "rust": "evaluation_document"
       }
     },
@@ -124,7 +127,9 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "hvp_document"
+        "julia": "hvp_document",
+        "python": "hvp_document",
+        "rust": "hvp_document"
       }
     },
     {
@@ -217,7 +222,9 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "jvp_document"
+        "julia": "jvp_document",
+        "python": "jvp_document",
+        "rust": "jvp_document"
       }
     },
     {
@@ -265,7 +272,8 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "scatter_plan"
+        "julia": "scatter_plan",
+        "python": "scatter_plan"
       }
     },
     {
@@ -274,6 +282,7 @@
       "tier": "stable",
       "bindings": {
         "julia": "ScatterPlan",
+        "python": "ScatterPlan",
         "rust": "ScatterPlan"
       }
     },
@@ -352,7 +361,9 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "vjp_document"
+        "julia": "vjp_document",
+        "python": "vjp_document",
+        "rust": "vjp_document"
       }
     }
   ]

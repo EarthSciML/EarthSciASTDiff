@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
 use crate::clip::RIdx;
-use crate::eval_cse::hoist_observed;
+use crate::eval_cse::hoist_observed_bands;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, Wrt};
@@ -1254,7 +1254,7 @@ pub fn parse_jacobian_blocks(x: &Value) -> Result<Vec<ParsedBlock>, crate::bands
 
 /// The source model as a document: every variable (sorted) and every
 /// equation verbatim (emit.jl `_base_document`).
-fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, Value>) {
+pub(crate) fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, Value>) {
     let mut vars = Map::new();
     let mut names: Vec<&String> = sv.variables.keys().collect();
     names.sort();
@@ -1313,12 +1313,14 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
 /// coefficients do not read (directly or through other observed) are dropped
 /// with their declarations: they fed only `f`. (Carrying the states as
 /// parameters instead is unsafe: EarthSciAST caches observed that read only
-/// parameters, so an in-place `u` update goes stale.)
-fn zero_source_derivatives(
+/// parameters, so an in-place `u` update goes stale.) `roots` are the
+/// expressions the derived model evaluates: the coefficients, and for a
+/// product document also the column indices and `where` guards (spec §9).
+pub(crate) fn zero_source_derivatives(
     model: &mut Map<String, Value>,
     sv: &SysView,
     ctx: &Ctx,
-    entries: &[JacEntry],
+    roots: &[&Expr],
 ) -> Result<(), crate::bands::BandError> {
     let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
     let defined: Vec<Option<String>> = sv
@@ -1339,10 +1341,7 @@ fn zero_source_derivatives(
         }
     }
     let mut live: HashSet<String> = HashSet::new();
-    let mut stack: Vec<String> = entries
-        .iter()
-        .flat_map(|en| free_variables(&en.band.coef))
-        .collect();
+    let mut stack: Vec<String> = roots.iter().flat_map(|r| free_variables(r)).collect();
     while let Some(n) = stack.pop() {
         let Some(rs) = reads.get(n.as_str()) else {
             continue;
@@ -1424,6 +1423,42 @@ fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
     nm
 }
 
+/// With `cse`, repeated coefficient subtrees are hoisted into observed of
+/// the derived model ([`crate::hoist_observed`]): its index sets, declarations and
+/// bare-LHS equations go into `doc` and `model`. The coefficients the model
+/// reads (emit.jl `_hoist!`).
+pub(crate) fn hoist(
+    doc: &mut Map<String, Value>,
+    model: &mut Map<String, Value>,
+    sv: &SysView,
+    bands: &[&Band],
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Vec<Expr> {
+    let Some(h) = cse
+        .then(|| hoist_observed_bands(bands, sv, cse_min_nodes))
+        .flatten()
+    else {
+        return bands.iter().map(|b| b.coef.clone()).collect();
+    };
+    if let Some(Value::Object(isets)) = doc.get_mut("index_sets") {
+        for (nm, sz) in &h.axes {
+            isets.insert(nm.clone(), json!({"kind": "interval", "size": sz}));
+        }
+    }
+    if let Some(Value::Object(vars)) = model.get_mut("variables") {
+        for (nm, vd) in &h.obs {
+            vars.insert(nm.clone(), vd.clone());
+        }
+    }
+    if let Some(Value::Array(eqs)) = model.get_mut("equations") {
+        for (nm, rhs) in &h.obs_eqs {
+            eqs.push(json!({"lhs": nm, "rhs": rhs}));
+        }
+    }
+    h.coefs
+}
+
 /// The derived evaluation document and its band-state names (`J_1`, …).
 /// With `cse`, repeated coefficient subtrees are first hoisted into observed
 /// ([`crate::eval_cse::hoist_observed`]).
@@ -1435,7 +1470,10 @@ pub fn evaluation_document(
 ) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
-    zero_source_derivatives(&mut model, sv, &ctx, entries)?;
+    let roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
+    zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let coefs = hoist(&mut doc, &mut model, sv, &bands, cse, cse_min_nodes);
     let Some(Value::Array(mut eqs)) = model.remove("equations") else {
         unreachable!()
     };
@@ -1446,26 +1484,6 @@ pub fn evaluation_document(
     let Some(Value::Object(vars)) = model.get_mut("variables") else {
         unreachable!()
     };
-    let h = if cse {
-        hoist_observed(entries, sv, cse_min_nodes)
-    } else {
-        None
-    };
-    let coefs: Vec<Expr> = match &h {
-        Some(h) => h.coefs.clone(),
-        None => entries.iter().map(|en| en.band.coef.clone()).collect(),
-    };
-    if let Some(h) = &h {
-        for (nm, sz) in &h.axes {
-            isets.insert(nm.clone(), json!({"kind": "interval", "size": sz}));
-        }
-        for (nm, vd) in &h.obs {
-            vars.insert(nm.clone(), vd.clone());
-        }
-        for (nm, rhs) in &h.obs_eqs {
-            eqs.push(json!({"lhs": nm, "rhs": rhs}));
-        }
-    }
     let mut names = Vec::new();
     for (k, en) in entries.iter().enumerate() {
         let b = &en.band;
@@ -1544,7 +1562,7 @@ pub fn evaluation_document(
 /// admits what it holds. 1.1.0 for its `faq` nodes; 1.2.0 when any
 /// expression node carries `units` (a unit-bearing `const` copied from a
 /// 1.2.0 source). Read off the content, as the Julia reference does.
-fn derived_version(doc: &mut Map<String, Value>) {
+pub(crate) fn derived_version(doc: &mut Map<String, Value>) {
     fn has_units(v: &Value) -> bool {
         match v {
             Value::Object(m) => {

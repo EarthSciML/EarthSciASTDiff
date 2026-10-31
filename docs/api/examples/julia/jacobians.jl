@@ -54,6 +54,7 @@ J = jac_prototype(file)                      # sparse matrix on the fixed patter
 # checked against the source before it is used.
 bound = bind_plan(file, scatter_plan(file, Csr()))
 @assert bound.len == 24
+@assert all(1 <= k <= length(fields) for (k, _, _) in bound.pairs)
 # endregion
 
 # region: block ops=jacobian_document

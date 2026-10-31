@@ -29,9 +29,10 @@ expressions. From the bands it derives, without any numeric probing:
 Every binding manipulates ASTs only: every number comes from EarthSciAST
 evaluating one of its documents, and
 [EarthSciIntegrator](https://github.com/EarthSciML/EarthSciIntegrator)
-coordinates those evaluations in a solver. (The Python and Rust test suites
-keep a test-only value oracle until those bindings emit the product
-documents too.)
+coordinates those evaluations in a solver. All three bindings emit the
+evaluation and product documents and the scatter plans, and every binding's
+value tests get their numbers by running those documents through
+EarthSciAST.
 
 Correctness contract: the derivative is taken on the *same* expanded,
 lowered tree `EarthSciAST.build_evaluator` compiles, and the test suite pins
@@ -227,7 +228,7 @@ EarthSciAST implementation and is gated by the same goldens.
       over ForwardDiff. Pinned by `<fixture>.<a1>-<a2>.*` goldens on
       `bd_chem`, `arrhenius_chem`, `forcing_bracket` and `minmod_adv`.
       Python and Rust reproduce the band and block goldens byte-for-byte
-      and the contraction values on their test oracles.
+      and the contraction values through their `hvp` product documents.
 - [x] Filtered faq nodes, `max`/`min`/`*` reductions and value-indexed reads
       ([#3](https://github.com/EarthSciML/EarthSciASTDiff/issues/3), spec
       §3.5): a filter is a gate whose Dirac term is dropped; its index-only
@@ -251,24 +252,31 @@ EarthSciAST implementation and is gated by the same goldens.
       reference on every fixture × axis (goldens now cover all five
       fixtures). Includes a faithful port of the reference `simplify`
       (the two packages' own simplifiers order commutative arguments
-      differently). Its tests check values with a test-only oracle
-      (per-cell evaluation through the numpy interpreter) against
-      Julia-produced VALUE goldens `tests/goldens/*.jvals.json` — exact
-      pattern key set, 1e-10 relative values. The emission side is in too —
+      differently). Its tests check values against the Julia-produced VALUE
+      goldens `tests/goldens/*.jvals.json` — exact pattern key set, 1e-10
+      relative values — by running its documents through EarthSciAST's
+      Python interpreter, as Julia's do (`tests/docvals.py`). The emission side is in too —
       `jacobian_block` with §4.1 template CSE and the block-LU
       factorization plan, byte-identical to the reference's blocks
-      (`*.block.json` goldens). Still to come there: the evaluation and
-      product documents.
+      (`*.block.json` goldens). Emits the evaluation document (with
+      `hoist_observed`) and the `jvp` / `vjp` / `hvp` product documents
+      byte-identically to Julia, each product checked by value by
+      EarthSciAST's Python interpreter against the value goldens, and the
+      scatter plans (`scatter.py`, `*.plan.json`), each bound plan checked
+      by scattering the evaluated band fields.
 - [x] Rust binding (`pkg/earthsci-astdiff-rs`), same scope as Python:
       band calculus, block emission (template CSE + structure + block-LU
-      plan), and (in its tests) a value oracle — all three golden gates pass
+      plan), and value tests run through its documents
+      (`tests/common/docvals.rs`) — all three golden gates pass
       byte-for-byte / at tolerance on every fixture. Caught up with esm
       1.0.0/1.1.0 (the `faq` tag, the unknown/parameter variable model,
       inline pruning) together with Python. Emits the derived evaluation
       document (with `hoist_observed`) byte-identically to Julia
       (`*.evaldoc.json`) and the scatter plans (`*.plan.json`), with
-      each bound plan's scatter checked against the oracle on every
-      fixture. Still to come: the product documents.
+      each bound plan's scatter of the evaluated band fields checked
+      against `J` on every fixture, and the `jvp` / `vjp` / `hvp` product documents
+      (`products.rs`), each checked by value by earthsci-ast-rs's
+      interpreter against the value goldens.
 - [x] Production-rate Rust assembly
       ([#4](https://github.com/EarthSciML/EarthSciASTDiff/issues/4) W2, W4,
       W5) — since retired: `JacobianProgram` / `HvpProgram` compiled the

@@ -2,8 +2,8 @@
 //! coefficients, for the axis pairs a Rosenbrock adjoint contracts. Mirrors
 //! the reference's second_order_test.jl: byte-gated by
 //! `tests/goldens/<fixture>.<a1>-<a2>.{bands,block}.json` and by value by
-//! the matching `*.hvals.json` (1e-10 relative, exact key set) on the
-//! test oracle (tests/common/oracle.rs).
+//! the matching `*.hvals.json` (1e-10 relative, exact key set), each value
+//! from EarthSciAST evaluating the `HvpEval` document (tests/common/docvals.rs).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
@@ -13,12 +13,12 @@ use earthsci_astdiff::helpers::ser_expr;
 use earthsci_astdiff::{
     jacobian_bands2, jacobian_bands2_with_forcing, jacobian_block, jacobian_block2,
     jacobian_blocks, parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks,
-    serialize_band2, stable_json, BlockWrt, JacEntry2, ParsedBlock, Wrt,
+    serialize_band2, stable_json, BlockWrt, HvpForm, JacEntry2, ParsedBlock, Wrt,
 };
 use serde_json::{json, Value};
 
 mod common;
-use common::oracle::{hvp, prepare_hvp, Env, HvpForm, HvpPair};
+use common::docvals::{doc_hvp, Env, HvpPair};
 use common::{cells_env, load, root};
 
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
@@ -154,8 +154,6 @@ fn structure() {
     assert!(blk("forcing_bracket", (Wrt::Time, Wrt::States))
         .get("structure")
         .is_none());
-    let hv = prepare_hvp(&load("bd_chem"), None, SS, None).unwrap();
-    assert_eq!(hv.structure, Some("block_diagonal"));
 }
 
 /// The pinned point and stage pairs of `<name>.<a1>-<a2>.hvals.json`.
@@ -214,20 +212,28 @@ fn value_goldens() {
     for (name, wrt) in SECOND_ORDER {
         let file = load(name);
         let (env, pairs, gd) = hvals(name, wrt);
-        let hv = prepare_hvp(&file, None, wrt, None).unwrap();
-        let mut g = BTreeMap::new();
-        hv.hvp(&env, &pairs, HvpForm::Contract, &mut g).unwrap();
+        let g = doc_hvp(&file, None, wrt, None, &env, &pairs, HvpForm::Contract).unwrap();
         check_g(&format!("{name} {}", tag(wrt)), &g, &gd);
         if wrt == SS {
-            let mut gs = BTreeMap::new();
-            hv.hvp(&env, &pairs, HvpForm::Symmetric, &mut gs).unwrap();
+            let gs = doc_hvp(&file, None, wrt, None, &env, &pairs, HvpForm::Symmetric).unwrap();
             check_g(&format!("{name} {} (symmetric)", tag(wrt)), &gs, &gd);
         }
-        // one pair at a time accumulates to the same
-        let mut g1 = BTreeMap::new();
+        // one stage at a time sums to the same
+        let mut g1: BTreeMap<String, f64> = BTreeMap::new();
         for pr in &pairs {
-            hv.hvp(&env, std::slice::from_ref(pr), HvpForm::Contract, &mut g1)
-                .unwrap();
+            let gi = doc_hvp(
+                &file,
+                None,
+                wrt,
+                None,
+                &env,
+                std::slice::from_ref(pr),
+                HvpForm::Contract,
+            )
+            .unwrap();
+            for (n, v) in gi {
+                *g1.entry(n).or_default() += v;
+            }
         }
         assert_eq!(g1.len(), g.len());
         for (n, v) in &g {
@@ -236,20 +242,6 @@ fn value_goldens() {
                 "{name}: {n}"
             );
         }
-        // the one-call form is the prepared one
-        let mut g2 = BTreeMap::new();
-        hvp(
-            &file,
-            None,
-            wrt,
-            None,
-            &env,
-            &pairs,
-            HvpForm::Contract,
-            &mut g2,
-        )
-        .unwrap();
-        assert_eq!(g2, g);
     }
 }
 
@@ -326,7 +318,6 @@ fn refusals() {
     ] {
         assert!(jacobian_bands2(&file, None, bad).is_err(), "{bad:?}");
         assert!(jacobian_block2(&file, None, bad, None, true, 12).is_err());
-        assert!(prepare_hvp(&file, None, bad, None).is_err());
     }
     let mut block = jacobian_block2(&file, None, (Wrt::Time, Wrt::States), None, true, 12).unwrap();
     block["wrt"] = json!(["states"]);
@@ -334,17 +325,18 @@ fn refusals() {
     block["wrt"] = json!(["forcing", "states"]);
     assert!(parse_jacobian_block2(&block).is_err());
     // the symmetric form needs a (states, states) pair
-    let ht = prepare_hvp(&file, None, (Wrt::Time, Wrt::States), None).unwrap();
     let (env, pairs, _) = hvals("forcing_bracket", (Wrt::Time, Wrt::States));
-    assert!(ht
-        .hvp(&env, &pairs, HvpForm::Symmetric, &mut BTreeMap::new())
-        .is_err());
+    let tp = (Wrt::Time, Wrt::States);
+    assert!(doc_hvp(&file, None, tp, None, &env, &pairs, HvpForm::Symmetric).is_err());
     // a stage that does not bind a row the bands read
     let mut short = pairs.clone();
     short[0].0.remove("c[2]");
-    assert!(ht
-        .hvp(&env, &short, HvpForm::Contract, &mut BTreeMap::new())
-        .is_err());
+    assert!(doc_hvp(&file, None, tp, None, &env, &short, HvpForm::Contract).is_err());
+    // nor a misspelled one
+    let mut typo = pairs.clone();
+    let x = typo[0].0.remove("c[2]").unwrap();
+    typo[0].0.insert("c[ 2]".into(), x);
+    assert!(doc_hvp(&file, None, tp, None, &env, &typo, HvpForm::Contract).is_err());
     // a second column read through a parameter offset is one-hot over the
     // buffer's extent (spec §3.5), every point a placeable column
     let ix = |v: &str, i: &[Value]| {
