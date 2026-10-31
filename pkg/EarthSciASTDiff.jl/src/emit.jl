@@ -87,9 +87,11 @@ when a factorization plan exists for that structure, the serialized plan. A
 `wrt` may also be a vector of distinct axes (`[:states, :forcing]`): the
 model's entry is then an ARRAY of blocks, one per axis in the given order
 (esm-jacobian-spec.md §4); a single `wrt` keeps the single-object form. A
-Tuple `(a1, a2)` is an axis PAIR, a block of second-order entries
-([`jacobian_bands2`](@ref), §4.4), alone or in such a list
-(`[:states, (:states, :states)]`).
+`Pair` `a1 => a2` is an axis PAIR, a block of second-order entries
+([`jacobian_bands2`](@ref), §4.4), alone or in such a list, where a Tuple
+`(a1, a2)` (or a two-name vector) is a pair too
+(`[:states, (:states, :states)]`). A bare Tuple `wrt` is refused: it would
+read either as a pair or as a list of axes, so neither is assumed.
 
 With `cse = true` (default), repeated coefficient subtrees of at least
 `cse_min_nodes` AST nodes are hoisted into zero-parameter
@@ -130,14 +132,26 @@ function _attach_jacobians!(
         cse::Bool = true, cse_min_nodes::Int = 12
     )
     # One axis may be spelled as a Symbol or a String; iterating a String
-    # would split it into one-character "axes". A Tuple is one axis PAIR
-    # (second order, §4.4); inside a list, a two-name vector is one too.
-    single = wrt isa Union{Symbol, AbstractString, Tuple}
+    # would split it into one-character "axes". A Pair is one axis PAIR
+    # (second order, §4.4); inside a list, a Tuple or a two-name vector is
+    # one too. A bare Tuple is both a pair and a list of axes, so it is
+    # refused rather than silently read as either.
+    wrt isa Tuple && throw(
+        ArgumentError(
+            "a Tuple wrt $wrt is ambiguous: write a list of axes as a vector " *
+                "([:states, :forcing]) and one second-order pair as a Pair " *
+                "(:states => :forcing)"
+        )
+    )
+    single = wrt isa Union{Symbol, AbstractString, Pair}
     axes = single ? Any[_axis_key(wrt)] : Any[_axis_key(w) for w in wrt]
     (isempty(axes) || !allunique(axes)) &&
         throw(ArgumentError("wrt must name one or more distinct axes, got $wrt"))
+    memo = _FirstOrder()
     blocks = Any[
-        _jacobian_block(sv, w; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes)
+        _jacobian_block(
+            sv, w, memo; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes
+        )
             for w in axes
     ]
     jb = get!(doc, "jacobians", OrderedDict{String, Any}())
@@ -147,60 +161,70 @@ function _attach_jacobians!(
 end
 
 _axis_key(w::Union{Symbol, AbstractString}) = Symbol(w)
-_axis_key(w::Union{Tuple, AbstractVector}) = _axis_pair(w)
+_axis_key(w::Union{Tuple, AbstractVector, Pair}) = _axis_pair(w)
 
-# One `"jacobians"` block (esm-jacobian-spec.md §4) for one axis.
+# One `"jacobians"` block (esm-jacobian-spec.md §4) for one axis. `memo`
+# shares the first-order pass with the pairs of the same emission.
 function _jacobian_block(
-        sv::SysView, wrt::Symbol; forcing = nothing,
+        sv::SysView, wrt::Symbol, memo::_FirstOrder = _FirstOrder(); forcing = nothing,
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
-    ser_entries = entries
-    templates = OrderedDict{String, ASTExpr}()
-    if cse
-        coefs = ASTExpr[en.band.coef for en in entries]
-        templates, rewritten = cse_templates(coefs; min_nodes = cse_min_nodes)
-        isempty(templates) || (
-            ser_entries = JacEntry[
-                JacEntry(
-                    en.u, en.v, Band(
-                        en.band.rows, en.band.ridx,
-                        en.band.cidx, rewritten[k],
-                        en.band.contracted
-                    )
-                )
-                    for (k, en) in enumerate(entries)
-            ]
-        )
-    end
-    block = OrderedDict{String, Any}(
-        "wrt" => String(wrt),
-        "entries" => Any[serialize_band(en) for en in ser_entries],
-    )
+    _check_axis(wrt)
+    entries = _first_order!(memo, sv, wrt, nothing, forcing)
     # A parameter or forcing block describes a rectangular matrix, which the
     # structure classes and the factorization plan do not: it carries its
     # column space instead, so a consumer can size and order the columns
     # without the source document.
-    if wrt in (:parameters, :forcing)
-        block["columns"] = Any[
-            OrderedDict{String, Any}("name" => n, "shape" => Any[shape...])
-                for (n, shape) in jacobian_columns(sv; wrt = wrt, forcing = forcing)
-        ]
-    else
-        block["structure"] = String(detect_structure(entries, sv))
+    rect = wrt in (:parameters, :forcing)
+    structure = rect ? nothing : _structure!(memo, entries, sv)
+    block = _block(
+        String(wrt), entries, rect ? _columns_field(sv, wrt, forcing) : nothing,
+        structure, cse, cse_min_nodes
+    )
+    if !rect
+        plan = plan_factorization(entries, sv; structure = structure)
+        plan === nothing || (block["factorization"] = serialize_plan(plan))
     end
+    return block
+end
+
+# The fields every block shares, in their emitted order: `wrt`, the entries
+# (coefficients template-CSE'd when `cse`), the `columns` of a parameter or
+# forcing axis and the `structure` class (each when given), and the
+# block-local `expression_templates`.
+function _block(wrt, entries, columns, structure, cse::Bool, cse_min_nodes::Int)
+    ser_entries = entries
+    templates = OrderedDict{String, ASTExpr}()
+    if cse
+        templates, rewritten = cse_templates(
+            ASTExpr[en.band.coef for en in entries]; min_nodes = cse_min_nodes
+        )
+        isempty(templates) || (
+            ser_entries = [
+                _with_band(en, Band(b.rows, b.ridx, b.cidx, rewritten[k], b.contracted))
+                    for (k, en) in enumerate(entries) for b in (en.band,)
+            ]
+        )
+    end
+    block = OrderedDict{String, Any}(
+        "wrt" => wrt,
+        "entries" => Any[serialize_band(en) for en in ser_entries],
+    )
+    columns === nothing || (block["columns"] = columns)
+    structure === nothing || (block["structure"] = String(structure))
     isempty(templates) || (
         block["expression_templates"] = OrderedDict{String, Any}(
             name => OrderedDict{String, Any}("params" => Any[], "body" => _ser_expr(body))
                 for (name, body) in templates
         )
     )
-    if wrt in (:states, :time)
-        plan = plan_factorization(entries, sv; structure = Symbol(block["structure"]))
-        plan === nothing || (block["factorization"] = serialize_plan(plan))
-    end
     return block
 end
+
+_columns_field(sv::SysView, wrt::Symbol, forcing) = Any[
+    OrderedDict{String, Any}("name" => n, "shape" => Any[shape...])
+        for (n, shape) in jacobian_columns(sv; wrt = wrt, forcing = forcing)
+]
 
 """
     _raise_faq_floor!(doc) -> doc
@@ -255,12 +279,15 @@ _expand_band(b::Band, reg) = Band(
 _with_band(en::JacEntry, b::Band) = JacEntry(en.u, en.v, b)
 
 """
-    parse_jacobian_blocks(x) -> Vector{Tuple{Symbol,Vector{JacEntry}}}
+    parse_jacobian_blocks(x) -> Vector{Any}
 
 [`parse_jacobian_block`](@ref) over a model's `"jacobians"` entry, which is
 either one block or an array of blocks with distinct `wrt`
-(esm-jacobian-spec.md §4); returns one `(wrt, entries)` per block, in order
-(`wrt` a Symbol, or a Tuple for a second-order pair).
+(esm-jacobian-spec.md §4); returns one `(wrt, entries)` per block, in order:
+`(wrt::Symbol, Vector{JacEntry})` for a first-order block and
+`(wrt::Tuple{Symbol,Symbol}, Vector{JacEntry2})` for a second-order pair, so
+the element type is `Any` once a model mixes the two. Dispatch on `wrt`
+(or on the entry type) rather than assuming the first form.
 """
 function parse_jacobian_blocks(x)
     blocks = x isa AbstractDict ? [x] : collect(x)

@@ -85,7 +85,7 @@ for (name, wrt) in (
     gold(kind) = joinpath(root, "tests", "goldens", "$name.$tag.$kind.json")
     entries = jacobian_bands2(file, mname; wrt = wrt)
     write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
-    doc = jacobian_document(file, mname; wrt = wrt)
+    doc = jacobian_document(file, mname; wrt = Pair(wrt...))
     write(gold("block"), stable_json(doc["jacobians"][mname]))
     println("wrote ", name, ".$tag.{bands,block}.json")
 end

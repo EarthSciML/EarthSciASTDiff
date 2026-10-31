@@ -86,7 +86,7 @@ end
         gold(kind) = joinpath(golden_dir, "$name.$(_pairtag(wrt)).$kind.json")
         entries = jacobian_bands2(file, model; wrt = wrt)
         @test stable_json(Any[serialize_band(en) for en in entries]) == read(gold("bands"), String)
-        block = jacobian_document(file, model; wrt = wrt)["jacobians"][model]
+        block = jacobian_document(file, model; wrt = Pair(wrt...))["jacobians"][model]
         @test block["wrt"] == Any[String(wrt[1]), String(wrt[2])]
         @test !haskey(block, "factorization")
         @test haskey(block, "columns") == (wrt[2] in (:parameters, :forcing))
@@ -127,7 +127,7 @@ end
 end
 
 @testset "second order: structure" begin
-    blk(name, model, wrt) = jacobian_document(fixture("$name.esm"), model; wrt = wrt)["jacobians"][model]
+    blk(name, model, wrt) = jacobian_document(fixture("$name.esm"), model; wrt = Pair(wrt...))["jacobians"][model]
     @test blk("bd_chem", "Chem", (:states, :states))["structure"] == "block_diagonal"
     @test blk("arrhenius_chem", "Chem", (:states, :states))["structure"] == "block_diagonal"
     # a scalar parameter column is shared by every lane: not lane-local
@@ -192,6 +192,26 @@ end
     @test first.(parsed) == Any[:states, (:states, :forcing), (:time, :states)]
     @test parsed[2][2] isa Vector{JacEntry2}
     @test_throws ArgumentError jacobian_document(file, "Bracket"; wrt = [(:states, :states), (:states, :states)])
+    @test_throws ArgumentError jacobian_document(file, "Bracket"; wrt = [(:states, :states), :states => :states])
+    # a bare Tuple reads both as a pair and as a list of axes: refused
+    @test_throws ArgumentError jacobian_document(file, "Bracket"; wrt = (:states, :forcing))
+    @test_throws ArgumentError jacobian_document(file, "Bracket"; wrt = ("states", "forcing"))
+    # a Pair anywhere a pair goes
+    @test jacobian_document(file, "Bracket"; wrt = :states => :forcing)["jacobians"]["Bracket"] ==
+        jb[2]
+    @test jacobian_document(file, "Bracket"; wrt = [:states, :states => :forcing, :time => :states])["jacobians"]["Bracket"] ==
+        jb
+    @test serialize_band.(jacobian_bands2(sysview(file, "Bracket"); wrt = :time => :states)) ==
+        serialize_band.(jacobian_bands2(sysview(file, "Bracket"); wrt = (:time, :states)))
+    # one emission shares its first-order passes: the blocks equal those
+    # emitted alone
+    for name in ("arrhenius_chem", "bd_chem")
+        f = fixture("$name.esm")
+        m = first(keys(f.models))
+        wrts = [:states, :states => :states, :states => :parameters, :time]
+        both = jacobian_document(f, m; wrt = wrts)["jacobians"][m]
+        @test both == Any[jacobian_document(f, m; wrt = w)["jacobians"][m] for w in wrts]
+    end
 end
 
 @testset "second order: refusals" begin

@@ -67,6 +67,9 @@ hvp!(g, hv, [(μ₁, w₁), (μ₂, w₂)], u, p, t)   # g += ∇_u Σᵢ μᵢ�
 doc = jacobian_document(file, "MyModel"; wrt = [:states, (:states, :states)])
 ```
 
+In `jacobian_document` a single pair block is `wrt = :states => :states`; a
+bare tuple there is refused, since it also reads as a list of axes.
+
 Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
 loading one activates the SciMLBase package extension):
 

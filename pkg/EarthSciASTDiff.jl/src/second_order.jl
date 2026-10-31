@@ -27,6 +27,7 @@ col2_idx(en::JacEntry2) = en.band.cidx[(en.ncol + 1):end]
 
 # A second-order `wrt` is a pair: the first derivative's axis, then the
 # second's (esm-jacobian-spec.md §4.4).
+_axis_pair(wrt::Pair) = _axis_pair((wrt.first, wrt.second))
 function _axis_pair(wrt)::Tuple{Symbol, Symbol}
     (wrt isa Union{Tuple, AbstractVector} && length(wrt) == 2) ||
         throw(ArgumentError("a second-order wrt is a pair (a1, a2), got $wrt"))
@@ -68,10 +69,10 @@ jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing) =
 # the observed that move with EITHER axis: one that reads only parameters
 # (an Arrhenius rate) is opaque on the state axis, and would hide its
 # parameter sites from the second derivative.
-function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing)
+function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder = _FirstOrder())
     ctx = _ctx(sv)
     t2 = _targets(sv, a2, forcing, a2 == :states ? _observed_defs(sv) : nothing)
-    e1 = _jacobian_bands(sv, a1, forcing, t2)
+    e1 = _first_order!(memo, sv, a1, a2, forcing, t2)
     tset = Set{String}(t2)
     out = JacEntry2[]
     for en in e1
@@ -107,31 +108,20 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
     return out
 end
 
-# `_check_closed_columns` for the second column of a pair.
-function _check_closed_col2(en::JacEntry2)
-    b = en.band
-    bound = Set{String}(r for r in b.ridx if r isa String)
-    for (n, _, _) in b.contracted
-        push!(bound, n)
-    end
-    for c in col2_idx(en), n in free_variables(c)
-        n in bound || throw(
-            BandError(
-                "second column index $(JSON3.write(EarthSciAST.serialize_expression(c))) of " *
-                    "`$(en.w)` in ∂²($(en.u))/∂$(en.v)∂$(en.w) reads `$n`, which is not " *
-                    "closed at build time"
-            )
-        )
-    end
-    return
-end
+_check_closed_col2(en::JacEntry2) = _check_closed(
+    en.band, col2_idx(en),
+    c -> "second column index $(_json(c)) of `$(en.w)` in ∂²($(en.u))/∂$(en.v)∂$(en.w)"
+)
 
 # `:block_diagonal` when the first-order state block is and every second
 # column sits on the row's own cell, so the contraction is lane-local;
 # `nothing` (field omitted) otherwise, and always on a time pair.
-function _structure2(e1::Vector{JacEntry}, entries::Vector{JacEntry2}, sv::SysView, a1::Symbol)
+function _structure2(
+        e1::Vector{JacEntry}, entries::Vector{JacEntry2}, sv::SysView, a1::Symbol,
+        memo::_FirstOrder = _FirstOrder()
+    )
     a1 == :states || return nothing
-    detect_structure(e1, sv) == :block_diagonal || return nothing
+    _structure!(memo, e1, sv) == :block_diagonal || return nothing
     ctx = _ctx(sv)
     for en in entries
         haskey(ctx.shapes, en.u) == haskey(ctx.shapes, en.w) || return nothing
@@ -179,48 +169,16 @@ _with_band(en::JacEntry2, b::Band) = JacEntry2(en.u, en.v, en.w, b, en.ncol)
 # factorization, `structure` only when the contraction is lane-local, and the
 # second axis's `columns` when it is a parameter or forcing axis.
 function _jacobian_block(
-        sv::SysView, wrt::Tuple{Symbol, Symbol}; forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        sv::SysView, wrt::Tuple{Symbol, Symbol}, memo::_FirstOrder = _FirstOrder();
+        forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12
     )
     a1, a2 = wrt
-    e1, entries = _bands2(sv, a1, a2, forcing)
-    ser_entries = entries
-    templates = OrderedDict{String, ASTExpr}()
-    if cse
-        templates, rewritten = cse_templates(
-            ASTExpr[en.band.coef for en in entries]; min_nodes = cse_min_nodes
-        )
-        isempty(templates) || (
-            ser_entries = JacEntry2[
-                JacEntry2(
-                    en.u, en.v, en.w, Band(
-                        en.band.rows, en.band.ridx, en.band.cidx, rewritten[k],
-                        en.band.contracted
-                    ), en.ncol
-                )
-                    for (k, en) in enumerate(entries)
-            ]
-        )
-    end
-    block = OrderedDict{String, Any}(
-        "wrt" => Any[String(a1), String(a2)],
-        "entries" => Any[serialize_band(en) for en in ser_entries],
+    e1, entries = _bands2(sv, a1, a2, forcing, memo)
+    return _block(
+        Any[String(a1), String(a2)], entries,
+        a2 in (:parameters, :forcing) ? _columns_field(sv, a2, forcing) : nothing,
+        _structure2(e1, entries, sv, a1, memo), cse, cse_min_nodes
     )
-    a2 in (:parameters, :forcing) && (
-        block["columns"] = Any[
-            OrderedDict{String, Any}("name" => n, "shape" => Any[shape...])
-                for (n, shape) in jacobian_columns(sv; wrt = a2, forcing = forcing)
-        ]
-    )
-    st = _structure2(e1, entries, sv, a1)
-    st === nothing || (block["structure"] = String(st))
-    isempty(templates) || (
-        block["expression_templates"] = OrderedDict{String, Any}(
-            name => OrderedDict{String, Any}("params" => Any[], "body" => _ser_expr(body))
-                for (name, body) in templates
-        )
-    )
-    return block
 end
 
 # ── evaluation: the contraction kernel ──────────────────────────────────────
