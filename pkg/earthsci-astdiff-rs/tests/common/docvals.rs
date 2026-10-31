@@ -101,16 +101,24 @@ impl DocEval {
             })
             .collect();
         let (x0, aux) = prog.default_state();
+        let declared = &doc["models"][model]["variables"];
         let mut overrides = HashMap::new();
         for (k, v) in &env.params {
             let x = v.as_f64().expect("a scalar parameter override");
-            // a parameter the derived document does not read is not in `p`
             if let Some(s) = prog
                 .parameters()
                 .iter()
                 .find(|s| s.name == format!("{model}.{k}") || s.name == *k)
             {
                 overrides.insert(s.name.clone(), x);
+            } else {
+                // a parameter the derived document declares but does not
+                // read is not in `p`; a name it does not declare at all is a
+                // misspelled or stale override, never silently dropped
+                assert!(
+                    declared.get(k).is_some(),
+                    "parameter override `{k}` names no variable of the derived document"
+                );
             }
         }
         let p = prog.parameter_vector(&overrides).unwrap();
@@ -223,7 +231,9 @@ pub fn pattern(sv: &SysView, entries: &[JacEntry], wrt: Wrt) -> R<HashSet<(Strin
 
 /// `J` at `env` on axis `wrt`, keyed `(row cell, column cell)` over exactly
 /// the structural [`pattern`]: column `c` read off one `JvpEval` call at
-/// the unit direction `e_c`. A nonzero off the pattern panics.
+/// the unit direction `e_c`, for every column cell of the axis. A nonzero
+/// off the pattern panics, as does a pattern pair the axis has no row or
+/// column for.
 pub fn doc_jacobian(
     file: &EsmFile,
     model_name: Option<&str>,
@@ -257,9 +267,8 @@ pub fn doc_jacobian_entries(
         .keys()
         .flat_map(|r| cells(r, ctx.shapes.get(r).map_or(&[], |s| s.as_slice())))
         .collect();
-    let cols: HashSet<&String> = pat.iter().map(|(_, c)| c).collect();
     let mut out = BTreeMap::new();
-    for c in cols {
+    for c in &column_cells(sv, wrt, forcing)? {
         let du = ev.call(&HashMap::from([(doc_cell(&io.v, c), 1.0)]));
         for r in &rows {
             let x = du.at(&doc_cell(&io.jvp, r));
@@ -271,7 +280,28 @@ pub fn doc_jacobian_entries(
             }
         }
     }
+    assert_eq!(
+        out.len(),
+        pat.len(),
+        "a pattern pair names no row or column of the axis"
+    );
     Ok(out)
+}
+
+/// `d` binds exactly `names`: a missing or misspelled cell is an error.
+fn bound(d: &HashMap<String, f64>, names: &[String], what: &str) -> R<()> {
+    let want: HashSet<&str> = names.iter().map(String::as_str).collect();
+    let got: HashSet<&str> = d.keys().map(String::as_str).collect();
+    if want != got {
+        let mut miss: Vec<&&str> = want.difference(&got).collect();
+        let mut extra: Vec<&&str> = got.difference(&want).collect();
+        miss.sort();
+        extra.sort();
+        return Err(BandError(format!(
+            "{what} must bind exactly the axis's cells: missing {miss:?}, unknown {extra:?}"
+        )));
+    }
+    Ok(())
 }
 
 /// The column cells of axis `wrt`: every state cell, `["t"]`, or the
@@ -291,7 +321,8 @@ pub fn column_cells(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<Vec
 }
 
 /// `Jᵀ λ` from one `VjpEval` call, over every column cell of the axis;
-/// `lambda` is keyed by row cell (a row it omits reads 0).
+/// `lambda` binds exactly every row (state) cell: a missing or misspelled
+/// cell is an error, never a zero.
 pub fn doc_vjp(
     file: &EsmFile,
     model_name: Option<&str>,
@@ -307,6 +338,7 @@ pub fn doc_vjp(
         ..Default::default()
     };
     let (doc, io) = vjp_document(&sv, &entries, wrt, &opts)?;
+    bound(lambda, &column_cells(&sv, Wrt::States, None)?, "λ")?;
     let ev = DocEval::new(&doc, &io.model, env);
     let inputs = lambda
         .iter()
@@ -324,7 +356,9 @@ pub fn doc_vjp(
 
 /// The §4.4 contraction from one `HvpEval` (`HvpEvalSymmetric`) call, keyed
 /// by the second-axis column cells a band point reaches (the structural key
-/// set); a nonzero elsewhere panics.
+/// set); a nonzero elsewhere panics. Each stage's `μ` binds exactly every
+/// state cell and its `w` every first-axis column cell (`"t"` on a time
+/// pair): a missing or misspelled cell is an error, never a zero.
 pub fn doc_hvp(
     file: &EsmFile,
     model_name: Option<&str>,
@@ -354,6 +388,12 @@ pub fn doc_hvp(
         ..Default::default()
     };
     let (doc, io) = hvp_document(&sv, &entries, wrt, pairs.len(), form, &opts)?;
+    let rows = column_cells(&sv, Wrt::States, None)?;
+    let cols1 = column_cells(&sv, wrt.0, forcing)?;
+    for (mu, w) in pairs {
+        bound(mu, &rows, "μ")?;
+        bound(w, &cols1, "w")?;
+    }
     let ev = DocEval::new(&doc, &io.model, env);
     let mut inputs = HashMap::new();
     for (i, (mu, w)) in pairs.iter().enumerate() {

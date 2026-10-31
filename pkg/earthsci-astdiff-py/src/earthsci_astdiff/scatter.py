@@ -33,7 +33,7 @@ from .emit import _cellname, _eval_cidx, _product, foreach_point
 from .factorization import _block_diagonal_plan
 from .jacobian import JacEntry, jacobian_bands
 from .structure import _offset_class, detect_structure
-from .system import SysView, ctx_of, sysview, view_states
+from .system import ctx_of, sysview, view_states
 
 # ── layouts ─────────────────────────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ def scatter_plan(
     :class:`ColumnBanded`, …), and always for an empty band list on a model
     with array states — that is the silent all-zero Jacobian, never a valid
     plan."""
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     if entries is None:
         entries = jacobian_bands(sv, wrt="states")
     ctx = ctx_of(sv)
@@ -498,7 +498,7 @@ def bind_plan(
     never silently misapplied. ``lanes`` is the lane capacity ``L`` of a lane
     or column layout (default: exactly the lane count; padding lanes stay
     zero)."""
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     ctx = ctx_of(sv)
     entries = jacobian_bands(sv, wrt="states")
     field_shapes = [_field_shape(en, ctx) for en in entries]

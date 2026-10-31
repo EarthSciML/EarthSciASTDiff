@@ -9,7 +9,7 @@ use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
 use crate::clip::RIdx;
-use crate::eval_cse::hoist_observed;
+use crate::eval_cse::hoist_observed_bands;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, Wrt};
@@ -1424,22 +1424,22 @@ fn axis_name(isets: &mut Map<String, Value>, sz: i64) -> String {
 }
 
 /// With `cse`, repeated coefficient subtrees are hoisted into observed of
-/// the derived model ([`hoist_observed`]): its index sets, declarations and
+/// the derived model ([`crate::hoist_observed`]): its index sets, declarations and
 /// bare-LHS equations go into `doc` and `model`. The coefficients the model
 /// reads (emit.jl `_hoist!`).
 pub(crate) fn hoist(
     doc: &mut Map<String, Value>,
     model: &mut Map<String, Value>,
     sv: &SysView,
-    entries: &[JacEntry],
+    bands: &[&Band],
     cse: bool,
     cse_min_nodes: usize,
 ) -> Vec<Expr> {
     let Some(h) = cse
-        .then(|| hoist_observed(entries, sv, cse_min_nodes))
+        .then(|| hoist_observed_bands(bands, sv, cse_min_nodes))
         .flatten()
     else {
-        return entries.iter().map(|en| en.band.coef.clone()).collect();
+        return bands.iter().map(|b| b.coef.clone()).collect();
     };
     if let Some(Value::Object(isets)) = doc.get_mut("index_sets") {
         for (nm, sz) in &h.axes {
@@ -1472,7 +1472,8 @@ pub fn evaluation_document(
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
     let roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
-    let coefs = hoist(&mut doc, &mut model, sv, entries, cse, cse_min_nodes);
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let coefs = hoist(&mut doc, &mut model, sv, &bands, cse, cse_min_nodes);
     let Some(Value::Array(mut eqs)) = model.remove("equations") else {
         unreachable!()
     };

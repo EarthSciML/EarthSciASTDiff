@@ -121,9 +121,7 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", fo
     and ``"forcing"`` axes the columns are cells of the canonical column
     space (:func:`jacobian_columns`): a forcing column must resolve to one,
     and a parameter column outside its variable's extent is a ghost read."""
-    from .system import SysView
-
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     if wrt != "states":
         triples = scatter_pairs(sv, entries)
@@ -226,7 +224,7 @@ def jacobian_block(
     plan when every coupling stays within one line along that axis
     (:func:`~earthsci_astdiff.structure.column_lines`)."""
     from .jacobian import _FirstOrder
-    from .system import SysView, sysview
+    from .system import sysview
 
     if isinstance(wrt, tuple):
         raise ValueError(
@@ -234,7 +232,7 @@ def jacobian_block(
             '(["states", "forcing"]) and a second-order pair inside one '
             '([("states", "forcing")])'
         )
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     memo = _FirstOrder()
     # One axis is a str (iterating it would split it into characters).
     if isinstance(wrt, str):
@@ -588,9 +586,7 @@ def evaluation_document(
     Returns ``(doc, fields)``, ``fields[k]`` naming entry ``k``'s field. With
     ``cse``, repeated coefficient subtrees are hoisted into observed arrays
     (:func:`~earthsci_astdiff.eval_cse.hoist_observed`)."""
-    from .system import SysView
-
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes)
 

@@ -131,6 +131,18 @@ fn fresh(taken: &mut HashSet<String>, base: &str) -> String {
     nm
 }
 
+/// [`fresh`] clear of `local` too, which is left untouched: the document's
+/// names stay in `taken` and an entry's own in `local`, so a per-entry
+/// freshening never copies the document-wide set.
+fn fresh2(taken: &HashSet<String>, local: &mut HashSet<String>, base: &str) -> String {
+    let mut nm = base.to_string();
+    while taken.contains(&nm) || local.contains(&nm) {
+        nm.push('_');
+    }
+    local.insert(nm.clone());
+    nm
+}
+
 /// Every name of a derived document (§9.1): the variable and index-set
 /// names, every `ranges` key, and every string its equations hold other
 /// than an `op`.
@@ -193,6 +205,24 @@ fn io_name<'m>(names: &'m IoMap, v: &str) -> R<&'m str> {
     })
 }
 
+/// Refuse entries whose column variable `col` is not on the document's axis
+/// (`cols`, from `wrt` and `opts.forcing`): the caller built the entries
+/// under another forcing set. Checked before any term is built, so the
+/// mismatch is named rather than met late in [`io_name`].
+fn check_columns<'e>(cols: &IoMap, used: impl IntoIterator<Item = &'e str>, wrt: Wrt) -> R<()> {
+    for c in used {
+        if !cols.contains_key(c) {
+            return Err(BandError(format!(
+                "an entry reads `{c}`, which is no column variable of the {} axis the product \
+                 document was asked for; build the entries and the document with the same \
+                 forcing set (`ProductOptions::forcing`)",
+                wrt.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn shape_of(ctx: &Ctx, v: &str) -> Vec<i64> {
     ctx.shapes.get(v).cloned().unwrap_or_default()
 }
@@ -246,12 +276,14 @@ impl Doc<'_, '_> {
         owner: &[&str],
         mut term: impl FnMut(usize, &Ctx) -> R<Option<Value>>,
     ) -> R<()> {
+        // each output's entries, in entry order: one pass, not one per output
+        let mut by_owner: IndexMap<&str, Vec<usize>> = IndexMap::new();
+        for (k, o) in owner.iter().enumerate() {
+            by_owner.entry(o).or_default().push(k);
+        }
         for (c, nm) in outs {
             let mut terms = Vec::new();
-            for (k, o) in owner.iter().enumerate() {
-                if o != c {
-                    continue;
-                }
+            for &k in by_owner.get(c.as_str()).map_or(&[][..], Vec::as_slice) {
                 if let Some(t) = term(k, &self.ctx)? {
                     terms.push(t);
                 }
@@ -277,23 +309,23 @@ impl Doc<'_, '_> {
 fn product_base<'s, 'a>(
     sv: &'s SysView<'a>,
     name: &str,
-    entries: &[JacEntry],
+    bands: &[&Band],
     opts: &ProductOptions,
 ) -> R<(Doc<'s, 'a>, Vec<Expr>)> {
     let (mut doc, mut model) = base_document(sv, name);
     let ctx = ctx_of(sv)?;
     let mut roots: Vec<&Expr> = Vec::new();
-    for en in entries {
-        roots.push(&en.band.coef);
-        roots.extend(&en.band.cidx);
-        roots.extend(&en.band.guard);
+    for b in bands {
+        roots.push(&b.coef);
+        roots.extend(&b.cidx);
+        roots.extend(&b.guard);
     }
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     let coefs = hoist(
         &mut doc,
         &mut model,
         sv,
-        entries,
+        bands,
         opts.cse,
         opts.cse_min_nodes,
     );
@@ -317,15 +349,31 @@ fn with_cidx(b: &Band, ci: &[Expr]) -> Band {
 
 /// Whether every point of `b` reads `ci` inside `shape`; `None` when an
 /// index is not closed at build time (a gather through a table that is not
-/// `const`), so the question has no build-time answer.
+/// `const`), or when `ci` has more indices than `shape` has dimensions, so
+/// the question has no build-time answer.
 fn in_extent(b: &Band, ci: &[Expr], shape: &[i64]) -> Option<bool> {
     if ci.is_empty() {
         return Some(true);
+    }
+    if ci.len() > shape.len() {
+        return None;
     }
     all_points(&with_cidx(b, ci), &mut |_, _, _, c| {
         Ok(c.iter().zip(shape).all(|(x, n)| 1 <= *x && x <= n))
     })
     .ok()
+}
+
+/// Refuse a read of `v` with more indices than its shape has dimensions.
+fn check_rank(v: &str, ci: &[Expr], shape: &[i64]) -> R<()> {
+    if ci.len() > shape.len() {
+        return Err(BandError(format!(
+            "a band reads `{v}` with {} indices, but it has {} dimensions",
+            ci.len(),
+            shape.len()
+        )));
+    }
+    Ok(())
 }
 
 /// An extra conjunct of a filter, with the index names it reads.
@@ -336,6 +384,7 @@ type Conj = (Value, HashSet<String>);
 /// extent (the region split then leaves the box whole). On the forcing axis
 /// there is no ghost read: a point outside its buffer is refused.
 fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<Vec<Conj>> {
+    check_rank(v, ci, shape)?;
     let ok = in_extent(b, ci, shape);
     if ok == Some(true) {
         return Ok(Vec::new());
@@ -364,6 +413,7 @@ fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R
 /// fails), and §9.2 has its column indices closed: whether that point reads
 /// `v` inside its extent. A ghost is dropped, except on the forcing axis.
 fn point_in_extent(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<bool> {
+    check_rank(v, ci, shape)?;
     let Some(ok) = in_extent(b, ci, shape) else {
         return Err(BandError(format!(
             "a band with no index names reads `{v}` at an index not closed at build time \
@@ -421,15 +471,14 @@ fn rho(b: &Band) -> Vec<Value> {
 /// Fresh output-index names `_j1 … _jn`, clear of the entry's and the
 /// document's names (§9.1).
 fn jnames(taken: &HashSet<String>, b: &Band, coef: &Expr, n: usize) -> Vec<String> {
-    let mut local = taken.clone();
-    local.extend(row_names(b));
+    let mut local = row_names(b);
     local.extend(b.contracted.iter().map(|(n, _, _)| n.clone()));
     local.extend(names_of(std::iter::once(coef).chain(&b.cidx)));
     if let Some(g) = &b.guard {
         local.extend(free_variables(g));
     }
     (1..=n)
-        .map(|d| fresh(&mut local, &format!("_j{d}")))
+        .map(|d| fresh2(taken, &mut local, &format!("_j{d}")))
         .collect()
 }
 
@@ -727,6 +776,11 @@ fn hvp_sym_term(
 /// the derivative slots of its outputs. The consumer writes the inputs
 /// ([`JvpIo::v`]) into the evaluator's state slots beside the source states
 /// and reads the outputs ([`JvpIo::jvp`]) from `du`.
+///
+/// `entries` must be built under the same forcing set as `opts.forcing`
+/// (`None` on both sides infers it): the document's columns come from
+/// `wrt` and `opts.forcing`, and an entry reading a variable outside them is
+/// refused. A column of that set the entries never read comes out zero.
 pub fn jvp_document(
     sv: &SysView,
     entries: &[JacEntry],
@@ -734,7 +788,8 @@ pub fn jvp_document(
     opts: &ProductOptions,
 ) -> R<(Value, JvpIo)> {
     let model = "JvpEval";
-    let (mut d, coefs) = product_base(sv, model, entries, opts)?;
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
     let vin: IoMap = column_vars(sv, wrt, opts.forcing)?
         .into_iter()
@@ -750,6 +805,7 @@ pub fn jvp_document(
             (r, nm)
         })
         .collect();
+    check_columns(&vin, entries.iter().map(|en| en.v.as_str()), wrt)?;
     for (c, nm) in &vin {
         d.declare(nm, c, None);
     }
@@ -775,7 +831,8 @@ pub fn jvp_document(
 /// [`jvp_document`], with the cotangent inputs [`VjpIo::lam`] and the
 /// outputs [`VjpIo::vjp`]. An equality-filtered `faq` scatter: correct under
 /// any evaluator, linear-time only under one that implements §9.3's
-/// equality-filter scatter.
+/// equality-filter scatter. `entries` and `opts.forcing` must agree, as for
+/// [`jvp_document`].
 pub fn vjp_document(
     sv: &SysView,
     entries: &[JacEntry],
@@ -783,7 +840,8 @@ pub fn vjp_document(
     opts: &ProductOptions,
 ) -> R<(Value, VjpIo)> {
     let model = "VjpEval";
-    let (mut d, coefs) = product_base(sv, model, entries, opts)?;
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
     let lam: IoMap = view_states(sv, &observed_defs(sv)?)
         .into_iter()
@@ -799,6 +857,7 @@ pub fn vjp_document(
             (c, nm)
         })
         .collect();
+    check_columns(&out, entries.iter().map(|en| en.v.as_str()), wrt)?;
     for (r, nm) in &lam {
         d.declare(nm, r, None);
     }
@@ -827,6 +886,7 @@ pub fn vjp_document(
 /// wᵢ` (`∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t` on a time pair) in the derivative slots of
 /// its outputs. [`HvpForm::Symmetric`] (a `(states, states)` pair only)
 /// scatters by the first column instead (model `"HvpEvalSymmetric"`).
+/// `entries` and `opts.forcing` must agree, as for [`jvp_document`].
 pub fn hvp_document(
     sv: &SysView,
     entries: &[JacEntry2],
@@ -852,17 +912,10 @@ pub fn hvp_document(
         HvpForm::Contract => "HvpEval",
         HvpForm::Symmetric => "HvpEvalSymmetric",
     };
-    // the coefficients only: a second-order entry rides through the base and
-    // the hoisting as a first-order one (its `cidx` holds both columns)
-    let first: Vec<JacEntry> = entries
-        .iter()
-        .map(|en| JacEntry {
-            u: en.u.clone(),
-            v: en.v.clone(),
-            band: en.band.clone(),
-        })
-        .collect();
-    let (mut d, coefs) = product_base(sv, model, &first, opts)?;
+    // the bands only, borrowed: a second-order band rides through the base
+    // and the hoisting as a first-order one (its `cidx` holds both columns)
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
     let states = view_states(sv, &observed_defs(sv)?);
     let cols1 = if a1 == Wrt::Time {
@@ -892,6 +945,9 @@ pub fn hvp_document(
             (c, nm)
         })
         .collect();
+    if form == HvpForm::Contract {
+        check_columns(&out, entries.iter().map(|en| en.w.as_str()), a2)?;
+    }
     for (mi, wi) in mu.iter().zip(&w) {
         for (r, nm) in mi {
             d.declare(nm, r, None);
@@ -922,4 +978,36 @@ pub fn hvp_document(
         hvp: out,
     };
     Ok((d.finish(model), io))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One point (row 1), reading its column at the literal index `ci`.
+    fn band(ci: &[i64]) -> Band {
+        Band {
+            rows: vec![(1, 1)],
+            ridx: vec![RIdx::Fixed(1)],
+            cidx: ci.iter().map(|n| Expr::Integer(*n)).collect(),
+            coef: Expr::Number(1.0),
+            contracted: Vec::new(),
+            guard: None,
+        }
+    }
+
+    #[test]
+    fn a_read_with_more_indices_than_dimensions_is_refused() {
+        let b = band(&[1, 1]);
+        // one index past the shape's dimensions has no build-time answer, as
+        // in the reference (an out-of-bounds `shape[d]`), not `Some(true)`
+        assert_eq!(in_extent(&b, &b.cidx, &[4]), None);
+        assert_eq!(in_extent(&b, &b.cidx, &[]), None);
+        assert_eq!(in_extent(&b, &b.cidx, &[4, 4]), Some(true));
+        assert_eq!(in_extent(&b, &b.cidx[..1], &[4, 4]), Some(true));
+        for wrt in [Wrt::States, Wrt::Parameters, Wrt::Forcing] {
+            assert!(ghost_conjuncts(&b, "c", &b.cidx, &[4], wrt).is_err());
+            assert!(point_in_extent(&b, "c", &b.cidx, &[4], wrt).is_err());
+        }
+    }
 }

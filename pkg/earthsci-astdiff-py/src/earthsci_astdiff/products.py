@@ -142,12 +142,22 @@ def _in_extent(b: Band, ci: list, shape: list[int]):
         return None
 
 
+def _check_rank(v: str, ci: list, shape: list[int]) -> None:
+    """Refuse a read of ``v`` with more indices than its shape has
+    dimensions."""
+    if len(ci) > len(shape):
+        raise BandError(
+            f"a band reads `{v}` with {len(ci)} indices, but it has {len(shape)} dimensions"
+        )
+
+
 def _ghost_conjuncts(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> list:
     """§9.1's ghost rule for a read of column variable ``v`` at ``ci`` on axis
     ``wrt``: the in-extent conjuncts ``G`` to filter by, as ``(conjunct,
     names)`` pairs; none when every point is in extent (the region split
     then leaves the box whole). On the forcing axis there is no ghost read:
     a point outside its buffer is refused."""
+    _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     if ok is True:
         return []
@@ -170,6 +180,7 @@ def _point_in_extent(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> b
     ``where`` fails), and §9.2 has its column indices closed: whether that
     point reads ``v`` inside its extent. A ghost is dropped, except on the
     forcing axis."""
+    _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     if ok is None:
         raise BandError(
@@ -209,11 +220,19 @@ def _rho(b: Band) -> list:
 
 def _jnames(taken: set[str], b: Band, coef, n: int) -> list[str]:
     """Fresh output-index names ``_j1 … _jn``, clear of the entry's and the
-    document's names (§9.1)."""
-    local = set(taken) | _row_names(b) | {c[0] for c in b.contracted} | _names_of((coef, *b.cidx))
+    document's names (§9.1). The document's names are only looked up, never
+    copied: a per-entry copy of the document-wide set is quadratic."""
+    local = _row_names(b) | {c[0] for c in b.contracted} | _names_of((coef, *b.cidx))
     if b.guard is not None:
         local |= free_variables(b.guard)
-    return [_fresh(local, f"_j{d + 1}") for d in range(n)]
+    out = []
+    for d in range(n):
+        nm = f"_j{d + 1}"
+        while nm in taken or nm in local:
+            nm += "_"
+        local.add(nm)
+        out.append(nm)
+    return out
 
 
 def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames: set[str]):
@@ -398,11 +417,12 @@ def _hvp_sym_term(en: JacEntry2, coef, mu, w, ctx, taken: set[str]):
 def _outputs(m: dict, sv: SysView, ctx, outs: dict[str, str], term, owner: list) -> None:
     """Each output's equation: the left fold of its entries' terms (§9.1).
     ``owner`` lists ``(k, the output variable entry k lands in)``."""
+    by_owner: dict[str, list[int]] = {}
+    for k, o in owner:  # one pass, not one per output; entry order kept
+        by_owner.setdefault(o, []).append(k)
     for c, nm in outs.items():
         terms = []
-        for k, o in owner:
-            if o != c:
-                continue
+        for k in by_owner.get(c, ()):
             t = term(k)
             if t is not None:
                 terms.append(t)
@@ -518,10 +538,6 @@ def _hvp_document(
     return _derived_version(doc), {"model": model, "mu": mu, "w": w, "hvp": out}
 
 
-def _sv_of(obj, model_name: str | None) -> SysView:
-    return obj if isinstance(obj, SysView) else sysview(obj, model_name)
-
-
 def jvp_document(
     obj,
     model_name: str | None = None,
@@ -543,7 +559,7 @@ def jvp_document(
     ``io["jvp"]`` each state to its output. The consumer writes the inputs
     into the evaluator's state slots beside the source states and reads the
     outputs from ``du`` through the evaluator's variable map."""
-    sv = _sv_of(obj, model_name)
+    sv = sysview(obj, model_name)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     return _jvp_document(sv, entries, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
 
@@ -564,7 +580,7 @@ def vjp_document(
     A ``VjpEval`` document is an equality-filtered ``faq`` scatter: correct
     under any evaluator, linear-time only under one that implements §9.3's
     equality-filter scatter."""
-    sv = _sv_of(obj, model_name)
+    sv = sysview(obj, model_name)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     return _vjp_document(sv, entries, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
 
@@ -591,7 +607,7 @@ def hvp_document(
     scatters by the first column instead (model ``"HvpEvalSymmetric"``);
     both forms give the same ``g``."""
     a1, a2 = axis_pair(wrt)
-    sv = _sv_of(obj, model_name)
+    sv = sysview(obj, model_name)
     entries = jacobian_bands2(sv, wrt=(a1, a2), forcing=forcing)
     return _hvp_document(
         sv, entries, (a1, a2), forcing, stages, form=form, cse=cse, cse_min_nodes=cse_min_nodes

@@ -33,10 +33,6 @@ from earthsci_astdiff.second_order import axis_pair, jacobian_bands2
 from earthsci_astdiff.system import SysView, ctx_of, view_states
 
 
-def _sv(obj, model_name) -> SysView:
-    return obj if isinstance(obj, SysView) else sysview(obj, model_name)
-
-
 def _doc_cell(io_map: dict, cell: str) -> str:
     """The document's name for a cell of a source variable: ``u[3]`` →
     ``<io_map["u"]>[3]``."""
@@ -73,7 +69,7 @@ def _document(build, obj, model_name, *args, **kw) -> tuple:
     key = (build.__name__, id(obj), model_name, args, tuple(sorted(kw.items())))
     hit = _CACHE.get(key)
     if hit is None or hit[0] is not obj:
-        sv = _sv(obj, model_name)
+        sv = sysview(obj, model_name)
         doc, io = build(sv, *args, **kw)
         hit = (obj, sv, _Doc(doc, io["model"], state_cells(sv)), io)
         _CACHE[key] = hit
@@ -214,7 +210,7 @@ def reached2(obj, model_name: str | None = None, wrt=("states", "states"), forci
     structural, read off the bands by a point walk — the key set of an
     ``*.hvals.json`` golden (scripts/regenerate-value-goldens.jl
     ``_reached2``)."""
-    sv = _sv(obj, model_name)
+    sv = sysview(obj, model_name)
     shapes = ctx_of(sv).shapes
 
     def inext(v, c):

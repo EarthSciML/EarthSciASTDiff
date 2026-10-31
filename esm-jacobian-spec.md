@@ -796,6 +796,15 @@ A producer MUST refuse (not emit) a plan for an empty band list on a model
 with array states, for a band column that is not a state, and for a layout
 whose preconditions above do not hold.
 
+**Bound plans (binding API, non-normative).** A binding's `bind_plan`
+returns the plan's contributions as a flat gather list, and its positions
+follow the host language's indexing, not the plan file's: Julia's
+`BoundScatter.pairs` holds 1-based output positions, Python's 0-based ones,
+and Rust's `BoundScatter.pairs` holds 0-based `(k, f, pos)` triples. Only the
+serialized plan is a conformance artifact, and it is 0-based everywhere. A
+consumer porting a scatter loop between bindings must shift positions to
+match.
+
 ## 9. Product documents (PROPOSED)
 
 **Status: PROPOSED. Produced by the Julia reference (`jvp_document`,

@@ -443,4 +443,19 @@ fn product_refusals() {
     let sp = (Wrt::States, Wrt::Parameters);
     let entries = jacobian_bands2(&file, None, sp).unwrap();
     assert!(hvp_document(&sv, &entries, sp, 2, HvpForm::Symmetric, &opts).is_err());
+    // entries built under another forcing set than the document's: with no
+    // forcing, `F` is a parameter column; the inferred set makes it forcing
+    let file = load("forcing_bracket");
+    let sv = sysview(&file, None).unwrap();
+    let none: [String; 0] = [];
+    let entries = jacobian_bands_view(&sv, Wrt::Parameters, Some(&none)).unwrap();
+    assert!(entries.iter().any(|en| en.v == "F"));
+    let err = vjp_document(&sv, &entries, Wrt::Parameters, &opts).unwrap_err();
+    assert!(err.0.contains("forcing set"), "{}", err.0);
+    assert!(jvp_document(&sv, &entries, Wrt::Parameters, &opts).is_err());
+    let agree = ProductOptions {
+        forcing: Some(&none),
+        ..Default::default()
+    };
+    assert!(vjp_document(&sv, &entries, Wrt::Parameters, &agree).is_ok());
 }

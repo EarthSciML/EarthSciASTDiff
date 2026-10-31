@@ -328,6 +328,15 @@ fn refusals() {
     let (env, pairs, _) = hvals("forcing_bracket", (Wrt::Time, Wrt::States));
     let tp = (Wrt::Time, Wrt::States);
     assert!(doc_hvp(&file, None, tp, None, &env, &pairs, HvpForm::Symmetric).is_err());
+    // a stage that does not bind a row the bands read
+    let mut short = pairs.clone();
+    short[0].0.remove("c[2]");
+    assert!(doc_hvp(&file, None, tp, None, &env, &short, HvpForm::Contract).is_err());
+    // nor a misspelled one
+    let mut typo = pairs.clone();
+    let x = typo[0].0.remove("c[2]").unwrap();
+    typo[0].0.insert("c[ 2]".into(), x);
+    assert!(doc_hvp(&file, None, tp, None, &env, &typo, HvpForm::Contract).is_err());
     // a second column read through a parameter offset is one-hot over the
     // buffer's extent (spec §3.5), every point a placeable column
     let ix = |v: &str, i: &[Value]| {

@@ -114,7 +114,19 @@ end
 # the in-extent conjuncts `G` to filter by, none when every point is in
 # extent (the region split then leaves the box whole). On the forcing axis
 # there is no ghost read: a point outside its buffer is refused.
+# Refuse a read of `v` with more indices than its shape has dimensions.
+function _check_rank(v::String, ci::Vector{ASTExpr}, shape::Vector{Int})
+    length(ci) > length(shape) && throw(
+        BandError(
+            "a band reads `$v` with $(length(ci)) indices, but it has " *
+                "$(length(shape)) dimensions"
+        )
+    )
+    return
+end
+
 function _ghost_conjuncts(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
+    _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     ok === true && return Tuple{Any, Set{String}}[]
     wrt == :forcing && throw(
@@ -137,6 +149,7 @@ end
 # fails), and §9.2 has its column indices closed: whether that point reads
 # `v` inside its extent. A ghost is dropped, except on the forcing axis.
 function _point_in_extent(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
+    _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     ok === nothing && throw(
         BandError(
@@ -151,9 +164,20 @@ end
 # Fresh output-index names `_j1 … _jn`, clear of the entry's and the
 # document's names (§9.1).
 function _jnames(taken::Set{String}, b::Band, coef::ASTExpr, n::Int)
-    local_taken = union(taken, _row_names(b), first.(b.contracted), _names_of((coef, b.cidx...)))
+    # the document's names are looked up, never copied: a per-entry copy of
+    # the document-wide set makes the build quadratic
+    local_taken = union(_row_names(b), first.(b.contracted), _names_of((coef, b.cidx...)))
     b.guard === nothing || union!(local_taken, free_variables(b.guard))
-    return [_fresh!(local_taken, "_j$d") for d in 1:n]
+    out = String[]
+    for d in 1:n
+        nm = "_j$d"
+        while nm in taken || nm in local_taken
+            nm *= "_"
+        end
+        push!(local_taken, nm)
+        push!(out, nm)
+    end
+    return out
 end
 
 # The `faq` of one entry's term: `ranges` (the output names first, then the
@@ -307,10 +331,14 @@ end
 # Each output's equation: the left fold of its entries' terms (§9.1).
 # `owner` yields `(k, the output variable entry k lands in)`.
 function _outputs!(m, sv, ctx, outs::OrderedDict{String, String}, term, owner)
+    # each output's entries, in entry order: one pass, not one per output
+    by_owner = Dict{String, Vector{Int}}()
+    for (k, o) in owner
+        push!(get!(Vector{Int}, by_owner, o), k)
+    end
     for (c, nm) in outs
         terms = Any[]
-        for (k, o) in owner
-            o == c || continue
+        for k in get(by_owner, c, Int[])
             t = term(k)
             t === nothing || push!(terms, t)
         end
