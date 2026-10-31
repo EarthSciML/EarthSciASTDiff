@@ -139,7 +139,6 @@ A freshly zeroed sparse prototype on the structural pattern — the object to
 pass as `ODEFunction(f!; jac_prototype = …)`. Stored (structural) zeros are
 kept so the pattern is point-independent.
 """
-
 function jac_prototype(input; wrt::Symbol = :states, model_name = nothing)
     pat = jacobian_pattern(input; wrt = wrt, model_name = model_name).pattern
     return SparseMatrixCSC(

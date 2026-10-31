@@ -51,21 +51,29 @@ See [`detect_structure`](/generated/api/ref/detect_structure) and
 
 ## Evaluate
 
-The one-shot call evaluates the Jacobian at a point, using the document's
-initial state and parameters unless you pass others.
+Python and Rust evaluate the Jacobian at a point, using the document's
+initial state and parameters unless you pass others. The Julia package
+computes no values: it emits an evaluation document whose right-hand side,
+run once by an unmodified EarthSciAST evaluator, leaves every band value in
+`du` (and `jvp_document`, `vjp_document` and `hvp_document` do the same for
+`J v`, `Jᵀ λ` and second-order products).
 
 <!-- example: assemble -->
 
-See [`assemble_jacobian`](/generated/api/ref/assemble_jacobian).
+See [`assemble_jacobian`](/generated/api/ref/assemble_jacobian) and
+[`evaluation_document`](/generated/api/ref/evaluation_document).
 
-## Prepare once, evaluate many times
+## Prototype and storage
 
-To use the Jacobian inside a solver, differentiate and compile once, then fill
-a fixed sparse prototype in place at each step.
+To use the Jacobian inside a solver, take the fixed sparse prototype once,
+and place the band values in your own storage with a scatter plan that is
+checked against the source before use.
 
 <!-- example: prepare -->
 
-See [`prepare_jacobian`](/generated/api/ref/prepare_jacobian).
+See [`jac_prototype`](/generated/api/ref/jac_prototype),
+[`scatter_plan`](/generated/api/ref/scatter_plan) and
+[`bind_plan`](/generated/api/ref/bind_plan).
 
 ## Serialize
 

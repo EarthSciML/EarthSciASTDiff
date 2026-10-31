@@ -1,7 +1,8 @@
-# Differentiate a model, read its sparsity and structure, and evaluate the Jacobian.
+# Differentiate a model, read its sparsity and structure, and emit the documents that evaluate the Jacobian.
 
 using EarthSciAST
 using EarthSciASTDiff
+using JSON3
 using SparseArrays: nnz
 
 const FIXTURES = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "tests", "valid"))
@@ -30,22 +31,29 @@ plan = plan_factorization(entries, view)
 @assert sort(plan.block_vars) == ["A", "B", "C"]
 # endregion
 
-# region: assemble ops=assemble_jacobian
-res = assemble_jacobian(file)                # at the document's initial state
-@assert res.structure == :block_diagonal
-@assert res.J[1, 1] == -0.04                 # -k1
-@assert res.J[5, 5] == -3.0                  # -2 k2 B, with B = 0.5 by default
+# region: assemble ops=evaluation_document
+# The Julia package computes no values: it emits a document whose right-hand
+# side, run once by an unmodified EarthSciAST evaluator, leaves every band
+# value in `du`. `fields[k]` names entry k's band field.
+doc, fields = evaluation_document(file)
+prob = EarthSciAST.esm_problem(
+    JSON3.read(stable_json(doc)), (0.0, 1.0)
+)
+du = zero(prob.u0)
+prob.f!(du, prob.u0, prob.p, 0.0)            # at the document's initial state
+k = findfirst(en -> (en.u, en.v) == ("A", "A"), entries)
+@assert du[prob.var_map["JacobianEval.$(fields[k])[1]"]] == -0.04   # -k1
 # endregion
 
-# region: prepare ops=prepare_jacobian,jac_prototype
-jac = prepare_jacobian(file)                 # differentiate and compile once
-J = jac_prototype(jac)                       # sparse matrix on the fixed pattern
-u = fill(2.0, 12)
-p = jac.p_default                            # the document's parameter values
-jac(J, u, p, 0.0)                            # fill J in place, at any (u, p, t)
+# region: prepare ops=jac_prototype,scatter_plan,bind_plan
+J = jac_prototype(file)                      # sparse matrix on the fixed pattern
 @assert size(J) == (12, 12)
 @assert nnz(J) == 24
-@assert J[1, 1] == -0.04
+# A scatter plan places the band fields in your own storage (here CSR),
+# checked against the source before it is used.
+bound = bind_plan(file, scatter_plan(file, Csr()))
+@assert bound.len == 24
+@assert all(1 <= k <= length(fields) for (k, _, _) in bound.pairs)
 # endregion
 
 # region: block ops=jacobian_document

@@ -154,6 +154,13 @@ EarthSciAST implementation and is gated by the same goldens.
 
 ## Roadmap
 
+The checked items record what landed when. The Julia package has since
+stopped evaluating anything (spec §9): the Julia numeric evaluators some of
+them name (`prepare_jacobian`, `jac!`, `jac_into!`, `vjp_forcing!`, `hvp!`,
+`odefunction` / `odeproblem`) are retired, and their products are now the
+`evaluation_document`, `jvp_document`, `vjp_document` and `hvp_document`
+documents that EarthSciAST evaluates.
+
 - [x] Coefficient-size control, stage 1: branch-aware simplification
       (`simplify_branches` — equal-branch collapse, same-condition pruning)
       in the band calculus, plus hash-consed template CSE at emission
@@ -166,8 +173,8 @@ EarthSciAST implementation and is gated by the same goldens.
       smaller, `jac!` 8× faster per call (beating ForwardDiff through the
       RHS by an order of magnitude); values bit-identical to the plain
       path. Symbolic reverse mode turned out unnecessary at this scale —
-      the remaining `prepare_jacobian` cost is tree-walk kernel JIT, i.e.
-      the dedicated compiled `jac!` kernel already noted in Design notes.
+      the remaining cost of the (since retired) `prepare_jacobian` was
+      tree-walk kernel JIT, an EarthSciAST evaluator concern.
 - [x] Trimmed evaluation document: the source's state derivatives are
       zeroed in the derived model, so a `jac!` call evaluates the band
       fields and the observed they read but no longer recomputes `f`
@@ -179,8 +186,8 @@ EarthSciAST implementation and is gated by the same goldens.
       (Markowitz `block_vars` order), KPP-style sparse lane blocks, per-column
       bands and CSR. Lane layouts are per-cell templates (O(nnz)); the lane
       capacity is a bind-time choice. `bind_plan` refuses a plan from another
-      band list or state set, and `jac_into!` fills the layout from a prepared
-      evaluator. Pinned by `*.<layout>.plan.json`, which Rust reproduces.
+      band list or state set; its integer `(band, field cell, position)`
+      pairs place the evaluation document's band fields. Pinned by `*.<layout>.plan.json`, which Rust reproduces.
 - [x] Static region clipping for `index(makearray…)` reads (`clip.jl`):
       decidable membership guards are decided exactly by splitting band row
       ranges at their affine breakpoints (equal-coefficient sub-bands
@@ -214,16 +221,17 @@ EarthSciAST implementation and is gated by the same goldens.
       falls out of `*`/`+`; array parameters are real columns of
       `wrt: "parameters"` instead of being dropped at assembly. Blocks carry
       their `columns` (the canonical column ordinal) and a model's
-      `"jacobians"` entry may be an array of blocks. `vjp_forcing!` applies
-      the transposed bands as a scatter-add into buffer-shaped accumulators
-      (Python and Rust: `prepare_jacobian` once, then `vjp_forcing` per stage).
+      `"jacobians"` entry may be an array of blocks. The transposed bands
+      apply as a scatter-add into buffer-shaped accumulators (Julia: the
+      `VjpEval` product document on the forcing axis; Python and Rust:
+      `prepare_jacobian` once, then `vjp_forcing` per stage).
       Pinned by `forcing_bracket.{forcing,parameters}.*` goldens.
 - [x] Second-order bands for Rosenbrock discrete adjoints
       ([#2](https://github.com/EarthSciML/EarthSciASTDiff/issues/2), spec
       §4.4): the band calculus applied to first-order coefficients, emitted
       as `wrt: [a1, a2]` blocks (`col2`, `col2_idx`), and contracted per
-      adjoint step by `hvp!` (`g[col2] += coef2 · Σᵢ μᵢ[row] wᵢ[col]`, or
-      the symmetric form on the state pair) — checked against ForwardDiff
+      adjoint step as `g[col2] += coef2 · Σᵢ μᵢ[row] wᵢ[col]` (or the
+      symmetric form on the state pair; Julia: the `HvpEval` product document) — checked against ForwardDiff
       over ForwardDiff. Pinned by `<fixture>.<a1>-<a2>.*` goldens on
       `bd_chem`, `arrhenius_chem`, `forcing_bracket` and `minmod_adv`.
       Python and Rust reproduce the band and block goldens byte-for-byte
@@ -247,9 +255,10 @@ EarthSciAST implementation and is gated by the same goldens.
       goldens. Causal recurrences (tangent/adjoint sweeps) are the
       remaining part of #3.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
-      ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
-      wiring (`odefunction` / `odeproblem` via the SciMLBase package
-      extension; `ode_components` is the solver-free half).
+      ≥ 0.9.1). The `ODEFunction` / `ODEProblem` wiring that came with it
+      (`odefunction` / `odeproblem`, the SciMLBase extension) is retired
+      with the Julia evaluators; `jac_prototype(file)` still gives the
+      sparse prototype.
 - [x] Python binding, band-calculus half (`pkg/earthsci-astdiff-py`):
       the §3 rule table, observed inlining, static clipping, contracted
       bands, and the §4 serialization — byte-identical to the Julia
@@ -290,7 +299,7 @@ EarthSciAST implementation and is gated by the same goldens.
       order and padding; equal to the oracle to 1e-13 on every plan
       fixture. On `bd_chem` at 6,552 cells it is 0.65–0.95× Julia's `jac!`
       per call (lane layouts fastest, CSR slowest) and builds in
-      milliseconds where `prepare_jacobian` takes ~55 s
+      milliseconds where Julia's (since retired) `prepare_jacobian` took ~55 s
       (`examples/bench_production.rs`, `scripts/bench-production.jl`).
       U8's second-order contraction rides the same route: `HvpProgram`
       compiles the second-order band fields (an empty list, as on
