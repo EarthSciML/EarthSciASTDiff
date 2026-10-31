@@ -14,8 +14,8 @@ use indexmap::IndexMap;
 use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, BandError, Ctx};
-use crate::clip::RIdx;
-use crate::emit::{base_document, derived_version, hoist, zero_source_derivatives};
+use crate::clip::{index_bounds, index_box, RIdx};
+use crate::emit::{base_document, derived_version, hoist, zero_source_derivatives, zeros};
 use crate::helpers::ser_expr;
 use crate::jacobian::{extended_pass, jacobian_columns, targets, JacEntry, Wrt};
 use crate::points::{all_points, eval_guard};
@@ -257,15 +257,7 @@ impl Doc<'_, '_> {
         if let Some(Value::Object(vars)) = self.model.get_mut("variables") {
             vars.insert(name.into(), Value::Object(d));
         }
-        let rhs = rhs.unwrap_or_else(|| {
-            if shape.is_empty() {
-                json!(0.0)
-            } else {
-                json!({"op": "makearray", "args": [],
-                       "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
-                       "values": [0.0]})
-            }
-        });
+        let rhs = rhs.unwrap_or_else(|| zeros(&shape));
         if let Some(Value::Array(eqs)) = self.model.get_mut("equations") {
             eqs.push(json!({"lhs": {"op": "D", "args": [name], "wrt": "t"}, "rhs": rhs}));
         }
@@ -368,68 +360,9 @@ fn walk_band(b: &Band, ci: &[Expr], guard: Option<Expr>) -> Band {
     }
 }
 
-/// A band's index names (row names, then contracted names) and their ranges.
-fn index_box(b: &Band) -> HashMap<String, (i64, i64)> {
-    let mut bx = HashMap::new();
-    for (k, r) in b.ridx.iter().enumerate() {
-        if let RIdx::Name(n) = r {
-            bx.insert(n.clone(), b.rows[k]);
-        }
-    }
-    for (n, lo, hi) in &b.contracted {
-        bx.insert(n.clone(), (*lo, *hi));
-    }
-    bx
-}
-
 /// Whether `e` reads only the band's index names.
 fn index_only(e: &Expr, bx: &HashMap<String, (i64, i64)>) -> bool {
     free_variables(e).iter().all(|n| bx.contains_key(n))
-}
-
-/// Bounds `(lo, hi, exact, names read)` of an index expression over `bx`, by
-/// interval arithmetic over the integer `+`, `-`, `*` core; `None` outside
-/// it (a `const` gather, a division, …). The bounds always enclose every
-/// value; `exact` when they are also attained at corners of the box: an
-/// affine expression reading each name at most once.
-fn index_bounds(
-    e: &Expr,
-    bx: &HashMap<String, (i64, i64)>,
-) -> Option<(i64, i64, bool, Vec<String>)> {
-    match e {
-        Expr::Integer(n) => Some((*n, *n, true, Vec::new())),
-        Expr::Number(x) if x.fract() == 0.0 => Some((*x as i64, *x as i64, true, Vec::new())),
-        Expr::Variable(n) => bx.get(n).map(|&(lo, hi)| (lo, hi, true, vec![n.clone()])),
-        Expr::Operator(nd) if matches!(nd.op.as_str(), "+" | "-" | "*") && !nd.args.is_empty() => {
-            let parts: Vec<_> = nd
-                .args
-                .iter()
-                .map(|a| index_bounds(a, bx))
-                .collect::<Option<_>>()?;
-            let mut it = parts.into_iter();
-            let (mut lo, mut hi, mut ex, mut ns) = it.next()?;
-            if nd.op == "-" && nd.args.len() == 1 {
-                return Some((-hi, -lo, ex, ns));
-            }
-            for (plo, phi, pex, pns) in it {
-                match nd.op.as_str() {
-                    "+" => (lo, hi) = (lo + plo, hi + phi),
-                    "-" => (lo, hi) = (lo - phi, hi - plo),
-                    _ => {
-                        // affine only while one factor is a constant
-                        ex &= ns.is_empty() || pns.is_empty();
-                        let c = [lo * plo, lo * phi, hi * plo, hi * phi];
-                        (lo, hi) = (*c.iter().min()?, *c.iter().max()?);
-                    }
-                }
-                ex &= pex;
-                ns.extend(pns);
-            }
-            let unique = ns.iter().collect::<HashSet<_>>().len() == ns.len();
-            Some((lo, hi, ex && unique, ns))
-        }
-        _ => None,
-    }
 }
 
 /// Whether every point of `b` reads `ci` inside `shape`; `None` when that has
@@ -515,16 +448,26 @@ fn forcing_ghost(v: &str, ok: Option<bool>) -> BandError {
 type Conj = (Value, HashSet<String>);
 
 /// §9.1's ghost rule for a read of column variable `v` at `ci` on axis
-/// `wrt`: the in-extent conjuncts to filter by, none when every point is in
-/// extent (the region split then leaves the box whole).
-fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<Vec<Conj>> {
+/// `wrt`: whether a point may read outside `v`'s extent, so the read must
+/// be filtered by the in-extent conjuncts `1 <= ci_d <= shape_d`. A ghost
+/// read on the forcing axis is refused.
+fn needs_ghost(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<bool> {
     check_rank(v, ci, shape)?;
     let ok = in_extent(b, ci, shape)?;
     if ok == Some(true) {
-        return Ok(Vec::new());
+        return Ok(false);
     }
     if wrt == Wrt::Forcing {
         return Err(forcing_ghost(v, ok));
+    }
+    Ok(true)
+}
+
+/// The in-extent conjuncts of [`needs_ghost`], none when every point is in
+/// extent (the region split then leaves the box whole).
+fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<Vec<Conj>> {
+    if !needs_ghost(b, v, ci, shape, wrt)? {
+        return Ok(Vec::new());
     }
     let mut out = Vec::new();
     for (e, n) in ci.iter().zip(shape) {
@@ -941,6 +884,13 @@ fn hvp_sym_term(
 /// (`None` on both sides infers it): the document's columns come from
 /// `wrt` and `opts.forcing`, and an entry reading a variable outside them is
 /// refused. A column of that set the entries never read comes out zero.
+///
+/// Through an active recurrence (spec §4.5) the document is §9.7's tangent
+/// sweep over the extended system, which this function builds itself:
+/// `entries` then only serve that forcing-set check. Pass the extended
+/// system's rows ([`crate::extended_bands`]`(sv, wrt, forcing,
+/// None)?.rows`, whose columns may also be a recurrence) rather than the
+/// materialized bands, so the transfer recurrence is never composed.
 pub fn jvp_document(
     sv: &SysView,
     entries: &[JacEntry],
@@ -950,14 +900,7 @@ pub fn jvp_document(
     let model = "JvpEval";
     let ext = extended_for(sv, wrt, opts.forcing)?;
     if !ext.recurrences.is_empty() {
-        check_columns(
-            &column_vars(sv, wrt, opts.forcing)?
-                .into_iter()
-                .map(|c| (c.clone(), c))
-                .collect(),
-            entries.iter().map(|en| en.v.as_str()),
-            wrt,
-        )?;
+        check_sweep_columns(sv, &ext, entries, wrt, opts)?;
         return jvp_sweeps(sv, &ext, wrt, opts);
     }
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
@@ -1004,7 +947,7 @@ pub fn jvp_document(
 /// outputs [`VjpIo::vjp`]. An equality-filtered `faq` scatter: correct under
 /// any evaluator, linear-time only under one that implements §9.3's
 /// equality-filter scatter. `entries` and `opts.forcing` must agree, as for
-/// [`jvp_document`].
+/// [`jvp_document`], which also says what to pass through a recurrence.
 pub fn vjp_document(
     sv: &SysView,
     entries: &[JacEntry],
@@ -1014,14 +957,7 @@ pub fn vjp_document(
     let model = "VjpEval";
     let ext = extended_for(sv, wrt, opts.forcing)?;
     if !ext.recurrences.is_empty() {
-        check_columns(
-            &column_vars(sv, wrt, opts.forcing)?
-                .into_iter()
-                .map(|c| (c.clone(), c))
-                .collect(),
-            entries.iter().map(|en| en.v.as_str()),
-            wrt,
-        )?;
+        check_sweep_columns(sv, &ext, entries, wrt, opts)?;
         return vjp_sweeps(sv, &ext, wrt, opts);
     }
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
@@ -1097,7 +1033,8 @@ pub fn hvp_document(
         HvpForm::Symmetric => "HvpEvalSymmetric",
     };
     if let Some((e1, e2)) = pair_extended(sv, (a1, a2), opts.forcing)? {
-        return hvp_sweeps(sv, entries, (&e1, &e2), (a1, a2), stages, form, model, opts);
+        let e2 = e2.as_ref().unwrap_or(&e1);
+        return hvp_sweeps(sv, entries, (&e1, e2), (a1, a2), stages, form, model, opts);
     }
     // the bands only, borrowed: a second-order band rides through the base
     // and the hoisting as a first-order one (its `cidx` holds both columns)
@@ -1169,6 +1106,30 @@ pub fn hvp_document(
 
 // ── recurrences: tangent and adjoint sweeps (§9.7) ──────────────────────────
 
+/// The forcing-set check of a sweep document's `entries`: materialized
+/// bands or the extended system's rows, so a column may be a target or an
+/// active recurrence.
+fn check_sweep_columns(
+    sv: &SysView,
+    ext: &ExtendedBands,
+    entries: &[JacEntry],
+    wrt: Wrt,
+    opts: &ProductOptions,
+) -> R<()> {
+    let cols: IoMap = column_vars(sv, wrt, opts.forcing)?
+        .into_iter()
+        .map(|c| (c.clone(), c))
+        .collect();
+    check_columns(
+        &cols,
+        entries
+            .iter()
+            .map(|en| en.v.as_str())
+            .filter(|v| !ext.is_recurrence(v)),
+        wrt,
+    )
+}
+
 /// The extended system of axis `wrt` (spec §4.5).
 /// Empty (no pass run) when the view has no recurrence at all.
 fn extended_for(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<ExtendedBands> {
@@ -1184,13 +1145,14 @@ fn extended_for(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<Extende
 /// axis's (state rows and recurrence rows, seeded with the second axis's
 /// targets, as [`crate::jacobian_bands2`] differentiates it) and the second
 /// axis's (its recurrence rows carry the adjoint back to the second axis's
-/// columns), both over the recurrences that move with either axis. `None`
-/// without one.
+/// columns), both over the recurrences that move with either axis — the
+/// second `None` on a pair of one axis, whose second pass is the first.
+/// `None` without an active recurrence.
 fn pair_extended(
     sv: &SysView,
     (a1, a2): (Wrt, Wrt),
     forcing: Option<&[String]>,
-) -> R<Option<(ExtendedBands, ExtendedBands)>> {
+) -> R<Option<(ExtendedBands, Option<ExtendedBands>)>> {
     let ctx = ctx_of(sv)?;
     let obs = observed_defs(sv)?;
     if recurrences(sv, &obs, &ctx)?.is_empty() {
@@ -1203,9 +1165,9 @@ fn pair_extended(
         return Ok(None);
     }
     let e2 = if a1 == a2 {
-        e1.clone()
+        None
     } else {
-        extended_pass(sv, &ctx, &obs, a2, forcing, &t1)?
+        Some(extended_pass(sv, &ctx, &obs, a2, forcing, &t1)?)
     };
     Ok(Some((e1, e2)))
 }
@@ -1220,11 +1182,9 @@ fn ghost_exprs(
     shape: &[i64],
     wrt: Wrt,
 ) -> R<Vec<Expr>> {
-    check_rank(v, ci, shape)?;
-    if in_extent(b, ci, shape)? == Some(true) {
+    if !needs_ghost(b, v, ci, shape, wrt)? {
         return Ok(Vec::new());
     }
-    ghost_conjuncts(b, v, ci, shape, wrt)?; // refuses on the forcing axis
     let mut out = Vec::new();
     for (e, n) in ci_sub.iter().zip(shape) {
         out.push(crate::helpers::op(">=", vec![e.clone(), Expr::Integer(1)]));
@@ -1364,21 +1324,10 @@ fn cot_source(
         }
     }
     Ok(if terms.is_empty() {
-        zero_of(&shape_of(ctx, v))
+        zeros(&shape_of(ctx, v))
     } else {
         sfold("+", terms)
     })
-}
-
-/// A zero value of `shape` (§9.1).
-fn zero_of(shape: &[i64]) -> Value {
-    if shape.is_empty() {
-        json!(0.0)
-    } else {
-        json!({"op": "makearray", "args": [],
-               "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
-               "values": [0.0]})
-    }
 }
 
 /// Fresh names `_<tag><stage>_<V>` for every recurrence, in order.
@@ -1519,17 +1468,29 @@ fn hvp_sweeps(
     opts: &ProductOptions,
 ) -> R<(Value, HvpIo)> {
     let first: Vec<&JacEntry> = e1.rows.iter().chain(&e1.rec_rows).collect();
-    let back: Vec<&JacEntry> = e2.rec_rows.iter().collect();
+    let nrow = e1.rows.len();
+    // on a pair of one axis the second pass IS the first: its recurrence
+    // rows (and their hoisted coefficients) are shared, not emitted twice
+    let shared = a1 == a2;
+    let back: Vec<&JacEntry> = if shared {
+        first[nrow..].to_vec()
+    } else {
+        e2.rec_rows.iter().collect()
+    };
     let mut bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     bands.extend(first.iter().map(|en| &en.band));
-    bands.extend(back.iter().map(|en| &en.band));
+    if !shared {
+        bands.extend(back.iter().map(|en| &en.band));
+    }
     let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let n2 = entries.len();
-    let (c2s, c1s, cbs) = (
-        &coefs[..n2],
-        &coefs[n2..n2 + first.len()],
-        &coefs[n2 + first.len()..],
-    );
+    let c2s = &coefs[..n2];
+    let c1s = &coefs[n2..n2 + first.len()];
+    let cbs = if shared {
+        &c1s[nrow..]
+    } else {
+        &coefs[n2 + first.len()..]
+    };
     let mut taken = doc_names(&d.doc, &d.model);
     let states = view_states(sv, &observed_defs(sv)?);
     let cols1 = if a1 == Wrt::Time {
@@ -1587,7 +1548,6 @@ fn hvp_sweeps(
             d.declare(nm, c, None);
         }
     }
-    let nrow = e1.rows.len();
     for i in 0..stages {
         for rec in &e1.recurrences {
             let v = &rec.name;
@@ -1723,7 +1683,7 @@ fn hvp_sweeps(
             }
         }
         let src = if terms.is_empty() {
-            zero_of(&shape_of(&ctx, v))
+            zeros(&shape_of(&ctx, v))
         } else {
             sfold("+", terms)
         };

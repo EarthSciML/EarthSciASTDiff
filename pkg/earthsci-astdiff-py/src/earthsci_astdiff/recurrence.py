@@ -18,6 +18,7 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 
 from .bands import Band, BandError, _range_of, bands, merge_bands, normalize_band
+from .clip import _index_bounds, _index_box
 from .expr_helpers import add, mul, op, skey
 from .inline import all_names, binders, inline_observed, subst_free
 from .reductions import conj, conjuncts
@@ -221,8 +222,21 @@ def _lag(rec: Recurrence, b: Band) -> Expr:
     """``lag = k − (column index along the axis)`` of a self band over its
     row index ``k`` (a name or a pinned literal). The column index must be
     affine in ``k`` with coefficient 1, and every other dimension the
-    identity (esm-spec §4.3.1.1), or the band is refused."""
+    identity (esm-spec §4.3.1.1), or the band is refused; so is a literal
+    lag below 1, a self-read that is not strictly earlier on the axis (its
+    sweep term would be gated to zero, never evaluated)."""
+    lag = _lag_expr(rec, b)
+    s = simp(lag)
+    if isinstance(s, int) and not isinstance(s, bool) and s < 1:
+        raise BandError(
+            f"recurrence `{rec.name}`: a self-read at lag {s} along `{rec.frame[rec.dim]}` "
+            "is not strictly earlier on its axis (esm-spec §4.3.1.1)"
+        )
+    return lag
 
+
+def _lag_expr(rec: Recurrence, b: Band) -> Expr:
+    # The lag expression of `_lag`, before its sign check.
     def fail() -> BandError:
         return BandError(
             f"recurrence `{rec.name}`: a self-read is not `{rec.frame[rec.dim]}` minus a "
@@ -574,34 +588,14 @@ def compose(outer: Band, inner: Band, shape_v: list) -> Band | None:
 
 
 def _span(e: Expr, b: Band):
-    # The span of index expression `e` over `b`'s box: a literal, a bare row
-    # or contracted name, one of those plus or minus a literal, or a literal
-    # minus a name; None for anything else.
-    def rng(nm):
-        for k, r in enumerate(b.ridx):
-            if isinstance(r, str) and r == nm:
-                return b.rows[k]
-        for n, lo, hi in b.contracted:
-            if n == nm:
-                return (lo, hi)
-        return None
-
-    if isinstance(e, int) and not isinstance(e, bool):
-        return (e, e)
-    if isinstance(e, str):
-        return rng(e)
-    if isinstance(e, ExprNode) and len(e.args) == 2 and e.op in ("+", "-"):
-        a, c = e.args
-        if isinstance(a, str) and isinstance(c, int) and not isinstance(c, bool):
-            s = c if e.op == "+" else -c
-            r = rng(a)
-            return None if r is None else (r[0] + s, r[1] + s)
-        if isinstance(a, int) and not isinstance(a, bool) and isinstance(c, str):
-            r = rng(c)
-            if r is None:
-                return None
-            return (r[0] + a, r[1] + a) if e.op == "+" else (a - r[1], a - r[0])
-    return None
+    # The span of index expression `e` over `b`'s box (its row and
+    # contracted names): the interval bounds of the `+ - *` core
+    # (clip._index_bounds, the bounds §9.1's extent decision uses); None
+    # outside it or when `e` reads another name. The bounds always enclose
+    # `e`'s values, so a comparison they decide holds (or fails) at every
+    # point.
+    r = _index_bounds(e, _index_box(b))
+    return None if r is None else (r[0], r[1])
 
 
 def _in_range(e: Expr, b: Band, lo: int, hi: int) -> bool:
@@ -708,12 +702,18 @@ class ExtendedBands:
     """The extended first-order system of one pass: the active recurrences,
     the bands of the state equations (columns: the axis's targets and the
     active recurrences) and the bands of the recurrences' own definitions
-    (rows: a recurrence). Without an active recurrence ``rows`` is the
-    ordinary band list and the rest is empty."""
+    (rows: a recurrence). ``row_eq[k]`` is the equation ``rows[k]`` came
+    from (two equations may share a state), and ``transfer`` the transfer
+    variable name of EVERY recurrence of the view (:func:`transfer_names`,
+    so a name never depends on which recurrences are active). Without an
+    active recurrence ``rows`` is the ordinary band list and the rest is
+    empty."""
 
     recurrences: list = field(default_factory=list)
     rows: list = field(default_factory=list)
     rec_rows: list = field(default_factory=list)
+    row_eq: list = field(default_factory=list)
+    transfer: dict = field(default_factory=dict)
 
     def is_recurrence(self, v: str) -> bool:
         return any(r.name == v for r in self.recurrences)
@@ -725,33 +725,33 @@ class ExtendedBands:
 def materialize(sv, ctx, ext: ExtendedBands) -> list:
     """The materialized band list of an extended system (spec §4.5): every
     state band whose column is a target, plus, for each state band reading a
-    recurrence ``V``, its composition with ``dV/dx``. Per row equation the
-    entries keep the sorted column order; a column's composites follow its
-    direct bands."""
+    recurrence ``V``, its composition with ``dV/dx``. Per row equation (two
+    equations of one state are never merged) the entries are stably sorted
+    by column name, a column's direct bands before its composites."""
     from .jacobian import JacEntry
 
-    names = transfer_names(sv, ext.recurrences)
+    names = ext.transfer
     memo: dict = {}
     out: list = []
-    group: list = []
+    group: list = []  # (column, 0 direct | 1 composite, entry)
 
     def flush():
-        group.sort(key=lambda en: en.v)
-        out.extend(group)
+        group.sort(key=lambda g: (g[0], g[1]))
+        out.extend(g[2] for g in group)
         group.clear()
 
     for k, en in enumerate(ext.rows):
-        if k > 0 and ext.rows[k - 1].u != en.u:
+        if k > 0 and ext.row_eq[k - 1] != ext.row_eq[k]:
             flush()
         rec = ext.recurrence(en.v)
         if rec is None:
-            group.append(en)
+            group.append((en.v, 0, en))
             continue
         shape = list(ctx.shapes.get(rec.name, []))
         for dd in _total(rec, ext, ctx, names, memo):
             b = compose(en.band, dd.band, shape)
             if b is not None:
-                group.append(JacEntry(en.u, dd.v, b))
+                group.append((dd.v, 1, JacEntry(en.u, dd.v, b)))
     flush()
     return out
 

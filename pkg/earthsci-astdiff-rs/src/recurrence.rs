@@ -19,7 +19,7 @@ use crate::bands::{
     bands, merge_bands, normalize_band, range_of, subst_free, Band, BandError, Ctx,
 };
 use crate::branches::{canon_lits, simp};
-use crate::clip::RIdx;
+use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{free_vars, mul, op};
 use crate::inline::{all_names, binders, inline_observed};
 use crate::jacobian::JacEntry;
@@ -252,8 +252,25 @@ pub(crate) fn active(
 /// with respect to `V` itself (a self band), over its row index `k` (a name
 /// or a pinned literal). The column index must be affine in `k` with
 /// coefficient 1, and every other dimension the identity (esm-spec
-/// §4.3.1.1), or the band is refused.
+/// §4.3.1.1), or the band is refused; so is a literal lag below 1, a
+/// self-read that is not strictly earlier on the axis (its sweep term would
+/// be gated to zero, never evaluated).
 pub(crate) fn lag(rec: &Recurrence, b: &Band) -> R<Expr> {
+    let l = lag_expr(rec, b)?;
+    if let Expr::Integer(i) = simp(&l) {
+        if i < 1 {
+            return Err(BandError(format!(
+                "recurrence `{}`: a self-read at lag {i} along `{}` is not strictly \
+                 earlier on its axis (esm-spec §4.3.1.1)",
+                rec.name, rec.frame[rec.dim]
+            )));
+        }
+    }
+    Ok(l)
+}
+
+/// The lag expression of [`lag`], before its sign check.
+fn lag_expr(rec: &Recurrence, b: &Band) -> R<Expr> {
     let fail = || {
         BandError(format!(
             "recurrence `{}`: a self-read is not `{}` minus a lag along its axis \
@@ -804,40 +821,13 @@ pub(crate) fn compose(outer: &Band, inner: &Band, shape_v: &[i64]) -> R<Option<B
     Ok(tidy(b))
 }
 
-/// The span of index expression `e` over `b`'s box: a literal, a bare row
-/// or contracted name, or one of those plus or minus a literal, or a
-/// literal minus a name; `None` for anything else.
+/// The span of index expression `e` over `b`'s box (its row and contracted
+/// names): the interval bounds of the `+ - *` core ([`index_bounds`], the
+/// bounds §9.1's extent decision uses); `None` outside it or when `e` reads
+/// another name. The bounds always enclose `e`'s values, so a comparison
+/// they decide holds (or fails) at every point.
 fn span(e: &Expr, b: &Band) -> Option<(i64, i64)> {
-    let range = |nm: &str| -> Option<(i64, i64)> {
-        for (k, r) in b.ridx.iter().enumerate() {
-            if matches!(r, RIdx::Name(x) if x == nm) {
-                return Some(b.rows[k]);
-            }
-        }
-        b.contracted.iter().find(|c| c.0 == nm).map(|c| (c.1, c.2))
-    };
-    match e {
-        Expr::Integer(i) => Some((*i, *i)),
-        Expr::Variable(nm) => range(nm),
-        Expr::Operator(n) if n.args.len() == 2 && (n.op == "+" || n.op == "-") => {
-            match (&n.args[0], &n.args[1]) {
-                (Expr::Variable(nm), Expr::Integer(c)) => {
-                    let s = if n.op == "+" { *c } else { -*c };
-                    range(nm).map(|(a, b)| (a + s, b + s))
-                }
-                (Expr::Integer(c), Expr::Variable(nm)) => {
-                    let (a, b) = range(nm)?;
-                    Some(if n.op == "+" {
-                        (a + c, b + c)
-                    } else {
-                        (c - b, c - a)
-                    })
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    index_bounds(e, &index_box(b)).map(|(lo, hi, _, _)| (lo, hi))
 }
 
 /// Whether index expression `e` provably lies in `[lo, hi]` at every point
@@ -962,13 +952,18 @@ fn tidy(b: Band) -> Option<Band> {
 /// The extended first-order system of one pass: the active recurrences, the
 /// bands of the state equations (columns: the axis's targets and the active
 /// recurrences) and the bands of the recurrences' own definitions (rows: a
-/// recurrence). Without an active recurrence `rows` is the ordinary band
-/// list and the rest is empty.
+/// recurrence). `row_eq[k]` is the equation `rows[k]` came from (two
+/// equations may share a state), and `transfer` the transfer variable name
+/// of EVERY recurrence of the view (so a name never depends on which
+/// recurrences are active). Without an active recurrence `rows` is the
+/// ordinary band list and the rest is empty.
 #[derive(Clone, Debug, Default)]
 pub struct ExtendedBands {
     pub recurrences: Vec<Recurrence>,
     pub rows: Vec<JacEntry>,
     pub rec_rows: Vec<JacEntry>,
+    pub row_eq: Vec<usize>,
+    pub transfer: HashMap<String, String>,
 }
 
 impl ExtendedBands {
@@ -985,32 +980,37 @@ impl ExtendedBands {
 /// band whose column is a target, plus, for each state band reading a
 /// recurrence `V`, its composition with `dV/dx` — the transfer band of `V`
 /// composed with each band of `V`'s definition on a target (through any
-/// recurrence it reads in turn). Per row equation the entries keep the
-/// sorted column order; a column's composites follow its direct bands.
-pub(crate) fn materialize(sv: &SysView, ctx: &Ctx, ext: &ExtendedBands) -> R<Vec<JacEntry>> {
-    let names = transfer_names(sv, &ext.recurrences);
+/// recurrence it reads in turn). Per row equation (two equations of one
+/// state are never merged) the entries are stably sorted by column name, a
+/// column's direct bands before its composites.
+pub(crate) fn materialize(ctx: &Ctx, ext: &ExtendedBands) -> R<Vec<JacEntry>> {
+    let names = &ext.transfer;
     let mut memo: HashMap<String, Vec<JacEntry>> = HashMap::new();
     let mut out: Vec<JacEntry> = Vec::new();
-    let mut group: Vec<JacEntry> = Vec::new();
-    let flush = |group: &mut Vec<JacEntry>, out: &mut Vec<JacEntry>| {
-        group.sort_by(|a, b| a.v.cmp(&b.v));
-        out.append(group);
+    // (composite?, entry), sorted by (column, composite?)
+    let mut group: Vec<(bool, JacEntry)> = Vec::new();
+    let flush = |group: &mut Vec<(bool, JacEntry)>, out: &mut Vec<JacEntry>| {
+        group.sort_by(|(ca, a), (cb, b)| a.v.cmp(&b.v).then(ca.cmp(cb)));
+        out.extend(group.drain(..).map(|(_, en)| en));
     };
     for (k, en) in ext.rows.iter().enumerate() {
-        if k > 0 && ext.rows[k - 1].u != en.u {
+        if k > 0 && ext.row_eq[k - 1] != ext.row_eq[k] {
             flush(&mut group, &mut out);
         }
         match ext.recurrence(&en.v) {
-            None => group.push(en.clone()),
+            None => group.push((false, en.clone())),
             Some(rec) => {
                 let shape = ctx.shapes.get(&rec.name).cloned().unwrap_or_default();
-                for d in total(rec, ext, ctx, &names, &mut memo)? {
+                for d in total(rec, ext, ctx, names, &mut memo)? {
                     if let Some(b) = compose(&en.band, &d.band, &shape)? {
-                        group.push(JacEntry {
-                            u: en.u.clone(),
-                            v: d.v.clone(),
-                            band: b,
-                        });
+                        group.push((
+                            true,
+                            JacEntry {
+                                u: en.u.clone(),
+                                v: d.v.clone(),
+                                band: b,
+                            },
+                        ));
                     }
                 }
             }

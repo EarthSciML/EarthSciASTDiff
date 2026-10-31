@@ -332,7 +332,9 @@ pub fn doc_vjp(
     lambda: &HashMap<String, f64>,
 ) -> R<BTreeMap<String, f64>> {
     let sv = sysview(file, model_name)?;
-    let entries = jacobian_bands_view(&sv, wrt, forcing)?;
+    // the extended system's rows: through a recurrence the document is the
+    // §9.7 sweeps, which need no materialized bands
+    let entries = extended_bands(&sv, wrt, forcing, None)?.rows;
     let opts = ProductOptions {
         forcing,
         ..Default::default()

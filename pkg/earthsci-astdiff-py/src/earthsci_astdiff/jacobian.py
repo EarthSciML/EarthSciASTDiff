@@ -186,7 +186,7 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
     # `seed` (a pair's second axis); recurrences are never inlined (no
     # fixpoint exists), so an inactive one stays an opaque read, constant
     # with respect to every target.
-    from .recurrence import ExtendedBands, active, recurrences
+    from .recurrence import ExtendedBands, _lag, active, recurrences, transfer_names
 
     src_obs = obs
     targets = _targets(sv, wrt, forcing, obs)
@@ -203,8 +203,9 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
         obs = {k: v for k, v in obs.items() if k not in names}
     cols = tset | {r.name for r in act}
     entries: list[JacEntry] = []
+    row_eq: list[int] = []
     obs_names: list = [None]
-    for eq in sv.equations:
+    for q, eq in enumerate(sv.equations):
         u = lhs_state(eq)
         if u is None:
             if is_derivative(eq):
@@ -214,14 +215,21 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
                 )
             continue
         _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx)
+        row_eq.extend([q] * (len(entries) - len(row_eq)))
     rec_rows: list[JacEntry] = []
     for r in act:
         _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx)
+    for en in rec_rows:
+        if en.u == en.v:
+            # every self band is a lag back along the axis, or refused
+            _lag(next(r for r in act if r.name == en.u), en.band)
     if wrt in ("parameters", "forcing"):
         for en in entries + rec_rows:
             if en.v in tset:
                 _check_closed_columns(en)
-    return ExtendedBands(act, entries, rec_rows)
+    if not act:
+        return ExtendedBands([], entries, [], row_eq)
+    return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
 
 
 def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx) -> None:
@@ -273,21 +281,32 @@ class _FirstOrder:
     # inlining seed a second axis adds (`_bands2`); that seed changes
     # nothing when the second axis is the first, so such a pair shares the
     # plain pass's key: a block list asking for "states" and ("states",
-    # "states") differentiates the system once. (On the time axis the seed
-    # changes no inlining, but it can make a recurrence active, spec §4.5.)
+    # "states") differentiates the system once. On the time axis the seed
+    # changes no inlining, so every time pair shares the plain time pass
+    # too — unless the view has a recurrence, which the seed can make
+    # active (spec §4.5).
 
     def __init__(self):
         self._ext: dict = {}
         self._bands: dict = {}
         self._structure: dict = {}
+        self._has_recs: bool | None = None
 
-    @staticmethod
-    def _key(a1, a2):
-        return (a1, None if a2 == a1 else a2)
+    def _key(self, sv: SysView, a1, a2):
+        if a2 == a1:
+            return (a1, None)
+        if a1 == "time":
+            if self._has_recs is None:
+                from .recurrence import recurrences
+
+                self._has_recs = bool(recurrences(sv, observed_defs(sv), ctx_of(sv)))
+            if not self._has_recs:
+                return (a1, None)
+        return (a1, a2)
 
     def ext(self, sv: SysView, a1: str, a2, forcing, seed=()):
         """The extended ``a1`` pass seeded with ``seed``."""
-        key = self._key(a1, a2)
+        key = self._key(sv, a1, a2)
         if key not in self._ext:
             self._ext[key] = _extended_pass(sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed)
         return self._ext[key]
@@ -297,7 +316,7 @@ class _FirstOrder:
         recurrences, spec §4.5)."""
         from .recurrence import materialize
 
-        key = self._key(a1, a2)
+        key = self._key(sv, a1, a2)
         if key not in self._bands:
             ext = self.ext(sv, a1, a2, forcing, seed)
             self._bands[key] = ext.rows if not ext.recurrences else materialize(sv, ctx_of(sv), ext)

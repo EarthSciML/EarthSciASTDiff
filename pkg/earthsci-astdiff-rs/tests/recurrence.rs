@@ -117,8 +117,15 @@ fn parameter_jacobian_matches_central_differences_of_the_source() {
 /// `J` assembled from the evaluation document's band fields (the
 /// materialized bands through the transfer recurrence, spec §4.5).
 fn materialized(name: &str, wrt: Wrt, env: &Env) -> BTreeMap<(String, String), f64> {
-    let file = load(name);
-    let sv = sysview(&file, None).unwrap();
+    materialized_of(&load(name), wrt, env)
+}
+
+fn materialized_of(
+    file: &earthsci_ast::EsmFile,
+    wrt: Wrt,
+    env: &Env,
+) -> BTreeMap<(String, String), f64> {
+    let sv = sysview(file, None).unwrap();
     let ctx = ctx_of(&sv).unwrap();
     let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
     let (doc, names) = evaluation_document(&sv, &entries, true, 12).unwrap();
@@ -374,6 +381,19 @@ fn ill_founded_recurrences_are_refused() {
                 vec![ix("x", vec![k.clone()]), ix("V", vec![json!(1), k.clone()])],
             ),
         ),
+        // a read of a later cell: its lag is -1, never "≥ 1", so its sweep
+        // term would be gated to a silent zero
+        (
+            "a later cell",
+            o(
+                "ifelse",
+                vec![
+                    o(">=", vec![k.clone(), json!(4)]),
+                    ix("x", vec![k.clone()]),
+                    ix("V", vec![o("+", vec![k.clone(), json!(1)])]),
+                ],
+            ),
+        ),
     ] {
         // the loader takes the document; the refusal is this crate's
         let file = earthsci_ast::load_document(&recdoc(body)).unwrap();
@@ -449,4 +469,124 @@ fn rank_one_plan() {
     // without the column axis it is an ordinary general block
     let plain = earthsci_astdiff::jacobian_block(&file, None, Wrt::States, true, 12).unwrap();
     assert_eq!(plain["structure"], json!("general"));
+}
+
+/// `v[k] = src[k] + a·v[k − 1]` (`src[1]` at `k = 1`).
+fn sweep(v: &str, src: &str, a: f64) -> Value {
+    let k = json!("k");
+    json!({"lhs": v, "rhs": {"op": "faq", "args": [], "output_idx": ["k"],
+    "ranges": {"k": {"from": "lev"}},
+    "expr": o("ifelse", vec![
+        o("<=", vec![k.clone(), json!(1)]),
+        ix(src, vec![json!(1)]),
+        o("+", vec![
+            ix(src, vec![k.clone()]),
+            o("*", vec![json!(a), ix(v, vec![o("-", vec![k.clone(), json!(1)])])]),
+        ]),
+    ])}})
+}
+
+/// `faq{D(u[i])} ~ rhs` over `i` in `[lo, hi]`: one equation of an array
+/// state.
+fn lifted(u: &str, lo: i64, hi: i64, rhs: Value) -> Value {
+    json!({"lhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": [lo, hi]},
+                   "expr": {"op": "D", "args": [ix(u, vec![json!("i")])], "wrt": "t"}},
+           "rhs": rhs})
+}
+
+fn model(variables: Value, equations: Vec<Value>) -> Value {
+    json!({"esm": "1.1.0", "metadata": {"name": "R"},
+        "index_sets": {"lev": {"kind": "interval", "size": 4}},
+        "models": {"R": {"variables": variables, "equations": equations}}})
+}
+
+#[test]
+fn transfer_names_do_not_depend_on_activity() {
+    // `A` (inactive on the state axis: it reads only `p`) sorts before `A_`,
+    // and the source already holds `_tr_A`: each recurrence's transfer name
+    // is the same in the coefficients and in the `auxiliary` field, so the
+    // evaluation document's J is A_'s chain 0.5^(k − j), not A's 0.25^(k − j)
+    let doc = model(
+        json!({
+            "x": {"type": "unknown", "shape": ["lev"], "default": 0.5},
+            "p": {"type": "parameter", "shape": ["lev"], "default": 1.0},
+            "_tr_A": {"type": "parameter", "default": 0.0},
+            "A": {"type": "unknown", "shape": ["lev"]},
+            "A_": {"type": "unknown", "shape": ["lev"]}}),
+        vec![
+            sweep("A", "p", 0.25),
+            sweep("A_", "x", 0.5),
+            json!({"lhs": {"op": "D", "args": ["x"], "wrt": "t"},
+                   "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
+                           "ranges": {"i": {"from": "lev"}},
+                           "expr": o("+", vec![ix("A_", vec![json!("i")]),
+                                               ix("A", vec![json!("i")])])}}),
+        ],
+    );
+    let file = earthsci_ast::load_document(&doc).unwrap();
+    let block = earthsci_astdiff::jacobian_block(&file, None, Wrt::States, true, 12).unwrap();
+    let read = stable_json(&block["entries"]);
+    let aux = block["auxiliary"].as_array().unwrap();
+    assert!(!aux.is_empty());
+    for a in aux {
+        let nm = a["name"].as_str().unwrap();
+        assert!(read.contains(&format!("\"{nm}\"")), "{nm} is not read");
+    }
+    let env = Env {
+        states: HashMap::from([("x".to_string(), json!([0.5, 0.5, 0.5, 0.5]))]),
+        params: HashMap::new(),
+        t: 0.0,
+    };
+    let j = materialized_of(&file, Wrt::States, &env);
+    for k in 1..=4 {
+        for c in 1..=4 {
+            let want = if c <= k { 0.5f64.powi(k - c) } else { 0.0 };
+            let got = j
+                .get(&(format!("x[{k}]"), format!("x[{c}]")))
+                .copied()
+                .unwrap_or(0.0);
+            assert!(
+                (got - want).abs() <= 1e-12,
+                "J[x[{k}], x[{c}]] = {got}, want {want}"
+            );
+        }
+    }
+}
+
+#[test]
+fn entries_keep_each_equation_of_a_state_apart() {
+    // two equations of `x` (its first level, then the rest): the second's
+    // direct band on `x` must not move ahead of the first's band on `y`
+    let lev = json!({"type": "unknown", "shape": ["lev"], "default": 0.5});
+    let doc = model(
+        json!({"x": lev, "y": lev, "V": {"type": "unknown", "shape": ["lev"]}}),
+        vec![
+            sweep("V", "y", 0.5),
+            lifted("x", 1, 1, ix("y", vec![json!("i")])),
+            lifted(
+                "x",
+                2,
+                4,
+                o(
+                    "+",
+                    vec![
+                        o("-", vec![ix("x", vec![json!("i")])]),
+                        ix("V", vec![json!("i")]),
+                    ],
+                ),
+            ),
+        ],
+    );
+    let file = earthsci_ast::load_document(&doc).unwrap();
+    let cols: Vec<String> = jacobian_bands(&file, None, Wrt::States)
+        .unwrap()
+        .into_iter()
+        .filter(|en| en.u == "x")
+        .map(|en| en.v)
+        .collect();
+    // the first equation's `y`, then the second's `x` and its composites on
+    // `y` (merging the two would sort the second's `x` first)
+    assert!(cols.len() > 2, "{cols:?}");
+    assert_eq!(&cols[..2], ["y", "x"], "{cols:?}");
+    assert!(cols[2..].iter().all(|c| c == "y"), "{cols:?}");
 }

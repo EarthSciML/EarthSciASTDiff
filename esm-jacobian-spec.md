@@ -641,7 +641,9 @@ index is the row index on every dimension but the axis, where it is `k − ℓ`
 with `k` the row index (or its pinned literal) and `ℓ` the **lag**: the
 second argument of a binary `-` whose first is `k`, or minus the other terms
 of a `+` that holds `k` once (simplified); for a pinned row `c`, `c − e`
-(simplified). A self band of any other form MUST be refused.
+(simplified). A self band of any other form MUST be refused, and so MUST one
+whose lag simplifies to an integer literal below 1 (a read of the current or
+a later cell: its term would be gated off by `ℓ >= 1`, a silent zero).
 
 **Transfer recurrence.** On each line of `V` along its axis, `dV/dx = (I −
 G)⁻¹ B`, `G` the self bands and `B` the other bands of the definition. The
@@ -654,7 +656,9 @@ T_V[o…, k, j] = ifelse(k == j, 1, 0) + Σ_{self bands} term
 ```
 
 an esm-spec §4.3.1.1 recurrence (it reads itself at `k − ℓ`, `j` the
-identity). `j` is `_tj` (`_j` appended until clear of the frame names and of
+identity). Transfer names are assigned over every recurrence of the view, in
+recognition order, active or not, so a recurrence's name is the same in every
+block and in the `auxiliary` field. `j` is `_tj` (`_j` appended until clear of the frame names and of
 every name in the self bands' coefficients and contracted names). Its self
 bands come from `V`'s definition with every OTHER observed inlined (not the
 pass's map), so `T_V` does not depend on the axis. A band's **term** in any
@@ -721,8 +725,10 @@ The **composition** of `outer` (rows `R`, column `V` at `φ`) with `inner`
    conjunct seen before is dropped; an empty range empties the band. The
    band is then normalized (§4's singleton pinning).
 
-Per row equation the entries are stably sorted by column name, so a
-column's composites follow its direct bands. Their coefficients read
+Per row equation (two equations of the same state are kept apart, in
+equation order) the entries are stably sorted by column name and, within a
+column, direct bands before composites; each of those keeps the order it was
+produced in. The composites' coefficients read
 `_tr_<V>`, and the block's `auxiliary` field (§4) carries the definition of
 every transfer variable some coefficient reads; the evaluation document
 (§8) declares them as observed (`{"type": "unknown", "shape": …}`) after the
@@ -1284,8 +1290,10 @@ guards of, in this order (which is also the hoisting order): for `JvpEval`
 and `VjpEval`, the extended state bands then the recurrence bands; for
 `HvpEval`, the second-order entries, then the first pass's state and
 recurrence bands, then the recurrence bands of the second axis's extended
-pass (seeded with the first axis's targets, over the same recurrences; the
-first pass's own when the axes are equal). Each intermediate is an
+pass (seeded with the first axis's targets, over the same recurrences).
+When the axes are equal the second pass is the first: its recurrence bands
+are not read again, and the second pass's terms use the first pass's
+(hoisted) coefficients. Each intermediate is an
 observed: `{"type": "unknown", "shape": <V's declared shape>}` defined by a
 bare-LHS equation, generated after the inputs and before the outputs in the
 order below, its equation placed after the inputs' and before the outputs'.

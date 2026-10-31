@@ -1514,13 +1514,7 @@ pub(crate) fn zero_source_derivatives(
             }
             Some(u) if done.insert(u.clone()) => {
                 let shape = ctx.shapes.get(&u).cloned().unwrap_or_default();
-                let rhs = if shape.is_empty() {
-                    json!(0.0)
-                } else {
-                    json!({"op": "makearray", "args": [],
-                           "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
-                           "values": [0.0]})
-                };
+                let rhs = zeros(&shape);
                 eqs.push(json!({"lhs": {"op": "D", "args": [u], "wrt": "t"}, "rhs": rhs}));
             }
             Some(_) => {}
@@ -1593,6 +1587,18 @@ pub(crate) fn hoist(
         }
     }
     h.coefs
+}
+
+/// The zero value of a variable of `shape` (§9.1): `0.0`, or a zero
+/// `makearray` over the shape.
+pub(crate) fn zeros(shape: &[i64]) -> Value {
+    if shape.is_empty() {
+        json!(0.0)
+    } else {
+        json!({"op": "makearray", "args": [],
+               "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
+               "values": [0.0]})
+    }
 }
 
 /// The `auxiliary` definitions (spec §4.5) as observed of a derived model:

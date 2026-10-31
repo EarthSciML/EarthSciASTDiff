@@ -63,6 +63,57 @@ def _affine(e: Expr, name: str):
     return None
 
 
+def _index_box(b) -> dict[str, tuple[int, int]]:
+    """A band's index names (row names, then contracted names) and their
+    ranges."""
+    box = {r: tuple(b.rows[k]) for k, r in enumerate(b.ridx) if isinstance(r, str)}
+    for n, lo, hi in b.contracted:
+        box[n] = (lo, hi)
+    return box
+
+
+def _index_bounds(e, box):
+    """Bounds ``(lo, hi, exact, names read)`` of an index expression over
+    ``box``, by interval arithmetic over the integer ``+``, ``-``, ``*``
+    core; ``None`` outside it (a ``const`` gather, a division, …). The bounds
+    always enclose every value; ``exact`` when they are also attained at
+    corners of the box: an affine expression reading each name at most
+    once."""
+    if isinstance(e, bool):
+        return None
+    if isinstance(e, int):
+        return (e, e, True, [])
+    if isinstance(e, float):
+        return (int(e), int(e), True, []) if e.is_integer() else None
+    if isinstance(e, str):
+        if e not in box:
+            return None
+        lo, hi = box[e]
+        return (lo, hi, True, [e])
+    if isinstance(e, ExprNode) and e.op in ("+", "-", "*") and e.args:
+        parts = [_index_bounds(a, box) for a in e.args]
+        if any(p is None for p in parts):
+            return None
+        lo, hi, ex, ns = parts[0]
+        ns = list(ns)
+        if e.op == "-" and len(parts) == 1:
+            return (-hi, -lo, ex, ns)
+        for plo, phi, pex, pns in parts[1:]:
+            if e.op == "+":
+                lo, hi = lo + plo, hi + phi
+            elif e.op == "-":
+                lo, hi = lo - phi, hi - plo
+            else:
+                # affine only while one factor is a constant
+                ex = ex and (not ns or not pns)
+                c = (lo * plo, lo * phi, hi * plo, hi * phi)
+                lo, hi = min(c), max(c)
+            ex = ex and pex
+            ns.extend(pns)
+        return (lo, hi, ex and len(set(ns)) == len(ns), ns)
+    return None
+
+
 def _sole_name(e: Expr, names) -> str | None:
     found: str | None = None
     ok = True

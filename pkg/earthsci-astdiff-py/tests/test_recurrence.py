@@ -228,6 +228,12 @@ def test_a_running_max_tie_takes_the_earlier_argument():
         ("same cell", _o("+", _ix("x", "k"), _ix("V", "k"))),
         ("bare self-reference", _o("+", _ix("x", "k"), "V")),
         ("not along a frame axis", _o("+", _ix("x", "k"), _ix("V", 1, "k"))),
+        # a read of a later cell: its lag is -1, never "≥ 1", so its sweep
+        # term would be gated to a silent zero
+        (
+            "a later cell",
+            _o("ifelse", _o(">=", "k", 4), _ix("x", "k"), _ix("V", _o("+", "k", 1))),
+        ),
     ],
 )
 def test_ill_founded_recurrences_are_refused(why, body):
@@ -275,3 +281,118 @@ def test_rank_one_plan(valid_dir):
         en = b["entries"][t - 1]
         assert en["row"] == en["col"] and len(en["contracted"]) == 1
     assert jacobian_block(file)["structure"] == "general"
+
+
+def _lifted(u, lo, hi, rhs):
+    # `faq{D(u[i])} ~ rhs` over i in [lo, hi]: one equation of an array state
+    return {
+        "lhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": ["i"],
+            "ranges": {"i": [lo, hi]},
+            "expr": _o("D", _ix(u, "i")) | {"wrt": "t"},
+        },
+        "rhs": rhs,
+    }
+
+
+def _sweep(v, src, a):
+    # `v[k] = src[k] + a·v[k − 1]` (src[1] at k = 1)
+    return {
+        "lhs": v,
+        "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": ["k"],
+            "ranges": {"k": {"from": "lev"}},
+            "expr": _o(
+                "ifelse",
+                _o("<=", "k", 1),
+                _ix(src, 1),
+                _o("+", _ix(src, "k"), _o("*", a, _ix(v, _o("-", "k", 1)))),
+            ),
+        },
+    }
+
+
+def _model(variables, equations):
+    return {
+        "esm": "1.1.0",
+        "metadata": {"name": "R"},
+        "index_sets": {"lev": {"kind": "interval", "size": 4}},
+        "models": {"R": {"variables": variables, "equations": equations}},
+    }
+
+
+def test_transfer_names_do_not_depend_on_activity():
+    # `A` (inactive on the state axis: it reads only `p`) sorts before `A_`,
+    # and the source already holds `_tr_A`: each recurrence's transfer name
+    # is the same in the coefficients and in the `auxiliary` field, so the
+    # evaluation document's J is A_'s chain 0.5^(k − j), not A's 0.25^(k − j)
+    lev = {"type": "unknown", "shape": ["lev"]}
+    doc = _model(
+        {
+            "x": lev | {"default": 0.5},
+            "p": {"type": "parameter", "shape": ["lev"], "default": 1.0},
+            "_tr_A": {"type": "parameter", "default": 0.0},
+            "A": lev,
+            "A_": lev,
+        },
+        [
+            _sweep("A", "p", 0.25),
+            _sweep("A_", "x", 0.5),
+            {
+                "lhs": {"op": "D", "args": ["x"], "wrt": "t"},
+                "rhs": {
+                    "op": "faq",
+                    "args": [],
+                    "output_idx": ["i"],
+                    "ranges": {"i": {"from": "lev"}},
+                    "expr": _o("+", _ix("A_", "i"), _ix("A", "i")),
+                },
+            },
+        ],
+    )
+    sv = sysview(ea.load_document(doc))
+    block = jacobian_block(sv)
+    read = set()
+    for en in block["entries"]:
+        read |= set(json.dumps(en["coef"]).replace('"', " ").split())
+    aux = [a["name"] for a in block["auxiliary"]]
+    assert aux and set(aux) <= read
+    ctx = ctx_of(sv)
+    entries = jacobian_bands(sv)
+    edoc, names = _evaluation_document(sv, entries)
+    cells = state_cells(sv)
+    out = _Doc(edoc, "JacobianEval", cells).call({c: 0.5 for c in cells}, {}, 0.0, {})
+    J: dict = {}
+    for en, nm in zip(entries, names):
+        shape = ctx.shapes.get(en.v) or []
+        for cell, cc, _, cidx in foreach_point(en.band):
+            if any(not (1 <= c <= n) for c, n in zip(cidx, shape)):
+                continue
+            key = (_cellname(en.u, cell), _cellname(en.v, cidx))
+            J[key] = J.get(key, 0.0) + out(_cellname(nm, [*cell, *cc]))
+    for k in range(1, 5):
+        for j in range(1, 5):
+            want = 0.5 ** (k - j) if j <= k else 0.0
+            assert J.get((f"x[{k}]", f"x[{j}]"), 0.0) == pytest.approx(want, rel=1e-12), (k, j)
+
+
+def test_entries_keep_each_equation_of_a_state_apart():
+    # two equations of `x` (its first level, then the rest): the second's
+    # direct band on `x` must not move ahead of the first's band on `y`
+    lev = {"type": "unknown", "shape": ["lev"], "default": 0.5}
+    doc = _model(
+        {"x": lev, "y": lev, "V": {"type": "unknown", "shape": ["lev"]}},
+        [
+            _sweep("V", "y", 0.5),
+            _lifted("x", 1, 1, _ix("y", "i")),
+            _lifted("x", 2, 4, _o("+", _o("-", _ix("x", "i")), _ix("V", "i"))),
+        ],
+    )
+    cols = [en.v for en in jacobian_bands(ea.load_document(doc)) if en.u == "x"]
+    # the first equation's `y`, then the second's `x` and its composites on
+    # `y` (merging the two would sort the second's `x` first)
+    assert cols[0] == "y" and cols[1] == "x" and set(cols[2:]) == {"y"} and len(cols) > 2

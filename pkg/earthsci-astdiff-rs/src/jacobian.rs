@@ -9,7 +9,7 @@ use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
-use crate::recurrence::{active, materialize, recurrences, ExtendedBands};
+use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
 use crate::system::{
     ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
     SysView,
@@ -264,7 +264,7 @@ pub(crate) fn jacobian_bands_seeded(
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
-    materialize(sv, ctx, &ext)
+    materialize(ctx, &ext)
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state
@@ -346,8 +346,9 @@ pub(crate) fn extended_pass(
     let mut cols = tset.clone();
     cols.extend(act.iter().map(|r| r.name.clone()));
     let mut entries = Vec::new();
+    let mut row_eq = Vec::new();
     let mut obs_names = None;
-    for eq in sv.equations {
+    for (q, eq) in sv.equations.iter().enumerate() {
         let Some(u) = lhs_state(eq) else {
             if is_derivative(eq) {
                 return Err(unsupported_derivative(eq));
@@ -355,11 +356,18 @@ pub(crate) fn extended_pass(
             continue;
         };
         row_bands(&mut entries, &u, &eq.rhs, obs, &mut obs_names, &cols, ctx)?;
+        row_eq.resize(entries.len(), q);
     }
     let mut rec_rows = Vec::new();
     for r in &act {
         let def = &src_obs[&r.name];
         row_bands(&mut rec_rows, &r.name, def, obs, &mut obs_names, &cols, ctx)?;
+    }
+    for en in rec_rows.iter().filter(|en| en.u == en.v) {
+        // every self band is a lag back along the axis, or refused
+        if let Some(r) = act.iter().find(|r| r.name == en.u) {
+            lag(r, &en.band)?;
+        }
     }
     if wrt.has_columns() {
         for en in entries.iter().chain(&rec_rows) {
@@ -368,10 +376,17 @@ pub(crate) fn extended_pass(
             }
         }
     }
+    let transfer = if act.is_empty() {
+        HashMap::new()
+    } else {
+        transfer_names(sv, &recs)
+    };
     Ok(ExtendedBands {
         recurrences: act,
         rows: entries,
         rec_rows,
+        row_eq,
+        transfer,
     })
 }
 
@@ -469,18 +484,38 @@ pub(crate) fn expr_json(c: &Expr) -> String {
 /// inlining seed a second axis adds ([`crate::second_order`]); that seed
 /// changes nothing when the second axis is the first, so such a pair shares
 /// the plain pass's key: a block list asking for `States` and `(States,
-/// States)` differentiates the system once. (On the time axis the seed
-/// changes no inlining, but it can make a recurrence active, spec §4.5.)
+/// States)` differentiates the system once. On the time axis the seed
+/// changes no inlining, so every time pair shares the plain time pass too —
+/// unless the view has a recurrence, which the seed can make active (spec
+/// §4.5).
 #[derive(Default)]
 pub(crate) struct FirstOrder {
     ext: HashMap<(Wrt, Option<Wrt>), Rc<ExtendedBands>>,
     bands: HashMap<(Wrt, Option<Wrt>), Rc<Vec<JacEntry>>>,
     structure: HashMap<(Wrt, Option<Wrt>), &'static str>,
+    has_recs: Option<bool>,
 }
 
 impl FirstOrder {
-    fn key(a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
-        (a1, if a2 == Some(a1) { None } else { a2 })
+    fn key(
+        &mut self,
+        sv: &SysView,
+        ctx: &Ctx,
+        obs: &HashMap<String, Expr>,
+        a1: Wrt,
+        a2: Option<Wrt>,
+    ) -> Result<(Wrt, Option<Wrt>), BandError> {
+        if a1 == Wrt::Time && a2.is_some() && self.has_recs.is_none() {
+            self.has_recs = Some(!recurrences(sv, obs, ctx)?.is_empty());
+        }
+        Ok(self.known_key(a1, a2))
+    }
+
+    /// [`Self::key`] once the view's recurrences are known (a time pair
+    /// keeps its own key until then).
+    fn known_key(&self, a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
+        let shared = a2 == Some(a1) || (a1 == Wrt::Time && self.has_recs == Some(false));
+        (a1, if shared { None } else { a2 })
     }
 
     /// The extended `a1` pass seeded with `seed`, the targets of `a2`
@@ -496,7 +531,7 @@ impl FirstOrder {
         forcing: Option<&[String]>,
         seed: &[String],
     ) -> Result<Rc<ExtendedBands>, BandError> {
-        let key = Self::key(a1, a2);
+        let key = self.key(sv, ctx, obs, a1, a2)?;
         if let Some(e) = self.ext.get(&key) {
             return Ok(e.clone());
         }
@@ -518,7 +553,7 @@ impl FirstOrder {
         forcing: Option<&[String]>,
         seed: &[String],
     ) -> Result<Rc<Vec<JacEntry>>, BandError> {
-        let key = Self::key(a1, a2);
+        let key = self.key(sv, ctx, obs, a1, a2)?;
         if let Some(e) = self.bands.get(&key) {
             return Ok(e.clone());
         }
@@ -526,7 +561,7 @@ impl FirstOrder {
         let e = Rc::new(if ext.recurrences.is_empty() {
             ext.rows.clone()
         } else {
-            materialize(sv, ctx, &ext)?
+            materialize(ctx, &ext)?
         });
         self.bands.insert(key, e.clone());
         Ok(e)
@@ -541,8 +576,9 @@ impl FirstOrder {
         e1: &[JacEntry],
         ctx: &Ctx,
     ) -> &'static str {
+        let key = self.known_key(a1, a2);
         self.structure
-            .entry(Self::key(a1, a2))
+            .entry(key)
             .or_insert_with(|| crate::emit::detect_structure(e1, ctx))
     }
 }
