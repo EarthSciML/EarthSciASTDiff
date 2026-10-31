@@ -8,7 +8,8 @@
 //! `LaneBlocks`, domain and lanes (capacity 256). Column: a 2-D chemistry +
 //! vertical-exchange operator on 72 levels × `cells/72` columns,
 //! `ColumnBanded` and `Csr` (domain). Compare with
-//! `scripts/bench-production.jl` (Julia `jac!` on the same documents).
+//! `scripts/bench-production.jl` (EarthSciAST.jl evaluating the same
+//! documents' band fields).
 
 use std::time::Instant;
 

@@ -194,7 +194,7 @@ end
     file = EarthSciAST.load_document(doc)
     f!, u0, p, _, _ = build_evaluator(file)
     for u in ([0.4, 7.0], [-1.0, 45.0])   # interior cell + double clamp
-        res = assemble_jacobian(file; u = u, p = p)
+        res = doc_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
         @test Matrix(res.J) ≈ Matrix(Jad) atol = 1.0e-12
     end
@@ -246,7 +246,7 @@ end
     file = EarthSciAST.load_document(doc)
     f!, u0, p, _, _ = build_evaluator(file)
     for (x, slope) in ((0.4, 10.0), (1.6, 2.0), (2.5, 0.0))
-        res = assemble_jacobian(file; u = [x], p = p)
+        res = doc_jacobian(file; u = [x], p = p)
         @test Matrix(res.J) ≈ [slope;;] atol = 1.0e-12
         Jad = ad_jacobian(f!, [x], p, 0.0)
         @test Matrix(res.J) ≈ Matrix(Jad) atol = 1.0e-12

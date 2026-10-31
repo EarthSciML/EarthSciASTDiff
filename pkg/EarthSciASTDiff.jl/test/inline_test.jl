@@ -71,7 +71,7 @@ using JSON3
         f!, u0, p, _, _ = build_evaluator(file)
         u = [0.3, 0.7, 1.1, 1.9, 2.3, 2.9][1:length(u0)]
 
-        res = assemble_jacobian(file; u = u, p = p)
+        res = doc_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
         @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         @test all((Jad .!= 0) .<= res.pattern)

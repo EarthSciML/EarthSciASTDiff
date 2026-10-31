@@ -2,14 +2,15 @@
 # consumer's own Jacobian storage (spec §8; EarthSciASTDiff#4 W3).
 #
 # The derived evaluation document (emit.jl) computes one band field `J_k` per
-# entry; `prepare_jacobian` scatters those fields into a CSC `nzval`. A
-# consumer with its own storage (lane-SoA per-cell blocks, a KPP-style sparse
+# entry, which an EarthSciAST evaluator computes. A consumer with its own
+# storage (lane-SoA per-cell blocks, a KPP-style sparse
 # block, per-column bands, CSR) would otherwise have to invert that scatter
 # and re-derive the state ordering — the reseact class of bug, where a layout
 # from another build puts every band in the wrong cell with no visible
 # symptom. A plan is that map, built once from the band list, serialized
 # byte-identically by every binding (`tests/goldens/*.plan.json`), and bound
-# to an evaluator only after its band list and state names have been checked.
+# to a source ([`bind_plan`](@ref)) only after its band list and state names
+# have been checked. Executing a bound plan (spec §9.5) is the consumer's.
 #
 # Indices in a plan are 0-based throughout (it is a storage map, and its main
 # consumers are Rust and C-layout kernels):
@@ -77,7 +78,7 @@ struct Csr <: StorageLayout end
 
 Band fields → storage positions for one (band list, layout). Built by
 [`scatter_plan`](@ref), serialized by [`serialize_scatter_plan`](@ref),
-bound to an evaluator by [`bind_plan`](@ref). Every plan carries the
+checked against a source by [`bind_plan`](@ref). Every plan carries the
 canonical `states` (name, shape) and the `bands` (row var, column var, field
 shape) it was built from, which is what binding checks.
 """
@@ -426,14 +427,20 @@ _contributions(p::CsrPlan, _) = p.items
 """
     BoundScatter
 
-A [`ScatterPlan`](@ref) checked against one [`JacobianEvaluator`](@ref) at
-a lane capacity: fill with [`jac_into!`](@ref).
+A [`ScatterPlan`](@ref) checked against one source's band list at a lane
+capacity. `pairs` lists `(k, cell, pos)`, all 1-based: cell `cell` of band
+`k`'s field (column-major over the field's shape; the evaluation document's
+`fields[k]`, see [`evaluation_document`](@ref)) goes to output position
+`pos`, `out[pos] += field_k[cell]` in order after zeroing `out` (several
+cells may land on one position). `len` is the output length. Nothing here
+is a name, so a consumer resolves each band field to its evaluator slots
+once, at bind time, and the scatter itself is integer-indexed.
 """
 struct BoundScatter{P <: ScatterPlan}
     plan::P
     lanes::Int
     len::Int
-    pairs::Vector{Tuple{Int, Int}}      # (derived-model du slot, 1-based output position)
+    pairs::Vector{Tuple{Int, Int, Int}}
 end
 
 # Every state cell name, in canonical order (the rows of a `Csr` plan).
@@ -449,56 +456,54 @@ end
 _bind_error(msg) = throw(ArgumentError("bind_plan: " * msg))
 
 """
-    bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing) -> BoundScatter
+    bind_plan(input, plan::ScatterPlan; lanes = nothing, model_name = nothing) -> BoundScatter
 
-Check `plan` against `jac` and precompute its gather. Binding is strict: the
+Check `plan` against the state Jacobian of `input` (an `EsmFile` or a
+`FlattenedSystem`) and precompute its gather. Binding is strict: the
 plan's band list (row var, column var, field shape per band) and canonical
-state cells must equal the evaluator's, and every contribution is decoded
-against the evaluator's own bands — each must land on the (row, column) cell
+states must equal the source's, and every contribution is decoded
+against the source's own bands — each must land on the (row, column) cell
 its band point differentiates, and every band point with a column must be
 covered exactly once. A plan from another build, another document or another
 stencil is refused, never silently misapplied. `lanes` is the lane capacity
 `L` of a lane or column layout (default: exactly the lane count; padding
 lanes stay zero).
 """
-function bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing)
-    jac.wrt == :states || throw(
-        ArgumentError(
-            "scatter plans cover wrt = :states; this evaluator is wrt = :$(jac.wrt)"
-        )
-    )
+function bind_plan(input, plan::ScatterPlan; lanes = nothing, model_name = nothing)
+    sv, _ = _sv_src(input, model_name)
+    ctx = _ctx(sv)
+    entries = jacobian_bands(sv)
+    field_shapes = [_field_shape(en, ctx) for en in entries]
     (
-        length(plan.bands) == length(jac.entries) &&
+        length(plan.bands) == length(entries) &&
             all(
-            en.u == u && en.v == v && jac.field_shapes[k] == s
-                for (k, (en, (u, v, s))) in enumerate(zip(jac.entries, plan.bands))
+            en.u == u && en.v == v && field_shapes[k] == s
+                for (k, (en, (u, v, s))) in enumerate(zip(entries, plan.bands))
         )
     ) ||
         _bind_error(
         "the plan was built from a different band list than this " *
-            "evaluator ($(length(plan.bands)) vs $(length(jac.entries)) bands, or a " *
+            "source ($(length(plan.bands)) vs $(length(entries)) bands, or a " *
             "band's variables or field shape differ)"
     )
     names = _state_cells(plan.states)
-    if !(
-            length(names) == length(jac.rownames) && allunique(names) &&
-                Set(names) == Set(jac.rownames)
-        )
-        extra = setdiff(union(names, jac.rownames), intersect(names, jac.rownames))
+    mine = _state_cells(_States([(u, get(ctx.shapes, u, Int[])) for u in view_states(sv)]))
+    if !(names == mine)
+        extra = setdiff(union(names, mine), intersect(names, mine))
         _bind_error(
-            "the plan's states are not this evaluator's" *
-                (isempty(extra) ? " (duplicate state cells)" : " (e.g. `$(first(extra))`)")
+            "the plan's states are not this source's" *
+                (isempty(extra) ? " (order or duplicate state cells)" : " (e.g. `$(first(extra))`)")
         )
     end
     nl = _nlanes(plan)
     L = lanes === nothing ? nl : Int(lanes)
     L >= nl || _bind_error("lane capacity $L < $nl lanes")
-    # The evaluator's own points: (band k, field cell) → (row, col) cell
+    # The source's own points: (band k, field cell) → (row, col) cell
     # names, or `nothing` for a ghost read (a value with no storage position).
     vshape = Dict(plan.states)
     want = Dict{Tuple{Int, Int}, Union{Nothing, Tuple{String, String}}}()
-    for (k, en) in enumerate(jac.entries)
-        sh = jac.field_shapes[k]; vs = vshape[en.v]
+    for (k, en) in enumerate(entries)
+        sh = field_shapes[k]; vs = vshape[en.v]
         _foreach_point(en.band) do cell, cc, cidx
             want[(k - 1, _flat(vcat(cell, cc), sh))] =
                 all(1 <= c <= n for (c, n) in zip(cidx, vs)) ?
@@ -507,7 +512,7 @@ function bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing)
     end
     targets = scatter_targets(plan; lanes = L)
     seen = Set{Tuple{Int, Int}}()
-    pairs = Tuple{Int, Int}[]           # (derived-model du slot, 1-based output position)
+    pairs = Tuple{Int, Int, Int}[]      # (band, field cell, output position), 1-based
     for (k, f, pos) in _contributions(plan, L)
         if haskey(want, (k, f))
             t = want[(k, f)]
@@ -522,8 +527,7 @@ function bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing)
             (k, f) in seen && _bind_error("band $(k + 1) field cell $f is scattered twice")
             push!(seen, (k, f))
         end                            # else: outside the band's region, so zero
-        c = Tuple(CartesianIndices(Tuple(plan.bands[k + 1][3]))[f + 1])
-        push!(pairs, (_slot(jac.slots, _cellname("J_$(k + 1)", c), "band"), pos + 1))
+        push!(pairs, (k + 1, f + 1, pos + 1))
     end
     for (kf, t) in want
         t === nothing || kf in seen || _bind_error(
@@ -532,30 +536,6 @@ function bind_plan(jac::JacobianEvaluator, plan::ScatterPlan; lanes = nothing)
         )
     end
     return BoundScatter(plan, L, _outlen(plan, L), pairs)
-end
-
-"""
-    jac_into!(out, jac::JacobianEvaluator, b::BoundScatter, u, p, t) -> out
-
-Evaluate the band fields at `(u, p, t)` (`u` in the evaluator's state order)
-and scatter them into `out` per the bound plan: zeroed, then `+=` in plan
-order (several bands may land on one element).
-"""
-function jac_into!(
-        out::AbstractVector, jac::JacobianEvaluator, b::BoundScatter,
-        u::AbstractVector, p, t::Real
-    )
-    length(out) == b.len || throw(
-        DimensionMismatch(
-            "output has length $(length(out)); the bound plan needs $(b.len)"
-        )
-    )
-    duj = _eval_fields!(jac, u, p, t)
-    fill!(out, zero(eltype(out)))
-    for (s, pos) in b.pairs
-        out[pos] += duj[s]
-    end
-    return out
 end
 
 """

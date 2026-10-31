@@ -17,10 +17,6 @@ const SECOND_ORDER = (
     ("semiring_reduce", (:states, :states)),
 )
 _pairtag((a1, a2)) = "$a1-$a2"
-# The native compiler declines a model whose coefficients carry a filtered or
-# non-`+` faq node (`compiler_refused_rule`); the interpreter evaluates them.
-_hkw(name) = name in ("filtered_scan", "semiring_reduce") ?
-    (compiler = :interpreter,) : NamedTuple()
 
 # The oracle's document: the second axis's parameters (scalar or array)
 # promoted to states with a zero derivative, so ForwardDiff with respect to
@@ -141,51 +137,35 @@ end
     @test !haskey(blk("forcing_bracket", "Bracket", (:time, :states)), "structure")
 end
 
-@testset "second order: values against ForwardDiff over ForwardDiff" begin
+# What the oracle needs to know of a pair: its axes, the second axis's column
+# space, and the row and second-column names of `doc_hvp`.
+function _hpair(file, wrt; build_kwargs = NamedTuple())
+    sv = sysview(file, first(keys(file.models)))
+    rows = _doc_source(file, nothing, build_kwargs).rownames
+    columns = wrt[2] in (:parameters, :forcing) ? jacobian_columns(sv; wrt = wrt[2]) : nothing
+    return (
+        wrt = wrt, columns = columns, rownames = rows,
+        colnames = wrt[1] == :time ? ["t"] : rows,
+        col2names = jacobian_pattern(file; wrt = wrt[2], build_kwargs = build_kwargs).colnames,
+    )
+end
+
+@testset "second order: the contraction document against ForwardDiff over ForwardDiff" begin
     for (name, wrt) in SECOND_ORDER
         file = fixture("$name.esm")
-        hv = prepare_hvp(file; wrt = wrt, build_kwargs = _hkw(name))
+        hv = _hpair(file, wrt; build_kwargs = _hkw(name))
         u = _hpoint(length(hv.rownames))
         ps = _hpairs(length(hv.rownames), length(hv.colnames), wrt[1])
         t = _ht(name)
         ref = _oracle_hvp(name, hv, u, ps, t)
-        g = hvp!(zeros(length(hv.col2names)), hv, ps, u, nothing, t)
+        g, cols = doc_hvp(file, ps; wrt = wrt, u = u, t = t, build_kwargs = _hkw(name))
+        @test cols == hv.col2names
         @test isapprox(g, ref; rtol = 1.0e-10, atol = 1.0e-12)
         if wrt == (:states, :states)
-            gs = hvp!(zeros(length(g)), hv, ps, u, nothing, t; form = :symmetric)
+            gs, _ = doc_hvp(
+                file, ps; wrt = wrt, form = :symmetric, u = u, t = t, build_kwargs = _hkw(name)
+            )
             @test isapprox(gs, ref; rtol = 1.0e-10, atol = 1.0e-12)
-        end
-        # one pair at a time accumulates to the same
-        g1 = zeros(length(g))
-        for pr in ps
-            hvp!(g1, hv, pr, u, nothing, t)
-        end
-        @test isapprox(g1, g; rtol = 1.0e-12, atol = 1.0e-14)
-    end
-end
-
-@testset "second order: value goldens" begin
-    golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
-    for (name, wrt) in SECOND_ORDER
-        gd = EarthSciASTDiff.JSON3.read(
-            read(joinpath(golden_dir, "$name.$(_pairtag(wrt)).hvals.json"), String),
-            Dict{String, Any}
-        )
-        hv = prepare_hvp(fixture("$name.esm"); wrt = wrt, build_kwargs = _hkw(name))
-        @test gd["wrt"] == Any[String(wrt[1]), String(wrt[2])]
-        u = [Float64(gd["u"][r]) for r in hv.rownames]
-        ps = [
-            (
-                [Float64(pr["mu"][r]) for r in hv.rownames],
-                pr["w"] isa Number ? Float64(pr["w"]) : [Float64(pr["w"][c]) for c in hv.colnames],
-            ) for pr in gd["pairs"]
-        ]
-        g = hvp!(zeros(length(hv.col2names)), hv, ps, u, nothing, Float64(gd["t"]))
-        reached = sort!(unique([hv.col2names[it[4]] for it in hv.items]))
-        @test reached == [String(e[1]) for e in gd["g"]]            # exact key set
-        lut = Dict(n => i for (i, n) in enumerate(hv.col2names))
-        for (n, v) in gd["g"]
-            @test isapprox(g[lut[n]], v; rtol = 1.0e-10, atol = 1.0e-13)
         end
     end
 end
@@ -225,14 +205,10 @@ end
     @test_throws ArgumentError jacobian_bands2(sv; wrt = (:forcing, :states))
     @test_throws ArgumentError jacobian_bands2(sv; wrt = (:states, :time))
     @test_throws ArgumentError jacobian_bands2(sv; wrt = (:states,))
-    hv = prepare_hvp(fixture("bd_chem.esm"))
-    n = length(hv.rownames)
-    @test_throws DimensionMismatch hvp!(zeros(n + 1), hv, (ones(n), ones(n)), ones(n), nothing, 0.0)
-    @test_throws DimensionMismatch hvp!(zeros(n), hv, (ones(n - 1), ones(n)), ones(n), nothing, 0.0)
-    @test_throws ArgumentError hvp!(zeros(n), hv, (ones(n), ones(n)), ones(n), nothing, 0.0; form = :nope)
-    ht = prepare_hvp(fixture("forcing_bracket.esm"); wrt = (:time, :states))
-    m = length(ht.rownames)
-    @test_throws ArgumentError hvp!(zeros(m), ht, (ones(m), 1.0), ones(m), nothing, 0.37; form = :symmetric)
+    @test_throws ArgumentError hvp_document(fixture("bd_chem.esm"); stages = 1, form = :nope)
+    @test_throws ArgumentError hvp_document(
+        fixture("forcing_bracket.esm"); stages = 1, wrt = (:time, :states), form = :symmetric
+    )
     # a second column read through a parameter offset is one-hot over the
     # buffer's extent (spec §3.5), every point a placeable column
     O(kv...) = Dict{String, Any}(kv...)

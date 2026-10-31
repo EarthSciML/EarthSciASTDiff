@@ -7,7 +7,7 @@
     f!, u0, p, _, _ = build_evaluator(file)
     for _ in 1:3
         u = 0.3 .+ rand(length(u0))
-        res = assemble_jacobian(file; u = u, p = p)
+        res = doc_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
         @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         @test all((Jad .!= 0) .<= res.pattern)      # global ⊇ local
@@ -18,7 +18,7 @@ end
     file = fixture("adv_react_2d.esm")
     f!, u0, p, _, _ = build_evaluator(file)
     u = 0.3 .+ rand(length(u0))
-    res = assemble_jacobian(file; wrt = :parameters, u = u, p = p)
+    res = doc_jacobian(file; wrt = :parameters, u = u, p = p)
     pv = collect(Float64, p)
     Jp_ad = ForwardDiff.jacobian(pv) do q
         pp = NamedTuple{keys(p)}(Tuple(q))
@@ -28,14 +28,12 @@ end
     @test maximum(abs.(Matrix(res.J) .- Jp_ad)) ≤ 1.0e-12
 end
 
-@testset "oracle: prepared evaluator reuse" begin
+@testset "oracle: several points" begin
     file = fixture("bd_chem.esm")
     f!, u0, p, _, _ = build_evaluator(file)
-    jac = prepare_jacobian(file)
-    J = jac_prototype(jac)
-    for _ in 1:3                                   # same prototype, many points
+    for _ in 1:3
         u = 0.2 .+ rand(length(u0))
-        jac(J, u, p, 0.0)
+        J = doc_jacobian(file; u = u, p = p).J
         Jad = ad_jacobian(f!, u, p, 0.0)
         @test maximum(abs.(Matrix(J) .- Matrix(Jad))) ≤ 1.0e-14
     end
@@ -46,7 +44,7 @@ end
     flat = flatten(file)
     f!, u0, p, _, _ = build_evaluator(flat)
     u = u0 .* (0.5 .+ rand(length(u0)))
-    res = assemble_jacobian(flat; u = u, p = p)
+    res = doc_jacobian(flat; u = u, p = p)
     Jad = ad_jacobian(f!, u, p, 0.0)
     scale = maximum(abs.(Jad))
     @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-12 * max(scale, 1.0)

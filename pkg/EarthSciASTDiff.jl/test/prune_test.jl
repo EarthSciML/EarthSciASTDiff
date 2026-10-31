@@ -74,7 +74,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
         f!, u0, p, _, _ = build_evaluator(file)
         u = [0.3, 0.7, 1.1, 1.9]
 
-        res = assemble_jacobian(file; u = u, p = p)
+        res = doc_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
         @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         # The pruned observed really is in the coefficient: ∂/∂u[i] = -2k, so a
@@ -82,7 +82,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
         # zeroed it would read 0.
         @test all(diag(Matrix(res.J)) .≈ -2K)
 
-        resp = assemble_jacobian(file; wrt = :parameters, u = u, p = p)
+        resp = doc_jacobian(file; wrt = :parameters, u = u, p = p)
         pv = collect(Float64, p)
         Jp_ad = ForwardDiff.jacobian(pv) do q
             pp = NamedTuple{keys(p)}(Tuple(q))

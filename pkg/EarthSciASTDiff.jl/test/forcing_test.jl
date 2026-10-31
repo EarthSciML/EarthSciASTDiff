@@ -135,7 +135,7 @@ end
         # t = 0.37: w = 0.37; t = 2.0: w = 0 exactly (the record time)
         for t in (0.37, 2.0)
             Jad = ForwardDiff.jacobian((du, y) -> f!(du, y, pp, t), similar(x), x)
-            res = assemble_jacobian(file; wrt = wrt, u = u, t = t)
+            res = doc_jacobian(file; wrt = wrt, u = u, t = t)
             @test res.rownames == rows
             checked = 0
             for (j, cn) in enumerate(res.colnames)
@@ -153,7 +153,7 @@ end
     end
     # the scalar parameter columns against ForwardDiff over `p`
     f!, u0, p, _, _ = build_evaluator(file)
-    res = assemble_jacobian(file; wrt = :parameters, u = u, p = p, t = 0.37)
+    res = doc_jacobian(file; wrt = :parameters, u = u, p = p, t = 0.37)
     Jp = ForwardDiff.jacobian(collect(Float64, p)) do q
         du = similar(q, length(u)); f!(du, u, NamedTuple{keys(p)}(Tuple(q)), 0.37); du
     end
@@ -170,9 +170,9 @@ end
         g = EarthSciASTDiff.JSON3.read(
             read(joinpath(golden_dir, "forcing_bracket.$wrt$sfx.jvals.json"), String)
         )
-        res0 = assemble_jacobian(file; wrt = wrt)
+        res0 = doc_jacobian(file; wrt = wrt)
         u = [Float64(g.u[Symbol(n)]) for n in res0.rownames]
-        res = assemble_jacobian(file; wrt = wrt, u = u, t = Float64(g.t))
+        res = doc_jacobian(file; wrt = wrt, u = u, t = Float64(g.t))
         I, J, V = findnz(res.J)
         got = Dict((res.rownames[I[k]], res.colnames[J[k]]) => V[k] for k in eachindex(I))
         want = Dict((String(e[1]), String(e[2])) => Float64(e[3]) for e in g.entries)
@@ -183,64 +183,48 @@ end
 
 @testset "parameters: array-parameter columns are real (no silent drop)" begin
     file = fixture("forcing_bracket.esm")
-    jac = prepare_jacobian(file; wrt = :parameters)
-    J = copy(jac.prototype)
-    _, u0, p, _, _ = build_evaluator(file)
-    jac(J, u0, p, 0.37)
+    res = doc_jacobian(file; wrt = :parameters, t = 0.37)
     for i in 1:4
-        j = findfirst(==("E[$i]"), jac.colnames)
+        j = findfirst(==("E[$i]"), res.colnames)
         @test j !== nothing
-        @test J[findfirst(==("c[$i]"), jac.rownames), j] == 1.0
+        @test res.J[findfirst(==("c[$i]"), res.rownames), j] == 1.0
     end
-    @test jac.columns == jacobian_columns(sysview(file, "Bracket"); wrt = :parameters)
+    @test res.colnames ==
+        EarthSciASTDiff._column_names(jacobian_columns(sysview(file, "Bracket"); wrt = :parameters))
 end
 
-@testset "forcing: vjp_forcing! is the transposed scatter" begin
+@testset "forcing: the Jᵀλ document is the transposed product" begin
     file = fixture("forcing_bracket.esm")
-    jac = prepare_jacobian(file; wrt = :forcing)
     _, u0, p, _, _ = build_evaluator(file)
     u = u0 .* (0.5 .+ rand(length(u0)))
     λ = randn(length(u0))
-    J = copy(jac.prototype)
-    jac(J, u, p, 0.37)
-    g = zeros(length(jac.colnames))
-    vjp_forcing!(g, jac, λ, u, p, 0.37)
-    @test g ≈ Matrix(J)' * λ atol = 1.0e-13
-    vjp_forcing!(g, jac, λ, u, p, 0.37)                 # accumulates
-    @test g ≈ 2 .* (Matrix(J)' * λ) atol = 1.0e-13
-    # buffer-shaped accumulators, column-major like the canonical ordinal
-    acc = Dict("F" => zeros(2, 5), "G" => zeros(2, 3))
-    vjp_forcing!(acc, jac, λ, u, p, 0.37)
-    @test vcat(vec(acc["F"]), vec(acc["G"])) ≈ Matrix(J)' * λ atol = 1.0e-13
-    @test acc["F"][2, 3] ≈ (Matrix(J)' * λ)[findfirst(==("F[2,3]"), jac.colnames)]
-    @test_throws ArgumentError vjp_forcing!(Dict("F" => zeros(2, 5)), jac, λ, u, p, 0.37)
-    @test_throws DimensionMismatch vjp_forcing!(zeros(3), jac, λ, u, p, 0.37)
-    # only on the forcing axis
-    jp = prepare_jacobian(file; wrt = :parameters)
-    @test_throws ArgumentError vjp_forcing!(zeros(length(jp.colnames)), jp, λ, u, p, 0.37)
-    gp = vjp!(zeros(length(jp.colnames)), jp, λ, u, p, 0.37)
-    Jp = copy(jp.prototype); jp(Jp, u, p, 0.37)
-    @test gp ≈ Matrix(Jp)' * λ atol = 1.0e-13
+    for wrt in FORCING_AXES
+        J = doc_jacobian(file; wrt = wrt, u = u, p = p, t = 0.37)
+        g, cols = doc_vjp(file, λ; wrt = wrt, u = u, p = p, t = 0.37)
+        @test cols == J.colnames
+        @test g ≈ Matrix(J.J)' * λ atol = 1.0e-13
+    end
 end
 
 @testset "forcing: live buffers through param_arrays" begin
+    # The forcing buffers of a product document are bound like any array
+    # parameter: read live, by reference, from `param_arrays`.
     file = fixture("forcing_bracket.esm")
     F = [1.0 1.25 1.5 1.75 2.0; 1.5 1.25 2.0 1.0 0.75]
     G = [0.2 0.4 0.6; 0.3 0.5 0.1]
     bufs = Dict{String, Any}("F" => copy(F), "G" => copy(G))
-    jac = prepare_jacobian(file; wrt = :forcing, build_kwargs = (param_arrays = bufs,))
-    _, u0, p, _, _ = build_evaluator(file)
-    J = copy(jac.prototype)
-    jac(J, u0, p, 0.37)
-    J0 = copy(J)
-    @test J0 ≈ assemble_jacobian(file; wrt = :forcing, u = u0, t = 0.37).J
+    kw = (param_arrays = bufs,)
+    layout = _doc_source(file, nothing, kw)
+    doc, io = jvp_document(file; wrt = :forcing)
+    ev = _doc_evaluator(doc, io.model; build_kwargs = kw)
+    dir = Dict(_doc_cell(io.v, "F[1,1]") => 1.0)
+    iS = findfirst(==("S"), layout.rownames)
+    col(u) = _doc_call(ev, layout, u, layout.p, 0.37, dir)(io.jvp["S"])
+    @test col(layout.u0) ≈ -2 * 1.0 * layout.u0[iS]
     # S's row reads F[1,1]²: refill the buffer in place, as a provider does
     bufs["F"][1, 1] = 3.0
     EarthSciAST.notify_forcing_refresh!(bufs["F"])
-    jac(J, u0, p, 0.37)
-    iS = findfirst(==("S"), jac.rownames); jF = findfirst(==("F[1,1]"), jac.colnames)
-    @test J[iS, jF] ≈ -2 * 3.0 * u0[iS]
-    @test J0[iS, jF] ≈ -2 * 1.0 * u0[iS]
+    @test col(layout.u0) ≈ -2 * 3.0 * layout.u0[iS]
 end
 
 @testset "forcing: several axes in one jacobians entry" begin
@@ -284,9 +268,8 @@ end
     @test_throws BandError jacobian_pattern(
         past; wrt = :forcing, forcing = ["F"], source_layout = lay
     )
-    @test_throws BandError prepare_jacobian(
-        past; wrt = :forcing, forcing = ["F"], source_layout = lay
-    )
+    @test_throws BandError jvp_document(past; wrt = :forcing, forcing = ["F"])
+    @test_throws BandError vjp_document(past; wrt = :forcing, forcing = ["F"])
     # a model that does not read the forcing set at all has an empty block
     none = _bracket_doc(_op("*", -1, _ix("c", "i")))
     @test isempty(jacobian_bands(none, "B"; wrt = :forcing, forcing = ["F"]))
@@ -300,7 +283,24 @@ end
     # ghost read, as the same stencil on a state is: i = 4 reads F[1,6]
     past = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", 2))))
     @test nnz(jacobian_pattern(past; wrt = :parameters, source_layout = lay).pattern) == 3
-    @test nnz(prepare_jacobian(past; wrt = :parameters, source_layout = lay).pattern) == 3
+    # the Jv document guards that read with the in-extent conjuncts (spec
+    # §9.1), so the ghost point contributes nothing and is never read
+    doc, io = jvp_document(past; wrt = :parameters)
+    rhs = only(
+        eq["rhs"] for eq in doc["models"][io.model]["equations"]
+            if eq["lhs"] isa AbstractDict && eq["lhs"]["args"] == [io.jvp["c"]]
+    )
+    @test occursin("\"<=\"", stable_json(rhs))
+    f!, x0, pd, _, vm = _doc_evaluator(doc, io.model)
+    x = copy(x0)
+    for i in 1:4
+        x[vm["c[$i]"]] = 1.0
+    end
+    for c in CartesianIndices((2, 5))
+        x[vm["$(io.v["F"])[$(c[1]),$(c[2])]"]] = 1.0
+    end
+    du = zeros(length(x)); f!(du, x, pd, 0.0)
+    @test [du[vm["$(io.jvp["c"])[$i]"]] for i in 1:4] == [1.0, 1.0, 1.0, 0.0]
     ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
     @test nnz(jacobian_pattern(ghost; source_layout = lay).pattern) == 3
 end
@@ -333,9 +333,9 @@ end
 
 @testset "forcing: rectangular axes carry no structure class" begin
     file = fixture("forcing_bracket.esm")
-    @test prepare_jacobian(file; wrt = :forcing).structure === nothing
-    @test assemble_jacobian(file; wrt = :parameters).structure === nothing
-    @test prepare_jacobian(file).structure isa Symbol
+    @test doc_jacobian(file; wrt = :forcing).structure === nothing
+    @test doc_jacobian(file; wrt = :parameters).structure === nothing
+    @test doc_jacobian(file).structure isa Symbol
 end
 
 @testset "forcing: the evaluation document keeps array defaults row-major" begin

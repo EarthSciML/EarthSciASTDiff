@@ -54,7 +54,7 @@ end
             file = EarthSciAST.load_path(path)
             f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
             Jad = ad_jacobian(f!, u, p, 0.0)
-            res = assemble_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
+            res = doc_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
             @testset "$label" begin
                 @test maximum(abs.(Matrix(res.J) .- Matrix(Jad)); init = 0.0) ≤ 1.0e-12
                 @test all(res.pattern .| (Jad .== 0))           # superset of the local pattern
@@ -149,7 +149,7 @@ end
         open(io -> JSON3.write(io, U.doc(neg(mx(le("j", "i"))))), path, "w")
         file = EarthSciAST.load_path(path)
         _, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
-        J = Matrix(assemble_jacobian(file; u = utie, p = p, build_kwargs = (compiler = :interpreter,)).J)
+        J = Matrix(doc_jacobian(file; u = utie, p = p, build_kwargs = (compiler = :interpreter,)).J)
         @test J[4, 2] ≈ -2 * 0.9 && J[4, 4] == 0 && J[5, 2] ≈ -2 * 0.9 && J[5, 4] == 0
     end
     # a max over two contracted indices has no ascending order: refused
@@ -270,7 +270,7 @@ end
         @test !isempty(entries) && all(en -> en.v == "u", entries)
         f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
         u = [0.3, 0.9, 0.2, 0.6, 0.45]
-        res = assemble_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
+        res = doc_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
         @test Matrix(res.J) ≈ Matrix(ad_jacobian(f!, u, p, 0.0)) atol = 1.0e-13
     end
     # A column whose variable the layout does not hold at all is refused at

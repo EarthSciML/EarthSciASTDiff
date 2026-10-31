@@ -41,11 +41,16 @@ using EarthSciAST, EarthSciASTDiff
 
 file = EarthSciAST.load_path("model.esm")
 
-jac = prepare_jacobian(file)             # differentiate + compile, once
-J = jac_prototype(jac)                   # SparseMatrixCSC on the fixed pattern
-jac(J, u, p, t)                          # fill J in place, any (u, p, t)
+entries = jacobian_bands(file, "MyModel")    # the Jacobian as structured bands
+pat = jacobian_pattern(file)                 # structural pattern + row/column names
+detect_structure(entries, sysview(file, "MyModel"))  # :block_diagonal | :banded | :general
 
-jac.structure                            # :block_diagonal | :banded | :general
+# Values are EarthSciAST's to compute: J's band fields, J v, Jᵀ λ and the
+# second-order contraction are each a document its evaluator runs.
+ev, fields = evaluation_document(file)
+jv, io = jvp_document(file)
+vj, io = vjp_document(file)
+hv, io = hvp_document(file; stages = 2)
 ```
 
 Source and issue tracker:

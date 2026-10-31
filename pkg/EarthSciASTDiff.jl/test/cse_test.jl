@@ -123,7 +123,7 @@ end
     # analytical J matches AD at non-smooth-friendly points; pattern ⊇ AD
     for k in 1:2
         u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* (1.3 + k)))
-        r = assemble_jacobian(file; u = u)
+        r = doc_jacobian(file; u = u)
         Jad = ad_jacobian(f!, u, p0, 0.0)
         @test Matrix(r.J) ≈ Matrix(Jad) rtol = 1.0e-10
         @test all((Jad .!= 0) .<= r.pattern)

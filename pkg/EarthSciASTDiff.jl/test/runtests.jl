@@ -9,6 +9,13 @@ using LinearAlgebra
 const FIXTURES = joinpath(@__DIR__, "fixtures")
 fixture(name) = EarthSciAST.load_path(joinpath(FIXTURES, name))
 
+include("docvals.jl")
+
+# The native compiler declines a model whose coefficients carry a filtered or
+# non-`+` faq node (`compiler_refused_rule`); the interpreter evaluates them.
+_hkw(name) = name in ("filtered_scan", "semiring_reduce") ?
+    (compiler = :interpreter,) : NamedTuple()
+
 # ForwardDiff oracle: dense Jacobian of the tree-walk RHS w.r.t. states.
 function ad_jacobian(f!, u, p, t)
     du = similar(u)
@@ -33,9 +40,9 @@ end
     include("time_test.jl")
     include("forcing_test.jl")
     include("second_order_test.jl")
+    include("products_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")
     include("scatter_test.jl")
-    include("ode_test.jl")
     include("source_layout_test.jl")
 end

@@ -28,19 +28,20 @@ Layered API, lowest to highest:
                                      (`:column_block` given a `column_axis`)
   - [`plan_factorization`](@ref)   — symbolic factorization info (general interface;
                                      per-cell block LU is the first implementation)
-  - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`;
-                                     [`vjp!`](@ref) / [`vjp_forcing!`](@ref) apply
-                                     the transposed bands without forming `J`
-  - [`jacobian_bands2`](@ref)      — second-order bands for an axis pair;
-                                     [`prepare_hvp`](@ref) + [`hvp!`](@ref) contract
-                                     them (Rosenbrock adjoints) without a tensor
+  - [`evaluation_document`](@ref)  — the band fields of `J` as an ESM document
+                                     an unmodified EarthSciAST evaluator runs
+  - [`jacobian_bands2`](@ref)      — second-order bands for an axis pair
+                                     (Rosenbrock adjoints; never a tensor)
+  - [`jvp_document`](@ref)         — `J v`, and [`vjp_document`](@ref) / [`hvp_document`](@ref)
+                                     `Jᵀ λ` and the §4.4 contraction, as ESM documents
+                                     an unmodified EarthSciAST evaluator runs (spec §9)
   - [`scatter_plan`](@ref)         — checked band-field → storage map (lane blocks,
                                      sparse lane blocks, column bands, CSR);
-                                     [`bind_plan`](@ref) + [`jac_into!`](@ref) fill it
-  - [`assemble_jacobian`](@ref)    — one-shot: values + pattern at a point
-  - [`odeproblem`](@ref)           — `SciMLBase.ODEProblem` with the analytical
-                                     sparse Jacobian attached (needs SciMLBase
-                                     loaded; see also [`ode_components`](@ref))
+                                     [`bind_plan`](@ref) checks it against a source
+
+This package evaluates nothing: every value (`J`, `J v`, `Jᵀ λ`, the
+second-order contraction) comes from running one of its documents through
+EarthSciAST, and executing a scatter plan is the consumer's work.
 
 Differentiation runs on the *expanded, lowered* expression tree — the same
 tree `EarthSciAST.build_evaluator` compiles — so the derivative and the RHS
@@ -63,16 +64,15 @@ export Site, dscalar, simplify_branches,
     SysView, sysview, expanded_model, inlinable_observed,
     jacobian_document, parse_jacobian_block, parse_jacobian_blocks, stable_json,
     cse_templates, expand_templates, hoist_observed,
-    jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
-    vjp!, vjp_forcing!,
-    JacEntry2, jacobian_bands2, col_idx, col2_idx, prepare_hvp, HVPEvaluator, hvp!,
-    ode_components, odefunction, odeproblem,
+    jacobian_pattern, evaluation_document,
+    JacEntry2, jacobian_bands2, col_idx, col2_idx,
+    jvp_document, vjp_document, hvp_document,
     detect_structure, column_lines, jac_prototype,
     FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, plan_factorization,
     serialize_plan, lu_fill,
     StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
     ScatterPlan, scatter_plan, serialize_scatter_plan,
-    BoundScatter, bind_plan, jac_into!, scatter_targets
+    BoundScatter, bind_plan, scatter_targets
 
 include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
 include("hashcons.jl")       # structural interning (size-independent equality)
@@ -87,11 +87,11 @@ include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("jacobian.jl")       # jacobian_bands driver
 include("eval_cse.jl")       # evaluation-model CSE (hoisted observed buffers)
 include("emit.jl")           # "jacobians" document block: emit / parse / goldens
-include("assemble.jl")       # numeric assembly + prepared evaluator
+include("assemble.jl")       # structural pattern over the source layout
 include("structure.jl")      # structure detection + jac_prototype
 include("factorization.jl")  # factorization-info interface + block-diagonal plan
-include("second_order.jl")   # second-order bands + the hvp! contraction (§4.4)
+include("second_order.jl")   # second-order bands (§4.4)
+include("products.jl")       # product documents: Jv, Jᵀλ, hvp as ESM documents (§9)
 include("scatter.jl")        # scatter plans: band fields → consumer storage layouts
-include("ode.jl")            # solver-free ODE pieces + SciMLBase ext dispatchers
 
 end # module

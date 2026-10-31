@@ -1,7 +1,7 @@
 # Evaluation-model CSE — stage 2 of the coefficient-size control roadmap item.
 #
 # Template CSE at emission (cse.jl) shrinks the SERIALIZED block; this pass
-# shrinks the derived EVALUATION model `prepare_jacobian` compiles. The same
+# shrinks the derived EVALUATION model (`evaluation_document`). The same
 # hash-consed extraction runs over the band coefficients, but instead of
 # `expression_templates` each repeated subtree becomes an OBSERVED ARRAY
 # variable of the derived document, defined by a `makearray` over the union
@@ -10,7 +10,7 @@
 # EarthSciAST/src/tree_walk.jl) then evaluate each shared subtree ONCE per
 # cell per RHS call into a buffer all band fields gather — so both the
 # derived-document size (the compile-time lever: parsing + `_Node` IR over
-# PPM-scale coefficients dominates `prepare_jacobian`) and the per-call
+# PPM-scale coefficients dominates the evaluator build) and the per-call
 # duplicate work drop together.
 #
 # Free row-index names in a hoisted fragment become the observed array's

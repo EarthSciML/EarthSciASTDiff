@@ -132,7 +132,9 @@ function jacobian_document(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
         cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
     )
-    return doc
+    # built from scratch, so the version is the content's, not the 1.1.0
+    # floor `_attach_jacobians!` raises a source's to
+    return _derived_version!(doc)
 end
 
 function _attach_jacobians!(
@@ -312,17 +314,15 @@ function parse_jacobian_blocks(x)
     return out
 end
 
-# ── the internal evaluation model ────────────────────────────────────────────
+# ── the evaluation model ─────────────────────────────────────────────────────
 #
-# v1 evaluation strategy (deliberate reuse of existing machinery, zero new
-# evaluator code): emit a derived single-model document in which each band's
-# coefficient field is a STATE `J_k` whose RHS is the band field —
+# Evaluation is EarthSciAST's: emit a derived single-model document in which
+# each band's coefficient field is a STATE `J_k` whose RHS is the band field —
 #
 #   D(J_k) = makearray( zero default, band region ← faq(coef) )
 #
-# and run it through the unmodified `EarthSciAST.build_evaluator`; one RHS
-# call then leaves every band value in `du`. A dedicated compiled `jac!`
-# kernel is the planned upgrade once this is a measured bottleneck.
+# so one RHS call of an unmodified EarthSciAST evaluator leaves every band
+# value in `du`. The product documents (products.jl) share its base.
 
 function _base_document(sv::SysView, name::String)
     m = OrderedDict{String, Any}(
@@ -357,15 +357,30 @@ function _base_document(sv::SysView, name::String)
             for (n, s) in sv.index_sets if s.size !== nothing
     )
     return OrderedDict{String, Any}(
-        # 1.1.0, not 1.0.0: every document this file builds may carry `faq`
-        # coefficient nodes, and `faq` arrives at esm 1.1.0. Declaring 1.0.0
-        # makes the document unloadable (`[E_FAQ_VERSION_TOO_OLD]`).
+        # Provisional: `_derived_version!` settles it once the document is
+        # complete.
         "esm" => "1.1.0",
         "metadata" => OrderedDict{String, Any}("name" => name),
         "index_sets" => isets,
         "models" => OrderedDict{String, Any}(name => m)
     )
 end
+
+# The `esm` version a finished derived document declares: the lowest that
+# admits what it holds. 1.1.0, not 1.0.0, because its coefficients may carry
+# `faq` nodes (`[E_FAQ_VERSION_TOO_OLD]` otherwise); 1.2.0 when any expression
+# node carries `units` (a unit-bearing `const` copied from a 1.2.0 source,
+# `const_units_version_too_old` otherwise). Read off the content rather than
+# the source's declared version, which a `FlattenedSystem` does not carry.
+# The `jacobians` blocks count: their coefficients copy the source's nodes too.
+function _derived_version!(doc)
+    held = (doc["models"], get(doc, "jacobians", nothing))
+    doc["esm"] = any(_has_units, held) ? "1.2.0" : "1.1.0"
+    return doc
+end
+_has_units(x::AbstractDict) = haskey(x, "units") && haskey(x, "op") || any(_has_units, values(x))
+_has_units(x::Union{AbstractVector, Tuple}) = any(_has_units, x)
+_has_units(x) = false
 
 # A variable's value in the document's inline form: an array value is
 # row-major nested JSON (esm-spec §6.3), outermost list over the FIRST
@@ -389,11 +404,13 @@ end
 # Trim the source's ODE right-hand side out of the evaluation model: every
 # `D(u)` equation of the source becomes `D(u) = 0` (a zero `makearray` over
 # the state's shape for an array state), in place of the first one and with
-# any further ones dropped. The states keep their solver slots — `jac!`
-# copies `u` into them exactly as before — so the observed definitions and
+# any further ones dropped. The states keep their solver slots — the
+# consumer copies `u` into them — so the observed definitions and
 # band fields read them unchanged, but each call no longer recomputes `f`.
 # Observed the coefficients do not read (directly or through other observed)
-# are dropped with their declarations: they fed only `f`.
+# are dropped with their declarations: they fed only `f`. `roots` are the
+# expressions the derived model evaluates (the coefficients, and for a
+# product document also the column indices and `where` guards, §9).
 #
 # Why zero derivatives rather than turning the states into parameters: an
 # array parameter is a build-time `param_arrays` buffer, and EarthSciAST
@@ -401,7 +418,10 @@ end
 # writing a new `u` into the buffer in place leaves those values stale
 # (minmod_adv's limiters, off by up to 16.0 at a second point) unless an
 # internal epoch hook is called on every write.
-function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry})
+_zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry}) =
+    _zero_source_derivatives!(m, sv, ctx, ASTExpr[en.band.coef for en in entries])
+
+function _zero_source_derivatives!(m, sv::SysView, ctx, roots::Vector{ASTExpr})
     states = Set{String}(
         u for u in (lhs_state(eq) for eq in sv.equations)
             if u !== nothing
@@ -415,7 +435,7 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
         (n === nothing || n in states) || push!(get!(reads, n, ASTExpr[]), eq.rhs)
     end
     live = Set{String}()
-    stack = String[v for en in entries for v in free_variables(en.band.coef)]
+    stack = String[v for r in roots for v in free_variables(r)]
     while !isempty(stack)
         n = pop!(stack)
         (haskey(reads, n) && !(n in live)) || continue
@@ -460,14 +480,62 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
     return m
 end
 
+"""
+    evaluation_document(input; wrt = :states, model_name = nothing, forcing = nothing,
+                        cse = true) -> (doc, fields)
+
+The derived evaluation document of the first-order bands on axis `wrt`
+(esm-jacobian-spec.md §8, model `"JacobianEval"`): the source's observed the
+coefficients read, every source derivative zeroed, and one band-field state
+`J_k` per entry whose `D` equation is that band's coefficient field. One
+right-hand-side call of an unmodified EarthSciAST evaluator at `(u, p, t)`
+leaves every band value in `du`; `fields[k]` names entry `k`'s field.
+Placing the values in a matrix is a scatter plan's ([`bind_plan`](@ref)).
+With `cse`, repeated coefficient subtrees are hoisted into observed arrays
+([`hoist_observed`](@ref)).
+"""
+function evaluation_document(
+        input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
+    sv, _ = _sv_src(input, model_name)
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
+    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
+end
+
+# With `cse`, repeated coefficient subtrees are hoisted into observed
+# variables of the derived model `m` ([`hoist_observed`](@ref)) so the
+# tree-walk's factored array-observed buffers evaluate them once per cell per
+# RHS call — the compile-time and duplicate-work control for limiter-heavy
+# (PPM-scale) coefficients. Returns the coefficients the model reads.
+function _hoist!(doc, m, sv::SysView, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int)
+    h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
+    h === nothing && return ASTExpr[en.band.coef for en in entries]
+    for (nm, sz) in h.axes
+        doc["index_sets"][nm] =
+            OrderedDict{String, Any}("kind" => "interval", "size" => sz)
+    end
+    for (nm, vd) in h.obs
+        m["variables"][nm] = vd
+    end
+    # 1.0.0: a hoisted observed is an unknown plus a bare-LHS equation. The
+    # equations go in BEFORE the derived model's own derivative equations,
+    # matching the declaration order the corpus migration produced --
+    # ordering is not semantically load-bearing, but a stable one keeps diffs
+    # readable.
+    for (nm, rhs) in h.obs_eqs
+        push!(
+            m["equations"],
+            OrderedDict{String, Any}("lhs" => nm, "rhs" => rhs)
+        )
+    end
+    return h.coefs
+end
+
 # Derived model: the source's observed definitions that the coefficients
 # read, with its state derivatives zeroed, plus one state per band whose RHS
-# is the band's coefficient field. With `cse = true`, repeated coefficient
-# subtrees are first hoisted into observed variables of the document
-# ([`hoist_observed`](@ref)) so the tree-walk's factored array-observed
-# buffers evaluate them once per cell per RHS call — the compile-time and
-# duplicate-work control for limiter-heavy (PPM-scale) coefficients.
-# Returns (document, band-state names).
+# is the band's coefficient field, after the optional hoisting of
+# [`_hoist!`](@ref). Returns (document, band-state names).
 function _evaluation_document(
         sv::SysView, entries::Vector{JacEntry};
         cse::Bool = true, cse_min_nodes::Int = 12
@@ -476,27 +544,7 @@ function _evaluation_document(
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
     _zero_source_derivatives!(m, sv, ctx, entries)
-    h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
-    coefs = h === nothing ? ASTExpr[en.band.coef for en in entries] : h.coefs
-    if h !== nothing
-        for (nm, sz) in h.axes
-            doc["index_sets"][nm] =
-                OrderedDict{String, Any}("kind" => "interval", "size" => sz)
-        end
-        for (nm, vd) in h.obs
-            m["variables"][nm] = vd
-        end
-        # 1.0.0: a hoisted observed is an unknown plus a bare-LHS equation. The
-        # equations go in BEFORE the J_k derivative equations below, matching the
-        # declaration order the corpus migration produced -- ordering is not
-        # semantically load-bearing, but a stable one keeps diffs readable.
-        for (nm, rhs) in h.obs_eqs
-            push!(
-                m["equations"],
-                OrderedDict{String, Any}("lhs" => nm, "rhs" => rhs)
-            )
-        end
-    end
+    coefs = _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
@@ -556,5 +604,5 @@ function _evaluation_document(
             )
         )
     end
-    return doc, names
+    return _derived_version!(doc), names
 end

@@ -71,7 +71,7 @@ end
     # constant, so row 1 has no u[0] ghost entry — not even a unioned one)
     f!, u0, p0, _, _ = build_evaluator(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 2.7))
-    r = assemble_jacobian(file; u = u)
+    r = doc_jacobian(file; u = u)
     Jad = ad_jacobian(f!, u, p0, 0.0)
     @test Matrix(r.J) ≈ Matrix(Jad) rtol = 1.0e-12
     @test r.pattern == (Jad .!= 0)     # EXACT, not merely a superset
