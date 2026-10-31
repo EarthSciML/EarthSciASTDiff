@@ -488,7 +488,8 @@ a buffer slot held at that stage, and the per-record accumulation across
 provider refreshes, are runtime state that the consumer (an integrator's
 tape) owns. They are not part of the block. A degenerate final bracket that
 repeats one record in both slots maps both slots' gradients to that record,
-where they sum.
+where they sum. §9.3 gives the same scatter-add as a document an EarthSciAST
+evaluator runs.
 
 ### 4.4 Second-order entries (`wrt: [a1, a2]`)
 
@@ -579,7 +580,8 @@ g[col2(r, c)]   += coef(r, c) · M(r, c)
 On a `["states", "states"]` pair the symmetry of `∇²(μᵀf)` gives an
 equivalent form with no `M`, one pass per stage:
 `g[col(r, c)] += μᵢ[row(r)] · coef(r, c) · wᵢ[col2(r, c)]`. Implementations
-choose by cost; conformance checks both against the oracle.
+choose by cost; conformance checks both against the oracle. §9.4 gives both
+forms as documents an EarthSciAST evaluator runs.
 
 ## 5. Conformance
 
@@ -790,3 +792,183 @@ index `ℓ` of the lane domain, and padding lanes stay zero.
 A producer MUST refuse (not emit) a plan for an empty band list on a model
 with array states, for a band column that is not a state, and for a layout
 whose preconditions above do not hold.
+
+## 9. Product documents (PROPOSED)
+
+**Status: PROPOSED, not yet produced by any binding, no goldens.** This
+section fixes the target shape before the producers are written; its
+fixtures and goldens land with the first producer (Julia), in the same
+commit as any change to the text below.
+
+A consumer needs more than the coefficients: an implicit integrator applies
+`J` and `Jᵀ` to vectors, and an adjoint contracts the second-order bands
+(§4.4). Evaluation of every one of these is EarthSciAST's job, not the
+producer's. For each product the producer emits a **product document**: a
+derived ESM document whose right-hand side, evaluated once by an unmodified
+EarthSciAST evaluator, yields the product. No binding of this repository
+evaluates band points itself, and no product needs a kernel beyond what the
+esm-spec's `faq` already expresses.
+
+### 9.1 Common form
+
+A product document is built like the §8 evaluation document: the source
+model's variables, the observed definitions the coefficients read
+(transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
+coefficients' `expression_templates` expanded (or hoisted as observed, as the
+evaluation document does). On top of that base:
+
+- **Inputs.** Every vector the product contracts with is declared as an
+  `unknown` with `D(x) = 0` and default `0.0`, of the shape of the space it
+  lives in: a row variable's shape for a cotangent, a column variable's for
+  a direction. The consumer writes it into the evaluator's state slots at
+  each call, beside the source states. (A state, not a parameter, for the
+  reason the evaluation document zeroes derivatives rather than freezing
+  states: an evaluator may cache observed that read only parameters.)
+- **Outputs.** Every result is an `unknown` with default `0.0` whose `D`
+  equation is the product expression. One right-hand-side call at
+  `(u, inputs, p, t)` leaves the product in the derivative slots of the
+  outputs; the consumer reads them through the evaluator's variable map.
+  No equation may read an output, and an output's own state value is never
+  read.
+- **Names.** Inputs and outputs take the names below, with `_` appended
+  until clear of every name in the document. `R` is a row variable, `C` a
+  column variable, `C2` a second-axis column variable, and `i` a 1-based
+  stage number.
+
+| Product | Model | Inputs | Outputs |
+|---|---|---|---|
+| `Jv` | `JvpEval` | `_v_<C>` per column variable | `_jvp_<R>` per state |
+| `Jᵀλ` | `VjpEval` | `_lam_<R>` per state | `_vjp_<C>` per column variable |
+| §4.4 contraction | `HvpEval` | `_mu<i>_<R>`, `_w<i>_<C>` per stage | `_hvp_<C2>` per second-axis column variable |
+
+The column variables of an axis are every state (`wrt: "states"`) or every
+entry of the block's `columns` (`"parameters"`, `"forcing"`), whether or not
+an entry reaches them: an output nothing reaches is `0`. The number of stages
+`S` of an `HvpEval` document is an input to the producer.
+
+**Notation.** For entry `k`: `R_k` its `row` with row box `rows_k` and
+free row-index names `ρ_k` (a singleton dimension's literal stays a
+literal), `γ_k` its `contracted` names with their ranges, `C_k` its `col`
+with index expressions `e_k(ρ, γ)`, `a_k(ρ, γ)` its `coef` and `ω_k(ρ, γ)` its
+`where` (`true` when absent). `n_{C,d}` is the extent of dimension `d` of
+`C`. Each product below is a `+` over entries in entry order (a left fold),
+so the association is fixed.
+
+**Ghost reads.** On the `states` and `parameters` axes a point whose column
+falls outside `C`'s extent contributes nothing (§4). Where a product reads
+`C` at `e_k`, the producer adds the in-extent conjunct
+`G_k = and(1 <= e_{k,d}, e_{k,d} <= n_{C,d} for every d)` to the filter;
+it SHOULD instead split the box at `G_k`'s affine breakpoints (the §2
+region clipping) so that no filter remains for an affine `e_k`. On the
+`forcing` axis there is no ghost read: the producer MUST check at build time
+that every point of every entry resolves to a cell of its buffer, and MUST
+fail rather than emit a document that would drop one.
+
+### 9.2 `Jv` (`JvpEval`)
+
+For each state `R`,
+
+```
+D(_jvp_R) = Σ_{k : R_k = R} makearray( 0 over shape(R),
+               rows_k ← faq{ output_idx: ρ_k,
+                             ranges:     rows_k over ρ_k, the ranges of γ_k,
+                             filter:     and(ω_k, G_k),
+                             expr:       a_k · index(_v_C_k, e_k) } )
+```
+
+with `reduce: "+"`. The contracted names are reduced; the row names are
+the output. A scalar `R` with no `contracted` drops the `makearray` and the
+`faq`: the term is `a_k · index(_v_C_k, e_k)` (a scalar `_v_C_k` read bare),
+and a ghost column (§9.1) drops the term outright, since `e_k` is then
+literal. This is a gather: every output cell reads its own row point, and no
+optimization beyond what a `faq` already gets is needed.
+
+### 9.3 `Jᵀλ` (`VjpEval`)
+
+For each column variable `C` of the axis, with fresh output-index names
+`j = (j_1, …, j_n)` (`n` the rank of `C`; renamed apart from every name in
+the entry),
+
+```
+D(_vjp_C) = Σ_{k : C_k = C} faq{ output_idx: j,
+                                 ranges:     j_d ∈ [1, n_{C,d}], rows_k over ρ_k,
+                                             the ranges of γ_k,
+                                 filter:     and(ω_k, e_{k,1} == j_1, …, e_{k,n} == j_n),
+                                 expr:       a_k · index(_lam_R_k, ρ_k) }
+```
+
+with `reduce: "+"`. This is §4's meaning transposed: output cell `j`
+receives `a_k · λ[row]` from every point whose column is `j`. The output
+range is exactly `C`'s extent, so ghost points never satisfy the equality
+and need no `G_k`. A scalar `C` has no output index and no equality: the
+term is the filtered sum over the entry's points. On `wrt: "forcing"` this is
+§4.3's `ḡ_B` scatter-add; on `wrt: "parameters"` it is the parameter
+cotangent.
+
+None of the conjuncts compares a contracted name with the node's own output
+index by `<`, `<=`, `>` or `>=`, so the node is not a scan (esm-spec
+§4.3.1): it folds ascending over its contracted names, and its value is
+fully determined by the esm-spec.
+
+**Evaluation cost (required of EarthSciAST).** Evaluated as written, the node
+costs `|output box| × |row box × contracted box|`: quadratic in the grid for a
+state vjp. An evaluator used for production MUST recognize the
+**equality-filter scatter**: a `faq` whose `filter` is a conjunction that
+contains, for an output index `j_d`, a conjunct `j_d == e` or `e == j_d` with
+`e` reading none of the node's output indices. It evaluates such a node in
+ONE pass over the box of the non-output names, in the same ascending order
+the naive evaluation visits them: at each point where the remaining
+conjuncts hold, it computes `e`, skips the point if `e` is not an integer in
+`j_d`'s range, and folds the body into output cell `j`. Each output cell then
+receives exactly the terms it receives naively, in the same order, so the
+result is bit-identical (the license has the form of esm-spec §4.3.1's
+running-accumulation license); the cost is `|row box × contracted box|`.
+Output indices with no equality conjunct iterate outside the pass as
+ordinary output indices. Because `e_k` reads only index names, literals,
+folded metaparameters and `const` gathers (§4, §4.3), an evaluator MAY also
+compute the scatter map once at build time.
+
+This optimization is an EarthSciAST change in each language, tracked
+there; until it lands, `VjpEval` documents are correct but quadratic.
+
+### 9.4 Second-order contraction (`HvpEval`)
+
+For a block with `wrt: [a1, a2]` and `S` stages, write
+`M_k(ρ, γ) = Σ_{i=1..S} index(_mu<i>_R_k, ρ_k) · index(_w<i>_C_k, e_k)`
+(on a time pair, `a1 = "time"`, `C_k` is `t` and each `_w<i>` is a scalar
+read bare). For each column variable `C2` of `a2`, with fresh output names
+`j` as in §9.3,
+
+```
+D(_hvp_C2) = Σ_{k : col2_k = C2} faq{ output_idx: j,
+                                      ranges:     j over C2's extent, rows_k, γ_k,
+                                      filter:     and(ω_k, G_k, col2_idx_k == j),
+                                      expr:       a_k · M_k }
+```
+
+with `G_k` the first column's in-extent conjunct (§9.1) and `col2_idx_k == j`
+the per-dimension equalities. This is §4.4's `contract` form: the same
+equality-filter scatter as `Jᵀλ`. On a `["states", "states"]` pair the
+producer MAY instead emit the `symmetric` form: the output is indexed by
+`col`, the equalities are `e_k == j`, `G_k` is `col2`'s in-extent conjunct,
+and the body is `Σ_i index(_mu<i>_R_k, ρ_k) · a_k · index(_w<i>_C2_k,
+col2_idx_k)`. The document records which form it holds in its model name
+(`HvpEval` or `HvpEvalSymmetric`).
+
+### 9.5 Matrix storage and scatter plans
+
+Assembling `J` into a consumer's storage stays §8's split: the evaluation
+document gives the band fields, and the scatter plan, a conformance
+artifact, says where each field cell goes. Executing a plan is the
+consumer's (an integrator's) work, not this repository's.
+
+### 9.6 Conformance (when produced)
+
+Each fixture that carries `*.jvals.json` will carry `<name>.jvp.evaldoc.json`
+and `<name>.vjp.evaldoc.json` per axis, and each second-order pair
+`<name>.<a1>-<a2>.hvp.evaldoc.json`, byte-compared across bindings. Their
+values are checked by evaluating the document with EarthSciAST at the pinned
+point of the value golden and comparing with the product computed from the
+golden itself (`J v`, `Jᵀ λ` from `*.jvals.json` at seeded `v`, `λ`; the
+`*.hvals.json` `g` at its pinned stage pairs), under §5 item 3's tolerances.
+No binding needs an evaluator of its own for this check.
