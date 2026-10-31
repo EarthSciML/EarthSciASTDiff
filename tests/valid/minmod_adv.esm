@@ -1317,7 +1317,7 @@
                 },
                 {
                     "lhs": "dx",
-                    "rhs": {"op": "const", "args": [], "value": 0.0625, "units": "m"}
+                    "rhs": {"op": "/", "args": [{"op": "const", "args": [], "value": 1, "units": "m"}, 16]}
                 }
             ],
             "tests": [
