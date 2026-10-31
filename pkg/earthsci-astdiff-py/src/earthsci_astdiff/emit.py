@@ -12,6 +12,7 @@ from .bands import Band
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
+from .structure import column_lines
 from .system import sysview
 
 
@@ -31,6 +32,8 @@ def serialize_band(en: JacEntry | JacEntry2) -> dict:
     }
     if b.contracted:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
+    if b.guard is not None:
+        d["where"] = ser_expr(b.guard)
     return d
 
 
@@ -41,6 +44,7 @@ def parse_band(d: dict) -> JacEntry:
         [parse_expression(c) for c in d["col_idx"]],
         parse_expression(d["coef"]),
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
+        parse_expression(d["where"]) if "where" in d else None,
     )
     return JacEntry(str(d["row"]), str(d["col"]), band)
 
@@ -67,6 +71,27 @@ def _eval_cidx(c, bind: dict[str, float]) -> int:
     return int(round(evaluate(_fold_const_gathers(c, bind), bind)))
 
 
+def _eval_guard(g, bind: dict[str, float]) -> bool:
+    return float(evaluate(_fold_const_gathers(g, bind), bind)) != 0
+
+
+def foreach_point(b: Band):
+    """Every point of one band (assemble.jl ``_foreach_point``): yields
+    ``(cell, cc, bind, cidx)`` per (row cell, contracted cell), first index
+    fastest, with ``bind`` the integer binding of the row and contracted
+    names and ``cidx`` the column index evaluated there. A point the band's
+    guard (``where``) excludes is not a point of the band."""
+    for cell in _product(b.rows):
+        for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
+            bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
+            for k, (n, _, _) in enumerate(b.contracted):
+                bind[n] = cc[k]
+            fbind = {k: float(v) for k, v in bind.items()}
+            if b.guard is not None and not _eval_guard(b.guard, fbind):
+                continue
+            yield cell, cc, bind, [_eval_cidx(c, fbind) for c in b.cidx]
+
+
 def _product(ranges):
     """Iterate integer boxes with the FIRST dimension fastest (Julia order)."""
     if not ranges:
@@ -83,14 +108,8 @@ def scatter_pairs(sv, entries: list[JacEntry]):
     Julia `_scatter_pairs` (without the derived-model slot names)."""
     pairs = []
     for k, en in enumerate(entries):
-        b = en.band
-        for cell in _product(b.rows):
-            for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                bind = {r: float(cell[k2]) for k2, r in enumerate(b.ridx) if isinstance(r, str)}
-                for k2, (n, _, _) in enumerate(b.contracted):
-                    bind[n] = float(cc[k2])
-                cidx = [_eval_cidx(c, bind) for c in b.cidx]
-                pairs.append((k, _cellname(en.u, cell), _cellname(en.v, cidx)))
+        for cell, _, _, cidx in foreach_point(en.band):
+            pairs.append((k, _cellname(en.u, cell), _cellname(en.v, cidx)))
     return pairs
 
 
@@ -104,10 +123,24 @@ def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", fo
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
-    triples = scatter_pairs(sv, entries)
+    if wrt != "states":
+        triples = scatter_pairs(sv, entries)
     if wrt in ("parameters", "forcing"):
         cols = set(column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing)))
         triples = [(k, r, c) for k, r, c in triples if check_column(c in cols, c, r, wrt)]
+    elif wrt == "states":
+        from .system import ctx_of, view_states
+
+        states = set(view_states(sv))
+        shapes = ctx_of(sv).shapes
+        triples = [
+            (k, _cellname(en.u, cell), _cellname(en.v, cidx))
+            for k, en in enumerate(entries)
+            for cell, _, _, cidx in foreach_point(en.band)
+            if check_state_column(
+                states, shapes, en.v, cidx, _cellname(en.v, cidx), _cellname(en.u, cell)
+            )
+        ]
     pairs = sorted({(r, c) for _, r, c in triples})
     return pairs, entries
 
@@ -142,6 +175,25 @@ def check_column(ok: bool, colname: str, rowname: str, wrt: str) -> bool:
     return ok
 
 
+def check_state_column(
+    states: set, shapes: dict, v: str, cidx: list, colname: str, rowname: str
+) -> bool:
+    """Whether a state column resolves (assemble.jl ``_colmap`` /
+    ``_colslot``): a cell past a state's extent is a ghost read (``False``,
+    skip it), and a column variable that is not a state of the layout at all
+    — an observed the band calculus took for a state, say — resolves nowhere
+    and is refused rather than silently dropped."""
+    from .bands import BandError
+
+    if v not in states:
+        raise BandError(
+            f"column `{colname}` (row `{rowname}`) names no state of the layout; a band "
+            "column must resolve to a state slot or read past a state's extent"
+        )
+    shape = shapes.get(v) or []
+    return len(cidx) == len(shape) and all(1 <= c <= n for c, n in zip(cidx, shape))
+
+
 def jacobian_block(
     obj,
     model_name: str | None = None,
@@ -149,6 +201,7 @@ def jacobian_block(
     cse: bool = True,
     cse_min_nodes: int = 12,
     forcing=None,
+    column_axis: str | None = None,
 ):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default) and the block-local `expression_templates`; on the state and
@@ -164,7 +217,12 @@ def jacobian_block(
     (:func:`jacobian_bands2`, §4.4): ``["states", ("states", "states")]``,
     and ``[("states", "states")]`` for a pair block alone. A bare ``tuple``
     ``wrt`` is refused: it reads both as a pair and as a list of axes, so
-    neither is assumed."""
+    neither is assumed.
+
+    ``column_axis`` (an index-set name) lets the state block report the
+    ``"column_block"`` structure class with its line-by-line factorization
+    plan when every coupling stays within one line along that axis
+    (:func:`~earthsci_astdiff.structure.column_lines`)."""
     from .jacobian import _FirstOrder
     from .system import SysView, sysview
 
@@ -178,24 +236,27 @@ def jacobian_block(
     memo = _FirstOrder()
     # One axis is a str (iterating it would split it into characters).
     if isinstance(wrt, str):
-        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo)
+        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo, column_axis)
     axes = [_axis_key(w) for w in wrt]
     if not axes or len(set(axes)) != len(axes):
         raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
-    return [_block_of(sv, w, forcing, cse, cse_min_nodes, memo) for w in axes]
+    return [_block_of(sv, w, forcing, cse, cse_min_nodes, memo, column_axis) for w in axes]
 
 
 def _axis_key(w):
     return axis_pair(w) if isinstance(w, (tuple, list)) else str(w)
 
 
-def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int, memo) -> dict:
+def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None) -> dict:
     if isinstance(w, tuple):
+        # a pair block has no structure class to refine
         return jacobian_block2(sv, w, forcing, cse, cse_min_nodes, memo)
-    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo)
+    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo, column_axis)
 
 
-def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo) -> dict:
+def _jacobian_block(
+    sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None
+) -> dict:
     from .jacobian import _AXES
 
     if wrt not in _AXES:
@@ -206,6 +267,14 @@ def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo) 
     # column space instead.
     rect = wrt in ("parameters", "forcing")
     structure = None if rect else memo.structure(entries, sv)
+    # Line-by-line structure is a property of the square state matrix.
+    cax = column_axis if wrt == "states" else None
+    if (
+        cax is not None
+        and structure not in ("empty", "block_diagonal")
+        and column_lines(entries, sv, str(cax)) is not None
+    ):
+        structure = "column_block"
     block = _block(
         wrt,
         entries,
@@ -218,7 +287,7 @@ def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo) 
     if not rect:
         from .factorization import plan_factorization, serialize_plan
 
-        plan = plan_factorization(entries, sv, structure=structure)
+        plan = plan_factorization(entries, sv, structure=structure, column_axis=cax)
         if plan is not None:
             block["factorization"] = serialize_plan(plan)
     return block
@@ -270,7 +339,6 @@ def parse_jacobian_block(block: dict):
     ``((a1, a2), [JacEntry2, ...])``."""
     from dataclasses import replace
 
-    from .bands import Band
     from .cse import expand_templates
 
     pair = isinstance(block["wrt"], list)
@@ -284,12 +352,10 @@ def parse_jacobian_block(block: dict):
         entries = [
             replace(
                 en,
-                band=Band(
-                    en.band.rows,
-                    en.band.ridx,
-                    [expand_templates(c, reg) for c in en.band.cidx],
-                    expand_templates(en.band.coef, reg),
-                    en.band.contracted,
+                band=replace(
+                    en.band,
+                    cidx=[expand_templates(c, reg) for c in en.band.cidx],
+                    coef=expand_templates(en.band.coef, reg),
                 ),
             )
             for en in entries

@@ -36,7 +36,10 @@ def simplify_jl(e: Expr) -> Expr:
     # Constant folding, delegated to the official evaluator; a node the
     # evaluator cannot run without bindings declines to fold (algebraic
     # rules below). Mirrors expression.jl's `_foldable_failure` set.
-    if all(_is_lit(a) for a in args):
+    # An aggregate's empty ``args`` are vacuously "all literal", but the
+    # reference's tree-walk declines to evaluate a faq node without bindings
+    # (a sum of a literal body stays a sum, e.g. ``Σ_j 0``).
+    if o != "faq" and all(_is_lit(a) for a in args):
         try:
             rv = float(evaluate(node, {}))
             all_int = all(isinstance(a, int) for a in args)

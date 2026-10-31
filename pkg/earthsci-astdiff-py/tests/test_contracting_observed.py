@@ -10,11 +10,10 @@ import earthsci_ast as ea
 import pytest
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expr_walk import map_children
-from earthsci_astdiff import assemble_jacobian, inline_observed, jacobian_bands
-from earthsci_astdiff.bands import BandError
+from earthsci_astdiff import assemble_jacobian, inline_observed
 from earthsci_astdiff.expr_helpers import skey
-from earthsci_astdiff.scalar_rules import DerivativeRuleError
 from earthsci_astdiff.system import lhs_state, observed_defs, sysview
+from oracle import check_against_fd
 
 NX, NZ = 2, 3
 U = [[0.1 * (i + NX * k + 1) for k in range(NZ)] for i in range(NX)]  # U[i][k]
@@ -116,22 +115,38 @@ def test_contracting_observed_keeps_its_sum(case, oidx):
         assert j[key] == pytest.approx(val, abs=1e-13), key
 
 
-def test_filtered_contracting_observed_is_refused():
-    # Refused, as the same filter written inline is — never dropped.
+def _sq_s(o):
+    return _neg(_sq(_idx("s", o[0])))
+
+
+def test_filtered_contracting_observed_keeps_its_window():
+    # s[i] = Σ_{k<3} u[i,k]², D(u)[i,k] = -s[i]²: the filter keeps its window
+    # (spec §3.5) and the lifted column takes the guard — never dropped.
     s = _sdef(filter={"op": "<", "args": ["k", 3]})
-    file = _doc(CASES["-s[i]"][0], ("i", "k"), s=s)
-    with pytest.raises((BandError, DerivativeRuleError)):
-        jacobian_bands(file)
+    file = _doc(_sq_s, s=s)
+    sf = [sum(U[i][k] ** 2 for k in range(2)) for i in range(NX)]
+    _check(
+        assemble_jacobian(file, states={"u": U}),
+        _expect(lambda i, k, a, b: -2 * sf[i] * 2 * U[i][b] if a == i and b < 2 else 0),
+    )
+    x = [U[i][k] for i in range(NX) for k in range(NZ)]
+    check_against_fd(file, x)
 
 
-def test_semiring_max_is_refused():
+def test_semiring_max_contracting_observed():
     # `semiring` supersedes `reduce`: a max_product node with no `reduce` is
-    # a max, not a sum.
+    # a max, not a sum — s[i] = max_k u[i,k], here at k = NZ.
     s = _sdef(semiring="max_product")
     del s["reduce"]
-    file = _doc(CASES["-s[i]"][0], s=s)
-    with pytest.raises((BandError, DerivativeRuleError)):
-        jacobian_bands(file)
+    file = _doc(_sq_s, s=s)
+    smax = [max(U[i][k] ** 2 for k in range(NZ)) for i in range(NX)]
+    j = assemble_jacobian(file, states={"u": U})
+    want = _expect(lambda i, k, a, b: -2 * smax[i] * 2 * U[i][b] if a == i and b == NZ - 1 else 0)
+    for key, val in want.items():
+        assert j[key] == pytest.approx(val, abs=1e-13), key
+    assert all(v == 0 for key, v in j.items() if key not in want)
+    x = [U[i][k] for i in range(NX) for k in range(NZ)]
+    check_against_fd(file, x)
 
 
 C = {"c": {"type": "unknown"}}

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from earthsci_ast.canonicalize import canonical_json
+from earthsci_ast.canonicalize import CanonicalizeError, canonical_json
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.serialize import _serialize_expression
@@ -149,6 +149,18 @@ def ckey(e: Expr) -> str:
     return canonical_json(e)
 
 
+def site_key(e: Expr) -> str:
+    """A site's identity key (expr_helpers.jl ``_site_key``): the canonical
+    JSON, or — for an ``index`` node whose subscripts hold an array op the
+    canonical form refuses (a level search ``u[κ]`` with κ a min-faq, spec
+    §3.5) — ``~`` followed by its stable JSON, which sorts after every
+    canonical key."""
+    try:
+        return ckey(e)
+    except CanonicalizeError:
+        return "~" + stable_json(ser_expr(e))
+
+
 @dataclass(frozen=True)
 class Site:
     """A bare variable reference or one symbolic ``index(v, i…)`` cell."""
@@ -158,12 +170,12 @@ class Site:
 
     @staticmethod
     def of(e: Expr) -> Site:
-        return Site(e, ckey(e))
+        return Site(e, site_key(e))
 
 
 def is_site(e: Expr, s: Site) -> bool:
     if isinstance(e, str) or (isinstance(e, ExprNode) and e.op == "index"):
-        return ckey(e) == s.key
+        return site_key(e) == s.key
     return False
 
 

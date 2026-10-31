@@ -13,6 +13,7 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expression import free_variables
 
 from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
+from .reductions import reduce_op, window_weight
 
 # The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
 # their time argument, so a.e. zero. ``datetime.julian_day`` is not one of them.
@@ -159,48 +160,45 @@ def dscalar(e: Expr, s: Site) -> Expr:
     )
 
 
-def plain_sum(e: ExprNode) -> bool:
-    """Whether faq node ``e`` reduces by ordinary ``+`` (scalar_rules.jl
-    ``_plain_sum``): a ``semiring`` supersedes ``reduce``, so a
-    ``max_product`` node with no ``reduce`` is a max, not a sum."""
-    if e.semiring is None:
-        return e.reduce in (None, "+")
-    return e.semiring == "sum_product"
-
-
 def reduction(e: ExprNode) -> str:
+    """A faq node's reduction, for messages (``reduce_op`` decides it,
+    reductions.py)."""
     return f"reduce=`{e.reduce}`" if e.semiring is None else f"semiring=`{e.semiring}`"
 
 
 def _dsum(e: ExprNode, s: Site) -> Expr:
-    """A scalar faq sum Σ_k body (scalar_rules.jl ``_dsum``): the sum of the
-    body's derivatives. Bound indices the site's column does not read are
-    summed; those it does read (``u[i,k]`` under Σ_k) are left FREE, for the
-    band emitter to turn into contracted column dimensions (bands.py
-    ``_lift_nested``). Filter, join and non-``"+"`` reductions have no rule."""
-    if e.filter is not None:
-        raise DerivativeRuleError(
-            "filtered faq nodes are not differentiated (the filter gate "
-            "would be dropped from the derivative)"
-        )
-    if e.join is not None:
-        raise DerivativeRuleError("joined faq nodes are not differentiated")
-    if not plain_sum(e):
-        raise DerivativeRuleError(f"{reduction(e)} (non-smooth semiring reductions have no rule)")
+    """A scalar faq reduction (scalar_rules.jl ``_dsum``): the ``+`` sum of
+    the body's derivatives, each weighted by what the reduction does with its
+    term (``window_weight``, reductions.py). Bound indices the site's column
+    does not read are summed; those it does read (``u[i,k]`` under Σ_k) are
+    left FREE, for the band emitter to turn into contracted column dimensions
+    (bands.py ``_lift_nested``). A filter keeps its window — the remaining
+    sum's filter, or an ``ifelse`` once every bound index is left free — and
+    its own Dirac term is dropped. A join or a value-invention node has no
+    rule (spec §3.5)."""
+    red = reduce_op(e, DerivativeRuleError)
     db = dscalar(e.expr, s)
     if is_zero(db):
         return 0
     ranges = e.ranges or {}
+    db = window_weight(red, e, sorted(str(n) for n in ranges), db, DerivativeRuleError)
+
+    def plus(**kw):
+        # A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+        if red == "+":
+            return replace(e, expr=db, **kw)
+        return replace(e, expr=db, reduce="+", semiring=None, **kw)
+
     read: set[str] = set()
     if isinstance(s.expr, ExprNode):
         for x in s.expr.args[1:]:
             read |= set(free_variables(x))
     summed = {n: r for n, r in ranges.items() if n not in read}
     if len(summed) == len(ranges):
-        return replace(e, expr=db)
+        return plus()
     if not summed:
-        return db
-    return replace(e, expr=db, ranges=summed)
+        return db if e.filter is None else op("ifelse", e.filter, db, 0)
+    return plus(ranges=summed)
 
 
 def _const_vector(e: Expr) -> list[float] | None:

@@ -22,6 +22,7 @@ from .emit import (
 from .expr_helpers import Site, ckey, skey, stable_json
 from .factorization import (
     BlockDiagonalPlan,
+    ColumnBlockPlan,
     lu_fill,
     markowitz_ordering,
     plan_factorization,
@@ -43,13 +44,14 @@ from .numeric import (
 from .scalar_rules import DerivativeRuleError, dscalar
 from .second_order import JacEntry2, jacobian_bands2, parse_band2
 from .simplify_branches import canon_lits, simp, simplify_branches
-from .structure import detect_structure
+from .structure import column_lines, detect_structure
 from .system import SysView, ctx_of, sysview
 
 __all__ = [
     "Band",
     "BandError",
     "BlockDiagonalPlan",
+    "ColumnBlockPlan",
     "Ctx",
     "DerivativeRuleError",
     "EvalError",
@@ -65,6 +67,7 @@ __all__ = [
     "canon_lits",
     "ckey",
     "clip_regions",
+    "column_lines",
     "column_names",
     "cse_templates",
     "ctx_of",

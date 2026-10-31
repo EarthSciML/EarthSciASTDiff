@@ -14,6 +14,8 @@ GOLDEN_NAMES = (
     "contracting_observed",
     "tgrad_photolysis",
     "forcing_bracket",
+    "filtered_scan",
+    "semiring_reduce",
 )
 
 
