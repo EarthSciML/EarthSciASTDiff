@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from bandvals import assemble_jacobian
 from earthsci_ast.numpy_interpreter import EvalContext, eval_expr
-from earthsci_astdiff import assemble_jacobian, inline_observed
+from earthsci_astdiff import inline_observed
 from earthsci_astdiff.system import ctx_of, lhs_state, observed_defs, sysview, view_states
 
 

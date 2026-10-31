@@ -3,11 +3,10 @@
 
 use std::fs;
 
-use earthsci_astdiff::{
-    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt,
-};
+use earthsci_astdiff::{jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt};
 
 mod common;
+use common::oracle::{assemble_jacobian, band_fields, scatter};
 use common::{jvals_env, load, root};
 
 fn cb(axis: &str) -> Layout {
@@ -62,7 +61,7 @@ fn scattered_values_match_the_oracle() {
         for l in [nl, nl + 3] {
             let bound = plan.bind(&file, None, l).unwrap();
             let mut out = vec![f64::NAN; bound.len];
-            bound.scatter(&fields, &mut out).unwrap();
+            scatter(&bound, &fields, &mut out).unwrap();
             let targets = plan.targets(l);
             let mut covered = std::collections::HashSet::new();
             for (pos, t) in targets.iter().enumerate() {
@@ -169,8 +168,8 @@ fn refusals() {
     let (env, _) = jvals_env("bd_chem");
     let fields = band_fields(&file, None, &env).unwrap();
     let b = plan.bind(&file, None, 4).unwrap();
-    assert!(b.scatter(&fields, &mut vec![0.0; b.len + 1]).is_err());
-    assert!(b.scatter(&fields[1..], &mut vec![0.0; b.len]).is_err());
+    assert!(scatter(&b, &fields, &mut vec![0.0; b.len + 1]).is_err());
+    assert!(scatter(&b, &fields[1..], &mut vec![0.0; b.len]).is_err());
 }
 
 #[test]

@@ -169,8 +169,8 @@ pub fn column_names(columns: &[(String, Vec<i64>)]) -> Vec<String> {
             out.push(v.clone());
         } else {
             let ranges: Vec<(i64, i64)> = shape.iter().map(|n| (1, *n)).collect();
-            for cell in crate::numeric::product_first_fastest(&ranges) {
-                out.push(crate::numeric::cellname(v, &cell));
+            for cell in crate::points::product_first_fastest(&ranges) {
+                out.push(crate::points::cellname(v, &cell));
             }
         }
     }
@@ -234,7 +234,7 @@ pub fn jacobian_bands_view(
     bands_of_view(sv, &ctx, &obs, wrt, forcing)
 }
 
-/// The body of [`jacobian_bands`], for callers (numeric assembly) that
+/// The body of [`jacobian_bands`], for callers that
 /// already hold the view, its context and its observed definitions.
 pub(crate) fn bands_of_view(
     sv: &SysView,

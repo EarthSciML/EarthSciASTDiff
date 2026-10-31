@@ -30,17 +30,6 @@ from .factorization import (
 )
 from .inline import InlineError, inline_observed
 from .jacobian import JacEntry, forcing_names, jacobian_bands, jacobian_columns
-from .numeric import (
-    EvalError,
-    HVPEvaluator,
-    JacobianEvaluator,
-    assemble_jacobian,
-    hvp,
-    prepare_hvp,
-    prepare_jacobian,
-    vjp,
-    vjp_forcing,
-)
 from .scalar_rules import DerivativeRuleError, dscalar
 from .second_order import JacEntry2, jacobian_bands2, parse_band2
 from .simplify_branches import canon_lits, simp, simplify_branches
@@ -54,15 +43,11 @@ __all__ = [
     "ColumnBlockPlan",
     "Ctx",
     "DerivativeRuleError",
-    "EvalError",
-    "HVPEvaluator",
     "InlineError",
     "JacEntry",
     "JacEntry2",
-    "JacobianEvaluator",
     "Site",
     "SysView",
-    "assemble_jacobian",
     "bands",
     "canon_lits",
     "ckey",
@@ -75,7 +60,6 @@ __all__ = [
     "dscalar",
     "expand_templates",
     "forcing_names",
-    "hvp",
     "inline_observed",
     "jacobian_bands",
     "jacobian_bands2",
@@ -91,8 +75,6 @@ __all__ = [
     "parse_jacobian_block",
     "parse_jacobian_blocks",
     "plan_factorization",
-    "prepare_hvp",
-    "prepare_jacobian",
     "scatter_pairs",
     "serialize_band",
     "serialize_plan",
@@ -101,6 +83,4 @@ __all__ = [
     "skey",
     "stable_json",
     "sysview",
-    "vjp",
-    "vjp_forcing",
 ]

@@ -8,14 +8,16 @@ use std::collections::HashMap;
 
 use earthsci_ast::{EsmFile, Expr};
 use earthsci_astdiff::{
-    assemble_jacobian, assemble_jacobian_with_forcing, column_names, forcing_names, jacobian_bands,
-    jacobian_bands_with_forcing, jacobian_block, jacobian_blocks, jacobian_columns,
-    parse_jacobian_block, parse_jacobian_blocks, prepare_jacobian, stable_json, sysview, vjp,
-    vjp_forcing, BlockWrt, ParsedBlock, Wrt,
+    column_names, forcing_names, jacobian_bands, jacobian_bands_with_forcing, jacobian_block,
+    jacobian_blocks, jacobian_columns, parse_jacobian_block, parse_jacobian_blocks, stable_json,
+    sysview, BlockWrt, ParsedBlock, Wrt,
 };
 use serde_json::{json, Value};
 
 mod common;
+use common::oracle::{
+    assemble_jacobian, assemble_jacobian_with_forcing, prepare_jacobian, vjp, vjp_forcing, Env,
+};
 use common::{jvals_env, load, root};
 
 fn s(v: &[&str]) -> Vec<String> {
@@ -284,7 +286,7 @@ fn refused_rather_than_silently_wrong() {
             .len(),
         1
     );
-    let env = earthsci_astdiff::numeric::Env {
+    let env = Env {
         states: [("c".to_string(), json!([0.1, 0.2, 0.3, 0.4]))].into(),
         params: HashMap::new(),
         t: 0.0,
@@ -385,7 +387,7 @@ fn array_parameter_defaults_broadcast_or_zero_fill() {
             "Z": {"type": "parameter", "shape": ["x"]},
         }),
     );
-    let env = earthsci_astdiff::numeric::Env {
+    let env = Env {
         states: [("c".to_string(), json!([0.1, 0.2, 0.3, 0.4]))].into(),
         params: HashMap::new(),
         t: 0.0,
@@ -420,7 +422,7 @@ fn prepared_evaluator_is_reused() {
         .map(|(k, r)| (r.to_string(), 0.5 + k as f64))
         .collect();
     for t in [0.0, 0.37] {
-        let env = earthsci_astdiff::numeric::Env { t, ..env.clone() };
+        let env = Env { t, ..env.clone() };
         let mut want = vec![0.0; jac.colnames.len()];
         vjp(&file, None, Wrt::Forcing, None, &env, &lambda, &mut want).unwrap();
         let mut got = vec![0.0; jac.colnames.len()];

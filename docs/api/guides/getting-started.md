@@ -1,6 +1,6 @@
 ---
 title: "Getting started"
-description: "Differentiate a model, read its sparsity pattern and structure, evaluate the Jacobian, and serialize it as a document block."
+description: "Differentiate a model, read its sparsity pattern and structure, emit the Jacobian as documents EarthSciAST evaluates, and serialize it as a document block."
 weight: 10
 ---
 
@@ -51,29 +51,16 @@ See [`detect_structure`](/generated/api/ref/detect_structure) and
 
 ## Evaluate
 
-Python and Rust evaluate the Jacobian at a point, using the document's
-initial state and parameters unless you pass others. The Julia package
-computes no values: it emits an evaluation document whose right-hand side,
-run once by an unmodified EarthSciAST evaluator, leaves every band value in
-`du` (and `jvp_document`, `vjp_document` and `hvp_document` do the same for
-`J v`, `Jᵀ λ` and second-order products).
+EarthSciASTDiff evaluates nothing itself. It emits the Jacobian as derived
+ESM documents, and EarthSciAST evaluates them like any other model: the band
+fields `J_k` (the evaluation document), and the matrix-free products `J·v`,
+`Jᵀ·λ` and the second-order contraction (spec §9).
 
-<!-- example: assemble -->
+<!-- example: evaluate -->
 
-See [`assemble_jacobian`](/generated/api/ref/assemble_jacobian) and
-[`evaluation_document`](/generated/api/ref/evaluation_document).
-
-## Prototype and storage
-
-To use the Jacobian inside a solver, take the fixed sparse prototype once,
-and place the band values in your own storage with a scatter plan that is
-checked against the source before use.
-
-<!-- example: prepare -->
-
-See [`jac_prototype`](/generated/api/ref/jac_prototype),
-[`scatter_plan`](/generated/api/ref/scatter_plan) and
-[`bind_plan`](/generated/api/ref/bind_plan).
+See [`evaluation_document`](/generated/api/ref/evaluation_document),
+[`jvp_document`](/generated/api/ref/jvp_document) and
+[`jac_prototype`](/generated/api/ref/jac_prototype).
 
 ## Serialize
 

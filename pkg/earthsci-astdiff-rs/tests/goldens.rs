@@ -5,12 +5,13 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    assemble_jacobian, evaluation_document, jacobian_bands, jacobian_block, parse_jacobian_block,
-    serialize_band, stable_json, sysview, Wrt,
+    evaluation_document, jacobian_bands, jacobian_block, parse_jacobian_block, serialize_band,
+    stable_json, sysview, Wrt,
 };
 use serde_json::Value;
 
 mod common;
+use common::oracle::assemble_jacobian;
 use common::{load, root};
 
 const NAMES: [&str; 10] = [

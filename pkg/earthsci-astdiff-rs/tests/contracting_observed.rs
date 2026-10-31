@@ -8,10 +8,12 @@
 use std::collections::HashMap;
 
 use earthsci_ast::Expr;
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{lhs_state, observed_defs};
-use earthsci_astdiff::{assemble_jacobian, inline_observed, jacobian_bands, skey, sysview, Wrt};
+use earthsci_astdiff::{inline_observed, jacobian_bands, skey, sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::oracle::{assemble_jacobian, Env};
 
 const NX: usize = 2;
 const NZ: usize = 3;

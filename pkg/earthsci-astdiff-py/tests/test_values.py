@@ -7,7 +7,7 @@ import json
 
 import earthsci_ast as ea
 import pytest
-from earthsci_astdiff import assemble_jacobian
+from bandvals import assemble_jacobian
 
 NAMES = (
     "bd_chem",

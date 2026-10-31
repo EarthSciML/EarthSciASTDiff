@@ -10,10 +10,12 @@ use std::collections::HashMap;
 
 use earthsci_ast::RegionBound;
 use earthsci_astdiff::bands::region_bounds;
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{observed_defs, view_states};
-use earthsci_astdiff::{assemble_jacobian, jacobian_bands, sysview, Wrt};
+use earthsci_astdiff::{jacobian_bands, sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::oracle::{assemble_jacobian, Env};
 
 const K: f64 = 3.0;
 

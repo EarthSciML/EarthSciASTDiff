@@ -14,7 +14,8 @@ test/observed_test.jl for the two shared cases).
 
 import earthsci_ast as ea
 import pytest
-from earthsci_astdiff import assemble_jacobian, jacobian_bands, sysview
+from bandvals import assemble_jacobian
+from earthsci_astdiff import jacobian_bands, sysview
 from earthsci_astdiff.system import observed_defs, view_states
 
 K = 3.0

@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use earthsci_astdiff::numeric::Env;
+pub mod oracle;
+
+use oracle::Env;
 use serde_json::Value;
 
 pub fn root() -> PathBuf {

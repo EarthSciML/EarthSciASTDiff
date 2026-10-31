@@ -17,8 +17,8 @@ ops = ["jacobian_pattern", "detect_structure", "column_lines", "plan_factorizati
 [[group]]
 id = "evaluate"
 title = "Evaluate the Jacobian"
-description = "The Jacobian and its products as documents an EarthSciAST evaluator runs, the storage map that places the band values, and (Python and Rust, until they emit the documents) prepared evaluators."
-ops = ["evaluation_document", "jvp_document", "vjp_document", "hvp_document", "jac_prototype", "scatter_plan", "bind_plan", "assemble_jacobian", "prepare_jacobian", "jacobian_evaluator", "vjp", "vjp_forcing", "prepare_hvp", "hvp_evaluator", "hvp"]
+description = "The Jacobian and its products as documents an EarthSciAST evaluator runs, the storage map that places the band values."
+ops = ["evaluation_document", "jvp_document", "vjp_document", "hvp_document", "jac_prototype", "scatter_plan", "bind_plan"]
 
 [[group]]
 id = "serialize"

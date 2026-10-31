@@ -1,5 +1,11 @@
-//! Numeric assembly — a correctness surface (like the Python binding's):
-//! per-cell read resolution to literals, then the official evaluator.
+//! A test-only value oracle: the band entries evaluated point by point, each
+//! coefficient's reads resolved to literals and the closed tree handed to
+//! EarthSciAST's `evaluate`. The crate itself evaluates nothing (the values
+//! are EarthSciAST's to compute from the emitted documents); this was the
+//! binding's `numeric` module and stays here to check the band calculus
+//! against the value goldens the Julia reference pins by evaluating its
+//! documents, until this binding emits the product documents (spec §9) too.
+#![allow(dead_code)]
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -7,23 +13,21 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use earthsci_ast::evaluate;
 use earthsci_ast::substitute;
 use earthsci_ast::{EsmFile, Expr, VariableType};
+use earthsci_astdiff::bands::{range_of, Band, BandError, Ctx};
+use earthsci_astdiff::helpers::map_expr_children;
+use earthsci_astdiff::inline::inline_observed_cached;
+use earthsci_astdiff::points::{
+    cellname, check_state_column, foreach_point, outside, product_first_fastest,
+};
+use earthsci_astdiff::reductions::reduce_op;
+use earthsci_astdiff::system::{ctx_of, observed_defs, sysview, view_states, SysView};
+use earthsci_astdiff::{
+    axis_pair, column_names, jacobian_bands2_with_forcing, jacobian_bands_view, jacobian_block2,
+    jacobian_columns, JacEntry, JacEntry2, Wrt,
+};
 use serde_json::Value;
 
-use crate::bands::{Band, BandError, Ctx};
-use crate::clip::RIdx;
-use crate::emit::detect_structure;
-use crate::helpers::map_expr_children;
-use crate::inline::inline_observed_cached;
-use crate::jacobian::{bands_of_view, column_names, jacobian_columns, JacEntry, Wrt};
-use crate::second_order::{axis_pair, bands2_view, structure2, JacEntry2};
-use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
-
 type R<T> = Result<T, BandError>;
-
-/// `foreach_point`'s callback: `(row cell, contracted cell, index binding,
-/// column cell)`.
-type PointFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()> + 'a;
-type PointWhileFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<bool> + 'a;
 
 /// `for_each_value`'s callback: `(k, entry, row cell, contracted cell,
 /// column cell, value)`.
@@ -114,15 +118,14 @@ fn resolve(e: &Expr, env: &Env, ctx: &Ctx) -> R<Expr> {
             // ⊕ per esm-spec: a filtered-out term is skipped; the empty
             // reduction is the semiring identity (0, 1, -inf, +inf); terms
             // fold in ascending order, first index fastest.
-            let red = crate::reductions::reduce_op(n)
-                .map_err(|m| BandError(format!("{m} in scalar coefficient")))?;
+            let red = reduce_op(n).map_err(|m| BandError(format!("{m} in scalar coefficient")))?;
             let empty = HashMap::new();
             let ranges = n.ranges.as_ref().unwrap_or(&empty);
             let mut names: Vec<String> = ranges.keys().cloned().collect();
             names.sort();
             let boxes: Vec<(i64, i64)> = names
                 .iter()
-                .map(|nm| crate::bands::range_of(&ranges[nm], ctx))
+                .map(|nm| range_of(&ranges[nm], ctx))
                 .collect::<Result<_, _>>()?;
             let body = n
                 .expr
@@ -188,150 +191,6 @@ fn resolve(e: &Expr, env: &Env, ctx: &Ctx) -> R<Expr> {
         }
         _ => Ok(e.clone()),
     }
-}
-
-pub(crate) fn cellname(v: &str, cell: &[i64]) -> String {
-    if cell.is_empty() {
-        v.to_string()
-    } else {
-        format!(
-            "{v}[{}]",
-            cell.iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-    }
-}
-
-fn fold_const_gathers(e: &Expr, bind: &HashMap<String, f64>) -> R<Expr> {
-    let Expr::Operator(n) = e else {
-        return Ok(e.clone());
-    };
-    if n.op == "index" {
-        if let Some(Expr::Operator(cn)) = n.args.first() {
-            if cn.op == "const" {
-                let mut v = cn
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| BandError("const without value".into()))?;
-                for x in &n.args[1..] {
-                    let i = eval_cidx(x, bind)?;
-                    v = v
-                        .as_array()
-                        .and_then(|a| a.get((i - 1) as usize))
-                        .ok_or_else(|| BandError("out-of-range const gather".into()))?;
-                }
-                return Ok(match v {
-                    Value::Number(num) if num.is_i64() => Expr::Integer(num.as_i64().unwrap()),
-                    _ => Expr::Number(
-                        v.as_f64()
-                            .ok_or_else(|| BandError("non-numeric const gather".into()))?,
-                    ),
-                });
-            }
-        }
-    }
-    let mut err: Option<BandError> = None;
-    let out = map_expr_children(e, &mut |x| match fold_const_gathers(x, bind) {
-        Ok(v) => v,
-        Err(er) => {
-            if err.is_none() {
-                err = Some(er);
-            }
-            x.clone()
-        }
-    });
-    match err {
-        Some(er) => Err(er),
-        None => Ok(out),
-    }
-}
-
-pub(crate) fn eval_cidx(c: &Expr, bind: &HashMap<String, f64>) -> R<i64> {
-    let folded = fold_const_gathers(c, bind)?;
-    evaluate(&folded, bind)
-        .map(|v| v.round() as i64)
-        .map_err(|er| BandError(format!("evaluate cidx: {er:?}")))
-}
-
-/// A band guard at one point (assemble.jl `_eval_guard`): `const` gathers
-/// folded like column indices, then evaluated; nonzero holds.
-pub(crate) fn eval_guard(g: &Expr, bind: &HashMap<String, f64>) -> R<bool> {
-    let folded = fold_const_gathers(g, bind)?;
-    evaluate(&folded, bind)
-        .map(|v| v != 0.0)
-        .map_err(|er| BandError(format!("evaluate guard: {er:?}")))
-}
-
-pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
-    let mut out = Vec::new();
-    let mut cell: Vec<i64> = ranges.iter().map(|(lo, _)| *lo).collect();
-    if ranges.is_empty() {
-        return vec![vec![]];
-    }
-    loop {
-        out.push(cell.clone());
-        let mut k = 0;
-        loop {
-            if k == cell.len() {
-                return out;
-            }
-            cell[k] += 1;
-            if cell[k] <= ranges[k].1 {
-                break;
-            }
-            cell[k] = ranges[k].0;
-            k += 1;
-        }
-    }
-}
-
-/// Every point of one band (a point its `where` guard excludes is none):
-/// `f(row cell, contracted cell, index binding,
-/// column cell)` per (row cell, contracted cell), first index fastest, with
-/// the column index evaluated there (ghost reads included). The one point
-/// walk shared by numeric assembly and the CSR scatter plan.
-pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
-    all_points(b, &mut |cell, cc, ibind, cidx| {
-        f(cell, cc, ibind, cidx).map(|()| true)
-    })?;
-    Ok(())
-}
-
-/// As [`foreach_point`], stopping at the first point where `f` returns
-/// false; whether it never did.
-pub(crate) fn all_points(b: &Band, f: &mut PointWhileFn<'_>) -> R<bool> {
-    let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
-    for cell in product_first_fastest(&b.rows) {
-        for cc in product_first_fastest(&cranges) {
-            let mut ibind: HashMap<String, i64> = HashMap::new();
-            for (k, r) in b.ridx.iter().enumerate() {
-                if let RIdx::Name(nm) = r {
-                    ibind.insert(nm.clone(), cell[k]);
-                }
-            }
-            for (k, (nm, _, _)) in b.contracted.iter().enumerate() {
-                ibind.insert(nm.clone(), cc[k]);
-            }
-            let fbind: HashMap<String, f64> =
-                ibind.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
-            if let Some(g) = &b.guard {
-                if !eval_guard(g, &fbind)? {
-                    continue; // a point the `where` guard excludes
-                }
-            }
-            let cidx: Vec<i64> = b
-                .cidx
-                .iter()
-                .map(|c| eval_cidx(c, &fbind))
-                .collect::<Result<_, _>>()?;
-            if !f(&cell, &cc, &ibind, &cidx)? {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
 }
 
 /// The coefficient of every band with the observed it reads spliced in.
@@ -416,20 +275,6 @@ fn for_each_value(
     Ok(())
 }
 
-/// A state column whose variable the layout does not hold at all resolves
-/// nowhere — an observed the band calculus took for a state, say — and is
-/// refused (assemble.jl `_colslot`); a cell past a state's extent is still a
-/// ghost read.
-pub(crate) fn check_state_column(states: &HashSet<String>, v: &str, u: &str) -> R<()> {
-    if states.contains(v) {
-        return Ok(());
-    }
-    Err(BandError(format!(
-        "column `{v}` (row `{u}`) names no state of the layout; a band column must \
-         resolve to a state slot or read past a state's extent"
-    )))
-}
-
 /// A value of `shape` with every cell `x`, as row-major nested arrays (the
 /// inline array form).
 fn nested_full(shape: &[i64], x: f64) -> Value {
@@ -492,7 +337,7 @@ fn with_defaults<'e>(defaults: &HashMap<String, Value>, env: &'e Env) -> Cow<'e,
 pub struct JacobianEvaluator {
     pub wrt: Wrt,
     pub entries: Vec<JacEntry>,
-    /// The [`crate::jacobian_columns`] space on the parameters and forcing
+    /// The [`earthsci_astdiff::jacobian_columns`] space on the parameters and forcing
     /// axes, `None` otherwise.
     pub columns: Option<Vec<(String, Vec<i64>)>>,
     /// The canonical column names of `columns` (empty without one).
@@ -516,7 +361,7 @@ pub fn prepare_jacobian(
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let entries = bands_of_view(&sv, &ctx, &obs, wrt, forcing)?;
+    let entries = jacobian_bands_view(&sv, wrt, forcing)?;
     let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let columns = if wrt.has_columns() {
         Some(jacobian_columns(&sv, wrt, forcing)?)
@@ -655,7 +500,7 @@ pub fn assemble_jacobian(
 
 /// [`assemble_jacobian`] with an explicit forcing set. On the parameters and
 /// forcing axes the column names are the canonical column space of
-/// [`crate::jacobian_columns`] (`"E[1]"`, `"F[2,3]"`, scalars bare). A
+/// [`earthsci_astdiff::jacobian_columns`] (`"E[1]"`, `"F[2,3]"`, scalars bare). A
 /// forcing column outside its buffer's extent is an error (no ghost skip); a
 /// parameter or state column read past its extent is a ghost read and is
 /// skipped. A parameter `env.params` does not bind reads the document's
@@ -676,7 +521,7 @@ pub fn assemble_jacobian_with_forcing(
 /// (and no transpose) formed. `lambda` is keyed by row cell name (`"c[2]"`,
 /// `"S"`); a row it does not bind is an error. `gbar` is indexed by the
 /// canonical column ordinal of a parameters or forcing axis
-/// ([`crate::jacobian::column_names`] of [`crate::jacobian_columns`]) and
+/// ([`earthsci_astdiff::jacobian::column_names`] of [`earthsci_astdiff::jacobian_columns`]) and
 /// ACCUMULATES — zero it first for a single product. This prepares the
 /// evaluator for one call; a loop calls [`JacobianEvaluator::vjp`] on one
 /// [`prepare_jacobian`] instead.
@@ -712,17 +557,17 @@ pub fn vjp_forcing(
 }
 
 /// The band fields at a point — what the derived evaluation document's
-/// `J_k` states hold, and what a [`crate::ScatterPlan`] scatters: field `k`
+/// `J_k` states hold, and what a [`earthsci_astdiff::ScatterPlan`] scatters: field `k`
 /// over the row shape then the contracted extents, column-major. Ghost
 /// points (no column) and cells outside the band region stay 0.
 pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec<Vec<f64>>> {
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let entries = bands_of_view(&sv, &ctx, &obs, Wrt::States, None)?;
+    let entries = jacobian_bands_view(&sv, Wrt::States, None)?;
     let shapes: Vec<Vec<i64>> = entries
         .iter()
-        .map(|en| crate::scatter::field_shape(en, &ctx))
+        .map(|en| earthsci_astdiff::scatter::field_shape(en, &ctx))
         .collect();
     let mut fields: Vec<Vec<f64>> = shapes
         .iter()
@@ -740,7 +585,7 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
         Some(&states),
         &mut |k, _, cell, cc, _, val| {
             let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
-            fields[k][crate::scatter::flat(&full, &shapes[k])] = val;
+            fields[k][earthsci_astdiff::scatter::flat(&full, &shapes[k])] = val;
         },
     )?;
     Ok(fields)
@@ -772,7 +617,7 @@ pub enum HvpForm {
 pub struct HvpEvaluator {
     pub wrt: (Wrt, Wrt),
     pub entries: Vec<JacEntry2>,
-    /// The second axis's [`crate::jacobian_columns`] space on a parameters
+    /// The second axis's [`earthsci_astdiff::jacobian_columns`] space on a parameters
     /// or forcing pair, `None` otherwise.
     pub columns: Option<Vec<(String, Vec<i64>)>>,
     /// The canonical column names of `columns` (empty without one).
@@ -798,7 +643,7 @@ pub fn prepare_hvp(
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let (e1, entries) = bands2_view(&sv, &ctx, &obs, wrt, forcing)?;
+    let entries = jacobian_bands2_with_forcing(file, model_name, wrt, forcing)?;
     let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let columns = if wrt.1.has_columns() {
         Some(jacobian_columns(&sv, wrt.1, forcing)?)
@@ -806,7 +651,16 @@ pub fn prepare_hvp(
         None
     };
     let colnames = columns.as_deref().map(column_names).unwrap_or_default();
-    let structure = structure2(|| detect_structure(&e1, &ctx), &entries, &ctx, wrt.0);
+    let structure = jacobian_block2(file, model_name, wrt, forcing, false, 12)?
+        .get("structure")
+        .and_then(Value::as_str)
+        .map(|s| {
+            if s == "block_diagonal" {
+                "block_diagonal"
+            } else {
+                "other"
+            }
+        });
     let defaults = parameter_defaults(&sv, &ctx);
     let states = view_states(&sv, &obs).into_iter().collect();
     Ok(HvpEvaluator {
@@ -820,11 +674,6 @@ pub fn prepare_hvp(
         defaults,
         states,
     })
-}
-
-/// Whether a column cell lies outside its variable's declared extent.
-pub(crate) fn outside(shape: Option<&Vec<i64>>, cidx: &[i64]) -> bool {
-    shape.is_some_and(|sh| cidx.iter().zip(sh).any(|(c, s)| *c < 1 || c > s))
 }
 
 impl HvpEvaluator {
@@ -960,4 +809,28 @@ pub fn hvp(
     g: &mut BTreeMap<String, f64>,
 ) -> R<()> {
     prepare_hvp(file, model_name, wrt, forcing)?.hvp(env, pairs, form, g)
+}
+
+/// Execute a bound scatter plan (the consumer's step, spec §8): `out`
+/// zeroed, then `out[pos] += fields[k][f]` in plan order.
+pub fn scatter(b: &earthsci_astdiff::BoundScatter, fields: &[Vec<f64>], out: &mut [f64]) -> R<()> {
+    if fields.len() != b.field_lens.len()
+        || fields.iter().zip(&b.field_lens).any(|(f, n)| f.len() != *n)
+    {
+        return Err(BandError(
+            "scatter: band fields do not match the plan's bands".into(),
+        ));
+    }
+    if out.len() != b.len {
+        return Err(BandError(format!(
+            "scatter: output has length {}; the plan needs {}",
+            out.len(),
+            b.len
+        )));
+    }
+    out.iter_mut().for_each(|x| *x = 0.0);
+    for &(k, f, pos) in &b.pairs {
+        out[pos] += fields[k][f];
+    }
+    Ok(())
 }

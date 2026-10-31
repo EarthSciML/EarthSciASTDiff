@@ -1,4 +1,4 @@
-"""Differentiate a model, read its sparsity and structure, and evaluate the Jacobian."""
+"""Differentiate a model, read its sparsity and structure, and serialize the Jacobian."""
 
 import json
 from pathlib import Path
@@ -38,13 +38,6 @@ assert ("A[1]", "A[2]") not in pairs
 assert earthsci_astdiff.detect_structure(entries, view) == "block_diagonal"
 plan = earthsci_astdiff.plan_factorization(entries, view)
 assert sorted(plan.block_vars) == ["A", "B", "C"]
-# endregion
-
-
-# region: assemble ops=assemble_jacobian
-values = earthsci_astdiff.assemble_jacobian(file, states={"A": [2.0] * 4})
-assert values[("A[1]", "A[1]")] == -0.04  # -k1
-assert values[("B[1]", "B[1]")] == -3.0  # -2 k2 B, with B = 0.5 by default
 # endregion
 
 

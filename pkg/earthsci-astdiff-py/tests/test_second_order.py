@@ -7,15 +7,14 @@ import json
 
 import earthsci_ast as ea
 import pytest
+from bandvals import hvp, prepare_hvp
 from earthsci_ast.expression import free_variables
 from earthsci_astdiff import (
     JacEntry2,
-    hvp,
     jacobian_bands2,
     jacobian_block,
     parse_jacobian_block,
     parse_jacobian_blocks,
-    prepare_hvp,
     serialize_band,
     stable_json,
     sysview,

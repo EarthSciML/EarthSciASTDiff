@@ -1,15 +1,14 @@
-"""Numeric assembly of the band entries — a correctness surface, not a
-performance one.
+"""A test-only value oracle: the band entries evaluated point by point —
+every read (state/parameter/`t`/const-table gathers and scalar faq
+reductions — ``+`` / ``*`` / ``max`` / ``min``, filtered or not) resolved to
+a literal and the closed tree handed to EarthSciAST's ``numpy_interpreter``,
+so operator semantics stay the runtime's own.
 
-The Julia reference compiles a derived evaluation model through its
-tree-walk; here each band coefficient is evaluated per (row, contracted)
-cell by resolving every read (state/parameter/`t`/const-table gathers and
-scalar faq reductions — ``+`` / ``*`` / ``max`` / ``min``, filtered or
-not) to a literal and handing the closed tree
-to the official ``numpy_interpreter`` evaluator — so operator semantics
-(ifelse, min/max, ``fn`` lookups) stay the runtime's own. Complexity is
-O(cells × coefficient size) per call; use the Julia binding for production
-assembly.
+The package evaluates nothing: the values are EarthSciAST's to compute from
+the emitted documents. This was the binding's ``numeric`` module, kept here
+to check the band calculus against the value goldens the Julia reference
+pins by evaluating its documents, until this binding emits the product
+documents (spec §9) too.
 """
 
 from __future__ import annotations
@@ -20,9 +19,8 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.substitute import substitute
-
-from .bands import _range_of
-from .emit import (
+from earthsci_astdiff.bands import _range_of
+from earthsci_astdiff.emit import (
     _cellname,
     _product,
     check_column,
@@ -30,11 +28,11 @@ from .emit import (
     column_names,
     foreach_point,
 )
-from .inline import inline_observed
-from .jacobian import _AXES, _jacobian_bands, jacobian_columns
-from .reductions import reduce_op
-from .second_order import _bands2, axis_pair, structure2
-from .system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
+from earthsci_astdiff.inline import inline_observed
+from earthsci_astdiff.jacobian import _AXES, _jacobian_bands, jacobian_columns
+from earthsci_astdiff.reductions import reduce_op
+from earthsci_astdiff.second_order import _bands2, axis_pair, structure2
+from earthsci_astdiff.system import SysView, _var_type, ctx_of, observed_defs, sysview, view_states
 
 
 class EvalError(Exception):

@@ -143,7 +143,7 @@ def jacobian_bands(
 
 
 def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
-    # The body of `jacobian_bands`, for callers (numeric assembly) that
+    # The body of `jacobian_bands`, for callers that
     # already hold the view's context and observed definitions. `seed` adds
     # names to the inlining seed without making them targets: the
     # second-order driver (second_order.py) differentiates these

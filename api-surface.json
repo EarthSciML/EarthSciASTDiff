@@ -3,15 +3,6 @@
   "version": 1,
   "symbols": [
     {
-      "name": "assemble_jacobian",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "assemble_jacobian",
-        "rust": "assemble_jacobian"
-      }
-    },
-    {
       "name": "band",
       "kind": "type",
       "tier": "stable",
@@ -129,29 +120,11 @@
       }
     },
     {
-      "name": "hvp",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "hvp",
-        "rust": "hvp"
-      }
-    },
-    {
       "name": "hvp_document",
       "kind": "function",
       "tier": "stable",
       "bindings": {
         "julia": "hvp_document"
-      }
-    },
-    {
-      "name": "hvp_evaluator",
-      "kind": "type",
-      "tier": "stable",
-      "bindings": {
-        "python": "HVPEvaluator",
-        "rust": "HvpEvaluator"
       }
     },
     {
@@ -231,15 +204,6 @@
       }
     },
     {
-      "name": "jacobian_evaluator",
-      "kind": "type",
-      "tier": "stable",
-      "bindings": {
-        "python": "JacobianEvaluator",
-        "rust": "JacobianEvaluator"
-      }
-    },
-    {
       "name": "jacobian_pattern",
       "kind": "function",
       "tier": "stable",
@@ -295,24 +259,6 @@
         "rust": "plan_factorization"
       },
       "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`. A `column_block` plan needs the column axis the class was detected with: a `column_axis` keyword in Julia and Python, `plan_factorization_along(entries, sv, ctx, structure, column_axis)` in Rust."
-    },
-    {
-      "name": "prepare_hvp",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "prepare_hvp",
-        "rust": "prepare_hvp"
-      }
-    },
-    {
-      "name": "prepare_jacobian",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "prepare_jacobian",
-        "rust": "prepare_jacobian"
-      }
     },
     {
       "name": "scatter_plan",
@@ -402,29 +348,11 @@
       "notes": "Julia and Python take a document's model or a flattened system through one `sysview`; Rust views a flattened system through `sysview_flat`."
     },
     {
-      "name": "vjp",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "vjp",
-        "rust": "vjp"
-      }
-    },
-    {
       "name": "vjp_document",
       "kind": "function",
       "tier": "stable",
       "bindings": {
         "julia": "vjp_document"
-      }
-    },
-    {
-      "name": "vjp_forcing",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "python": "vjp_forcing",
-        "rust": "vjp_forcing"
       }
     }
   ]

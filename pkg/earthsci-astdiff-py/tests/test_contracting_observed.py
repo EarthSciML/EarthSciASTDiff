@@ -8,9 +8,10 @@ contraction through it.
 
 import earthsci_ast as ea
 import pytest
+from bandvals import assemble_jacobian
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expr_walk import map_children
-from earthsci_astdiff import assemble_jacobian, inline_observed
+from earthsci_astdiff import inline_observed
 from earthsci_astdiff.expr_helpers import skey
 from earthsci_astdiff.system import lhs_state, observed_defs, sysview
 from oracle import check_against_fd
