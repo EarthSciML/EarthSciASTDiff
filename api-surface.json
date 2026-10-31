@@ -253,7 +253,7 @@
         "python": "plan_factorization",
         "rust": "plan_factorization"
       },
-      "notes": "Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`), returns a `FactorizationPlan` enum, and refuses an unknown structure class or a parameter-column band list; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+      "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
     },
     {
       "name": "prepare_hvp",
