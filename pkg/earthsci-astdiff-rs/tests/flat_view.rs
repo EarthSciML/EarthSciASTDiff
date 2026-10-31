@@ -4,7 +4,9 @@
 //! to take before, which wraps the flattened system back up as a one-model
 //! document and views that model with `sysview`.
 
-use earthsci_ast::{EsmFile, FlattenedSystem};
+use std::borrow::Cow;
+
+use earthsci_ast::{EsmFile, FlattenedSystem, ModelVariable};
 use earthsci_astdiff::{
     ctx_of, evaluation_document, jacobian_bands, jacobian_bands_view, serialize_band, stable_json,
     sysview, sysview_flat, JacEntry, SysView, Wrt,
@@ -16,9 +18,8 @@ mod common;
 use common::load;
 
 /// Every shared fixture: the single-model ones and the coupled document
-/// (`coupled_chem_advection`, which both routes refuse alike today: the Rust
-/// `flatten` leaves its undiscretized `grad` lift as a `faq` the band
-/// calculus has no rule for).
+/// (`coupled_chem_advection`, whose chemistry is pointwise-lifted onto the
+/// advection grid).
 const NAMES: [&str; 9] = [
     "bd_chem",
     "adv_interior",
@@ -33,30 +34,77 @@ const NAMES: [&str; 9] = [
 const AXES: [Wrt; 4] = [Wrt::States, Wrt::Parameters, Wrt::Forcing, Wrt::Time];
 const MODEL: &str = "flattened";
 
-/// The union of a flattened system's variable maps, merged as the reference
-/// merges them (states, then parameters, then observed; a repeated name
-/// keeps its first position and takes the last declaration).
-fn merged(flat: &FlattenedSystem) -> IndexMap<String, earthsci_ast::ModelVariable> {
-    let mut vars = IndexMap::new();
-    for (n, v) in flat
-        .state_variables
-        .iter()
-        .chain(&flat.parameters)
-        .chain(&flat.observed_variables)
-    {
-        vars.insert(n.clone(), v.clone());
+/// The union of a flattened system's variable maps, stated independently
+/// of `sysview_flat`'s merge loop: every name in the order of the first map
+/// (states, parameters, observed) that holds it, declared as the last map
+/// that holds it declares it.
+fn merged(flat: &FlattenedSystem) -> IndexMap<String, ModelVariable> {
+    let maps = [
+        &flat.state_variables,
+        &flat.parameters,
+        &flat.observed_variables,
+    ];
+    let mut names: Vec<&String> = Vec::new();
+    for m in maps {
+        for n in m.keys() {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
     }
-    vars
+    names
+        .into_iter()
+        .map(|n| {
+            let v = maps.iter().rev().find_map(|m| m.get(n)).unwrap();
+            (n.clone(), v.clone())
+        })
+        .collect()
 }
 
-/// The existing route: the flattened system as a one-model document.
+/// The existing route: the flattened system as a one-model document, each
+/// pointwise-lifted state written with its grid shape (every fixture's grid
+/// extents each name exactly one index set).
 fn wrapped(flat: &FlattenedSystem) -> EsmFile {
+    let shapes: Vec<(String, Vec<String>)> = flat
+        .lifted_shapes
+        .iter()
+        .map(|(n, extents)| {
+            let axes = extents
+                .iter()
+                .map(|e| {
+                    let named: Vec<&String> = flat
+                        .index_sets
+                        .iter()
+                        .filter(|(_, s)| s.size == Some(*e))
+                        .map(|(k, _)| k)
+                        .collect();
+                    assert_eq!(named.len(), 1, "{n}: extent {e} names one index set");
+                    named[0].clone()
+                })
+                .collect();
+            (n.clone(), axes)
+        })
+        .collect();
+    wrapped_with(flat, &shapes, json!({}))
+}
+
+/// The flattened system as a one-model document with the given variables'
+/// shapes replaced and `extra` index sets added.
+fn wrapped_with(flat: &FlattenedSystem, shapes: &[(String, Vec<String>)], extra: Value) -> EsmFile {
+    let mut vars = merged(flat);
+    for (n, sh) in shapes {
+        vars[n].shape = Some(sh.clone());
+    }
+    let mut isets = serde_json::to_value(&flat.index_sets).unwrap();
+    for (k, v) in extra.as_object().unwrap() {
+        isets[k] = v.clone();
+    }
     let doc = json!({
         "esm": "1.1.0",
         "metadata": {"name": MODEL},
-        "index_sets": serde_json::to_value(&flat.index_sets).unwrap(),
+        "index_sets": isets,
         "models": {MODEL: {
-            "variables": serde_json::to_value(merged(flat)).unwrap(),
+            "variables": serde_json::to_value(vars).unwrap(),
             "equations": serde_json::to_value(&flat.equations).unwrap(),
         }},
     });
@@ -73,7 +121,7 @@ fn ser(entries: &[JacEntry]) -> String {
 
 fn view_json(sv: &SysView) -> Value {
     json!({
-        "variables": serde_json::to_value(&*sv.variables).unwrap(),
+        "variables": serde_json::to_value(&sv.variables).unwrap(),
         "equations": serde_json::to_value(sv.equations).unwrap(),
         "index_sets": serde_json::to_value(&sv.index_sets).unwrap(),
     })
@@ -130,6 +178,11 @@ fn bands_match_the_wrapped_document_on_every_axis() {
             }
         }
     }
+    // The lifted coupled document differentiates: its chemistry rows are
+    // read as the grid arrays they are.
+    let flat = flat_of("coupled_chem_advection");
+    let coupled = jacobian_bands_view(&sysview_flat(&flat), Wrt::States, None).unwrap();
+    assert!(coupled.iter().any(|e| e.u == "SimpleOzone.O3"));
     assert!(
         nonempty >= NAMES.len(),
         "the comparison must see real bands"
@@ -223,4 +276,112 @@ fn repeated_names_take_the_last_declaration() {
         sv.variables.len(),
         flat.state_variables.len() + flat.parameters.len() + flat.observed_variables.len() - 1
     );
+}
+
+/// Chemistry lifted onto an advection grid (esm-spec §10.5): `Chem.O3` is
+/// declared scalar, and Rust's `flatten` records its grid only in
+/// `lifted_shapes`. `index_sets` is the document's.
+fn lifted(index_sets: Value) -> FlattenedSystem {
+    let file = earthsci_ast::load_document(&json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "Lifted"},
+        "index_sets": index_sets,
+        "models": {
+            "Chem": {
+                "variables": {
+                    "O3": {"type": "unknown", "default": 1.0},
+                    "k1": {"type": "parameter", "default": 0.1}},
+                "equations": [{"lhs": {"op": "D", "args": ["O3"], "wrt": "t"},
+                               "rhs": {"op": "*", "args": [
+                                   {"op": "-", "args": ["k1"]}, "O3", "O3"]}}]},
+            "Adv": {
+                "variables": {
+                    "u": {"type": "parameter", "default": 2.0},
+                    "dx": {"type": "parameter", "default": 100.0}},
+                "equations": [{"lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+                               "rhs": {"op": "*", "args": [
+                                   {"op": "-", "args": ["u"]},
+                                   {"op": "makearray", "args": [],
+                                    "regions": [[[2, 3]], [[1, 1]]],
+                                    "values": [
+                                        {"op": "/", "args": [
+                                            {"op": "-", "args": [
+                                                {"op": "index", "args": ["_var", "i"]},
+                                                {"op": "index", "args": [
+                                                    "_var", {"op": "-", "args": ["i", 1]}]}]},
+                                            "dx"]},
+                                        {"op": "/", "args": [
+                                            {"op": "index", "args": ["_var", "i"]}, "dx"]}]}]}}]}},
+        "coupling": [{"type": "operator_compose", "systems": ["Chem", "Adv"],
+                      "lifting": "pointwise"}]
+    }))
+    .expect("document loads");
+    let flat = earthsci_ast::flatten(&file).expect("document flattens");
+    assert_eq!(
+        flat.lifted_shapes.get("Chem.O3"),
+        Some(&vec![3]),
+        "the lift ran"
+    );
+    assert!(
+        flat.state_variables["Chem.O3"]
+            .shape
+            .as_ref()
+            .is_none_or(|s| s.is_empty()),
+        "flatten leaves the declared shape scalar"
+    );
+    flat
+}
+
+/// A lifted state takes its grid shape from `lifted_shapes`: the one index
+/// set of its extent names the axis, and the bands are those of the same
+/// system written with that shape.
+#[test]
+fn lifted_states_take_their_grid_shape() {
+    let flat = lifted(json!({"x": {"kind": "interval", "size": 3}}));
+    let sv = sysview_flat(&flat);
+    assert_eq!(
+        sv.variables["Chem.O3"].shape.as_deref(),
+        Some(&["x".to_string()][..])
+    );
+    assert!(matches!(sv.variables["Chem.O3"], Cow::Owned(_)));
+    assert!(matches!(sv.variables["Chem.k1"], Cow::Borrowed(_)));
+    assert_eq!(sv.index_sets.len(), 1, "no synthetic axis");
+    let ctx = ctx_of(&sv).unwrap();
+    assert_eq!(ctx.shapes.get("Chem.O3"), Some(&vec![3]));
+    let direct = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    assert!(!direct.is_empty());
+    let file = wrapped_with(&flat, &[("Chem.O3".into(), vec!["x".into()])], json!({}));
+    let via = jacobian_bands(&file, Some(MODEL), Wrt::States).unwrap();
+    assert_eq!(ser(&direct), ser(&via));
+    // The evaluation document declares the grid shape too.
+    let wsv = sysview(&file, Some(MODEL)).unwrap();
+    let (dd, fd) = evaluation_document(&sv, &direct, false, 0).unwrap();
+    let (dv, fv) = evaluation_document(&wsv, &direct, false, 0).unwrap();
+    assert_eq!(fd, fv);
+    assert_eq!(stable_json(&dd), stable_json(&dv));
+}
+
+/// With no single index set of the grid's extent, the axis is the
+/// synthetic dense `_liftdim<d>_<extent>` the reference names, added to
+/// the view's index sets.
+#[test]
+fn ambiguous_lift_extents_take_a_synthetic_axis() {
+    let flat = lifted(json!({
+        "x": {"kind": "interval", "size": 3},
+        "y": {"kind": "interval", "size": 3}}));
+    let sv = sysview_flat(&flat);
+    assert_eq!(
+        sv.variables["Chem.O3"].shape.as_deref(),
+        Some(&["_liftdim1_3".to_string()][..])
+    );
+    assert_eq!(sv.index_sets["_liftdim1_3"].size, Some(3));
+    assert_eq!(ctx_of(&sv).unwrap().shapes.get("Chem.O3"), Some(&vec![3]));
+    let direct = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let file = wrapped_with(
+        &flat,
+        &[("Chem.O3".into(), vec!["_liftdim1_3".into()])],
+        json!({"_liftdim1_3": {"kind": "interval", "size": 3}}),
+    );
+    let via = jacobian_bands(&file, Some(MODEL), Wrt::States).unwrap();
+    assert_eq!(ser(&direct), ser(&via));
 }

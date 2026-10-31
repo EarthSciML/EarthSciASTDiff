@@ -19,10 +19,11 @@ use crate::bands::{BandError, Ctx};
 /// sets. Build one with [`sysview`] (one model of a document) or
 /// [`sysview_flat`] (a flattened system).
 ///
-/// `variables` borrows a model's own map; a flattened system keeps its
-/// variables in three maps, so its view owns their union.
+/// Each variable is borrowed from its model or flattened system, except a
+/// pointwise-lifted state of a flattened system, which the view owns with
+/// its grid shape (see [`sysview_flat`]).
 pub struct SysView<'a> {
-    pub variables: Cow<'a, IndexMap<String, ModelVariable>>,
+    pub variables: IndexMap<String, Cow<'a, ModelVariable>>,
     pub equations: &'a Vec<Equation>,
     pub index_sets: IndexMap<String, IndexSet>,
 }
@@ -55,7 +56,11 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
     Ok(SysView {
-        variables: Cow::Borrowed(&model.variables),
+        variables: model
+            .variables
+            .iter()
+            .map(|(n, v)| (n.clone(), Cow::Borrowed(v)))
+            .collect(),
         equations: &model.equations,
         index_sets: file.index_sets.clone().unwrap_or_default(),
     })
@@ -73,24 +78,71 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
 /// entries, in the same order, as it gives for a one-model document holding
 /// these variables and equations.
 ///
+/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid keeps
+/// its declared scalar shape in Rust's `flatten`, which records the grid
+/// extents in `lifted_shapes` instead; the reference's `flatten` promotes
+/// the declared shape itself. The view promotes it as the reference does:
+/// each grid dimension takes the one index set of its extent, or, when no
+/// index set or more than one has that extent, a synthetic dense axis
+/// `_liftdim<d>_<extent>` the view adds to its index sets (the reference
+/// names the same axis). The reference can also pick among several
+/// same-sized index sets by what the lifted equations gather; the view
+/// does not, so such a state differs from it in axis names only, never in
+/// extents or bands.
+///
 /// The reference expands surviving `apply_expression_template` references
 /// first (`expand_flattened_refs`); there is nothing to expand here, since
 /// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
 pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
-    let mut variables = IndexMap::new();
+    let mut variables: IndexMap<String, Cow<'_, ModelVariable>> = IndexMap::new();
     for (n, v) in flat
         .state_variables
         .iter()
         .chain(&flat.parameters)
         .chain(&flat.observed_variables)
     {
-        variables.insert(n.clone(), v.clone());
+        variables.insert(n.clone(), Cow::Borrowed(v));
+    }
+    let mut index_sets = flat.index_sets.clone();
+    for (name, extents) in &flat.lifted_shapes {
+        let Some(var) = variables.get_mut(name) else {
+            continue;
+        };
+        if var.shape.as_ref().is_some_and(|s| !s.is_empty()) {
+            continue; // already spatial: the lift leaves it alone
+        }
+        let axes = extents
+            .iter()
+            .enumerate()
+            .map(|(d, &n)| lift_axis(&mut index_sets, d + 1, n))
+            .collect();
+        var.to_mut().shape = Some(axes);
     }
     SysView {
-        variables: Cow::Owned(variables),
+        variables,
         equations: &flat.equations,
-        index_sets: flat.index_sets.clone(),
+        index_sets,
     }
+}
+
+/// The index set naming grid dimension `d` (1-based) of extent `n` of a
+/// lifted state: the one declared set of that size, else the synthetic
+/// dense `_liftdim<d>_<n>` (added to `index_sets` once).
+fn lift_axis(index_sets: &mut IndexMap<String, IndexSet>, d: usize, n: i64) -> String {
+    let mut sized = index_sets
+        .iter()
+        .filter(|(k, s)| s.size == Some(n) && !k.starts_with("_liftdim"))
+        .map(|(k, _)| k);
+    if let (Some(k), None) = (sized.next(), sized.next()) {
+        return k.clone();
+    }
+    let name = format!("_liftdim{d}_{n}");
+    if !index_sets.contains_key(&name) {
+        let set = serde_json::from_value(serde_json::json!({"kind": "interval", "size": n}))
+            .expect("an interval index set deserializes");
+        index_sets.insert(name.clone(), set);
+    }
+    name
 }
 
 pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {

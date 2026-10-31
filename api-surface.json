@@ -253,7 +253,7 @@
         "python": "plan_factorization",
         "rust": "plan_factorization"
       },
-      "notes": "Rust also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+      "notes": "Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`), returns a `FactorizationPlan` enum, and refuses an unknown structure class or a parameter-column band list; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
     },
     {
       "name": "prepare_hvp",
@@ -306,10 +306,10 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
+        "julia": "serialize_plan",
         "python": "serialize_plan",
         "rust": "serialize_plan"
-      },
-      "notes": "Julia defines it without exporting it, as `EarthSciASTDiff.serialize_plan`."
+      }
     },
     {
       "name": "simplify_branches",

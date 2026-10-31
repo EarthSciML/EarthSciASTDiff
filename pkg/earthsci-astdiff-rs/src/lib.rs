@@ -26,7 +26,8 @@ pub use emit::{
     block_diagonal_lu, cse_templates, detect_structure, evaluation_document, jacobian_block,
     jacobian_block_with_forcing, jacobian_blocks, lu_fill, markowitz_ordering, parse_band,
     parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks, plan_factorization,
-    serialize_band, serialize_plan, BlockLu, BlockWrt, ParsedBlock,
+    serialize_band, serialize_plan, BlockLu, BlockWrt, FactorizationPlan, ParsedBlock,
+    STRUCTURE_CLASSES,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
