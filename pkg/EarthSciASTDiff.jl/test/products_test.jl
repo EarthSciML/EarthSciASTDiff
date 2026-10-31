@@ -7,8 +7,7 @@
 # themselves (`*.jvals.json`, `*.hvals.json`), so no evaluator of this
 # package takes part. Kept in step with scripts/regenerate-goldens.jl.
 
-using EarthSciASTDiff: BandError, _jvp_document, _vjp_document, _hvp_document,
-    _column_names
+using EarthSciASTDiff: BandError, _jvp_document, _vjp_document, _hvp_document
 
 const _PRODUCT_DIR = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
 
@@ -45,13 +44,6 @@ function _eval_product(doc, model, u::AbstractDict, inputs::AbstractDict, t; par
     du = zeros(length(x))
     f!(du, x, p, t)
     return n -> du[vm[n]]
-end
-
-# The product document's name for a cell of variable `v`, given `v`'s name map.
-function _cell(names::AbstractDict, cell::AbstractString)
-    k = findfirst('[', cell)
-    k === nothing && return names[cell]
-    return names[cell[1:(k - 1)]] * cell[k:end]
 end
 
 _rowcells(g) = sort!([String(k) for k in keys(g.u)])
@@ -106,21 +98,21 @@ end
         λ = _seed(length(rows), 0.7)
         doc, io = jvp_document(file; wrt = wrt)
         jv = _eval_product(
-            doc, io.model, g.u, Dict(_cell(io.v, c) => v[k] for (k, c) in enumerate(cols)),
+            doc, io.model, g.u, Dict(_doc_cell(io.v, c) => v[k] for (k, c) in enumerate(cols)),
             Float64(g.t); params = g.params
         )
         want = J * v
         for (k, r) in enumerate(rows)
-            @test isapprox(jv(_cell(io.jvp, r)), want[k]; rtol = 1.0e-10, atol = 1.0e-13)
+            @test isapprox(jv(_doc_cell(io.jvp, r)), want[k]; rtol = 1.0e-10, atol = 1.0e-13)
         end
         doc, io = vjp_document(file; wrt = wrt)
         vj = _eval_product(
-            doc, io.model, g.u, Dict(_cell(io.lam, r) => λ[k] for (k, r) in enumerate(rows)),
+            doc, io.model, g.u, Dict(_doc_cell(io.lam, r) => λ[k] for (k, r) in enumerate(rows)),
             Float64(g.t); params = g.params
         )
         want = J' * λ
         for (k, c) in enumerate(cols)
-            @test isapprox(vj(_cell(io.vjp, c)), want[k]; rtol = 1.0e-10, atol = 1.0e-13)
+            @test isapprox(vj(_doc_cell(io.vjp, c)), want[k]; rtol = 1.0e-10, atol = 1.0e-13)
         end
     end
 end
@@ -139,13 +131,13 @@ end
             inputs = Dict{String, Float64}()
             for (i, pr) in enumerate(gd["pairs"])
                 for (r, x) in pr["mu"]
-                    inputs[_cell(io.mu[i], r)] = x
+                    inputs[_doc_cell(io.mu[i], r)] = x
                 end
                 if pr["w"] isa Number
                     inputs[io.w[i]["t"]] = pr["w"]
                 else
                     for (c, x) in pr["w"]
-                        inputs[_cell(io.w[i], c)] = x
+                        inputs[_doc_cell(io.w[i], c)] = x
                     end
                 end
             end
@@ -159,7 +151,7 @@ end
                 _column_names(jacobian_columns(sv; wrt = a2))
             @test issubset(keys(want), cells)
             for c in cells
-                @test isapprox(h(_cell(io.hvp, c)), get(want, c, 0.0); rtol = 1.0e-10, atol = 1.0e-13)
+                @test isapprox(h(_doc_cell(io.hvp, c)), get(want, c, 0.0); rtol = 1.0e-10, atol = 1.0e-13)
             end
         end
     end

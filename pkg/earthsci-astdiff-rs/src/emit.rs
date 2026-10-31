@@ -1295,7 +1295,7 @@ fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Map<String, V
         })
         .collect();
     let mut doc = Map::new();
-    // 1.1.0: the band coefficients may carry `faq` nodes.
+    // Provisional: `derived_version` settles it once the document is complete.
     doc.insert("esm".into(), json!("1.1.0"));
     doc.insert("metadata".into(), json!({"name": name}));
     doc.insert("index_sets".into(), Value::Object(isets));
@@ -1551,5 +1551,28 @@ pub(crate) fn evaluation_document_with(
         "models".into(),
         json!({"JacobianEval": Value::Object(model)}),
     );
+    derived_version(&mut doc);
     Ok((Value::Object(doc), names))
+}
+
+/// The `esm` version a finished derived document declares: the lowest that
+/// admits what it holds. 1.1.0 for its `faq` nodes; 1.2.0 when any
+/// expression node carries `units` (a unit-bearing `const` copied from a
+/// 1.2.0 source). Read off the content, as the Julia reference does.
+fn derived_version(doc: &mut Map<String, Value>) {
+    fn has_units(v: &Value) -> bool {
+        match v {
+            Value::Object(m) => {
+                (m.contains_key("units") && m.contains_key("op")) || m.values().any(has_units)
+            }
+            Value::Array(a) => a.iter().any(has_units),
+            _ => false,
+        }
+    }
+    let v = if doc.get("models").is_some_and(has_units) {
+        "1.2.0"
+    } else {
+        "1.1.0"
+    };
+    doc.insert("esm".into(), json!(v));
 }

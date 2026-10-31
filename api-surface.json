@@ -7,7 +7,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "assemble_jacobian",
         "python": "assemble_jacobian",
         "rust": "assemble_jacobian"
       }
@@ -30,6 +29,14 @@
         "julia": "BandError",
         "python": "BandError",
         "rust": "BandError"
+      }
+    },
+    {
+      "name": "bind_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "bind_plan"
       }
     },
     {
@@ -103,6 +110,15 @@
       }
     },
     {
+      "name": "evaluation_document",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "evaluation_document",
+        "rust": "evaluation_document"
+      }
+    },
+    {
       "name": "forcing_names",
       "kind": "function",
       "tier": "stable",
@@ -117,7 +133,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "hvp!",
         "python": "hvp",
         "rust": "hvp"
       }
@@ -135,7 +150,6 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
-        "julia": "HVPEvaluator",
         "python": "HVPEvaluator",
         "rust": "HvpEvaluator"
       }
@@ -221,7 +235,6 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
-        "julia": "JacobianEvaluator",
         "python": "JacobianEvaluator",
         "rust": "JacobianEvaluator"
       }
@@ -263,14 +276,6 @@
       }
     },
     {
-      "name": "ode_components",
-      "kind": "function",
-      "tier": "stable",
-      "bindings": {
-        "julia": "ode_components"
-      }
-    },
-    {
       "name": "parse_jacobian_blocks",
       "kind": "function",
       "tier": "stable",
@@ -296,7 +301,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "prepare_hvp",
         "python": "prepare_hvp",
         "rust": "prepare_hvp"
       }
@@ -306,7 +310,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "prepare_jacobian",
         "python": "prepare_jacobian",
         "rust": "prepare_jacobian"
       }
@@ -403,7 +406,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "vjp!",
         "python": "vjp",
         "rust": "vjp"
       }
@@ -421,7 +423,6 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "vjp_forcing!",
         "python": "vjp_forcing",
         "rust": "vjp_forcing"
       }

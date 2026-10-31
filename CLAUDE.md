@@ -75,16 +75,15 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
   coefficient subtrees become observed-array buffers of the derived eval
   model (compile-time / per-call duplicate-work control)
 - `emit.jl`         — "jacobians" block, goldens writer, derived eval model
-- `assemble.jl`     — pattern, scatter map, prepared `jac!`
+- `assemble.jl`     — the structural pattern over the source's state layout
 - `structure.jl`    — structure classification from column-index expressions
 - `factorization.jl`— FactorizationPlan interface + block-diagonal LU plan
 - `products.jl`    — product documents (spec §9): `Jv`, `Jᵀλ` and the
   second-order contraction as derived ESM documents EarthSciAST evaluates
   (`jvp_document` / `vjp_document` / `hvp_document`)
 - `scatter.jl`     — scatter plans (spec §8): band fields → lane blocks,
-  sparse lane blocks, column bands, CSR; `bind_plan` / `jac_into!`
-- `ode.jl`          — solver-free ODE pieces (`ode_components`) + dispatchers
-  into `ext/EarthSciASTDiffSciMLBaseExt.jl` (`odefunction` / `odeproblem`)
+  sparse lane blocks, column bands, CSR; `bind_plan` checks one against a
+  source (executing it is the consumer's)
 
 ## Conventions
 

@@ -66,7 +66,7 @@ using EarthSciASTDiff: _observed_defs, view_states, sysview, BandError
 
         f!, _, p, _, _ = build_evaluator(file)
         u = [0.3, 0.7, 1.1, 1.9]
-        res = assemble_jacobian(file; u = u, p = p)
+        res = doc_jacobian(file; u = u, p = p)
         @test maximum(abs.(Matrix(res.J) .- Matrix(ad_jacobian(f!, u, p, 0.0)))) ≤ 1.0e-14
         @test Matrix(res.J) ≈ Diagonal(-2K .* u) atol = 1.0e-14
 

@@ -117,10 +117,8 @@ end
     f!, u0, p0, _, _ = build_evaluator(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 2.3))
     Jad = ad_jacobian(f!, u, p0, 0.0)
-    jc = prepare_jacobian(file; model_name = mname)                    # default: CSE on
-    jp = prepare_jacobian(file; model_name = mname, eval_cse = false)
-    Jc = copy(jc.prototype); jc(Jc, u, p0, 0.0)
-    Jp = copy(jp.prototype); jp(Jp, u, p0, 0.0)
+    Jc = doc_jacobian(file; model_name = mname, u = u, p = p0).J        # default: CSE on
+    Jp = doc_jacobian(file; model_name = mname, u = u, p = p0, cse = false).J
     @test Jc.colptr == Jp.colptr && Jc.rowval == Jp.rowval
     @test Matrix(Jc) ≈ Matrix(Jp) rtol = 1.0e-14
     @test Matrix(Jc) ≈ Matrix(Jad) rtol = 1.0e-10

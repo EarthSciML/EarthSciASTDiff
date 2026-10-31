@@ -312,17 +312,15 @@ function parse_jacobian_blocks(x)
     return out
 end
 
-# ── the internal evaluation model ────────────────────────────────────────────
+# ── the evaluation model ─────────────────────────────────────────────────────
 #
-# v1 evaluation strategy (deliberate reuse of existing machinery, zero new
-# evaluator code): emit a derived single-model document in which each band's
-# coefficient field is a STATE `J_k` whose RHS is the band field —
+# Evaluation is EarthSciAST's: emit a derived single-model document in which
+# each band's coefficient field is a STATE `J_k` whose RHS is the band field —
 #
 #   D(J_k) = makearray( zero default, band region ← faq(coef) )
 #
-# and run it through the unmodified `EarthSciAST.build_evaluator`; one RHS
-# call then leaves every band value in `du`. A dedicated compiled `jac!`
-# kernel is the planned upgrade once this is a measured bottleneck.
+# so one RHS call of an unmodified EarthSciAST evaluator leaves every band
+# value in `du`. The product documents (products.jl) share its base.
 
 function _base_document(sv::SysView, name::String)
     m = OrderedDict{String, Any}(
@@ -357,15 +355,28 @@ function _base_document(sv::SysView, name::String)
             for (n, s) in sv.index_sets if s.size !== nothing
     )
     return OrderedDict{String, Any}(
-        # 1.1.0, not 1.0.0: every document this file builds may carry `faq`
-        # coefficient nodes, and `faq` arrives at esm 1.1.0. Declaring 1.0.0
-        # makes the document unloadable (`[E_FAQ_VERSION_TOO_OLD]`).
+        # Provisional: `_derived_version!` settles it once the document is
+        # complete.
         "esm" => "1.1.0",
         "metadata" => OrderedDict{String, Any}("name" => name),
         "index_sets" => isets,
         "models" => OrderedDict{String, Any}(name => m)
     )
 end
+
+# The `esm` version a finished derived document declares: the lowest that
+# admits what it holds. 1.1.0, not 1.0.0, because its coefficients may carry
+# `faq` nodes (`[E_FAQ_VERSION_TOO_OLD]` otherwise); 1.2.0 when any expression
+# node carries `units` (a unit-bearing `const` copied from a 1.2.0 source,
+# `const_units_version_too_old` otherwise). Read off the content rather than
+# the source's declared version, which a `FlattenedSystem` does not carry.
+function _derived_version!(doc)
+    doc["esm"] = any(_has_units, values(doc["models"])) ? "1.2.0" : "1.1.0"
+    return doc
+end
+_has_units(x::AbstractDict) = haskey(x, "units") && haskey(x, "op") || any(_has_units, values(x))
+_has_units(x::AbstractVector) = any(_has_units, x)
+_has_units(x) = false
 
 # A variable's value in the document's inline form: an array value is
 # row-major nested JSON (esm-spec §6.3), outermost list over the FIRST
@@ -389,8 +400,8 @@ end
 # Trim the source's ODE right-hand side out of the evaluation model: every
 # `D(u)` equation of the source becomes `D(u) = 0` (a zero `makearray` over
 # the state's shape for an array state), in place of the first one and with
-# any further ones dropped. The states keep their solver slots — `jac!`
-# copies `u` into them exactly as before — so the observed definitions and
+# any further ones dropped. The states keep their solver slots — the
+# consumer copies `u` into them — so the observed definitions and
 # band fields read them unchanged, but each call no longer recomputes `f`.
 # Observed the coefficients do not read (directly or through other observed)
 # are dropped with their declarations: they fed only `f`. `roots` are the
@@ -463,6 +474,29 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, roots::Vector{ASTExpr})
     end
     m["equations"] = eqs
     return m
+end
+
+"""
+    evaluation_document(input; wrt = :states, model_name = nothing, forcing = nothing,
+                        cse = true) -> (doc, fields)
+
+The derived evaluation document of the first-order bands on axis `wrt`
+(esm-jacobian-spec.md §8, model `"JacobianEval"`): the source's observed the
+coefficients read, every source derivative zeroed, and one band-field state
+`J_k` per entry whose `D` equation is that band's coefficient field. One
+right-hand-side call of an unmodified EarthSciAST evaluator at `(u, p, t)`
+leaves every band value in `du`; `fields[k]` names entry `k`'s field.
+Placing the values in a matrix is a scatter plan's ([`bind_plan`](@ref)).
+With `cse`, repeated coefficient subtrees are hoisted into observed arrays
+([`hoist_observed`](@ref)).
+"""
+function evaluation_document(
+        input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
+        cse::Bool = true, cse_min_nodes::Int = 12
+    )
+    sv, _ = _sv_src(input, model_name)
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
+    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
 end
 
 # With `cse`, repeated coefficient subtrees are hoisted into observed
@@ -566,5 +600,5 @@ function _evaluation_document(
             )
         )
     end
-    return doc, names
+    return _derived_version!(doc), names
 end

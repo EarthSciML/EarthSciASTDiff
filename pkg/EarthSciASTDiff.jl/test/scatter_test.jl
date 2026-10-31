@@ -1,7 +1,8 @@
 # Scatter plans (scatter.jl, spec §8): band fields → a consumer's storage.
 # Pinned byte-for-byte by tests/goldens/<fixture>.<layout>.plan.json, which
-# the Rust binding must reproduce; the values a bound plan writes must be the
-# prepared CSC `jac!`'s, element for element.
+# the Rust binding must reproduce. Executing a bound plan is the consumer's
+# work: here the test does it, over band fields EarthSciAST evaluates from the
+# evaluation document, and checks the result against `J`.
 
 using EarthSciASTDiff: _nlanes
 
@@ -32,30 +33,36 @@ const PLAN_LAYOUTS = [
     end
 end
 
-@testset "scatter plans: bound values equal the CSC jac!" begin
-    # The contracted-band fixtures are excluded only because their derived
-    # documents do not compile on the current EarthSciAST (EarthSciAST#547);
-    # their plan goldens are still pinned above.
-    cases = [
-        (n, t, l) for (n, t, l) in PLAN_LAYOUTS
-            if !(n in ("contracted_ops", "contracting_observed", "filtered_scan", "semiring_reduce"))
-    ]
+# A consumer's execution of a bound plan: zero `out`, then `+=` each band
+# field cell into its position, in plan order.
+function _run_plan(b::BoundScatter, field)
+    out = zeros(b.len)
+    for (f, pos) in b.pairs
+        out[pos] += field(f)
+    end
+    return out
+end
+
+@testset "scatter plans: a bound plan places every band value of J" begin
+    cases = collect(PLAN_LAYOUTS)
     push!(cases, ("adv_react_2d", "csr", Csr()))
     for (name, tag, layout) in cases
         file = fixture("$name.esm")
-        _, u0, p0, _, _ = build_evaluator(file)
-        jac = prepare_jacobian(file)
+        _, u0, p0, _, _ = build_evaluator(file; _hkw(name)...)
         u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.7))
-        J = copy(jac.prototype)
-        jac(J, u, p0, 0.0)
-        slot = Dict(n => i for (i, n) in enumerate(jac.rownames))
+        res = doc_jacobian(file; u = u, p = p0, build_kwargs = _hkw(name))
+        J = res.J
+        slot = Dict(n => i for (i, n) in enumerate(res.rownames))
+        doc, _ = evaluation_document(file)
+        ev = _doc_evaluator(doc, "JacobianEval"; build_kwargs = _hkw(name))
+        field = _doc_call(ev, _doc_source(file, nothing, _hkw(name)), u, p0, 0.0, Dict())
         plan = scatter_plan(file, layout)
         nl = _nlanes(plan)
         for L in unique([nl, nl + 3])
-            b = bind_plan(jac, plan; lanes = L)
-            out = jac_into!(zeros(b.len), jac, b, u, p0, 0.0)
+            b = bind_plan(file, plan; lanes = L)
+            out = _run_plan(b, field)
             tg = scatter_targets(plan; lanes = L)
-            @test length(tg) == length(out)
+            @test length(tg) == length(out) == b.len
             ok = true; covered = Set{Tuple{Int, Int}}()
             for (pos, t) in enumerate(tg)
                 if t === nothing
@@ -63,17 +70,16 @@ end
                 else
                     r, c = slot[t[1]], slot[t[2]]
                     push!(covered, (r, c))
-                    ok &= out[pos] == J[r, c]      # same summation order: bitwise
+                    ok &= isapprox(out[pos], J[r, c]; rtol = 1.0e-14, atol = 1.0e-300)
                 end
             end
             @test ok
-            # every stored entry of the CSC pattern has a home in the layout
-            I, Jc, _ = findnz(jac.pattern)
+            # every stored entry of the pattern has a home in the layout
+            I, Jc, _ = findnz(res.pattern)
             @test issubset(Set(zip(I, Jc)), covered)
             # padding lanes never change a real lane's value
             if L > nl
-                b0 = bind_plan(jac, plan; lanes = nl)
-                o0 = jac_into!(zeros(b0.len), jac, b0, u, p0, 0.0)
+                o0 = _run_plan(bind_plan(file, plan; lanes = nl), field)
                 t0 = scatter_targets(plan; lanes = nl)
                 v0 = Dict(t => o0[i] for (i, t) in enumerate(t0) if t !== nothing)
                 @test all(out[i] === v0[t] for (i, t) in enumerate(tg) if t !== nothing)
@@ -101,16 +107,9 @@ end
     @test refuses(() -> scatter_plan(JacEntry[], sv, Csr()))
     # columns that are not states
     @test refuses(() -> scatter_plan(jacobian_bands(sv; wrt = :parameters), sv, Csr()))
-    # binding: a plan from another document, a short capacity, a non-state evaluator
-    jac = prepare_jacobian(bd)
-    @test refuses(() -> bind_plan(jac, scatter_plan(adv, Csr())))
-    @test refuses(() -> bind_plan(jac, scatter_plan(bd, LaneBlocks()); lanes = 2))
-    @test refuses(
-        () -> bind_plan(
-            prepare_jacobian(bd; wrt = :parameters),
-            scatter_plan(bd, Csr())
-        )
-    )
+    # binding: a plan from another document, a short capacity
+    @test refuses(() -> bind_plan(bd, scatter_plan(adv, Csr())))
+    @test refuses(() -> bind_plan(bd, scatter_plan(bd, LaneBlocks()); lanes = 2))
     # a contracted band whose column is its row cell is :block_diagonal, but a
     # lane template reads one field cell per lane — it would drop k = 2..hi
     bde = jacobian_bands(sv; wrt = :states)
@@ -133,10 +132,9 @@ end
         Band(en.band.rows, en.band.ridx, o.band.cidx, en.band.coef)
     )
     mirrored = [sw(ae[1], ae[2]), sw(ae[2], ae[1])]
-    ajac = prepare_jacobian(adv)
     for layout in (Csr(), ColumnBanded("x"))
-        bind_plan(ajac, scatter_plan(ae, asv, layout))           # the real one binds
-        @test refuses(() -> bind_plan(ajac, scatter_plan(mirrored, asv, layout)))
+        bind_plan(adv, scatter_plan(ae, asv, layout))            # the real one binds
+        @test refuses(() -> bind_plan(adv, scatter_plan(mirrored, asv, layout)))
     end
     # a plan whose state cells repeat: refused with the intended message
     p0 = scatter_plan(bd, Csr())
@@ -145,16 +143,11 @@ end
         p0.colind, p0.items
     )
     msg = try
-        bind_plan(jac, dup); ""
+        bind_plan(bd, dup); ""
     catch e
         sprint(showerror, e)
     end
-    @test occursin("not this evaluator's (duplicate state cells)", msg)
-    b = bind_plan(jac, scatter_plan(bd, Csr()))
-    @test_throws DimensionMismatch jac_into!(
-        zeros(b.len + 1), jac, b,
-        ones(12), nothing, 0.0
-    )
+    @test occursin("not this source's (order or duplicate state cells)", msg)
 end
 
 @testset "scatter plans: lane templates are O(nnz), not O(nnz·cells)" begin

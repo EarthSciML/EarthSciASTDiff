@@ -334,7 +334,7 @@ function _jvp_document(
         m, sv, ctx, out, k -> _jvp_term(entries[k], coefs[k], vin[entries[k].v], ctx, wrt),
         ((k, en.u) for (k, en) in enumerate(entries))
     )
-    return doc, (model = "JvpEval", v = vin, jvp = out)
+    return _derived_version!(doc), (model = "JvpEval", v = vin, jvp = out)
 end
 
 function _vjp_document(
@@ -352,7 +352,7 @@ function _vjp_document(
         m, sv, ctx, out, k -> _vjp_term(entries[k], coefs[k], lam[entries[k].u], ctx, wrt, taken),
         ((k, en.v) for (k, en) in enumerate(entries))
     )
-    return doc, (model = "VjpEval", lam = lam, vjp = out)
+    return _derived_version!(doc), (model = "VjpEval", lam = lam, vjp = out)
 end
 
 function _hvp_document(
@@ -401,7 +401,7 @@ function _hvp_document(
             ((k, en.v) for (k, en) in enumerate(entries))
         )
     end
-    return doc, (model = model, mu = mu, w = w, hvp = out)
+    return _derived_version!(doc), (model = model, mu = mu, w = w, hvp = out)
 end
 
 """

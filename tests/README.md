@@ -51,8 +51,8 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
 - `goldens/` — `<fixture>.evaldoc.json`: the derived evaluation document
-  `prepare_jacobian` compiles — the source's observed definitions that the
-  coefficients read, every state derivative zeroed (`D(u) = 0`), the
+  (`evaluation_document`, model `JacobianEval`) — the source's observed
+  definitions that the coefficients read, every state derivative zeroed (`D(u) = 0`), the
   `hoist_observed` buffers, and one band-field state `J_k` per entry.
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
   only where it differs (a fixture with something to hoist). Julia and Rust

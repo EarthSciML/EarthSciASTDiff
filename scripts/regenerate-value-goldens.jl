@@ -1,12 +1,14 @@
-# Regenerate tests/goldens/*.jvals.json — assembled Jacobian VALUES at a
-# pinned state, produced by the Julia reference. Other bindings' numeric
-# assemblies compare against these with a tolerance (evaluation order makes
-# bit-equality across runtimes unrealistic), and must produce EXACTLY the
-# same (row, col) key set. Run after an intended rule change, like
-# regenerate-goldens.jl.
+# Regenerate tests/goldens/*.jvals.json — Jacobian VALUES at a pinned state —
+# and *.hvals.json. The values come from EarthSciAST evaluating the Julia
+# reference's product documents (pkg/EarthSciASTDiff.jl/test/docvals.jl): this
+# package evaluates nothing itself. Other bindings compare against these with
+# a tolerance (evaluation order makes bit-equality across runtimes
+# unrealistic), and must produce EXACTLY the same (row, col) key set. Run
+# after an intended rule change, like regenerate-goldens.jl.
 using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
+include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "docvals.jl"))
 # `<name>.<axis>.jvals.json` for the other axes: wrt = :time (the single
 # column `t`) at the same pinned point, and the forcing / parameter axes of
 # the forcing fixture (canonical column space, spec §4) at two points of its
@@ -35,13 +37,11 @@ for (name, wrt, t, tag) in Iterators.flatten(
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
-    f!, u0, p0, _, vm = build_evaluator(
-        file; (name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple())...
-    )
+    bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
+    f!, u0, p0, _, vm = build_evaluator(file; bkw...)
     n = length(u0)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:n]
-    kw = name in INTERPRETED ? (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
-    res = assemble_jacobian(file; wrt = wrt, u = u, t = t, kw...)
+    res = doc_jacobian(file; wrt = wrt, u = u, t = t, build_kwargs = bkw)
     rn, cn = res.rownames, res.colnames
     entries = Any[]
     I, J, V = findnz(res.J)
@@ -60,6 +60,23 @@ for (name, wrt, t, tag) in Iterators.flatten(
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(entries), " stored entries)")
 end
+# The second columns a point of the pair's bands reaches with both of its
+# columns inside their extents (a ghost point reaches nothing): structural,
+# read off the bands by a point walk.
+function _reached2(file, wrt)
+    sv = sysview(file, first(keys(file.models)))
+    shapes = EarthSciASTDiff._ctx(sv).shapes
+    inext(v, c) = all(1 <= c[d] <= get(shapes, v, Int[])[d] for d in eachindex(c))
+    out = Set{String}()
+    for en in jacobian_bands2(sv; wrt = wrt)
+        EarthSciASTDiff._foreach_point(en.band) do _, _, c
+            c1, c2 = c[1:(en.ncol)], c[(en.ncol + 1):end]
+            inext(en.v, c1) && inext(en.w, c2) &&
+                push!(out, EarthSciASTDiff._cellname(en.w, c2))
+        end
+    end
+    return out
+end
 # `<name>.<a1>-<a2>.hvals.json`: the second-order contraction (spec §4.4)
 # `g = ∇_{a2} Σᵢ μᵢᵀ J wᵢ` (on a time pair `∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t`) at the
 # pinned state and two pinned stage pairs, all carried in the golden by name.
@@ -76,11 +93,9 @@ for (name, wrt, t) in (
         ("semiring_reduce", (:states, :states), 0.7),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
-    hv = prepare_hvp(
-        file; wrt = wrt,
-        build_kwargs = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
-    )
-    rn, cn, gn = hv.rownames, hv.colnames, hv.col2names
+    bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
+    rn = _doc_source(file, nothing, bkw).rownames
+    cn = wrt[1] == :time ? ["t"] : rn
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(rn)]
     ps = [
         (
@@ -88,8 +103,10 @@ for (name, wrt, t) in (
             wrt[1] == :time ? 0.5 + 0.25 * s : [cos(0.6 * k + 1.1 * s) for k in eachindex(cn)],
         ) for s in 1:2
     ]
-    g = hvp!(zeros(length(gn)), hv, ps, u, nothing, t)
-    reached = sort!(unique([it[4] for it in hv.items]); by = c -> gn[c])
+    g, gn = doc_hvp(file, ps; wrt = wrt, u = u, t = t, build_kwargs = bkw)
+    reached = sort!(
+        [findfirst(==(c), gn) for c in _reached2(file, wrt)]; by = c -> gn[c]
+    )
     doc = OrderedDict{String, Any}(
         "wrt" => Any[String(wrt[1]), String(wrt[2])],
         "t" => t,

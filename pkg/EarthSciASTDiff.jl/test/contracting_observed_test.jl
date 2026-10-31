@@ -95,7 +95,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
                 file = load(doc(body; vars = vars, eqs = eqs))
                 f!, _, p, _, _ = build_evaluator(file)
                 Jad = ad_jacobian(f!, u, p, 0.0)
-                res = assemble_jacobian(
+                res = doc_jacobian(
                     file; u = u, p = p,
                     build_kwargs = (compiler = :interpreter,)
                 )
@@ -160,7 +160,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
                 # The derived model reads the sum per cell, which the native
                 # compiler declines (`compiler_refused_rule`); the interpreter
                 # evaluates every cell.
-                res = assemble_jacobian(
+                res = doc_jacobian(
                     file; u = u, p = p,
                     build_kwargs = (compiler = :interpreter,)
                 )
@@ -179,7 +179,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
                 file = load(doc(o -> neg(sq(si(o))); s = s))
                 f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
                 Jad = ad_jacobian(f!, u, p, 0.0)
-                res = assemble_jacobian(
+                res = doc_jacobian(
                     file; u = u, p = p,
                     build_kwargs = (compiler = :interpreter,)
                 )
@@ -202,7 +202,7 @@ end
     f!, u0, p, _, _ = build_evaluator(file)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:length(u0)]
     Jad = ad_jacobian(f!, u, p, 0.7)
-    res = assemble_jacobian(
+    res = doc_jacobian(
         file; u = u, t = 0.7,
         build_kwargs = (compiler = :interpreter,)
     )

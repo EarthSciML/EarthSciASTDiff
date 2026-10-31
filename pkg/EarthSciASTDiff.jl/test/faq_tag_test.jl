@@ -10,7 +10,7 @@
 # threw: `lhs_state` simply stopped recognising the pointwise-lifted
 # `faq{ expr: D(index(u, …)) }` LHS that the flatten pipeline produces, so
 # every array state equation was classified as non-differential and
-# `prepare_jacobian` returned an EMPTY plan — zero entries, zero scatter — on
+# the Jacobian evaluator returned an EMPTY plan — zero entries, zero scatter — on
 # models whose Jacobian is entirely array-valued. A downstream adjoint driver
 # consuming that plan builds an all-zero Jacobian and reports success.
 #
@@ -133,7 +133,7 @@ end
     model_half = Dict{String, Any}(k => v for (k, v) in doc if k != "jacobians")
     @test EarthSciAST.load_document(model_half) isa EarthSciAST.EsmFile
 
-    # The evaluation model — the document `prepare_jacobian` actually loads —
+    # The evaluation model — the document a consumer's EarthSciAST loads —
     # carries `faq` coefficient fields and must load without the version gate
     # firing.
     ev, names = EarthSciASTDiff._evaluation_document(

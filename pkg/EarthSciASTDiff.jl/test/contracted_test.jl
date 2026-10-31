@@ -37,7 +37,7 @@ using EarthSciASTDiff: Band, skey
     # ACCUMULATE contracted entries landing on one column)
     f!, u0, p0, _, _ = build_evaluator(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.7))
-    res = assemble_jacobian(file; u = u)
+    res = doc_jacobian(file; u = u)
     Jad = ad_jacobian(f!, u, p0, 0.0)
     @test Matrix(res.J) ≈ Matrix(Jad) rtol = 1.0e-12
     @test res.pattern == (Jad .!= 0)
@@ -47,8 +47,7 @@ using EarthSciASTDiff: Band, skey
     @test res.structure == :general
 
     # eval-CSE on/off agree (hoisting must bind contracted names too)
-    jp = prepare_jacobian(file; eval_cse = false)
-    Jp = copy(jp.prototype); jp(Jp, u, p0, 0.0)
+    Jp = doc_jacobian(file; u = u, cse = false).J
     @test Matrix(res.J) ≈ Matrix(Jp) rtol = 1.0e-14
 
     # serialize → parse round-trip carries the contracted dims

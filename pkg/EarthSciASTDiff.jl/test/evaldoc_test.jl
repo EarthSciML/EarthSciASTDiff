@@ -117,20 +117,24 @@ end
     @test_throws EarthSciASTDiff.BandError _evaluation_document(sv, JacEntry[])
 end
 
-@testset "evaluation document: one prepared jac! tracks u across calls" begin
-    # Moving u between calls on ONE prepared evaluator must give the same
-    # Jacobian as a fresh evaluation at the new point — nothing derived from
-    # u may be cached at build time (the hazard that ruled out carrying the
-    # source states as parameters).
+@testset "derived documents: one evaluator tracks u across calls" begin
+    # Moving u between calls on ONE built evaluator of a derived document must
+    # give the same product as a fresh evaluation at the new point — nothing
+    # derived from u may be cached at build time (the hazard that ruled out
+    # carrying the source states as parameters).
     for name in ("bd_chem", "minmod_adv", "flux_form_adv")
         file = fixture("$name.esm")
         f!, u0, p0, _, _ = build_evaluator(file)
-        jac = prepare_jacobian(file)
+        layout = _doc_source(file, nothing, NamedTuple())
+        doc, io = jvp_document(file)
+        ev = _doc_evaluator(doc, io.model)
         uA = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.3))
         uB = 0.2 .+ 0.6 .* abs.(cos.((1:length(u0)) .* 2.9))
-        J = copy(jac.prototype)
-        jac(J, uA, p0, 0.0)
-        jac(J, uB, p0, 0.0)
-        @test Matrix(J) ≈ Matrix(ad_jacobian(f!, uB, p0, 0.0)) rtol = 1.0e-10
+        v = [sin(0.7 * k) for k in eachindex(u0)]
+        inputs = Dict(_doc_cell(io.v, r) => v[i] for (i, r) in enumerate(layout.rownames))
+        _doc_call(ev, layout, uA, p0, 0.0, inputs)
+        out = _doc_call(ev, layout, uB, p0, 0.0, inputs)
+        got = [out(_doc_cell(io.jvp, r)) for r in layout.rownames]
+        @test got ≈ Matrix(ad_jacobian(f!, uB, p0, 0.0)) * v rtol = 1.0e-10
     end
 end

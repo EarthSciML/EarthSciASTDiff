@@ -20,9 +20,17 @@ expressions. From the bands it derives, without any numeric probing:
   the first implementation),
 - a serialized **`"jacobians"` document block**, so the Jacobian is itself
   an ESM artifact any language binding can evaluate,
-- a prepared evaluator `jac!(J, u, p, t)` over a fixed sparse prototype,
+- **product documents**: `J`'s band fields, `J v`, `Jᵀ λ` and the
+  second-order contraction, each as a derived ESM document an unmodified
+  EarthSciAST evaluator runs,
 - **second-order bands** for Rosenbrock discrete adjoints, contracted to
   `∇(μᵀ J w)` per step without ever forming a Hessian.
+
+The Julia package manipulates ASTs only: every number comes from
+EarthSciAST evaluating one of its documents, and
+[EarthSciIntegrator](https://github.com/EarthSciML/EarthSciIntegrator)
+coordinates those evaluations in a solver. (The Python and Rust bindings
+still carry their own evaluators, until they emit the same documents.)
 
 Correctness contract: the derivative is taken on the *same* expanded,
 lowered tree `EarthSciAST.build_evaluator` compiles, and the test suite pins
@@ -36,53 +44,54 @@ using EarthSciAST, EarthSciASTDiff
 
 file = EarthSciAST.load_path("model.esm")
 
-jac = prepare_jacobian(file)             # differentiate + compile, once
-J = jac_prototype(jac)                   # SparseMatrixCSC on the fixed pattern
-jac(J, u, p, t)                          # fill J in place, any (u, p, t)
+entries = jacobian_bands(file, "MyModel")    # the Jacobian as structured bands
+pat = jacobian_pattern(file)                 # structural pattern + row/column names
+detect_structure(entries, sysview(file, "MyModel"))  # :block_diagonal | :banded | :general
+doc = jacobian_document(file, "MyModel")     # document + "jacobians" block
 
-jac.structure                            # :block_diagonal | :banded | :general
-doc = jacobian_document(file, "MyModel") # document + "jacobians" block
+# Values are EarthSciAST's to compute. Each product is a document:
+ev, fields = evaluation_document(file)       # J's band fields  (model "JacobianEval")
+jv, io = jvp_document(file)                  # J v              (model "JvpEval")
+vj, io = vjp_document(file)                  # Jᵀ λ             (model "VjpEval")
+hv, io = hvp_document(file; stages = 2)      # ∇_u Σᵢ μᵢᵀ J(u) wᵢ (model "HvpEval")
+
+# Build any of them with EarthSciAST, write u into the source states' slots
+# and the inputs (io.v, io.lam, io.mu / io.w) into theirs, call the RHS once,
+# and read the outputs (io.jvp, io.vjp, io.hvp) from du.
+f!, x0, p, _, vm = build_evaluator(EarthSciAST.load_document(jv); model_name = io.model)
 
 # Coupled documents go through flatten first:
 flat = flatten(file)
-res = assemble_jacobian(flat; u = u, p = p)   # one-shot: J, pattern, entries…
+jv, io = jvp_document(flat)
 ```
 
-`∂f/∂p`: pass `wrt = :parameters` to any of the above. `∂f/∂B`, with respect
-to the cells of the forcing buffers (by default every array parameter with a
-`data` update; pass `forcing = [names…]` to choose), is `wrt = :forcing`:
-
-```julia
-jac = prepare_jacobian(file; wrt = :forcing,
-                       build_kwargs = (param_arrays = buffers,))  # live buffers
-ḡ = Dict(n => zeros(size(buffers[n])) for n in keys(buffers))
-vjp_forcing!(ḡ, jac, λ, u, p, t)         # ḡ_B += (∂f/∂B)ᵀ λ, no matrix formed
-```
+`∂f/∂p`: pass `wrt = :parameters`. `∂f/∂B`, with respect to the cells of
+the forcing buffers (by default every array parameter with a `data` update;
+pass `forcing = [names…]` to choose), is `wrt = :forcing`:
+`vjp_document(file; wrt = :forcing)` is the forcing cotangent
+`ḡ_B = (∂f/∂B)ᵀ λ`, its buffers bound live through EarthSciAST's
+`param_arrays`. `∂f/∂t` is `wrt = :time`.
 
 Second order, for a Rosenbrock adjoint: an axis pair `(a1, a2)`,
 `a1 ∈ (:states, :time)`, `a2 ∈ (:states, :parameters, :forcing)`:
 
 ```julia
-hv = prepare_hvp(file; wrt = (:states, :states))
-hvp!(g, hv, [(μ₁, w₁), (μ₂, w₂)], u, p, t)   # g += ∇_u Σᵢ μᵢᵀ J(u) wᵢ
+hv, io = hvp_document(file; stages = 2, wrt = (:states, :parameters))
 doc = jacobian_document(file, "MyModel"; wrt = [:states, (:states, :states)])
 ```
 
 In `jacobian_document` a single pair block is `wrt = :states => :states`; a
 bare tuple there is refused, since it also reads as a list of axes.
 
-Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
-loading one activates the SciMLBase package extension):
+A `Jᵀ λ` or second-order document is an equality-filtered `faq` scatter
+(spec §9.3): EarthSciAST.jl's interpreter evaluates it today
+(`compiler = :interpreter`), and its native compiler gains it with the
+equality-filter scatter optimization (EarthSciAST#613).
 
-```julia
-using OrdinaryDiffEqRosenbrock
-
-prob = odeproblem(file, (0.0, 3600.0))   # ODEFunction(f!; jac, jac_prototype)
-sol = solve(prob, Rodas5P())
-```
-
-(`ode_components(file)` returns the same pieces — `f!`, `jac!`,
-`jac_prototype`, `u0`, `p`, `var_map` — with no solver dependency.)
+Placing `J`'s band values in a matrix of your own layout is a scatter plan:
+`scatter_plan(file, Csr())` (or `LaneBlocks()`, `LaneSparseBlocks()`,
+`ColumnBanded(axis)`), checked against the source by `bind_plan`, whose
+`pairs` say which `JacobianEval` field cell goes to which storage position.
 
 ## Documentation
 
@@ -133,10 +142,10 @@ EarthSciAST implementation and is gated by the same goldens.
 - **Sparsity is structural occurrence** — never a symbolic-zero or numeric
   probe (the Symbolics/KPP/AMICI/OpenModelica consensus). Stored zeros are
   kept so solver preparations can be reused across the integration.
-- **v1 evaluation reuses the tree-walk.** Band coefficient fields are
-  emitted as a derived ESM model evaluated by the unmodified
-  `EarthSciAST.build_evaluator`; a dedicated compiled `jac!` kernel is a
-  planned optimization, not a correctness need.
+- **Evaluation is EarthSciAST's.** Band coefficient fields and every
+  product (spec §9) are emitted as derived ESM documents evaluated by the
+  unmodified EarthSciAST evaluator; this package computes no values, so a
+  faster evaluator is an EarthSciAST change, never a kernel here.
 - **Factorization info is a general interface** (`FactorizationPlan`,
   dispatched on the detected structure class); `BlockDiagonalPlan`
   (per-cell block LU: Markowitz ordering + symbolic fill-in, the KPP

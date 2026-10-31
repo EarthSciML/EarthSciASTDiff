@@ -600,7 +600,10 @@ Fixture corpus in `tests/` of this repository:
    bindings. Each fixture
    `<name>` carries `<name>.bands.json`, `<name>.block.json` (§4 block),
    `<name>.evaldoc.json` (§8 evaluation document; `-nocse` when it differs
-   without hoisting) and `<name>.jvals.json` (values, item 3). A fixture
+   without hoisting; like every derived document of §8 and §9 it declares
+   the lowest `esm` version that admits what it holds: `"1.2.0"` when any
+   expression node carries `units`, a unit-bearing `const` copied from the
+   source, and `"1.1.0"` otherwise, for its `faq` nodes) and `<name>.jvals.json` (values, item 3). A fixture
    whose right-hand side reads `t` also carries the same four for
    `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
