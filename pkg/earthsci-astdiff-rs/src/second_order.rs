@@ -5,6 +5,7 @@
 //! ([`crate::numeric::HvpEvaluator`]), never a Hessian tensor.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use earthsci_ast::{free_variables, EsmFile, Expr};
 use serde_json::{json, Value};
@@ -15,9 +16,9 @@ use crate::bands::{
 };
 use crate::branches::simp;
 use crate::clip::{clip_regions, RIdx};
-use crate::emit::{cse_templates, detect_structure, offset_class, serialize_band};
+use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
 use crate::helpers::{is_zero, ser_expr};
-use crate::jacobian::{jacobian_bands_seeded, jacobian_columns, targets, JacEntry, Wrt};
+use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
 use crate::rules::dscalar;
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
@@ -115,13 +116,25 @@ pub(crate) fn bands2_view(
     obs: &HashMap<String, Expr>,
     wrt: (Wrt, Wrt),
     forcing: Option<&[String]>,
-) -> R<(Vec<JacEntry>, Vec<JacEntry2>)> {
+) -> R<(Rc<Vec<JacEntry>>, Vec<JacEntry2>)> {
+    bands2_memo(sv, ctx, obs, wrt, forcing, &mut FirstOrder::default())
+}
+
+/// [`bands2_view`] sharing its first-order pass through `memo`.
+pub(crate) fn bands2_memo(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: (Wrt, Wrt),
+    forcing: Option<&[String]>,
+    memo: &mut FirstOrder,
+) -> R<(Rc<Vec<JacEntry>>, Vec<JacEntry2>)> {
     let (a1, a2) = wrt;
     let t2 = targets(sv, a2, forcing, obs)?;
-    let e1 = jacobian_bands_seeded(sv, ctx, obs, a1, forcing, &t2)?;
+    let e1 = memo.bands(sv, ctx, obs, a1, Some(a2), forcing, &t2)?;
     let tset: HashSet<String> = t2.into_iter().collect();
     let mut out = Vec::new();
-    for en in &e1 {
+    for en in e1.iter() {
         let mut ws: Vec<String> = free_variables(&en.band.coef)
             .into_iter()
             .filter(|x| tset.contains(x))
@@ -200,44 +213,29 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
 /// the parameters and forcing second axes a `col2_idx` may read only the
 /// entry's row and contracted index names.
 fn check_closed_col2(en: &JacEntry2) -> R<()> {
-    let b = &en.band;
-    let mut bound: HashSet<&str> = b
-        .ridx
-        .iter()
-        .filter_map(|r| match r {
-            RIdx::Name(n) => Some(n.as_str()),
-            RIdx::Fixed(_) => None,
-        })
-        .collect();
-    bound.extend(b.contracted.iter().map(|(n, _, _)| n.as_str()));
-    for c in en.col2_idx() {
-        let mut fv: Vec<String> = free_variables(c).into_iter().collect();
-        fv.sort();
-        if let Some(n) = fv.iter().find(|n| !bound.contains(n.as_str())) {
-            return Err(BandError(format!(
-                "second column index {} of `{}` in ∂²({})/∂{}∂{} reads `{n}`, which is \
-                 not closed at build time",
-                serde_json::to_string(&ser_expr(c)).expect("expression serializes"),
-                en.w,
-                en.u,
-                en.v,
-                en.w
-            )));
-        }
-    }
-    Ok(())
+    check_closed(&en.band, en.col2_idx(), |c| {
+        format!(
+            "second column index {} of `{}` in ∂²({})/∂{}∂{}",
+            expr_json(c),
+            en.w,
+            en.u,
+            en.v,
+            en.w
+        )
+    })
 }
 
 /// `"block_diagonal"` when the first-order state block is and every second
 /// column sits on the row's own cell, so the contraction is lane-local;
 /// `None` (field omitted) otherwise, and always on a time pair.
+/// `first` is the first-order block's class (asked only on a states pair).
 pub(crate) fn structure2(
-    e1: &[JacEntry],
+    first: impl FnOnce() -> &'static str,
     entries: &[JacEntry2],
     ctx: &Ctx,
     a1: Wrt,
 ) -> Option<&'static str> {
-    if a1 != Wrt::States || detect_structure(e1, ctx) != "block_diagonal" {
+    if a1 != Wrt::States || first() != "block_diagonal" {
         return None;
     }
     for en in entries {
@@ -325,56 +323,41 @@ pub fn jacobian_block2(
     cse: bool,
     cse_min_nodes: usize,
 ) -> R<Value> {
-    let (a1, a2) = axis_pair(wrt)?;
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let (e1, entries) = bands2_view(&sv, &ctx, &obs, (a1, a2), forcing)?;
-    let mut ser_entries: Vec<Value> = entries.iter().map(serialize_band2).collect();
-    let mut templates: Vec<(String, Expr)> = Vec::new();
-    if cse {
-        let coefs: Vec<Expr> = entries.iter().map(|en| en.band.coef.clone()).collect();
-        let (tpl, rewritten) = cse_templates(&coefs, cse_min_nodes, "jt");
-        if !tpl.is_empty() {
-            ser_entries = entries
-                .iter()
-                .zip(rewritten)
-                .map(|(en, coef)| {
-                    serialize_band2(&JacEntry2 {
-                        band: Band {
-                            coef,
-                            ..en.band.clone()
-                        },
-                        ..en.clone()
-                    })
-                })
-                .collect();
-            templates = tpl;
-        }
-    }
-    let mut block = serde_json::Map::new();
-    block.insert("wrt".into(), json!([a1.as_str(), a2.as_str()]));
-    block.insert("entries".into(), Value::Array(ser_entries));
-    if a2.has_columns() {
-        let cols = jacobian_columns(&sv, a2, forcing)?;
-        block.insert(
-            "columns".into(),
-            Value::Array(
-                cols.iter()
-                    .map(|(n, shape)| json!({"name": n, "shape": shape}))
-                    .collect(),
-            ),
-        );
-    }
-    if let Some(st) = structure2(&e1, &entries, &ctx, a1) {
-        block.insert("structure".into(), json!(st));
-    }
-    if !templates.is_empty() {
-        let mut t = serde_json::Map::new();
-        for (n, body) in &templates {
-            t.insert(n.clone(), json!({"params": [], "body": ser_expr(body)}));
-        }
-        block.insert("expression_templates".into(), Value::Object(t));
-    }
-    Ok(Value::Object(block))
+    let mut memo = FirstOrder::default();
+    pair_block(&sv, &ctx, &obs, wrt, forcing, cse, cse_min_nodes, &mut memo)
+}
+
+/// [`jacobian_block2`] over a view, sharing its first-order pass through
+/// `memo` with the other blocks of one emission.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pair_block(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: (Wrt, Wrt),
+    forcing: Option<&[String]>,
+    cse: bool,
+    cse_min_nodes: usize,
+    memo: &mut FirstOrder,
+) -> R<Value> {
+    let (a1, a2) = axis_pair(wrt)?;
+    let (e1, entries) = bands2_memo(sv, ctx, obs, (a1, a2), forcing, memo)?;
+    let columns = if a2.has_columns() {
+        Some(columns_field(sv, a2, forcing)?)
+    } else {
+        None
+    };
+    let structure = structure2(|| memo.structure(a1, Some(a2), &e1, ctx), &entries, ctx, a1);
+    Ok(Value::Object(block_fields(
+        json!([a1.as_str(), a2.as_str()]),
+        &entries,
+        serialize_band2,
+        columns,
+        structure,
+        cse,
+        cse_min_nodes,
+    )))
 }

@@ -12,7 +12,7 @@ use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
-use crate::jacobian::{JacEntry, Wrt};
+use crate::jacobian::{FirstOrder, JacEntry, Wrt};
 use crate::second_order::JacEntry2;
 use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
@@ -461,19 +461,25 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
             wrt.iter().map(BlockWrt::label).collect::<Vec<_>>()
         )));
     }
+    let sv = crate::system::sysview(file, model_name)?;
+    let ctx = crate::system::ctx_of(&sv)?;
+    let obs = crate::system::observed_defs(&sv)?;
+    let mut memo = FirstOrder::default();
     Ok(Value::Array(
         wrt.iter()
             .map(|w| match *w {
                 BlockWrt::Axis(w) => {
-                    jacobian_block_with_forcing(file, model_name, w, forcing, cse, cse_min_nodes)
+                    axis_block(&sv, &ctx, &obs, w, forcing, cse, cse_min_nodes, &mut memo)
                 }
-                BlockWrt::Pair(a1, a2) => crate::second_order::jacobian_block2(
-                    file,
-                    model_name,
+                BlockWrt::Pair(a1, a2) => crate::second_order::pair_block(
+                    &sv,
+                    &ctx,
+                    &obs,
                     (a1, a2),
                     forcing,
                     cse,
                     cse_min_nodes,
+                    &mut memo,
                 ),
             })
             .collect::<Result<_, _>>()?,
@@ -489,13 +495,69 @@ pub fn jacobian_block_with_forcing(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<Value, crate::bands::BandError> {
-    let entries = crate::jacobian::jacobian_bands_with_forcing(file, model_name, wrt, forcing)?;
     let sv: SysView = crate::system::sysview(file, model_name)?;
     let ctx = crate::system::ctx_of(&sv)?;
-    let mut ser_entries: Vec<Value> = entries.iter().map(serialize_band).collect();
+    let obs = crate::system::observed_defs(&sv)?;
+    let mut memo = FirstOrder::default();
+    axis_block(&sv, &ctx, &obs, wrt, forcing, cse, cse_min_nodes, &mut memo)
+}
+
+/// [`jacobian_block_with_forcing`] over a view, sharing its first-order
+/// pass through `memo` with the other blocks of one emission.
+#[allow(clippy::too_many_arguments)]
+fn axis_block(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    cse: bool,
+    cse_min_nodes: usize,
+    memo: &mut FirstOrder,
+) -> Result<Value, crate::bands::BandError> {
+    let entries = memo.bands(sv, ctx, obs, wrt, None, forcing, &[])?;
+    // A parameter or forcing block describes a rectangular matrix, which the
+    // structure classes and the factorization plan do not: it carries its
+    // column space instead, so a consumer can size and order the columns
+    // without the source document.
+    let (columns, structure) = if wrt.has_columns() {
+        (Some(columns_field(sv, wrt, forcing)?), None)
+    } else {
+        (None, Some(memo.structure(wrt, None, &entries, ctx)))
+    };
+    let mut block = block_fields(
+        json!(wrt.as_str()),
+        &entries,
+        serialize_band,
+        columns,
+        structure,
+        cse,
+        cse_min_nodes,
+    );
+    if structure == Some("block_diagonal") {
+        block.insert("factorization".into(), block_diagonal_plan(&entries));
+    }
+    Ok(Value::Object(block))
+}
+
+/// The fields every block shares, in their emitted order: `wrt`, the
+/// entries (coefficients template-CSE'd when `cse` is set), the `columns`
+/// of a parameter or forcing axis and the `structure` class (each when
+/// given), and the block-local `expression_templates`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn block_fields<T: Clone + BandEntry>(
+    wrt: Value,
+    entries: &[T],
+    serialize: impl Fn(&T) -> Value,
+    columns: Option<Value>,
+    structure: Option<&str>,
+    cse: bool,
+    cse_min_nodes: usize,
+) -> Map<String, Value> {
+    let mut ser_entries: Vec<Value> = entries.iter().map(&serialize).collect();
     let mut templates: Vec<(String, Expr)> = Vec::new();
     if cse {
-        let coefs: Vec<Expr> = entries.iter().map(|en| en.band.coef.clone()).collect();
+        let coefs: Vec<Expr> = entries.iter().map(|en| en.band().coef.clone()).collect();
         let (tpl, rewritten) = cse_templates(&coefs, cse_min_nodes, "jt");
         if !tpl.is_empty() {
             ser_entries = entries
@@ -503,50 +565,68 @@ pub fn jacobian_block_with_forcing(
                 .zip(rewritten)
                 .map(|(en, coef)| {
                     let mut en2 = en.clone();
-                    en2.band = Band {
-                        coef,
-                        ..en.band.clone()
-                    };
-                    serialize_band(&en2)
+                    en2.band_mut().coef = coef;
+                    serialize(&en2)
                 })
                 .collect();
             templates = tpl;
         }
     }
-    let mut block = serde_json::Map::new();
-    block.insert("wrt".into(), json!(wrt.as_str()));
+    let mut block = Map::new();
+    block.insert("wrt".into(), wrt);
     block.insert("entries".into(), Value::Array(ser_entries));
-    // A parameter or forcing block describes a rectangular matrix, which the
-    // structure classes and the factorization plan do not: it carries its
-    // column space instead, so a consumer can size and order the columns
-    // without the source document.
-    let structure = if wrt.has_columns() {
-        let cols = crate::jacobian::jacobian_columns(&sv, wrt, forcing)?;
-        block.insert(
-            "columns".into(),
-            Value::Array(
-                cols.iter()
-                    .map(|(n, shape)| json!({"name": n, "shape": shape}))
-                    .collect(),
-            ),
-        );
-        None
-    } else {
-        let structure = detect_structure(&entries, &ctx);
-        block.insert("structure".into(), json!(structure));
-        Some(structure)
-    };
+    if let Some(c) = columns {
+        block.insert("columns".into(), c);
+    }
+    if let Some(st) = structure {
+        block.insert("structure".into(), json!(st));
+    }
     if !templates.is_empty() {
-        let mut t = serde_json::Map::new();
+        let mut t = Map::new();
         for (n, body) in &templates {
             t.insert(n.clone(), json!({"params": [], "body": ser_expr(body)}));
         }
         block.insert("expression_templates".into(), Value::Object(t));
     }
-    if structure == Some("block_diagonal") {
-        block.insert("factorization".into(), block_diagonal_plan(&entries));
+    block
+}
+
+/// A first- or second-order entry, for [`block_fields`].
+pub(crate) trait BandEntry {
+    fn band(&self) -> &Band;
+    fn band_mut(&mut self) -> &mut Band;
+}
+
+impl BandEntry for JacEntry {
+    fn band(&self) -> &Band {
+        &self.band
     }
-    Ok(Value::Object(block))
+    fn band_mut(&mut self) -> &mut Band {
+        &mut self.band
+    }
+}
+
+impl BandEntry for JacEntry2 {
+    fn band(&self) -> &Band {
+        &self.band
+    }
+    fn band_mut(&mut self) -> &mut Band {
+        &mut self.band
+    }
+}
+
+/// A parameter or forcing block's `columns` field.
+pub(crate) fn columns_field(
+    sv: &SysView,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+) -> Result<Value, crate::bands::BandError> {
+    let cols = crate::jacobian::jacobian_columns(sv, wrt, forcing)?;
+    Ok(Value::Array(
+        cols.iter()
+            .map(|(n, shape)| json!({"name": n, "shape": shape}))
+            .collect(),
+    ))
 }
 
 // ── parsing a block back (emit.jl `parse_jacobian_block(s)`) ────────────────

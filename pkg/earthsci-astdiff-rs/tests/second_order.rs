@@ -11,10 +11,10 @@ use std::fs;
 use earthsci_ast::{esm_problem, free_variables, rhs_program, EsmFile, ProblemOptions, RhsProgram};
 use earthsci_astdiff::helpers::ser_expr;
 use earthsci_astdiff::{
-    hvp, jacobian_bands2, jacobian_bands2_with_forcing, jacobian_block2, jacobian_blocks,
-    parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks, prepare_hvp,
-    serialize_band2, stable_json, BlockWrt, BuildOptions, Exec, HvpForm, HvpPair, HvpPlan,
-    HvpProgram, HvpWorkspace, JacEntry2, ParsedBlock, Wrt,
+    hvp, jacobian_bands2, jacobian_bands2_with_forcing, jacobian_block, jacobian_block2,
+    jacobian_blocks, parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks,
+    prepare_hvp, serialize_band2, stable_json, BlockWrt, BuildOptions, Exec, HvpForm, HvpPair,
+    HvpPlan, HvpProgram, HvpWorkspace, JacEntry2, ParsedBlock, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -304,6 +304,28 @@ fn document_forms() {
     assert!(parse_jacobian_block2(&arr[0]).is_err());
     assert!(jacobian_blocks(&file, None, &[SS, SS], None, true, 12).is_err());
     assert!(parse_jacobian_blocks(&json!([arr[2], arr[2]])).is_err());
+    // one emission shares its first-order passes: the blocks equal those
+    // emitted alone
+    for name in ["arrhenius_chem", "bd_chem"] {
+        let f = load(name);
+        let wrt = [
+            BlockWrt::Axis(Wrt::States),
+            BlockWrt::Pair(Wrt::States, Wrt::States),
+            BlockWrt::Pair(Wrt::States, Wrt::Parameters),
+            BlockWrt::Axis(Wrt::Time),
+        ];
+        let both = jacobian_blocks(&f, None, &wrt, None, true, 12).unwrap();
+        let alone: Vec<Value> = wrt
+            .iter()
+            .map(|w| match *w {
+                BlockWrt::Axis(a) => jacobian_block(&f, None, a, true, 12).unwrap(),
+                BlockWrt::Pair(a1, a2) => {
+                    jacobian_block2(&f, None, (a1, a2), None, true, 12).unwrap()
+                }
+            })
+            .collect();
+        assert_eq!(both, Value::Array(alone), "{name}");
+    }
 }
 
 #[test]

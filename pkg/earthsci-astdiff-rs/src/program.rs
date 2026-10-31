@@ -48,7 +48,7 @@ use crate::bands::BandError;
 use crate::clip::RIdx;
 use crate::emit::{evaluation_document, evaluation_document_with};
 use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
-use crate::numeric::{foreach_point, HvpForm};
+use crate::numeric::{foreach_point, outside, HvpForm};
 use crate::scatter::{flat, ncells, Layout, PlanKind, ScatterPlan};
 use crate::second_order::{axis_pair, bands2_view, JacEntry2};
 use crate::system::{ctx_of, observed_defs, sysview};
@@ -183,12 +183,14 @@ struct ProgInner {
     /// The `*.evaldoc.json` form, emitted on first request (the compiled
     /// document is built from the form without the zeroed `D` equations).
     evaldoc: OnceLock<Value>,
-    /// The evaluation document's program, selected to the band fields.
-    rhs: RhsProgram,
-    /// The document as emitted, and its program, compiled on the first lane
+    /// The compiled document (fused band form) and its programs, selected
+    /// to the band fields; the build-time-data form is compiled at build.
+    doc: Value,
+    rhs: Compiled,
+    /// The document as emitted, and its programs, compiled on the first lane
     /// plan (see [`fused_band`]).
     lane_doc: Value,
-    lane_rhs: OnceLock<Result<RhsProgram, String>>,
+    lane_rhs: Compiled,
     names: Vec<String>,
     /// The index-set names of each state's shape.
     dims: HashMap<String, Vec<String>>,
@@ -412,6 +414,52 @@ fn compile(doc: &Value, model: &str, names: &[String], runtime_arrays: bool) -> 
         .map_err(|e| JacError::Build(format!("band-field selection: {e}")))
 }
 
+/// Whether `source` holds shaped parameters as run-time slots
+/// (`ProblemOptions::runtime_array_parameters`). A band program planned
+/// against it must read those slots too: compiled with the shaped
+/// parameters as build-time data, its fields would see the document's
+/// values while the source's buffers move, and nothing would say so.
+fn runtime_arrays(source: &RhsProgram) -> bool {
+    source
+        .forcing_slots()
+        .iter()
+        .any(|s| s.kind == SlotKind::ArrayParameter)
+}
+
+/// One band-field document's programs, each compiled on first use: shaped
+/// parameters as build-time data, and as run-time slots ([`compile`]).
+#[derive(Default)]
+struct Compiled([OnceLock<Result<RhsProgram, String>>; 2]);
+
+impl Compiled {
+    /// With the build-time-data form already compiled.
+    fn with(rhs: RhsProgram) -> Compiled {
+        let c = Compiled::default();
+        let _ = c.0[0].set(Ok(rhs));
+        c
+    }
+
+    /// The form that matches `source` ([`runtime_arrays`]).
+    fn matching(
+        &self,
+        doc: &Value,
+        model: &str,
+        names: &[String],
+        source: &RhsProgram,
+    ) -> R<&RhsProgram> {
+        let arrays = runtime_arrays(source);
+        self.0[usize::from(arrays)]
+            .get_or_init(|| compile(doc, model, names, arrays).map_err(|e| e.to_string()))
+            .as_ref()
+            .map_err(|e| JacError::Plan(e.clone()))
+    }
+
+    /// The build-time-data form, when compiled.
+    fn data(&self) -> Option<&RhsProgram> {
+        self.0[0].get().and_then(|r| r.as_ref().ok())
+    }
+}
+
 impl JacobianProgram {
     /// Differentiate `model_name` (the only model when `None`) with respect
     /// to its states and compile the band fields. Refuses an empty band list:
@@ -447,10 +495,11 @@ impl JacobianProgram {
         let doc = compiled_document(&src, &model, &evaldoc, &names, &entries, true)?;
         let rhs = compile(&doc, &model, &names, false)?;
         let lane_doc = compiled_document(&src, &model, &evaldoc, &names, &entries, false)?;
-        let lane_rhs = OnceLock::new();
-        if lane_doc == doc {
-            let _ = lane_rhs.set(Ok(rhs.clone()));
-        }
+        let lane_rhs = if lane_doc == doc {
+            Compiled::with(rhs.clone())
+        } else {
+            Compiled::default()
+        };
         let dims = sv
             .variables
             .iter()
@@ -465,7 +514,8 @@ impl JacobianProgram {
                 entries,
                 opts: opts.clone(),
                 evaldoc: OnceLock::new(),
-                rhs,
+                doc,
+                rhs: Compiled::with(rhs),
                 lane_doc,
                 lane_rhs,
                 names,
@@ -497,9 +547,12 @@ impl JacobianProgram {
     }
 
     /// The compiled band-field program: writes `<model>.J_k`, reads the
-    /// source states it needs as `aux`.
+    /// source states it needs as `aux`. Shaped parameters are build-time
+    /// data here; a plan against a source built with
+    /// `ProblemOptions::runtime_array_parameters` uses a form that reads
+    /// them as run-time slots instead.
     pub fn rhs(&self) -> &RhsProgram {
-        &self.inner.rhs
+        self.inner.rhs.data().expect("compiled at build")
     }
 
     fn prefixed(&self, name: &str) -> String {
@@ -525,9 +578,12 @@ impl JacobianProgram {
         let (pexec, ours, theirs, width, l) = match exec {
             Exec::Domain => {
                 let nl = scatter.lanes();
+                let rhs = inner
+                    .rhs
+                    .matching(&inner.doc, &inner.model, &inner.names, source)?;
                 (
-                    PlanExec::Domain(inner.rhs.clone(), inner.rhs.clone()),
-                    Slots::tile(inner.rhs.layout()),
+                    PlanExec::Domain(rhs.clone(), rhs.clone()),
+                    Slots::tile(rhs.layout()),
                     Slots::tile(source.layout()),
                     1,
                     nl,
@@ -556,14 +612,10 @@ impl JacobianProgram {
                                          domain); use Exec::Domain"
                     ));
                 }
-                let base = inner
-                    .lane_rhs
-                    .get_or_init(|| {
-                        compile(&inner.lane_doc, &inner.model, &inner.names, false)
-                            .map_err(|e| e.to_string())
-                    })
-                    .as_ref()
-                    .map_err(|e| JacError::Plan(e.clone()))?;
+                let base =
+                    inner
+                        .lane_rhs
+                        .matching(&inner.lane_doc, &inner.model, &inner.names, source)?;
                 let lp = base.lanes(kind.clone(), capacity).map_err(|e| {
                     JacError::Plan(format!("the band fields do not lane as {kind:?}: {e}"))
                 })?;
@@ -1611,19 +1663,16 @@ pub struct HvpProgram {
 
 struct HvpInner {
     id: u64,
-    file: EsmFile,
     model_name: Option<String>,
     model: String,
     wrt: (Wrt, Wrt),
     entries: Vec<JacEntry2>,
-    /// The compiled document (fused band form) and its band-field names;
-    /// `None` for an empty band list, which compiles nothing.
-    doc: Option<(Value, Vec<String>)>,
-    /// Its band-field program, with shaped parameters build-time data …
-    rhs: Option<RhsProgram>,
-    /// … and with them run-time slots, compiled on the first plan against a
-    /// source built with `ProblemOptions::runtime_array_parameters`.
-    rhs_arrays: OnceLock<Result<RhsProgram, String>>,
+    /// Every variable's declared shape (scalars absent), all a plan needs
+    /// of the document.
+    shapes: HashMap<String, Vec<i64>>,
+    /// The compiled document (fused band form), its band-field names and
+    /// programs; `None` for an empty band list, which compiles nothing.
+    doc: Option<(Value, Vec<String>, Compiled)>,
 }
 
 impl fmt::Debug for HvpProgram {
@@ -1768,8 +1817,8 @@ impl HvpProgram {
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
         let (_, entries) = bands2_view(&sv, &ctx, &obs, wrt, forcing)?;
-        let (doc, rhs) = if entries.is_empty() {
-            (None, None)
+        let doc = if entries.is_empty() {
+            None
         } else {
             let first = first_order_form(&entries);
             let (evaldoc, names) =
@@ -1783,19 +1832,17 @@ impl HvpProgram {
             let src = source_value(file)?;
             let doc = compiled_document(&src, &model, &evaldoc, &names, &first, true)?;
             let rhs = compile(&doc, &model, &names, false)?;
-            (Some((doc, names)), Some(rhs))
+            Some((doc, names, Compiled::with(rhs)))
         };
         Ok(HvpProgram {
             inner: Arc::new(HvpInner {
                 id: next_id(),
-                file: file.clone(),
                 model_name: model_name.map(str::to_string),
                 model,
                 wrt,
                 entries,
+                shapes: ctx.shapes.clone(),
                 doc,
-                rhs,
-                rhs_arrays: OnceLock::new(),
             }),
         })
     }
@@ -1817,7 +1864,7 @@ impl HvpProgram {
 
     /// The compiled band-field program (`None` for an empty band list).
     pub fn rhs(&self) -> Option<&RhsProgram> {
-        self.inner.rhs.as_ref()
+        self.inner.doc.as_ref().and_then(|(_, _, c)| c.data())
     }
 
     fn prefixed(&self, name: &str) -> String {
@@ -1862,31 +1909,18 @@ impl HvpProgram {
         let theirs_p = source.parameters();
         let theirs_f = source.forcing_slots();
         let n_src_params = theirs_p.len();
-        let runtime_arrays = theirs_f.iter().any(|s| s.kind == SlotKind::ArrayParameter);
-        let run = match (&inner.doc, &inner.rhs) {
-            (Some((doc, names)), Some(rhs)) => {
-                let bprog = if runtime_arrays {
-                    inner
-                        .rhs_arrays
-                        .get_or_init(|| {
-                            compile(doc, &inner.model, names, true).map_err(|e| e.to_string())
-                        })
-                        .as_ref()
-                        .map_err(|e| JacError::Plan(e.clone()))?
-                } else {
-                    rhs
-                };
+        let run = match &inner.doc {
+            Some((doc, names, rhs)) => {
+                let bprog = rhs.matching(doc, &inner.model, names, source)?;
                 let ours = Slots::tile(bprog.layout());
                 let io = bind_inputs(bprog, &ours, &theirs, source)?;
                 Some((PlanExec::Domain(bprog.clone(), bprog.clone()), io, ours))
             }
-            _ => None,
+            None => None,
         };
 
-        let sv = sysview(&inner.file, Some(&inner.model))?;
-        let ctx = ctx_of(&sv)?;
         let perr = |m: String| JacError::Plan(m);
-        let shape_of = |n: &str| ctx.shapes.get(n).cloned().unwrap_or_default();
+        let shape_of = |n: &str| inner.shapes.get(n).cloned().unwrap_or_default();
         let as_usize = |s: &[i64]| s.iter().map(|&n| n.max(0) as usize).collect::<Vec<_>>();
         // A state's block in the source's `u ++ aux`, dense column-major
         // over its declared shape.
@@ -1940,11 +1974,7 @@ impl HvpProgram {
             }
             Ok(slot_off[j] + flat(cell, &shape))
         };
-        let outside = |n: &str, cell: &[i64]| {
-            ctx.shapes
-                .get(n)
-                .is_some_and(|sh| cell.iter().zip(sh).any(|(c, s)| *c < 1 || c > s))
-        };
+        let ghost = |n: &str, cell: &[i64]| outside(inner.shapes.get(n), cell);
 
         let mut items = Vec::new();
         for (k, en) in inner.entries.iter().enumerate() {
@@ -1973,7 +2003,7 @@ impl HvpProgram {
             })?;
             for (cell, cc, cidx) in pts {
                 let (c1, c2) = cidx.split_at(en.ncol);
-                if outside(&en.w, c2) {
+                if ghost(&en.w, c2) {
                     if a2 == Wrt::Forcing {
                         return Err(perr(format!(
                             "second column `{}` (row `{}`) is outside the declared extent of \
@@ -1985,7 +2015,7 @@ impl HvpProgram {
                     }
                     continue;
                 }
-                if a1 == Wrt::States && outside(&en.v, c1) {
+                if a1 == Wrt::States && ghost(&en.v, c1) {
                     continue; // ghost read: no column
                 }
                 let col = match a1 {

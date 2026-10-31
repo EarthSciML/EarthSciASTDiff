@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
+use crate::emit::detect_structure;
 use crate::helpers::map_expr_children;
 use crate::inline::inline_observed_cached;
 use crate::jacobian::{column_names, jacobian_bands_view, jacobian_columns, JacEntry, Wrt};
@@ -724,7 +725,7 @@ pub fn prepare_hvp(
         None
     };
     let colnames = columns.as_deref().map(column_names).unwrap_or_default();
-    let structure = structure2(&e1, &entries, &ctx, wrt.0);
+    let structure = structure2(|| detect_structure(&e1, &ctx), &entries, &ctx, wrt.0);
     let defaults = parameter_defaults(&sv, &ctx);
     Ok(HvpEvaluator {
         wrt,
@@ -739,7 +740,7 @@ pub fn prepare_hvp(
 }
 
 /// Whether a column cell lies outside its variable's declared extent.
-fn outside(shape: Option<&Vec<i64>>, cidx: &[i64]) -> bool {
+pub(crate) fn outside(shape: Option<&Vec<i64>>, cidx: &[i64]) -> bool {
     shape.is_some_and(|sh| cidx.iter().zip(sh).any(|(c, s)| *c < 1 || c > s))
 }
 
