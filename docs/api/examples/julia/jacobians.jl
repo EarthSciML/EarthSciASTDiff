@@ -32,11 +32,10 @@ plan = plan_factorization(entries, view)
 @assert sort(plan.block_vars) == ["A", "B", "C"]
 # endregion
 
-# region: evaluate ops=evaluation_document,jvp_document
+# region: evaluate ops=evaluation_document,jvp_document,jac_prototype,scatter_plan,bind_plan
 # EarthSciASTDiff evaluates nothing: it emits ESM documents that EarthSciAST
 # evaluates. The band fields J_k, as a derived model whose right-hand side,
-# run once by an unmodified EarthSciAST evaluator, leaves every band value in
-# `du`. `fields[k]` names entry k's band field.
+# run once, leaves every band value in `du`. `fields[k]` names entry k's field.
 doc, fields = evaluation_document(file)
 @assert length(fields) == length(entries)
 prob = EarthSciAST.esm_problem(
@@ -49,12 +48,8 @@ k = findfirst(en -> (en.u, en.v) == ("A", "A"), entries)
 # J·v as a derived model: inputs `_v_<C>`, outputs `_jvp_<R>`.
 jdoc, (model, v, jvp) = jvp_document(file)
 @assert model == "JvpEval"
-# endregion
-
-# region: prepare ops=jac_prototype,scatter_plan,bind_plan
 J = jac_prototype(file)                      # sparse matrix on the fixed pattern
-@assert size(J) == (12, 12)
-@assert nnz(J) == 24
+@assert size(J) == (12, 12) && nnz(J) == 24
 # A scatter plan places the band fields in your own storage (here CSR),
 # checked against the source before it is used.
 bound = bind_plan(file, scatter_plan(file, Csr()))

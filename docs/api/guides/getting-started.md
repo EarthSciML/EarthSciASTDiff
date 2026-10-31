@@ -58,20 +58,9 @@ fields `J_k` (the evaluation document), and the matrix-free products `J·v`,
 
 <!-- example: evaluate -->
 
-See [`evaluation_document`](/generated/api/ref/evaluation_document) and
-[`jvp_document`](/generated/api/ref/jvp_document).
-
-## Prototype and storage
-
-To use the Jacobian inside a solver, take the fixed sparse prototype once,
-and place the band values in your own storage with a scatter plan that is
-checked against the source before use.
-
-<!-- example: prepare -->
-
-See [`jac_prototype`](/generated/api/ref/jac_prototype),
-[`scatter_plan`](/generated/api/ref/scatter_plan) and
-[`bind_plan`](/generated/api/ref/bind_plan).
+See [`evaluation_document`](/generated/api/ref/evaluation_document),
+[`jvp_document`](/generated/api/ref/jvp_document) and
+[`jac_prototype`](/generated/api/ref/jac_prototype).
 
 ## Serialize
 
