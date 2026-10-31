@@ -17,7 +17,12 @@ root = normpath(joinpath(@__DIR__, ".."))
 const STATE_NAMES = (
     "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
     "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+    "filtered_scan", "semiring_reduce",
 )
+# The native compiler declines a derived model whose coefficients carry a sum,
+# a filter or a non-`+` reduction (`compiler_refused_rule`); the interpreter
+# evaluates them.
+const INTERPRETED = ("contracted_ops", "contracting_observed", "filtered_scan", "semiring_reduce")
 for (name, wrt, t, tag) in Iterators.flatten(
         (
             ((n, :states, 0.7, "") for n in STATE_NAMES),
@@ -30,13 +35,12 @@ for (name, wrt, t, tag) in Iterators.flatten(
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
-    f!, u0, p0, _, vm = build_evaluator(file)
+    f!, u0, p0, _, vm = build_evaluator(
+        file; (name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple())...
+    )
     n = length(u0)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:n]
-    # The native compiler declines a derived model whose coefficients carry
-    # a sum (`compiler_refused_rule`); the interpreter evaluates them.
-    kw = name in ("contracted_ops", "contracting_observed") ?
-        (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
+    kw = name in INTERPRETED ? (build_kwargs = (compiler = :interpreter,),) : NamedTuple()
     res = assemble_jacobian(file; wrt = wrt, u = u, t = t, kw...)
     rn, cn = res.rownames, res.colnames
     entries = Any[]
@@ -68,9 +72,14 @@ for (name, wrt, t) in (
         ("forcing_bracket", (:states, :forcing), 0.37),
         ("forcing_bracket", (:time, :states), 0.37),
         ("minmod_adv", (:states, :states), 0.7),
+        ("filtered_scan", (:states, :states), 0.7),
+        ("semiring_reduce", (:states, :states), 0.7),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
-    hv = prepare_hvp(file; wrt = wrt)
+    hv = prepare_hvp(
+        file; wrt = wrt,
+        build_kwargs = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
+    )
     rn, cn, gn = hv.rownames, hv.colnames, hv.col2names
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(rn)]
     ps = [

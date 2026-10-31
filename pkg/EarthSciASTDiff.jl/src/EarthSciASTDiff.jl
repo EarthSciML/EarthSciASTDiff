@@ -25,6 +25,7 @@ Layered API, lowest to highest:
   - [`jacobian_document`](@ref)    — original document + serialized `"jacobians"` block
   - [`jacobian_pattern`](@ref)     — structural sparsity pattern (`SparseMatrixCSC{Bool}`)
   - [`detect_structure`](@ref)     — `:block_diagonal` / `:banded` / `:general`
+                                     (`:column_block` given a `column_axis`)
   - [`plan_factorization`](@ref)   — symbolic factorization info (general interface;
                                      per-cell block LU is the first implementation)
   - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`;
@@ -66,8 +67,8 @@ export Site, dscalar, simplify_branches,
     vjp!, vjp_forcing!,
     JacEntry2, jacobian_bands2, col_idx, col2_idx, prepare_hvp, HVPEvaluator, hvp!,
     ode_components, odefunction, odeproblem,
-    detect_structure, jac_prototype,
-    FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
+    detect_structure, column_lines, jac_prototype,
+    FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, plan_factorization, lu_fill,
     StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
     ScatterPlan, scatter_plan, serialize_scatter_plan,
     BoundScatter, bind_plan, jac_into!, scatter_targets
@@ -79,6 +80,7 @@ include("cse.jl")            # hash-consed template extraction (swell control)
 include("scalar_rules.jl")   # dscalar + closed-function derivative table
 include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus
+include("reductions.jl")     # filters, max/min/* reductions, one-hot index reads
 include("clip.jl")           # static region clipping + band re-merging
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("jacobian.jl")       # jacobian_bands driver

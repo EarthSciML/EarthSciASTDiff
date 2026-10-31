@@ -36,6 +36,19 @@ ckey(e::ASTExpr) = canonical_json(e)
 # `stable_json` (emit.jl), so equal trees always produce equal keys.
 skey(e::ASTExpr) = stable_json(EarthSciAST.serialize_expression(e))
 
+# A site's identity key: the canonical JSON, or — for an `index` node whose
+# subscripts hold an array op the canonical form refuses (a level search
+# `u[κ]` with κ a min-faq, §3.5) — `~` followed by its stable JSON, which
+# sorts after every canonical key.
+function _site_key(e::ASTExpr)::String
+    try
+        return ckey(e)
+    catch err
+        err isa EarthSciAST.CanonicalizeError || rethrow()
+        return "~" * skey(e)
+    end
+end
+
 """
     Site(expr)
 
@@ -58,12 +71,12 @@ struct Site
 end
 function Site(e::ASTExpr)
     if e isa VarExpr
-        return Site(e, ckey(e), e.name, -1)
+        return Site(e, _site_key(e), e.name, -1)
     elseif e isa OpExpr && e.op == "index" && !isempty(e.args) &&
             e.args[1] isa VarExpr
-        return Site(e, ckey(e), e.args[1].name, length(e.args) - 1)
+        return Site(e, _site_key(e), e.args[1].name, length(e.args) - 1)
     end
-    return Site(e, ckey(e), "", -2)
+    return Site(e, _site_key(e), "", -2)
 end
 
 """
@@ -84,7 +97,7 @@ object, so key equality already implies the prefilter's conditions.
 function is_site(e::ASTExpr, s::Site)::Bool
     if s.rank == -2                                 # unrecognized site shape:
         return (e isa VarExpr || (e isa OpExpr && e.op == "index")) &&
-            ckey(e) == s.key                     # plain key compare
+            _site_key(e) == s.key                # plain key compare
     end
     if e isa VarExpr
         return s.rank == -1 && e.name == s.name
@@ -92,7 +105,7 @@ function is_site(e::ASTExpr, s::Site)::Bool
         s.rank >= 0 && length(e.args) == s.rank + 1 || return false
         a1 = e.args[1]
         (a1 isa VarExpr && a1.name == s.name) || return false
-        return ckey(e) == s.key
+        return _site_key(e) == s.key
     end
     return false
 end

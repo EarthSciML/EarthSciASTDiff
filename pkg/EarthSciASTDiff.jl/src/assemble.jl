@@ -20,10 +20,13 @@ function _fold_const_gathers(e::ASTExpr, bind::Dict{String, Float64})::ASTExpr
 end
 _eval_cidx(c::ASTExpr, bind::Dict{String, Float64})::Int =
     Int(round(evaluate_expr(_fold_const_gathers(c, bind), bind)))
+_eval_guard(g::ASTExpr, bind::Dict{String, Float64})::Bool =
+    evaluate_expr(_fold_const_gathers(g, bind), bind) != 0
 
 # Every point of one band: `f(cell, cc, cidx)` per (row cell, contracted cell),
 # first index fastest, with the column index evaluated there. Column index
-# expressions are evaluated per cell ONCE (build-time, not solve-time).
+# expressions are evaluated per cell ONCE (build-time, not solve-time). A
+# point the band's guard (`where`) excludes is not a point of the band.
 function _foreach_point(f, b::Band)
     rowcells = isempty(b.rows) ? [Int[]] :
         [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
@@ -39,6 +42,7 @@ function _foreach_point(f, b::Band)
         for (k2, (n, _, _)) in enumerate(b.contracted)
             bind[n] = Float64(cc[k2])
         end
+        b.guard === nothing || _eval_guard(b.guard, bind) || continue
         f(cell, cc, [_eval_cidx(c, bind) for c in b.cidx])
     end
     return nothing
@@ -70,8 +74,15 @@ function _colmap(vm0, cols, wrt::Symbol)
     if wrt == :time
         return name -> name == "t" ? 1 : 0, 1, ["t"]
     elseif wrt == :states
-        return name -> get(vm0, name, 0), length(vm0),
-            first.(sort(collect(vm0), by = last))
+        # A cell past a state's extent is a ghost read (0); a column variable
+        # with no cell in the layout at all is not a state the layout holds
+        # (-1), which `_colslot` refuses rather than skip.
+        vars = Set{String}(first(split(String(n), '[')) for n in keys(vm0))
+        slot(name) = (
+            j = get(vm0, name, 0);
+            j != 0 ? j : first(split(name, '[')) in vars ? 0 : -1
+        )
+        return slot, length(vm0), first.(sort(collect(vm0), by = last))
     else
         cnames = _column_names(cols)
         lut = Dict(n => i for (i, n) in enumerate(cnames))
@@ -94,7 +105,10 @@ function _column_names(cols)::Vector{String}
     return names
 end
 
-# The column slot of one scatter pair. On the forcing axis a column is a cell
+# The column slot of one scatter pair. A state column whose variable the
+# layout does not hold at all resolves nowhere — an observed the band
+# calculus took for a state, say — and is an error on every axis rather than
+# a silently dropped derivative. On the forcing axis a column is a cell
 # of a live buffer, and the ghost-read skip that is legitimate for a stencil
 # reading past the domain is not: an unresolvable column there would silently
 # drop a gradient, so it is an error (esm-jacobian-spec.md §4). The parameters
@@ -102,6 +116,12 @@ end
 # face coefficient `K[i+1]` beside `c[i+1]`) is a ghost read.
 function _colslot(colslot, colname::String, rowname::String, wrt::Symbol)
     cs = colslot(colname)
+    cs == -1 && throw(
+        BandError(
+            "column `$colname` (row `$rowname`) names no state of the layout; a band " *
+                "column must resolve to a state slot or read past a state's extent"
+        )
+    )
     cs == 0 && wrt == :forcing && throw(
         BandError(
             "column `$colname` (row `$rowname`) is outside the declared extent of its " *
@@ -216,8 +236,8 @@ function jacobian_pattern(
     strict = source_layout !== nothing
     I = Int[]; J = Int[]
     for (_, rowname, colname, _) in _scatter_pairs(sv, entries)
+        r = _rowslot(vm0, rowname, colslot(colname), strict)  # a wrong layout first
         cs = _colslot(colslot, colname, rowname, wrt)
-        r = _rowslot(vm0, rowname, cs, strict)
         cs == 0 && continue                          # ghost / out-of-layout column
         push!(I, r); push!(J, cs)
     end
@@ -351,8 +371,8 @@ function prepare_jacobian(
     strict = source_layout !== nothing
     items = Tuple{Int, Int, Int}[]     # (duj slot, row, col)
     for (k, rowname, colname, jname) in _scatter_pairs(sv, entries)
+        r = _rowslot(vm0, rowname, colslot(colname), strict)  # a wrong layout first
         cs = _colslot(colslot, colname, rowname, wrt)
-        r = _rowslot(vm0, rowname, cs, strict)
         cs == 0 && continue
         push!(items, (_slot(vmj, jname, "band"), r, cs))
     end

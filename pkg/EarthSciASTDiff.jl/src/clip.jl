@@ -229,8 +229,8 @@ end
 """
     merge_bands(bs::Vector{Band}) -> Vector{Band}
 
-Coalesce bands that are identical in `ridx`, `cidx`, and `coef` (structural
-keys) and whose `rows` boxes are adjacent along exactly one dimension.
+Coalesce bands that are identical in `ridx`, `cidx`, `coef`, `contracted`
+and `guard` (structural keys) and whose `rows` boxes are adjacent along exactly one dimension.
 Iterated to a fixpoint; band order is preserved (a merge keeps the
 earlier band's position), so emission stays deterministic.
 
@@ -250,7 +250,10 @@ serialization beats interning it node by node.)
 """
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
-    key(b) = (b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted)
+    key(b) = (
+        b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted,
+        b.guard === nothing ? nothing : skey(b.guard),
+    )
     buckets = Dict{Any, Vector{Int}}()
     for (i, b) in enumerate(bs)
         push!(get!(buckets, key(b), Int[]), i)
@@ -284,10 +287,7 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
                     (ok && d != 0) || continue
                     lo = min(ra[d][1], rb[d][1]); hi = max(ra[d][2], rb[d][2])
                     rows = copy(ra); rows[d] = (lo, hi)
-                    out[a] = Band(
-                        rows, out[a].ridx, out[a].cidx, out[a].coef,
-                        out[a].contracted
-                    )
+                    out[a] = _rebuild(out[a]; rows = rows)
                     alive[b] = false
                     changed = true
                 end

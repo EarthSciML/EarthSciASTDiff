@@ -28,6 +28,7 @@ end
     include("prune_test.jl")
     include("observed_test.jl")
     include("contracting_observed_test.jl")
+    include("reductions_test.jl")
     include("roundtrip_test.jl")
     include("time_test.jl")
     include("forcing_test.jl")

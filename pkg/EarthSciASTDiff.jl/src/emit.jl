@@ -49,6 +49,7 @@ function serialize_band(en::JacEntry)
     )
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
+    b.guard === nothing || (d["where"] = _ser_expr(b.guard))
     return d
 end
 
@@ -67,15 +68,17 @@ function parse_band(d::AbstractDict)::JacEntry
                 for c in d["contracted"]
             ] :
             Tuple{String, Int, Int}[],
+        haskey(d, "where") ? expression_from_json(d["where"]) : nothing,
     )
     return JacEntry(String(d["row"]), String(d["col"]), band)
 end
 
 """
     jacobian_document(file::EsmFile, model_name; wrt = :states, forcing = nothing,
-                      cse = true, cse_min_nodes = 12) -> Dict
+                      cse = true, cse_min_nodes = 12, column_axis = nothing) -> Dict
     jacobian_document(flat::FlattenedSystem; wrt = :states, forcing = nothing,
-                      name = "Flattened", cse = true, cse_min_nodes = 12) -> Dict
+                      name = "Flattened", cse = true, cse_min_nodes = 12,
+                      column_axis = nothing) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
 (esm-jacobian-spec.md §4): per model, the differentiation axis, the band
@@ -99,16 +102,21 @@ With `cse = true` (default), repeated coefficient subtrees of at least
 and the emitted coefficients reference them via `apply_expression_template`
 — the size control for limiter-heavy schemes. [`parse_jacobian_block`](@ref)
 expands the references back, so the round-trip is exact either way.
+
+`column_axis` (an index-set name) lets the state block report the
+`"column_block"` structure class with its line-by-line factorization plan
+when every coupling stays within one line along that axis
+([`detect_structure`](@ref), [`column_lines`](@ref)).
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
     )
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
     _attach_jacobians!(
         doc, sv, String(model_name); wrt = wrt, forcing = forcing,
-        cse = cse, cse_min_nodes = cse_min_nodes
+        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
     )
     return doc
 end
@@ -116,20 +124,20 @@ end
 function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
     )
     sv = sysview(flat)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
-        cse = cse, cse_min_nodes = cse_min_nodes
+        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
     )
     return doc
 end
 
 function _attach_jacobians!(
         doc, sv::SysView, model_name::String; wrt, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
     )
     # One axis may be spelled as a Symbol or a String; iterating a String
     # would split it into one-character "axes". A Pair is one axis PAIR
@@ -150,7 +158,8 @@ function _attach_jacobians!(
     memo = _FirstOrder()
     blocks = Any[
         _jacobian_block(
-            sv, w, memo; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes
+            sv, w, memo; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes,
+            column_axis = column_axis
         )
             for w in axes
     ]
@@ -167,7 +176,7 @@ _axis_key(w::Union{Tuple, AbstractVector, Pair}) = _axis_pair(w)
 # shares the first-order pass with the pairs of the same emission.
 function _jacobian_block(
         sv::SysView, wrt::Symbol, memo::_FirstOrder = _FirstOrder(); forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
     )
     _check_axis(wrt)
     entries = _first_order!(memo, sv, wrt, nothing, forcing)
@@ -177,12 +186,16 @@ function _jacobian_block(
     # without the source document.
     rect = wrt in (:parameters, :forcing)
     structure = rect ? nothing : _structure!(memo, entries, sv)
+    # Line-by-line structure is a property of the square state matrix.
+    cax = wrt == :states ? column_axis : nothing
+    cax === nothing || structure in (:empty, :block_diagonal) ||
+        column_lines(entries, sv, String(cax)) === nothing || (structure = :column_block)
     block = _block(
         String(wrt), entries, rect ? _columns_field(sv, wrt, forcing) : nothing,
         structure, cse, cse_min_nodes
     )
     if !rect
-        plan = plan_factorization(entries, sv; structure = structure)
+        plan = plan_factorization(entries, sv; structure = structure, column_axis = cax)
         plan === nothing || (block["factorization"] = serialize_plan(plan))
     end
     return block
@@ -201,7 +214,7 @@ function _block(wrt, entries, columns, structure, cse::Bool, cse_min_nodes::Int)
         )
         isempty(templates) || (
             ser_entries = [
-                _with_band(en, Band(b.rows, b.ridx, b.cidx, rewritten[k], b.contracted))
+                _with_band(en, _rebuild(b; coef = rewritten[k]))
                     for (k, en) in enumerate(entries) for b in (en.band,)
             ]
         )
@@ -272,9 +285,9 @@ function parse_jacobian_block(block::AbstractDict)
     return wrt, entries
 end
 
-_expand_band(b::Band, reg) = Band(
-    b.rows, b.ridx, ASTExpr[expand_templates(c, reg) for c in b.cidx],
-    expand_templates(b.coef, reg), b.contracted
+_expand_band(b::Band, reg) = _rebuild(
+    b; cidx = ASTExpr[expand_templates(c, reg) for c in b.cidx],
+    coef = expand_templates(b.coef, reg)
 )
 _with_band(en::JacEntry, b::Band) = JacEntry(en.u, en.v, b)
 

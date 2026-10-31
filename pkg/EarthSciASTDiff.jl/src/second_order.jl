@@ -99,10 +99,15 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
                 BandError("whole-array reference to `$w` in a band coefficient")
             )
             c2 = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            c2, d, extra = _lift_nested(nested, s, body, c2, dscalar(body, s), ctx, outer, taken)
+            c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s), ctx, outer, taken)
             coef = _simp(d)
             iszero_lit(coef) && continue
-            push!(out, Band(rows2, b.ridx, vcat(b.cidx, c2), coef, vcat(b.contracted, extra)))
+            c2, coef, contracted = _one_hot(c2, coef, vcat(b.contracted, extra), b.ridx, w, ctx)
+            push!(
+                out, Band(
+                    rows2, b.ridx, vcat(b.cidx, c2), coef, contracted, _conj(b.guard, g)
+                )
+            )
         end
     end
     return out
@@ -150,6 +155,7 @@ function serialize_band(en::JacEntry2)
     )
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
+    b.guard === nothing || (d["where"] = _ser_expr(b.guard))
     return d
 end
 
@@ -159,7 +165,7 @@ function parse_band2(d::AbstractDict)::JacEntry2
     b = en.band
     return JacEntry2(
         en.u, en.v, String(d["col2"]),
-        Band(b.rows, b.ridx, vcat(b.cidx, c2), b.coef, b.contracted), length(b.cidx)
+        _rebuild(b; cidx = vcat(b.cidx, c2)), length(b.cidx)
     )
 end
 
@@ -170,7 +176,8 @@ _with_band(en::JacEntry2, b::Band) = JacEntry2(en.u, en.v, en.w, b, en.ncol)
 # second axis's `columns` when it is a parameter or forcing axis.
 function _jacobian_block(
         sv::SysView, wrt::Tuple{Symbol, Symbol}, memo::_FirstOrder = _FirstOrder();
-        forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12
+        forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12,
+        column_axis = nothing       # a pair block has no structure class to refine
     )
     a1, a2 = wrt
     e1, entries = _bands2(sv, a1, a2, forcing, memo)
@@ -253,9 +260,11 @@ function prepare_hvp(
     for (k, en) in enumerate(entries)
         _foreach_point(en.band) do cell, cc, cidx
             rowname = _cellname(en.u, cell)
-            c2 = _colslot(col2slot, _cellname(en.w, cidx[(en.ncol + 1):end]), rowname, a2)
-            c1 = _colslot(colslot, _cellname(en.v, cidx[1:(en.ncol)]), rowname, a1)
-            r = _rowslot(vm0, rowname, c1 * c2, strict)
+            n2 = _cellname(en.w, cidx[(en.ncol + 1):end])
+            n1 = _cellname(en.v, cidx[1:(en.ncol)])
+            r = _rowslot(vm0, rowname, colslot(n1) * col2slot(n2), strict)  # a wrong layout first
+            c2 = _colslot(col2slot, n2, rowname, a2)
+            c1 = _colslot(colslot, n1, rowname, a1)
             (c1 == 0 || c2 == 0) && return
             push!(items, (_slot(vmj, _cellname("J_$k", vcat(cell, cc)), "band"), r, c1, c2))
         end
