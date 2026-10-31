@@ -55,23 +55,23 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   definitions that the coefficients read, every state derivative zeroed (`D(u) = 0`), the
   `hoist_observed` buffers, and one band-field state `J_k` per entry.
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
-  only where it differs (a fixture with something to hoist). Julia and Rust
-  compare byte-exactly; it is the input the Rust production path (#4) compiles.
+  only where it differs (a fixture with something to hoist). Julia, Rust and
+  Python compare byte-exactly.
 - `goldens/` — `<fixture>[.<axis>].{jvp,vjp}.evaldoc.json` and
   `<fixture>.<a1>-<a2>.{hvp,hvp-sym}.evaldoc.json`: the product documents
   (spec §9), models `JvpEval`, `VjpEval`, `HvpEval` (two stages) and, on a
   `states-states` pair, `HvpEvalSymmetric`. One per axis with a `*.jvals.json`
-  and per second-order pair. Julia-produced only so far; byte-compared, and
-  checked by value by evaluating each with EarthSciAST against the product
-  formed from the `*.jvals.json` / `*.hvals.json` golden.
+  and per second-order pair. Julia, Rust and Python compare byte-exactly, and
+  each binding checks them by value by evaluating each with its EarthSciAST
+  against the product formed from the `*.jvals.json` / `*.hvals.json` golden.
 - `goldens/` — `<fixture>.<layout>.plan.json`: scatter plans (spec §8) —
   band field → storage position for `lane_blocks`, `lane_sparse_blocks`,
   `column_banded` and `csr`, one per layout the fixture's structure admits
-  (the list lives in `scripts/regenerate-goldens.jl`). Julia and Rust
-  compare byte-exactly; Python does not port scatter plans yet.
+  (the list lives in `scripts/regenerate-goldens.jl`). Julia, Rust and
+  Python compare byte-exactly.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
-  numeric assemblies must reproduce the exact (row, col) key set and every
+  value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
 - `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
@@ -86,5 +86,6 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   integral float keeps its `.0`; scientific notation for magnitudes outside `[1e-4, 1e6)`).
 
 Value-level conformance (Jacobian entries at sample points) is asserted in
-each binding's own test suite against a machine-precision oracle — for Julia,
-ForwardDiff through the eltype-generic tree-walk RHS.
+each binding's own test suite, every value obtained by running the emitted
+documents through that binding's EarthSciAST — never by evaluating band
+coefficients in the test itself.

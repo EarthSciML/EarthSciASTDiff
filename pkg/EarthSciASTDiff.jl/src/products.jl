@@ -177,10 +177,22 @@ function _forcing_ghost(v::String, ok)
     )
 end
 
+# Refuse a read of `v` with more indices than its shape has dimensions.
+function _check_rank(v::String, ci::Vector{ASTExpr}, shape::Vector{Int})
+    length(ci) > length(shape) && throw(
+        BandError(
+            "a band reads `$v` with $(length(ci)) indices, but it has " *
+                "$(length(shape)) dimensions"
+        )
+    )
+    return
+end
+
 # §9.1's ghost rule for a read of column variable `v` at `ci` on axis `wrt`:
 # the in-extent conjuncts `G` to filter by, none when every point is in
 # extent (the region split then leaves the box whole).
 function _ghost_conjuncts(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
+    _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     ok === true && return Tuple{Any, Set{String}}[]
     wrt == :forcing && _forcing_ghost(v, ok)
@@ -198,6 +210,7 @@ end
 # and reads `v` inside its extent. A ghost is dropped, except on the forcing
 # axis, where it is refused. Decided from the literal indices, no walk.
 function _point_in_extent(b::Band, v::String, ci::Vector{ASTExpr}, shape::Vector{Int}, wrt::Symbol)
+    _check_rank(v, ci, shape)
     all(e -> isempty(free_variables(e)), ci) || throw(
         BandError(
             "a band with no index names reads `$v` at an index not closed at build " *
@@ -213,9 +226,20 @@ end
 # Fresh output-index names `_j1 … _jn`, clear of the entry's and the
 # document's names (§9.1).
 function _jnames(taken::Set{String}, b::Band, coef::ASTExpr, n::Int)
-    local_taken = union(taken, _row_names(b), first.(b.contracted), _names_of((coef, b.cidx...)))
+    # the document's names are looked up, never copied: a per-entry copy of
+    # the document-wide set makes the build quadratic
+    local_taken = union(_row_names(b), first.(b.contracted), _names_of((coef, b.cidx...)))
     b.guard === nothing || union!(local_taken, free_variables(b.guard))
-    return [_fresh!(local_taken, "_j$d", "_") for d in 1:n]
+    out = String[]
+    for d in 1:n
+        nm = "_j$d"
+        while nm in taken || nm in local_taken
+            nm *= "_"
+        end
+        push!(local_taken, nm)
+        push!(out, nm)
+    end
+    return out
 end
 
 # The `faq` of one entry's term: `ranges` (the output names first, then the

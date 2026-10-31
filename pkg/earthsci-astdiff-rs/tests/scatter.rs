@@ -1,13 +1,14 @@
-//! Scatter plans (spec §8): byte-identical plan goldens, values a plan
-//! scatters equal to the oracle's, refusals, and the plan's thread-safety.
+//! Scatter plans (spec §8): byte-identical plan goldens, the evaluation
+//! document's band fields (evaluated by EarthSciAST) scattered by each plan
+//! equal to `J` from the `JvpEval` document, refusals, and the plan's
+//! thread-safety.
 
 use std::fs;
 
-use earthsci_astdiff::{
-    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt,
-};
+use earthsci_astdiff::{jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt};
 
 mod common;
+use common::docvals::{doc_band_fields, doc_jacobian, scatter};
 use common::{jvals_env, load, root};
 
 fn cb(axis: &str) -> Layout {
@@ -51,25 +52,25 @@ fn plan_goldens() {
 }
 
 #[test]
-fn scattered_values_match_the_oracle() {
+fn scattered_values_match_the_jacobian() {
     for (name, tag, layout) in plan_layouts() {
         let file = load(name);
         let (env, _) = jvals_env(name);
-        let oracle = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
-        let fields = band_fields(&file, None, &env).unwrap();
+        let jac = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
+        let fields = doc_band_fields(&file, None, &env).unwrap();
         let plan = ScatterPlan::from_file(&file, None, &layout).unwrap();
         let nl = plan.lanes();
         for l in [nl, nl + 3] {
             let bound = plan.bind(&file, None, l).unwrap();
             let mut out = vec![f64::NAN; bound.len];
-            bound.scatter(&fields, &mut out).unwrap();
+            scatter(&bound, &fields, &mut out).unwrap();
             let targets = plan.targets(l);
             let mut covered = std::collections::HashSet::new();
             for (pos, t) in targets.iter().enumerate() {
                 match t {
                     None => assert_eq!(out[pos], 0.0, "{name}.{tag}: padding slot {pos}"),
                     Some(rc) => {
-                        let want = oracle.get(rc).copied().unwrap_or(0.0);
+                        let want = jac.get(rc).copied().unwrap_or(0.0);
                         let tol = 1e-13 * want.abs().max(1.0);
                         assert!(
                             (out[pos] - want).abs() <= tol,
@@ -80,7 +81,7 @@ fn scattered_values_match_the_oracle() {
                     }
                 }
             }
-            for k in oracle.keys() {
+            for k in jac.keys() {
                 assert!(covered.contains(k), "{name}.{tag}: {k:?} has no slot");
             }
         }
@@ -167,10 +168,10 @@ fn refusals() {
     }
     // scatter-time checks: wrong output length, wrong fields
     let (env, _) = jvals_env("bd_chem");
-    let fields = band_fields(&file, None, &env).unwrap();
+    let fields = doc_band_fields(&file, None, &env).unwrap();
     let b = plan.bind(&file, None, 4).unwrap();
-    assert!(b.scatter(&fields, &mut vec![0.0; b.len + 1]).is_err());
-    assert!(b.scatter(&fields[1..], &mut vec![0.0; b.len]).is_err());
+    assert!(scatter(&b, &fields, &mut vec![0.0; b.len + 1]).is_err());
+    assert!(scatter(&b, &fields[1..], &mut vec![0.0; b.len]).is_err());
 }
 
 #[test]

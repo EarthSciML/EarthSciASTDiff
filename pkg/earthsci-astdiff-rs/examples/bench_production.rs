@@ -1,20 +1,19 @@
-//! #4 W5: production assembly timings — `JacobianProgram::eval_into`, `apply`
-//! and `apply_transpose` against one evaluation of the operator's own RHS.
-//! Median of 50 warm single-thread calls.
+//! #4 W5: band-field timings — EarthSciAST evaluating the evaluation
+//! document (this crate evaluates nothing itself) against one evaluation of
+//! the operator's own RHS. Median of 50 warm single-thread calls.
 //!
 //!     cargo run --release --example bench_production -- [cells]
 //!
-//! B1: `bd_chem` on `cells` cells (default 6552, the CONUS 4×5° count),
-//! `LaneBlocks`, domain and lanes (capacity 256). Column: a 2-D chemistry +
-//! vertical-exchange operator on 72 levels × `cells/72` columns,
-//! `ColumnBanded` and `Csr` (domain). Compare with
+//! B1: `bd_chem` on `cells` cells (default 6552, the CONUS 4×5° count).
+//! Column: a 2-D chemistry + vertical-exchange operator on 72 levels ×
+//! `cells/72` columns. Compare with
 //! `scripts/bench-production.jl` (EarthSciAST.jl evaluating the same
 //! documents' band fields).
 
 use std::time::Instant;
 
-use earthsci_ast::{esm_problem, rhs_program, EsmFile, ProblemOptions, RhsProgram};
-use earthsci_astdiff::{BuildOptions, Exec, JacobianProgram, Layout};
+use earthsci_ast::{esm_problem, rhs_program, Compiler, EsmFile, ProblemOptions, RhsProgram};
+use earthsci_astdiff::{evaluation_document, jacobian_bands_view, sysview, Wrt};
 use serde_json::{json, Value};
 
 fn median<F: FnMut()>(mut f: F) -> f64 {
@@ -112,94 +111,32 @@ fn rhs_time(src: &RhsProgram, u: &[f64], p: &[f64]) -> f64 {
     median(|| src.eval_into(u, &[], p, 0.5, &f, &mut du, &mut ws).unwrap())
 }
 
-fn domain(name: &str, file: &EsmFile, layout: Layout) {
+/// The band fields: EarthSciAST compiling and evaluating the evaluation
+/// document (`evaluation_document`, CSE on), next to the operator's own RHS.
+/// Placing the values in a matrix is a scatter plan's work, the consumer's,
+/// and is not timed.
+fn band_fields(name: &str, file: &EsmFile) {
     let src = source(file);
     let (u, p) = state(&src);
     let t0 = Instant::now();
-    let prog = JacobianProgram::build(file, None, &BuildOptions::default()).unwrap();
-    let plan = prog.plan(&layout, &src, Exec::Domain).unwrap();
+    let sv = sysview(file, None).unwrap();
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let (doc, fields) = evaluation_document(&sv, &entries, true, 12).unwrap();
+    let opts = ProblemOptions {
+        compiler: Some(Compiler::Native),
+        ..Default::default()
+    };
+    let ev = rhs_program(&esm_problem(&doc, (0.0, 1.0), opts).unwrap()).unwrap();
     let build = t0.elapsed().as_secs_f64();
-    let mut ws = prog.new_workspace(&plan);
-    let f = src.default_forcing();
-    let mut out = vec![0.0f64; plan.out_len()];
-    let mut o32 = vec![0.0f32; plan.out_len()];
-    let ev = median(|| {
-        prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws)
-            .unwrap()
-    });
-    let ev32 = median(|| {
-        prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut o32, &mut ws)
-            .unwrap()
-    });
-    prog.eval_into(&plan, &u, &[], &p, 0.5, &f, &[], 0, &mut out, &mut ws)
-        .unwrap();
-    let mut y = vec![0.0; u.len()];
-    let ap = median(|| prog.apply(&plan, &ws, &u, &mut y).unwrap());
-    let mut g = vec![0.0; u.len()];
-    let at = median(|| prog.apply_transpose(&plan, &ws, &u, &mut g).unwrap());
+    let (eu, ep) = state(&ev);
+    let tj = rhs_time(&ev, &eu, &ep);
     let rhs = rhs_time(&src, &u, &p);
     println!(
-        "{name:<28} build+plan {build:>7.3} s | eval_into {} (f32 {}) | {:.2}× RHS {} | \
-              apply {} | apply_transpose {} ({:.2}× apply)",
-        us(ev),
-        us(ev32),
-        ev / rhs,
+        "{name:<10} build {build:>7.3} s | band fields {} | {:.2}× RHS {} | {} band fields",
+        us(tj),
+        tj / rhs,
         us(rhs),
-        us(ap),
-        us(at),
-        at / ap
-    );
-}
-
-fn lanes(name: &str, file: &EsmFile, layout: Layout, cap: usize) {
-    let src = source(file);
-    let (u, p) = state(&src);
-    let prog = JacobianProgram::build(file, None, &BuildOptions::default()).unwrap();
-    let plan = prog
-        .plan(&layout, &src, Exec::Lanes { capacity: cap })
-        .unwrap();
-    let mut ws = prog.new_workspace(&plan);
-    let f = src.default_forcing();
-    let lay = src.layout();
-    let ncell = lay.u[0].len();
-    // every cell, batch by batch, its lane inputs gathered per batch
-    let batches: Vec<(Vec<i32>, Vec<f64>)> = (0..ncell)
-        .step_by(cap)
-        .map(|c0| {
-            let cells: Vec<i32> = (c0..(c0 + cap).min(ncell)).map(|c| c as i32 + 1).collect();
-            let mut lu = vec![0.0; lay.u.len() * cap];
-            for (s, b) in lay.u.iter().enumerate() {
-                for (l, c) in cells.iter().enumerate() {
-                    lu[s * cap + l] = u[b.base + *c as usize - 1];
-                }
-            }
-            (cells, lu)
-        })
-        .collect();
-    let mut out = vec![0.0f64; plan.out_len()];
-    let ev = median(|| {
-        for (cells, lu) in &batches {
-            prog.eval_into(
-                &plan,
-                lu,
-                &[],
-                &p,
-                0.5,
-                &f,
-                cells,
-                cells.len(),
-                &mut out,
-                &mut ws,
-            )
-            .unwrap();
-        }
-    });
-    let rhs = rhs_time(&src, &u, &p);
-    println!(
-        "{name:<28} lanes cap {cap:<4}            | eval_into {} over {} batches | {:.2}× RHS",
-        us(ev),
-        batches.len(),
-        ev / rhs
+        fields.len()
     );
 }
 
@@ -222,23 +159,10 @@ fn main() {
     }
     let chem = earthsci_ast::load_document(&bd_chem(n)).unwrap();
     println!("B1: bd_chem, {n} cells × 3 species");
-    domain("  LaneBlocks (domain)", &chem, Layout::LaneBlocks);
-    domain(
-        "  LaneSparseBlocks (domain)",
-        &chem,
-        Layout::LaneSparseBlocks,
-    );
-    domain("  Csr (domain)", &chem, Layout::Csr);
-    lanes("  LaneBlocks", &chem, Layout::LaneBlocks, 256);
-    lanes("  LaneSparseBlocks", &chem, Layout::LaneSparseBlocks, 256);
+    band_fields("bd_chem", &chem);
     let nz = 72;
     let nx = (n / nz).max(1);
     let col = earthsci_ast::load_document(&column(nx, nz)).unwrap();
     println!("Column: {nx} columns × {nz} levels × 2 species, vertical exchange");
-    domain(
-        "  ColumnBanded (domain)",
-        &col,
-        Layout::ColumnBanded { axis: "z".into() },
-    );
-    domain("  Csr (domain)", &col, Layout::Csr);
+    band_fields("column", &col);
 }

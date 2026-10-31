@@ -8,9 +8,10 @@ contraction through it.
 
 import earthsci_ast as ea
 import pytest
+from docvals import doc_jacobian
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expr_walk import map_children
-from earthsci_astdiff import assemble_jacobian, inline_observed
+from earthsci_astdiff import inline_observed
 from earthsci_astdiff.expr_helpers import skey
 from earthsci_astdiff.system import lhs_state, observed_defs, sysview
 from oracle import check_against_fd
@@ -18,6 +19,12 @@ from oracle import check_against_fd
 NX, NZ = 2, 3
 U = [[0.1 * (i + NX * k + 1) for k in range(NZ)] for i in range(NX)]  # U[i][k]
 S = [sum(U[i][k] ** 2 for k in range(NZ)) for i in range(NX)]
+
+
+def _jac(file):
+    """``J`` at ``U``, from EarthSciAST evaluating the ``JvpEval`` document."""
+    states = {f"u[{i + 1},{k + 1}]": U[i][k] for i in range(NX) for k in range(NZ)}
+    return doc_jacobian(file, states=states).J
 
 
 def _idx(v, *i):
@@ -103,7 +110,7 @@ CASES = {
 @pytest.mark.parametrize("case", list(CASES))
 def test_contracting_observed_keeps_its_sum(case, oidx):
     body, want = CASES[case]
-    j = assemble_jacobian(_doc(body, oidx), states={"u": U})
+    j = _jac(_doc(body, oidx))
     expect = {
         (f"u[{i + 1},{k + 1}]", f"u[{i + 1},{kp + 1}]"): want(i, k, kp)
         for i in range(NX)
@@ -126,7 +133,7 @@ def test_filtered_contracting_observed_keeps_its_window():
     file = _doc(_sq_s, s=s)
     sf = [sum(U[i][k] ** 2 for k in range(2)) for i in range(NX)]
     _check(
-        assemble_jacobian(file, states={"u": U}),
+        _jac(file),
         _expect(lambda i, k, a, b: -2 * sf[i] * 2 * U[i][b] if a == i and b < 2 else 0),
     )
     x = [U[i][k] for i in range(NX) for k in range(NZ)]
@@ -140,7 +147,7 @@ def test_semiring_max_contracting_observed():
     del s["reduce"]
     file = _doc(_sq_s, s=s)
     smax = [max(U[i][k] ** 2 for k in range(NZ)) for i in range(NX)]
-    j = assemble_jacobian(file, states={"u": U})
+    j = _jac(file)
     want = _expect(lambda i, k, a, b: -2 * smax[i] * 2 * U[i][b] if a == i and b == NZ - 1 else 0)
     for key, val in want.items():
         assert j[key] == pytest.approx(val, abs=1e-13), key
@@ -181,7 +188,7 @@ def test_scalar_sum_observed_bare_read():
         equations=[{"lhs": "c", "rhs": _ksum(_idx("u", 1, "k"))}],
     )
     _check(
-        assemble_jacobian(file, states={"u": U}),
+        _jac(file),
         _expect(lambda i, k, a, b: -(c if (a, b) == (i, k) else 0) - (U[i][k] if a == 0 else 0)),
     )
 
@@ -195,7 +202,7 @@ def test_observed_with_a_sum_below_its_root():
         equations=[{"lhs": "c", "rhs": _mul(2, _ksum(_sq(_idx("u", 2, "k"))))}],
     )
     _check(
-        assemble_jacobian(file, states={"u": U}),
+        _jac(file),
         _expect(
             lambda i, k, a, b: (
                 -(c if (a, b) == (i, k) else 0) - (U[i][k] * 4 * U[1][b] if a == 1 else 0)
@@ -209,7 +216,7 @@ def test_hand_written_shadowing_sum():
     # shadows the reader's k
     file = _doc(lambda o: _neg(_mul(_idx("u", *o), _ksum(_sq(_idx("u", "i", "k"))))))
     _check(
-        assemble_jacobian(file, states={"u": U}),
+        _jac(file),
         _expect(
             lambda i, k, a, b: 0 if a != i else -(S[i] if b == k else 0) - U[i][k] * 2 * U[i][b]
         ),
@@ -225,7 +232,7 @@ def test_index_named_like_an_observed():
         equations=[{"lhs": "k", "rhs": _ksum(_idx("u", 1, "k"))}],
     )
     _check(
-        assemble_jacobian(file, states={"u": U}),
+        _jac(file),
         _expect(lambda i, k, a, b: -1 if (a, b) == (i, k) else 0),
     )
 

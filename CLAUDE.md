@@ -35,8 +35,7 @@ that will merge into EarthSciAST's `esm-spec.md`). Layout mirrors EarthSciAST:
 holds shared fixtures + goldens that all future bindings must match.
 
 Python binding (`pkg/earthsci-astdiff-py/src/earthsci_astdiff/`): a module-
-for-module mirror of the Julia source map below (except `scatter.jl`, not yet
-ported: the `*.plan.json` goldens are checked by Julia and Rust only), plus `simplify_port.py` — a
+for-module mirror of the Julia source map below, plus `simplify_port.py` — a
 faithful port of the Julia reference's `EarthSciAST.simplify` (the bindings'
 own simplifiers differ in commutative-argument handling, and the goldens pin
 the Julia behavior; never switch the band calculus back to
@@ -48,14 +47,14 @@ Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
 Two Rust-specific parity traps are already handled — Julia `fld` is floor
 division (NOT `div_euclid`, which differs for negative divisors), and
 `simplify_port.rs` carries the same Julia-simplify port as Python.
-Rust-only: `program.rs` (production assembly, #4 W2/W4) compiles the
-evaluation document through earthsci-ast-rs's `RhsProgram` (domain and lane
-programs) and scatters/applies the band slab (`HvpProgram`: the same route
-for second-order bands, contracted instead of scattered); `numeric.rs` stays the oracle
-it is tested against (`tests/program.rs`). The compiled copy differs from the
-`*.evaldoc.json` golden ON PURPOSE (source declarations kept, zeroed `D`
-equations dropped, band fields in a fused form for domain plans) — never
-"fix" the golden to match it.
+No binding evaluates anything: the values are EarthSciAST's, from the
+emitted documents. Rust's `points.rs` is the structural point walk (band
+point → row/column cell) the patterns and scatter plans share. The bindings'
+value tests get every number by running the emitted documents through
+EarthSciAST's interpreter (`pkg/earthsci-astdiff-rs/tests/common/docvals.rs`,
+`pkg/earthsci-astdiff-py/tests/docvals.py`, mirroring Julia's
+`test/docvals.jl`); never add a value evaluator back to a package, nor a
+test oracle that evaluates band coefficients itself.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

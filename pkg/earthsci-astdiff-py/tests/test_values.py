@@ -1,13 +1,14 @@
-"""Numeric assembly against the Julia reference's value goldens
-(tests/goldens/*.jvals.json): the (row, col) key set must match EXACTLY and
-every value to 1e-10 relative (bit-equality across runtimes is unrealistic —
-evaluation order differs)."""
+"""The Jacobian EarthSciAST evaluates from this binding's ``JvpEval`` product
+document (tests/docvals.py) against the Julia reference's value goldens
+(tests/goldens/*.jvals.json): the stored (row, col) key set — the structural
+pattern — must match EXACTLY and every value to 1e-10 relative (bit-equality
+across runtimes is unrealistic — evaluation order differs)."""
 
 import json
 
 import earthsci_ast as ea
 import pytest
-from earthsci_astdiff import assemble_jacobian
+from docvals import doc_jacobian
 
 NAMES = (
     "bd_chem",
@@ -21,29 +22,6 @@ NAMES = (
     "filtered_scan",
     "semiring_reduce",
 )
-
-
-def _cells_to_arrays(u: dict):
-    """{'u[3]': v, 's': v} → {'u': [..1-based..], 's': v}"""
-    arrays: dict = {}
-    for cellname, v in u.items():
-        if "[" not in cellname:
-            arrays[cellname] = v
-            continue
-        name, rest = cellname.split("[", 1)
-        cells = [int(x) for x in rest[:-1].split(",")]
-        cur = arrays.setdefault(name, {})
-        for c in cells[:-1]:
-            cur = cur.setdefault(c, {})
-        cur[cells[-1]] = v
-
-    def to_list(d):
-        if not isinstance(d, dict):
-            return d
-        n = max(d)
-        return [to_list(d.get(i)) for i in range(1, n + 1)]
-
-    return {k: to_list(v) for k, v in arrays.items()}
 
 
 # (fixture, axis, golden suffix) beyond the default states-axis goldens; the
@@ -62,14 +40,9 @@ def test_values_golden(name, wrt, sfx, golden_dir, valid_dir):
     tag = name if wrt == "states" else f"{name}.{wrt}{sfx}"
     g = json.loads((golden_dir / f"{tag}.jvals.json").read_text())
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
-    got = assemble_jacobian(
-        file,
-        next(iter(file.models)),
-        wrt=wrt,
-        states=_cells_to_arrays(g["u"]),
-        params=g["params"],
-        t=g["t"],
-    )
+    got = doc_jacobian(
+        file, next(iter(file.models)), wrt=wrt, states=g["u"], params=g["params"], t=g["t"]
+    ).J
     want = {(r, c): v for r, c, v in g["entries"]}
     assert set(got) == set(want)
     for k, v in want.items():

@@ -1,8 +1,8 @@
 """Second-order bands (second_order.jl, esm-jacobian-spec.md §4.4): the band
 calculus applied once more, to the coefficients of the first-order bands. A
 Rosenbrock step contains J(uₙ) explicitly, so its discrete adjoint needs
-∇(μᵀ J(u) w) once per step; that is a contraction of these entries (see
-:func:`~earthsci_astdiff.numeric.hvp`), never a Hessian tensor."""
+∇(μᵀ J(u) w) once per step; that is a contraction of these entries (the
+reference's ``hvp`` product document, spec §9), never a Hessian tensor."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def jacobian_bands2(
     index must be closed at build time (spec §4.3), else :class:`BandError`.
     """
     a1, a2 = axis_pair(wrt)
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     return _bands2(sv, a1, a2, forcing)[1]
 
 

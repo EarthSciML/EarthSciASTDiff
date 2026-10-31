@@ -14,11 +14,16 @@ test/observed_test.jl for the two shared cases).
 
 import earthsci_ast as ea
 import pytest
-from earthsci_astdiff import assemble_jacobian, jacobian_bands, sysview
+from docvals import doc_jacobian
+from earthsci_astdiff import jacobian_bands, jacobian_pattern, serialize_band, stable_json, sysview
 from earthsci_astdiff.system import observed_defs, view_states
 
 K = 3.0
 U = [0.3, 0.7, 1.1, 1.9]
+
+
+def _cells(u):
+    return {f"u[{i}]": x for i, x in enumerate(u, start=1)}
 
 
 def _idx(v, i):
@@ -67,7 +72,7 @@ def test_indexed_observed_is_inlined():
     assert "y" in observed_defs(sv)
     assert view_states(sv) == ["u"], "y must not be a solver slot"
     assert {e.v for e in jacobian_bands(file)} == {"u"}
-    j = assemble_jacobian(file, states={"u": U}, params={"k": K})
+    j = doc_jacobian(file, states=_cells(U), params={"k": K}).J
     assert len(j) == 4
     for i, ui in enumerate(U, start=1):
         assert j[(f"u[{i}]", f"u[{i}]")] == pytest.approx(-2 * K * ui, abs=1e-14)
@@ -115,10 +120,15 @@ def test_flattened_system_has_states():
     (u,) = states
     entries = jacobian_bands(sv)
     assert entries, "EMPTY band list for a flattened system (the silent zero)"
-    j = assemble_jacobian(
-        sv, states={u: 0.7}, params={n: K for n, v in sv.variables.items() if v.type == "parameter"}
-    )
-    assert j[(u, u)] == pytest.approx(-2 * K * 0.7, abs=1e-14)
+    assert jacobian_pattern(sv)[0] == [(u, u)]
+    # The flattened view's bands are the model's own, namespaced. Python
+    # EarthSciAST refuses to load a derived document with dotted names
+    # ("reference 'Flat.u' to undefined system"), so the value is the model's,
+    # evaluated from its own `JvpEval` document.
+    bands = stable_json([serialize_band(en) for en in entries]).replace("Flat.", "")
+    assert bands == stable_json([serialize_band(en) for en in jacobian_bands(file)])
+    j = doc_jacobian(file, states={"u": 0.7}, params={"k": K}).J
+    assert j[("u", "u")] == pytest.approx(-2 * K * 0.7, abs=1e-14)
 
 
 def test_element_derivative_lhs_is_refused():

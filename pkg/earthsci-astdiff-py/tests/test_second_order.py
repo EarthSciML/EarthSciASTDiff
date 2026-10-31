@@ -1,27 +1,27 @@
 """Second-order bands (spec §4.4) against the Julia reference's goldens:
 `<fixture>.<a1>-<a2>.{bands,block}.json` byte-identical, and the hvp
-contraction against `<fixture>.<a1>-<a2>.hvals.json` (exact key set, values
-to 1e-10 relative)."""
+contraction EarthSciAST evaluates from the `HvpEval` product document
+(tests/docvals.py) against `<fixture>.<a1>-<a2>.hvals.json` (exact
+structural key set, values to 1e-10 relative)."""
 
 import json
 
 import earthsci_ast as ea
 import pytest
+from docvals import doc_hvp, reached2
 from earthsci_ast.expression import free_variables
 from earthsci_astdiff import (
     JacEntry2,
-    hvp,
+    hvp_document,
     jacobian_bands2,
     jacobian_block,
     parse_jacobian_block,
     parse_jacobian_blocks,
-    prepare_hvp,
     serialize_band,
     stable_json,
     sysview,
 )
 from earthsci_astdiff.expr_helpers import ser_expr
-from test_values import _cells_to_arrays
 
 SECOND_ORDER = (
     ("bd_chem", ("states", "states")),
@@ -110,38 +110,34 @@ def test_structure(valid_dir):
 def _golden_point(golden_dir, name, wrt):
     gd = json.loads((golden_dir / f"{name}.{wrt[0]}-{wrt[1]}.hvals.json").read_text())
     assert gd["wrt"] == list(wrt)
-    pairs = [(pr["mu"], pr["w"]) for pr in gd["pairs"]]
-    return gd, pairs, _cells_to_arrays(gd["u"])
+    return gd, [(pr["mu"], pr["w"]) for pr in gd["pairs"]]
 
 
 @pytest.mark.parametrize("name,wrt", SECOND_ORDER)
 def test_hvp_value_goldens(name, wrt, valid_dir, golden_dir):
-    gd, pairs, states = _golden_point(golden_dir, name, wrt)
-    hv = prepare_hvp(*_load(valid_dir, name), wrt=wrt)
-    g = hvp({}, hv, pairs, states=states, t=gd["t"])
+    gd, pairs = _golden_point(golden_dir, name, wrt)
+    file, model = _load(valid_dir, name)
     want = dict(gd["g"])
-    assert set(g) == set(want)  # every reached second column, exactly
-    for k, v in want.items():
-        assert g[k] == pytest.approx(v, rel=1e-10, abs=1e-13), k
-    # one pair at a time accumulates to the same
-    g1: dict = {}
+    # every reached second column, exactly: structural, off the bands
+    assert reached2(file, model, wrt=wrt) == set(want)
+    g = doc_hvp(file, pairs, model, wrt=wrt, states=gd["u"], t=gd["t"])
+    assert set(want) <= set(g)
+    for k, v in g.items():
+        assert v == pytest.approx(want.get(k, 0.0), rel=1e-10, abs=1e-13), k
+    # one stage pair at a time sums to the same
+    g1 = dict.fromkeys(g, 0.0)
     for pr in pairs:
-        hvp(g1, hv, pr, states=states, t=gd["t"])
-    assert set(g1) == set(g)
+        for k, v in doc_hvp(file, [pr], model, wrt=wrt, states=gd["u"], t=gd["t"]).items():
+            g1[k] += v
     for k, v in g.items():
         assert g1[k] == pytest.approx(v, rel=1e-12, abs=1e-14), k
     if wrt == ("states", "states"):
         # ∇²(μᵀf) is symmetric: scattering by the first column gives the
-        # same gradient on every column either form reaches
-        gs = hvp({}, hv, pairs, states=states, t=gd["t"], form="symmetric")
-        assert bool(gs) == bool(want)
-        for k in set(gs) | set(want):
-            assert gs.get(k, 0.0) == pytest.approx(want.get(k, 0.0), rel=1e-10, abs=1e-13), k
-    if hv.col2names is not None:
-        # the flat form over the canonical second-axis ordinal
-        flat = hvp([0.0] * len(hv.col2names), hv, pairs, states=states, t=gd["t"])
-        for n, v in zip(hv.col2names, flat):
-            assert v == pytest.approx(want.get(n, 0.0), rel=1e-10, abs=1e-13), n
+        # same gradient on every column
+        gs = doc_hvp(file, pairs, model, wrt=wrt, form="symmetric", states=gd["u"], t=gd["t"])
+        assert set(gs) == set(g)
+        for k, v in gs.items():
+            assert v == pytest.approx(want.get(k, 0.0), rel=1e-10, abs=1e-13), k
 
 
 def test_document_forms(valid_dir, golden_dir):
@@ -176,26 +172,12 @@ def test_refusals(valid_dir):
         with pytest.raises(ValueError):
             jacobian_bands2(sv, wrt=bad)
         with pytest.raises(ValueError):
-            prepare_hvp(sv, wrt=bad)
-    hv = prepare_hvp(*_load(valid_dir, "bd_chem"))
-    ones = {n: 1.0 for n in ("A", "B", "C")}
+            hvp_document(sv, stages=1, wrt=bad)
     with pytest.raises(ValueError):
-        hvp({}, hv, (ones, ones), form="nope")
+        hvp_document(sv, stages=1, form="nope")
+    # the symmetric form needs a (states, states) pair
     with pytest.raises(ValueError):
-        hvp({}, hv, ({"A": 1.0}, ones))  # μ misses a row a point needs
-    with pytest.raises(ValueError):
-        hvp([0.0], hv, (ones, ones))  # a states second axis has no flat form
-    with pytest.raises(ValueError):
-        hvp({}, hv, (ones, ones), wrt=("states", "parameters"))
-    ht = prepare_hvp(sv, wrt=("time", "states"))
-    mu = {n: 1.0 for n in ("S", "c[1]", "c[2]", "c[3]", "c[4]")}
-    with pytest.raises(ValueError):
-        hvp({}, ht, (mu, 1.0), t=0.37, form="symmetric")
-    with pytest.raises(ValueError):
-        hvp({}, ht, (mu, mu), t=0.37)  # w is a number on a time pair
-    hp = prepare_hvp(sv, wrt=("states", "forcing"))
-    with pytest.raises(ValueError):
-        hvp([0.0] * (len(hp.col2names) + 1), hp, (mu, mu), t=0.37)
+        hvp_document(sv, stages=1, wrt=("time", "states"), form="symmetric")
 
 
 def test_value_offset_second_column_is_one_hot():

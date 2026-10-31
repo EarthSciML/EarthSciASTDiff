@@ -34,7 +34,7 @@ use crate::inline::all_names;
 /// supersedes `reduce`, and its ⊗ is already written out in the body. A join
 /// or a value-invention node has no rule. The error is the bare message; the
 /// caller wraps it in its own error type.
-pub(crate) fn reduce_op(n: &ExpressionNode) -> Result<&'static str, String> {
+pub fn reduce_op(n: &ExpressionNode) -> Result<&'static str, String> {
     if n.join.is_some() {
         return Err("joined faq nodes are not differentiated".into());
     }

@@ -11,6 +11,7 @@ use earthsci_ast::free_variables;
 use earthsci_ast::Expr;
 use serde_json::{json, Map, Value};
 
+use crate::bands::Band;
 use crate::clip::RIdx;
 use crate::emit::cse_templates;
 use crate::helpers::{map_expr_children, op, ser_expr};
@@ -62,7 +63,19 @@ fn deref(e: &Expr, readmap: &HashMap<String, Expr>) -> Expr {
 /// nothing to hoist, or when a template's free index names are not bound by
 /// every band that uses it (the caller then emits the plain document).
 pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize) -> Option<Hoisted> {
-    let coefs: Vec<Expr> = entries.iter().map(|en| en.band.coef.clone()).collect();
+    let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    hoist_observed_bands(&bands, sv, min_nodes)
+}
+
+/// [`hoist_observed`] over borrowed bands, so a caller holding bands of
+/// another entry type (the second-order product document) need not copy
+/// them.
+pub(crate) fn hoist_observed_bands(
+    bands: &[&Band],
+    sv: &SysView,
+    min_nodes: usize,
+) -> Option<Hoisted> {
+    let coefs: Vec<Expr> = bands.iter().map(|b| b.coef.clone()).collect();
     // Hoisted names must be fresh in the derived model's variable namespace.
     let mut pfx = "Jcse".to_string();
     while sv.variables.keys().any(|k| k.starts_with(&pfx)) {
@@ -76,20 +89,19 @@ pub fn hoist_observed(entries: &[JacEntry], sv: &SysView, min_nodes: usize) -> O
     let tnames: Vec<&str> = templates.iter().map(|(n, _)| n.as_str()).collect();
 
     // Per entry: index name → (lo, hi) — row dims plus free contracted dims.
-    let boxof: Vec<HashMap<String, (i64, i64)>> = entries
+    let boxof: Vec<HashMap<String, (i64, i64)>> = bands
         .iter()
-        .map(|en| {
-            let mut d: HashMap<String, (i64, i64)> = en
-                .band
+        .map(|b| {
+            let mut d: HashMap<String, (i64, i64)> = b
                 .ridx
                 .iter()
                 .enumerate()
                 .filter_map(|(k, r)| match r {
-                    RIdx::Name(nm) => Some((nm.clone(), en.band.rows[k])),
+                    RIdx::Name(nm) => Some((nm.clone(), b.rows[k])),
                     RIdx::Fixed(_) => None,
                 })
                 .collect();
-            for (n, lo, hi) in &en.band.contracted {
+            for (n, lo, hi) in &b.contracted {
                 d.insert(n.clone(), (*lo, *hi));
             }
             d

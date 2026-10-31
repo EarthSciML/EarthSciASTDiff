@@ -103,7 +103,7 @@ def jacobian_columns(obj, model_name: str | None = None, wrt: str = "parameters"
     column-major (first index fastest)."""
     if wrt not in ("parameters", "forcing"):
         raise ValueError(f"columns are defined for wrt = parameters or forcing, got {wrt}")
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     ctx = ctx_of(sv)
     return [(n, list(ctx.shapes.get(n, []))) for n in _targets(sv, wrt, forcing, None)]
 
@@ -138,12 +138,12 @@ def jacobian_bands(
     """
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
-    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    sv = sysview(obj, model_name)
     return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing)
 
 
 def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
-    # The body of `jacobian_bands`, for callers (numeric assembly) that
+    # The body of `jacobian_bands`, for callers that
     # already hold the view's context and observed definitions. `seed` adds
     # names to the inlining seed without making them targets: the
     # second-order driver (second_order.py) differentiates these

@@ -1,14 +1,16 @@
 """A finite-difference Jacobian oracle independent of the band calculus: the
 model's state equations, observed inlined, evaluated by EarthSciAST's own
 numpy tree-walk (``eval_expr``, which runs filtered and non-``+`` faq
-nodes) and differenced cell by cell."""
+nodes) and differenced cell by cell — checked against the Jacobian
+EarthSciAST evaluates from the ``JvpEval`` document (tests/docvals.py)."""
 
 from __future__ import annotations
 
 import numpy as np
 import pytest
+from docvals import doc_jacobian
 from earthsci_ast.numpy_interpreter import EvalContext, eval_expr
-from earthsci_astdiff import assemble_jacobian, inline_observed
+from earthsci_astdiff import inline_observed
 from earthsci_astdiff.system import ctx_of, lhs_state, observed_defs, sysview, view_states
 
 
@@ -82,25 +84,12 @@ def fd_jacobian(file, x, model=None, h=1e-6) -> dict:
     return out
 
 
-def states_of(file, x, model=None) -> dict:
-    """The flat state ``x`` as :func:`assemble_jacobian`'s ``states``."""
-    sv = sysview(file, model)
-    ctx = ctx_of(sv)
-    states = view_states(sv)
-    out, k = {}, 0
-    for n in states:
-        shape = ctx.shapes.get(n, [])
-        size = int(np.prod(shape)) if shape else 1
-        a = np.asarray(x[k : k + size], dtype=float)
-        out[n] = a.reshape(shape).tolist() if shape else float(a[0])
-        k += size
-    return out
-
-
 def check_against_fd(file, x, model=None, npat=None, tol=1e-7):
-    """The assembled Jacobian at ``x`` against central differences: every
-    value within ``tol``, and the pattern a superset of every nonzero."""
-    got = assemble_jacobian(file, model, states=states_of(file, x, model))
+    """The document's Jacobian at ``x`` against central differences: every
+    value within ``tol``, and the structural pattern a superset of every
+    nonzero (``npat``: its exact size). Returns ``J`` on the pattern."""
+    _, names, _ = rhs_function(file, model)
+    got = doc_jacobian(file, model, states=dict(zip(names, map(float, x)))).J
     want = fd_jacobian(file, x, model)
     for key, v in want.items():
         if abs(v) > 1e-8:

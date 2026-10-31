@@ -8,10 +8,12 @@
 use std::collections::HashMap;
 
 use earthsci_ast::Expr;
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{lhs_state, observed_defs};
-use earthsci_astdiff::{assemble_jacobian, inline_observed, jacobian_bands, skey, sysview, Wrt};
+use earthsci_astdiff::{inline_observed, jacobian_bands, skey, sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::docvals::{doc_jacobian, Env};
 
 const NX: usize = 2;
 const NZ: usize = 3;
@@ -114,7 +116,7 @@ fn contracting_observed_keeps_its_sum() {
     for oidx in [["i", "k"], ["i", "j"]] {
         for (label, body, want) in cases(oidx) {
             let file = doc(body, oidx, sdef(None));
-            let j = assemble_jacobian(&file, None, Wrt::States, &env)
+            let j = doc_jacobian(&file, None, Wrt::States, None, &env)
                 .unwrap_or_else(|e| panic!("{label} over {oidx:?}: {}", e.0));
             assert_eq!(
                 j.len(),
@@ -145,7 +147,7 @@ fn contracting_observed_keeps_its_sum() {
 /// ∂/∂u[i,kp] (0-based), over the structural pattern `cols(i)` per row.
 fn check_sq(s: Value, label: &str, npat: usize, want: impl Fn(usize, usize) -> Option<f64>) {
     let file = doc(neg(sq(idx("s", &["i"]))), ["i", "k"], s);
-    let j = assemble_jacobian(&file, None, Wrt::States, &env())
+    let j = doc_jacobian(&file, None, Wrt::States, None, &env())
         .unwrap_or_else(|e| panic!("{label}: {}", e.0));
     assert_eq!(j.len(), NX * NZ * npat, "{label}: pattern");
     for i in 0..NX {
@@ -230,7 +232,7 @@ fn env() -> Env {
 /// only.
 fn check(file: &earthsci_ast::EsmFile, want: impl Fn(usize, usize, usize, usize) -> f64) {
     let j =
-        assemble_jacobian(file, None, Wrt::States, &env()).unwrap_or_else(|e| panic!("{}", e.0));
+        doc_jacobian(file, None, Wrt::States, None, &env()).unwrap_or_else(|e| panic!("{}", e.0));
     let mut n = 0;
     for i in 0..NX {
         for k in 0..NZ {

@@ -9,10 +9,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{inlinable_observed, observed_defs};
-use earthsci_astdiff::{assemble_jacobian, sysview, Wrt};
+use earthsci_astdiff::{sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::docvals::{doc_jacobian, Env};
 
 const K: f64 = 3.0;
 
@@ -58,7 +60,7 @@ fn pruned_observed_values_on_both_axes() {
         params: HashMap::from([("k".to_string(), Value::from(K))]),
         t: 0.0,
     };
-    let ju = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
+    let ju = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
     assert_eq!(ju.len(), 4);
     for i in 1..=4 {
         // A coefficient that dropped the pruned observed would read -1; one
@@ -66,7 +68,7 @@ fn pruned_observed_values_on_both_axes() {
         let v = ju[&(format!("u[{i}]"), format!("u[{i}]"))];
         assert!((v + 2.0 * K).abs() <= 1e-14, "∂u[{i}]/∂u[{i}] = {v}");
     }
-    let jp = assemble_jacobian(&file, None, Wrt::Parameters, &env).unwrap();
+    let jp = doc_jacobian(&file, None, Wrt::Parameters, None, &env).unwrap();
     assert_eq!(jp.len(), 4, "the k column must not be pruned to zero");
     for (i, ui) in u.iter().enumerate() {
         let v = jp[&(format!("u[{}]", i + 1), "k".to_string())];

@@ -10,10 +10,12 @@ use std::collections::HashMap;
 
 use earthsci_ast::RegionBound;
 use earthsci_astdiff::bands::region_bounds;
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{observed_defs, view_states};
-use earthsci_astdiff::{assemble_jacobian, jacobian_bands, sysview, Wrt};
+use earthsci_astdiff::{jacobian_bands, sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::docvals::{doc_jacobian, Env};
 
 const K: f64 = 3.0;
 
@@ -64,7 +66,7 @@ fn indexed_observed_is_inlined() {
         params: HashMap::from([("k".to_string(), Value::from(K))]),
         t: 0.0,
     };
-    let j = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
+    let j = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
     assert_eq!(j.len(), 4);
     for (i, ui) in u.iter().enumerate() {
         let v = j[&(format!("u[{}]", i + 1), format!("u[{}]", i + 1))];

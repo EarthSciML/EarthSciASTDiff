@@ -11,8 +11,8 @@ pub mod eval_cse;
 pub mod helpers;
 pub mod inline;
 pub mod jacobian;
-pub mod numeric;
-pub mod program;
+pub mod points;
+pub mod products;
 pub mod reductions;
 pub mod rules;
 pub mod scatter;
@@ -39,13 +39,8 @@ pub use jacobian::{
     column_names, forcing_names, jacobian_bands, jacobian_bands_view, jacobian_bands_with_forcing,
     jacobian_columns, JacEntry, Wrt,
 };
-pub use numeric::{
-    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, hvp, prepare_hvp,
-    prepare_jacobian, vjp, vjp_forcing, HvpEvaluator, HvpForm, HvpPair, JacobianEvaluator,
-};
-pub use program::{
-    BuildOptions, Exec, HvpPlan, HvpProgram, HvpWorkspace, JacError, JacPlan, JacWorkspace,
-    JacobianProgram, StorageScalar,
+pub use products::{
+    hvp_document, jvp_document, vjp_document, HvpForm, HvpIo, IoMap, JvpIo, ProductOptions, VjpIo,
 };
 pub use rules::{dscalar, DerivativeRuleError};
 pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};

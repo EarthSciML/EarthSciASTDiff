@@ -1,4 +1,4 @@
-"""Differentiate a model, read its sparsity and structure, and evaluate the Jacobian."""
+"""Differentiate a model, read its sparsity and structure, and serialize the Jacobian."""
 
 import json
 from pathlib import Path
@@ -41,10 +41,17 @@ assert sorted(plan.block_vars) == ["A", "B", "C"]
 # endregion
 
 
-# region: assemble ops=assemble_jacobian
-values = earthsci_astdiff.assemble_jacobian(file, states={"A": [2.0] * 4})
-assert values[("A[1]", "A[1]")] == -0.04  # -k1
-assert values[("B[1]", "B[1]")] == -3.0  # -2 k2 B, with B = 0.5 by default
+# region: evaluate ops=evaluation_document,jvp_document
+# EarthSciASTDiff evaluates nothing: it emits the band fields `J_k` as a derived
+# ESM model that EarthSciAST evaluates.
+doc, fields = earthsci_astdiff.evaluation_document(file)
+assert "JacobianEval" in doc["models"]
+assert len(fields) == len(entries)
+# `J v` likewise: write `v` into the inputs io["v"], read `J v` from the
+# derivatives of the outputs io["jvp"].
+jdoc, io = earthsci_astdiff.jvp_document(file)
+assert io["model"] in jdoc["models"]
+assert io["v"]["A"] == "_v_A" and io["jvp"]["A"] == "_jvp_A"
 # endregion
 
 

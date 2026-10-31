@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use earthsci_astdiff::numeric::Env;
+pub mod docvals;
+
+use docvals::Env;
 use serde_json::Value;
 
 pub fn root() -> PathBuf {
@@ -17,7 +19,7 @@ pub fn load(name: &str) -> earthsci_ast::EsmFile {
     earthsci_ast::load_path(&path).expect("fixture loads")
 }
 
-/// The pinned point of `<name>.jvals.json` as an oracle `Env`, plus the
+/// The pinned point of `<name>.jvals.json` as an `Env`, plus the
 /// golden itself.
 pub fn jvals_env(name: &str) -> (Env, Value) {
     let g: Value = serde_json::from_str(
@@ -39,7 +41,7 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
     (env, g)
 }
 
-/// An oracle `Env` from cell-named state values (`{"c[2]": 0.5, "S": 1.0}`)
+/// An `Env` from cell-named state values (`{"c[2]": 0.5, "S": 1.0}`)
 /// as the value goldens carry them.
 pub fn cells_env(u: &Value, params: HashMap<String, Value>, t: f64) -> Env {
     // cell-named state values → nested arrays

@@ -8,13 +8,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use earthsci_ast::{esm_problem, rhs_program, EsmFile, ProblemOptions};
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::{
-    assemble_jacobian, column_lines, ctx_of, detect_structure, detect_structure_along,
-    jacobian_bands, jacobian_block, jacobian_block_with, prepare_jacobian, sysview, BlockOptions,
-    JacEntry, Wrt,
+    column_lines, ctx_of, detect_structure, detect_structure_along, jacobian_bands, jacobian_block,
+    jacobian_block_with, sysview, BlockOptions, JacEntry, Wrt,
 };
 use serde_json::{json, Map, Value};
+
+mod common;
+use common::docvals::{doc_jacobian, doc_jacobian_entries, Env};
 
 fn idx(v: &str, i: &[Value]) -> Value {
     let mut args = vec![json!(v)];
@@ -175,7 +176,7 @@ fn check(file: &EsmFile, u: &[f64], label: &str, npat: Option<usize>) -> Vec<Jac
         params: HashMap::new(),
         t: 0.0,
     };
-    let jac = assemble_jacobian(file, None, Wrt::States, &env)
+    let jac = doc_jacobian(file, None, Wrt::States, None, &env)
         .unwrap_or_else(|e| panic!("{label}: {}", e.0));
     for (k, want) in &fd {
         let got = jac
@@ -391,7 +392,7 @@ fn max_min_reductions() {
         params: HashMap::new(),
         t: 0.0,
     };
-    let j = assemble_jacobian(&file, None, Wrt::States, &env).unwrap();
+    let j = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
     let at = |r: usize, c: usize| j[&(format!("u[{r}]"), format!("u[{c}]"))];
     assert!((at(4, 2) + 2.0 * 0.9).abs() < 1e-14 && at(4, 4) == 0.0);
     assert!((at(5, 2) + 2.0 * 0.9).abs() < 1e-14 && at(5, 4) == 0.0);
@@ -568,17 +569,18 @@ fn unresolvable_column_is_refused() {
         params: HashMap::new(),
         t: 0.0,
     };
-    let mut ev = prepare_jacobian(&file, None, Wrt::States, None).unwrap();
-    assert!(ev.values(&env).is_ok());
-    let mut ghost = ev.clone();
-    ghost.entries[0].band.cidx[0] = op("+", &[json!("j"), json!(10)]).to_expr();
-    let n0 = ev.values(&env).unwrap().len();
+    let sv = sysview(&file, None).unwrap();
+    let mut entries = jacobian_bands(&file, None, Wrt::States).unwrap();
+    let values = |es: &[JacEntry]| doc_jacobian_entries(&sv, es, Wrt::States, None, &env);
+    let n0 = values(&entries).unwrap().len();
+    let mut ghost = entries.clone();
+    ghost[0].band.cidx[0] = op("+", &[json!("j"), json!(10)]).to_expr();
     assert!(
-        ghost.values(&env).unwrap().len() < n0,
+        values(&ghost).unwrap().len() < n0,
         "past the extent: ghost reads"
     );
-    ev.entries[0].v = "V".into();
-    let err = ev.values(&env).unwrap_err();
+    entries[0].v = "V".into();
+    let err = values(&entries).unwrap_err();
     assert!(err.0.contains("names no state"), "{}", err.0);
 }
 

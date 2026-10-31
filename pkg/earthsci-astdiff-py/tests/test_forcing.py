@@ -1,25 +1,24 @@
 """Forcing-buffer and array-parameter columns (spec §4, §4.3) — port of the
 reference's test/forcing_test.jl where the binding has the surface. The
 byte/value goldens themselves are checked in test_goldens.py,
-test_blocks.py and test_values.py."""
+test_blocks.py and test_values.py. Values come from EarthSciAST evaluating the
+product documents (tests/docvals.py)."""
 
 import earthsci_ast as ea
 import numpy as np
 import pytest
+from docvals import doc_jacobian, doc_vjp
 from earthsci_astdiff import (
     BandError,
-    JacobianEvaluator,
-    assemble_jacobian,
     column_names,
     forcing_names,
     jacobian_bands,
     jacobian_block,
     jacobian_columns,
     jacobian_pattern,
-    prepare_jacobian,
+    jvp_document,
     sysview,
-    vjp,
-    vjp_forcing,
+    vjp_document,
 )
 
 
@@ -114,9 +113,12 @@ def test_bracket_columns(bracket):
 
 
 def test_array_parameter_columns_are_real(bracket):
-    got = assemble_jacobian(bracket, "Bracket", wrt="parameters", t=0.37)
+    res = doc_jacobian(bracket, "Bracket", wrt="parameters", t=0.37)
+    assert res.colnames == column_names(
+        jacobian_columns(sysview(bracket, "Bracket"), wrt="parameters")
+    )
     for i in range(1, 5):
-        assert got[(f"c[{i}]", f"E[{i}]")] == 1.0
+        assert res.J[(f"c[{i}]", f"E[{i}]")] == 1.0
 
 
 def test_refused_rather_than_silently_wrong():
@@ -139,7 +141,9 @@ def test_refused_rather_than_silently_wrong():
     with pytest.raises(BandError):
         jacobian_pattern(past, "B", wrt="forcing", forcing=["F"])
     with pytest.raises(BandError):
-        assemble_jacobian(past, "B", wrt="forcing", forcing=["F"])
+        jvp_document(past, "B", wrt="forcing", forcing=["F"])
+    with pytest.raises(BandError):
+        vjp_document(past, "B", wrt="forcing", forcing=["F"])
     # a model that does not read the forcing set at all has an empty block
     none = _bracket_doc(_op("*", -1, _ix("c", "i")))
     assert jacobian_bands(none, "B", wrt="forcing", forcing=["F"]) == []
@@ -152,9 +156,10 @@ def test_parameter_read_past_extent_is_a_ghost_read():
     past = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", 2))))
     pairs, _ = jacobian_pattern(past, "B", wrt="parameters")
     assert pairs == [(f"c[{i}]", f"F[1,{i + 2}]") for i in range(1, 4)]
-    assert len(assemble_jacobian(past, "B", wrt="parameters")) == 3
+    # the documents drop the ghost point (a nonzero off the pattern raises)
+    assert len(doc_jacobian(past, "B", wrt="parameters").J) == 3
     ghost = _bracket_doc(_op("*", -1, _ix("c", _op("+", "i", 1))))
-    assert len(assemble_jacobian(ghost, "B")) == 3
+    assert len(doc_jacobian(ghost, "B").J) == 3
 
 
 def test_identically_zero_derivative_is_an_empty_block():
@@ -179,60 +184,20 @@ def test_one_forcing_name_as_a_str():
     )
 
 
-def test_vjp_is_the_transposed_scatter(bracket):
+def test_vjp_is_the_transposed_product(bracket):
+    # Jᵀλ from one VjpEval call against J from the JvpEval columns
     sv = sysview(bracket, "Bracket")
     rows = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
     rng = np.random.default_rng(7)
     lam = dict(zip(rows, rng.standard_normal(len(rows))))
     for wrt in ("forcing", "parameters"):
         cnames = column_names(jacobian_columns(sv, wrt=wrt))
-        J = assemble_jacobian(sv, wrt=wrt, t=0.37)
-        want = np.zeros(len(cnames))
-        for (r, c), v in J.items():
-            want[cnames.index(c)] += v * lam[r]
-        g = np.zeros(len(cnames))
-        vjp(g, sv, lam, wrt=wrt, t=0.37)
-        np.testing.assert_allclose(g, want, atol=1e-13)
-        vjp(g, sv, lam, wrt=wrt, t=0.37)  # accumulates
-        np.testing.assert_allclose(g, 2 * want, atol=1e-13)
-    # buffer-shaped accumulators, indexed by cell
-    cnames = column_names(jacobian_columns(sv, wrt="forcing"))
-    flat = vjp_forcing(np.zeros(len(cnames)), sv, lam, t=0.37)
-    acc = {"F": np.zeros((2, 5)), "G": np.zeros((2, 3))}
-    vjp_forcing(acc, sv, lam, t=0.37)
-    assert acc["F"][1, 2] == pytest.approx(flat[cnames.index("F[2,3]")])
-    np.testing.assert_allclose(
-        np.concatenate([acc["F"].ravel(order="F"), acc["G"].ravel(order="F")]), flat, atol=1e-13
-    )
-    with pytest.raises(ValueError):
-        vjp_forcing({"F": np.zeros((2, 5))}, sv, lam, t=0.37)
-    with pytest.raises(ValueError):
-        vjp_forcing(np.zeros(3), sv, lam, t=0.37)
-
-
-def test_prepared_evaluator_is_reused(bracket):
-    sv = sysview(bracket, "Bracket")
-    jac = prepare_jacobian(sv, wrt="forcing")
-    assert isinstance(jac, JacobianEvaluator) and jac.wrt == "forcing"
-    assert jac.colnames == column_names(jacobian_columns(sv, wrt="forcing"))
-    rows = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
-    lam = dict(zip(rows, [0.3, -1.0, 2.0, 0.5, 1.5]))
-    for t in (0.0, 0.37):
-        want = vjp(np.zeros(len(jac.colnames)), sv, lam, wrt="forcing", t=t)
-        got = vjp_forcing(np.zeros(len(jac.colnames)), jac, lam, t=t)
-        np.testing.assert_allclose(got, want, atol=1e-13)
-        assert assemble_jacobian(jac, t=t) == assemble_jacobian(sv, wrt="forcing", t=t)
-    # an evaluator keeps its own axis
-    with pytest.raises(ValueError):
-        vjp(np.zeros(len(jac.colnames)), jac, lam, wrt="parameters")
-    with pytest.raises(ValueError):
-        vjp_forcing(np.zeros(3), prepare_jacobian(sv, wrt="parameters"), lam)
-
-
-def test_vjp_refuses_an_unbound_row(bracket):
-    # a λ key spelled differently from the row cell name is not a zero row
-    sv = sysview(bracket, "Bracket")
-    jac = prepare_jacobian(sv, wrt="forcing")
-    lam = {"S": 1.0, "c[1]": 1.0, "c[2]": 1.0, "c[3]": 1.0, "c[ 4]": 1.0}
-    with pytest.raises(ValueError, match="binds no row"):
-        vjp(np.zeros(len(jac.colnames)), jac, lam)
+        for t in (0.0, 0.37):
+            res = doc_jacobian(sv, wrt=wrt, t=t)
+            assert res.rownames == rows and res.colnames == cnames
+            want = dict.fromkeys(cnames, 0.0)
+            for (r, c), v in res.J.items():
+                want[c] += v * lam[r]
+            g = doc_vjp(sv, lam, wrt=wrt, t=t)
+            assert list(g) == cnames
+            np.testing.assert_allclose(list(g.values()), list(want.values()), atol=1e-13)

@@ -1,5 +1,6 @@
 //! Scatter plans (the reference's scatter.jl, spec §8): the precomputed,
-//! checked map from band-field values to a consumer's storage layout. Gated
+//! checked map from band-field values to a consumer's storage layout (which
+//! the consumer executes; this crate evaluates nothing). Gated
 //! byte-for-byte by `tests/goldens/<fixture>.<layout>.plan.json`.
 //!
 //! All plan indices are 0-based. Band field `k`, cell `f`: field `J_{k+1}` of
@@ -17,7 +18,7 @@ use crate::bands::{BandError, Ctx};
 use crate::clip::RIdx;
 use crate::emit::{block_diagonal_lu, detect_structure, offset_class, BlockLu};
 use crate::jacobian::{bands_of_view, JacEntry, Wrt};
-use crate::numeric::{eval_cidx, foreach_point};
+use crate::points::{eval_cidx, foreach_point};
 use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 
 type R<T> = Result<T, BandError>;
@@ -614,45 +615,20 @@ impl ScatterPlan {
 }
 
 /// A [`ScatterPlan`] checked against one model at a lane capacity (see
-/// [`ScatterPlan::bind`]), its gather precomputed: fill with
-/// [`BoundScatter::scatter`]. Plain data, `Send + Sync`.
+/// [`ScatterPlan::bind`]), its gather precomputed. Plain data, `Send + Sync`.
+/// Executing it is the consumer's: zero the `len` outputs, then for each
+/// `(k, f, pos)` of `pairs` in order, `out[pos] += field_k[f]`, where
+/// `field_k` is the band field `J_{k+1}` EarthSciAST evaluated from the
+/// evaluation document ([`crate::evaluation_document`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundScatter {
     pub lanes: usize,
     /// Output length.
     pub len: usize,
-    field_lens: Vec<usize>,
+    /// Cell count of each band field.
+    pub field_lens: Vec<usize>,
     /// (band k, field cell, output position), in accumulation order.
-    pairs: Vec<(usize, usize, usize)>,
-}
-
-impl BoundScatter {
-    /// Scatter band fields (`fields[k][cell]`, see [`crate::band_fields`])
-    /// into `out`: zeroed, then `+=` in plan order.
-    pub fn scatter(&self, fields: &[Vec<f64>], out: &mut [f64]) -> R<()> {
-        if fields.len() != self.field_lens.len()
-            || fields
-                .iter()
-                .zip(&self.field_lens)
-                .any(|(f, n)| f.len() != *n)
-        {
-            return Err(BandError(
-                "scatter: band fields do not match the plan's bands".into(),
-            ));
-        }
-        if out.len() != self.len {
-            return Err(BandError(format!(
-                "scatter: output has length {}; the plan needs {}",
-                out.len(),
-                self.len
-            )));
-        }
-        out.iter_mut().for_each(|x| *x = 0.0);
-        for &(k, f, pos) in &self.pairs {
-            out[pos] += fields[k][f];
-        }
-        Ok(())
-    }
+    pub pairs: Vec<(usize, usize, usize)>,
 }
 
 /// Every state cell name, in canonical order (the rows of a `Csr` plan).
