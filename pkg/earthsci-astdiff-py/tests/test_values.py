@@ -21,6 +21,8 @@ NAMES = (
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    "recurrence_sweep",
+    "pbl_rank1",
 )
 
 
@@ -32,6 +34,7 @@ AXIS_VALUES = (
     ("forcing_bracket", "forcing", ".w0"),
     ("forcing_bracket", "parameters", ""),
     ("forcing_bracket", "parameters", ".w0"),
+    ("recurrence_sweep", "parameters", ""),
 )
 
 

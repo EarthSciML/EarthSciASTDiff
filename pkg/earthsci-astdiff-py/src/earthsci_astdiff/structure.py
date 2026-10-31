@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from earthsci_ast.esm_types import Expr, ExprNode
 
+from .expr_helpers import mul, op, ser_expr
 from .jacobian import JacEntry
+from .simplify_branches import canon_lits
 from .system import SysView, ctx_of
 
 
@@ -55,8 +57,10 @@ def column_lines(entries: list[JacEntry], sv: SysView, axis: str) -> dict | None
     axis is a ghost read and does not count. Returns a dict with ``axis``,
     ``dim`` (1-based), ``line_length``, ``block_vars``, ``kl`` / ``ku`` (the
     largest distances below / above the diagonal any point reaches along the
-    axis) and ``pattern`` — ``"dense"``, ``"lower"``, ``"upper"`` or
-    ``"banded"`` — read off the exact band points, never probed."""
+    axis) and ``pattern`` — ``"dense"``, ``"lower"``, ``"upper"``,
+    ``"banded"`` or ``"diag_plus_rank1"`` — read off the exact band points,
+    never probed, with ``rank1`` the rank-one terms of a
+    ``"diag_plus_rank1"`` line block (spec §6; empty otherwise)."""
     from .emit import foreach_point
 
     if not entries:
@@ -79,7 +83,9 @@ def column_lines(entries: list[JacEntry], sv: SysView, axis: str) -> dict | None
     dim = dims[0]
     N = ctx_of(sv).index_sets[axis]
     kl = ku = 0
-    for en in entries:
+    # per entry: whether every point sits at distance 0 on the axis
+    diag = [True] * len(entries)
+    for k, en in enumerate(entries):
         for cell, _, _, cidx in foreach_point(en.band):
             for d in range(len(cidx)):
                 if d != dim and cidx[d] != cell[d]:
@@ -89,7 +95,26 @@ def column_lines(entries: list[JacEntry], sv: SysView, axis: str) -> dict | None
             off = cidx[dim] - cell[dim]
             kl = max(kl, -off)
             ku = max(ku, off)
-    if kl == N - 1 and ku == N - 1:
+            diag[k] = diag[k] and off == 0
+    # every entry at distance 0 or a rank-one term, and at least one of
+    # those: D + Σ u vᵀ per line, for a Sherman–Morrison solve
+    rank1 = []
+    lowrank = (kl, ku) != (0, 0)
+    for k, en in enumerate(entries):
+        if diag[k]:
+            continue
+        t = _rank1_term(en.band, dim)
+        if t is None:
+            lowrank = False
+        else:
+            rank1.append(
+                {"entry": k + 1, "u": ser_expr(canon_lits(t[0])), "v": ser_expr(canon_lits(t[1]))}
+            )
+    if not lowrank:
+        rank1 = []
+    if rank1:
+        pattern = "diag_plus_rank1"
+    elif kl == N - 1 and ku == N - 1:
         pattern = "dense"
     elif ku == 0 and kl == N - 1:
         pattern = "lower"
@@ -105,7 +130,66 @@ def column_lines(entries: list[JacEntry], sv: SysView, axis: str) -> dict | None
         "kl": kl,
         "ku": ku,
         "pattern": pattern,
+        "rank1": rank1,
     }
+
+
+def _factors(e, num: list, den: list) -> None:
+    # The factors of a product: numerator and denominator factors, `*` and
+    # `/` flattened and a unary minus taken out as -1.
+    if isinstance(e, ExprNode):
+        if e.op == "*":
+            for a in e.args:
+                _factors(a, num, den)
+            return
+        if e.op == "/" and len(e.args) == 2:
+            _factors(e.args[0], num, den)
+            _factors(e.args[1], den, num)
+            return
+        if e.op == "-" and len(e.args) == 1:
+            num.append(-1)
+            _factors(e.args[0], num, den)
+            return
+    num.append(e)
+
+
+def _split_rank1(coef, kap: str, rows: set):
+    # `coef = u · v` with `u` free of the contracted name `kap` and `v` free
+    # of every row name, or None when a factor reads both.
+    from .recurrence import free_vars
+
+    num: list = []
+    den: list = []
+    _factors(coef, num, den)
+    un, ud, vn, vd = [], [], [], []
+    for fs, is_num in ((num, True), (den, False)):
+        for f in fs:
+            fv = free_vars(f)
+            k, r = kap in fv, bool(fv & rows)
+            if k and r:
+                return None
+            if k:
+                (vn if is_num else vd).append(f)
+            else:
+                (un if is_num else ud).append(f)
+
+    def build(n, d):
+        n = mul(*n)
+        return n if not d else op("/", n, mul(*d))
+
+    return build(un, ud), build(vn, vd)
+
+
+def _rank1_term(b, dim: int):
+    # A band whose every point reads one other cell of its row's line — the
+    # line position being its one contracted name, under no `where` — with
+    # a coefficient that splits as `u(row) · v(κ)`: a rank-one term.
+    if b.guard is not None or len(b.contracted) != 1:
+        return None
+    kap = b.contracted[0][0]
+    if not (dim < len(b.cidx) and isinstance(b.cidx[dim], str) and b.cidx[dim] == kap):
+        return None
+    return _split_rank1(b.coef, kap, {r for r in b.ridx if isinstance(r, str)})
 
 
 def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:

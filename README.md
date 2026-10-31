@@ -240,8 +240,21 @@ EarthSciAST implementation and is gated by the same goldens.
       level search `x[κ(u)]`) is one-hot over the axis. `detect_structure(…;
       column_axis)` reports `:column_block` with a line-by-line
       factorization plan. Pinned by `filtered_scan` and `semiring_reduce`
-      goldens. Causal recurrences (tangent/adjoint sweeps) are the
-      remaining part of #3.
+      goldens.
+- [x] Causal recurrences ([#3](https://github.com/EarthSciML/EarthSciASTDiff/issues/3),
+      spec §4.5, §9.7) — Rust and Python first, the Julia reference once
+      EarthSciAST.jl runs recurrences (EarthSciAST#546): an observed that
+      reads itself at an earlier cell is an intermediate, differentiated
+      on its definition and as an extra column of its readers. The block
+      composes the chain rule through the line's transfer recurrence
+      `T = (I − G)⁻¹` (the block's `auxiliary`); the product documents run
+      tangent and adjoint sweeps instead (the adjoint on the reversed
+      axis), and the second-order contraction runs both plus one more
+      adjoint sweep. `column_block` plans gain `diag_plus_rank1` (a
+      column-mean mixing term), and a `where` guard may gather from a
+      `const` mask. Pinned by `recurrence_sweep` and `pbl_rank1` goldens the
+      Rust binding writes (`tests/write_goldens.rs`), checked against
+      central differences of the source right-hand side.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package

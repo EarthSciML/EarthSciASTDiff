@@ -49,6 +49,9 @@ PRODUCT_AXES = (
     ("tgrad_photolysis", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
+    ("recurrence_sweep", "states"),
+    ("recurrence_sweep", "parameters"),
+    ("pbl_rank1", "states"),
 )
 
 

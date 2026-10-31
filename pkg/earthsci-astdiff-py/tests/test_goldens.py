@@ -16,6 +16,10 @@ GOLDEN_NAMES = (
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    # this binding's and the Rust one's (the reference cannot produce them
+    # yet: the Rust binding writes them, tests/write_goldens.rs)
+    "recurrence_sweep",
+    "pbl_rank1",
 )
 
 
@@ -48,6 +52,7 @@ AXIS_GOLDENS = (
     ("tgrad_photolysis", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
+    ("recurrence_sweep", "parameters"),
 )
 TIME_NAMES = tuple(n for n, w in AXIS_GOLDENS if w == "time")
 # Time-dependent fixtures pinned on other axes only (no `.time.*` goldens).

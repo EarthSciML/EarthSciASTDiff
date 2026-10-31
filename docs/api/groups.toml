@@ -6,7 +6,7 @@
 id = "differentiate"
 title = "Differentiate a model"
 description = "Take a model or flattened system, differentiate its right-hand side, and get back structured Jacobian bands."
-ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "jacobian_bands2", "band", "jac_entry", "jac_entry2", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
+ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "jacobian_bands2", "extended_bands", "recurrences", "transfer_definition", "band", "jac_entry", "jac_entry2", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
 
 [[group]]
 id = "structure"

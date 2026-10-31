@@ -23,7 +23,7 @@ use common::{cells_env, load, root};
 
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 8] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 10] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
@@ -32,6 +32,8 @@ const SECOND_ORDER: [(&str, (Wrt, Wrt)); 8] = [
     ("minmod_adv", SS),
     ("filtered_scan", SS),
     ("semiring_reduce", SS),
+    ("recurrence_sweep", SS),
+    ("recurrence_sweep", (Wrt::States, Wrt::Parameters)),
 ];
 
 fn tag((a1, a2): (Wrt, Wrt)) -> String {

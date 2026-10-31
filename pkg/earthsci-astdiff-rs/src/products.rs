@@ -17,8 +17,11 @@ use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::emit::{base_document, derived_version, hoist, zero_source_derivatives};
 use crate::helpers::ser_expr;
-use crate::jacobian::{jacobian_columns, JacEntry, Wrt};
+use crate::jacobian::{extended_pass, jacobian_columns, targets, JacEntry, Wrt};
 use crate::points::{all_points, eval_guard};
+use crate::recurrence::{
+    adjoint_sweep, forward_sweep, recurrences, reversed_read, ExtendedBands, Recurrence,
+};
 use crate::second_order::{axis_pair, JacEntry2};
 use crate::system::{ctx_of, observed_defs, view_states, SysView};
 
@@ -265,6 +268,18 @@ impl Doc<'_, '_> {
         });
         if let Some(Value::Array(eqs)) = self.model.get_mut("equations") {
             eqs.push(json!({"lhs": {"op": "D", "args": [name], "wrt": "t"}, "rhs": rhs}));
+        }
+    }
+
+    /// Declare an intermediate of the product document (§9.7): an observed
+    /// unknown shaped like recurrence `like`, defined by `name ~ rhs`.
+    fn observe(&mut self, name: &str, like: &str, rhs: Value) {
+        let shape = self.sv.variables[like].shape.clone().unwrap_or_default();
+        if let Some(Value::Object(vars)) = self.model.get_mut("variables") {
+            vars.insert(name.into(), json!({"type": "unknown", "shape": shape}));
+        }
+        if let Some(Value::Array(eqs)) = self.model.get_mut("equations") {
+            eqs.push(json!({"lhs": name, "rhs": rhs}));
         }
     }
 
@@ -771,8 +786,21 @@ fn vjp_term(
     wrt: Wrt,
     taken: &HashSet<String>,
 ) -> R<Option<Value>> {
+    vjp_term_read(en, coef, sread(lam, rho(&en.band)), ctx, wrt, taken)
+}
+
+/// [`vjp_term`] with the cotangent read at the row point given: a plain
+/// input, or a reversed adjoint sweep (§9.7).
+fn vjp_term_read(
+    en: &JacEntry,
+    coef: &Expr,
+    lam: Value,
+    ctx: &Ctx,
+    wrt: Wrt,
+    taken: &HashSet<String>,
+) -> R<Option<Value>> {
     let b = &en.band;
-    let body = sop("*", vec![ser_expr(coef), sread(lam, rho(b))]);
+    let body = sop("*", vec![ser_expr(coef), lam]);
     let mut bodynames = free_variables(coef);
     bodynames.extend(row_names(b));
     scatter_term(
@@ -920,6 +948,18 @@ pub fn jvp_document(
     opts: &ProductOptions,
 ) -> R<(Value, JvpIo)> {
     let model = "JvpEval";
+    let ext = extended_for(sv, wrt, opts.forcing)?;
+    if !ext.recurrences.is_empty() {
+        check_columns(
+            &column_vars(sv, wrt, opts.forcing)?
+                .into_iter()
+                .map(|c| (c.clone(), c))
+                .collect(),
+            entries.iter().map(|en| en.v.as_str()),
+            wrt,
+        )?;
+        return jvp_sweeps(sv, &ext, wrt, opts);
+    }
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
@@ -972,6 +1012,18 @@ pub fn vjp_document(
     opts: &ProductOptions,
 ) -> R<(Value, VjpIo)> {
     let model = "VjpEval";
+    let ext = extended_for(sv, wrt, opts.forcing)?;
+    if !ext.recurrences.is_empty() {
+        check_columns(
+            &column_vars(sv, wrt, opts.forcing)?
+                .into_iter()
+                .map(|c| (c.clone(), c))
+                .collect(),
+            entries.iter().map(|en| en.v.as_str()),
+            wrt,
+        )?;
+        return vjp_sweeps(sv, &ext, wrt, opts);
+    }
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
@@ -1044,6 +1096,9 @@ pub fn hvp_document(
         HvpForm::Contract => "HvpEval",
         HvpForm::Symmetric => "HvpEvalSymmetric",
     };
+    if let Some((e1, e2)) = pair_extended(sv, (a1, a2), opts.forcing)? {
+        return hvp_sweeps(sv, entries, (&e1, &e2), (a1, a2), stages, form, model, opts);
+    }
     // the bands only, borrowed: a second-order band rides through the base
     // and the hoisting as a first-order one (its `cidx` holds both columns)
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
@@ -1103,6 +1158,588 @@ pub fn hvp_document(
             })?;
         }
     }
+    let io = HvpIo {
+        model: model.into(),
+        mu,
+        w,
+        hvp: out,
+    };
+    Ok((d.finish(model), io))
+}
+
+// ── recurrences: tangent and adjoint sweeps (§9.7) ──────────────────────────
+
+/// The extended system of axis `wrt` (spec §4.5).
+/// Empty (no pass run) when the view has no recurrence at all.
+fn extended_for(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<ExtendedBands> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    if recurrences(sv, &obs, &ctx)?.is_empty() {
+        return Ok(ExtendedBands::default());
+    }
+    extended_pass(sv, &ctx, &obs, wrt, forcing, &[])
+}
+
+/// The two extended systems of a pair with an active recurrence: the first
+/// axis's (state rows and recurrence rows, seeded with the second axis's
+/// targets, as [`crate::jacobian_bands2`] differentiates it) and the second
+/// axis's (its recurrence rows carry the adjoint back to the second axis's
+/// columns), both over the recurrences that move with either axis. `None`
+/// without one.
+fn pair_extended(
+    sv: &SysView,
+    (a1, a2): (Wrt, Wrt),
+    forcing: Option<&[String]>,
+) -> R<Option<(ExtendedBands, ExtendedBands)>> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    if recurrences(sv, &obs, &ctx)?.is_empty() {
+        return Ok(None);
+    }
+    let t1 = targets(sv, a1, forcing, &obs)?;
+    let t2 = targets(sv, a2, forcing, &obs)?;
+    let e1 = extended_pass(sv, &ctx, &obs, a1, forcing, &t2)?;
+    if e1.recurrences.is_empty() {
+        return Ok(None);
+    }
+    let e2 = if a1 == a2 {
+        e1.clone()
+    } else {
+        extended_pass(sv, &ctx, &obs, a2, forcing, &t1)?
+    };
+    Ok(Some((e1, e2)))
+}
+
+/// The index expressions of a read of `v` at `ci` from band `b` as `Expr`
+/// conjuncts of §9.1's ghost rule (the forcing axis refuses a ghost).
+fn ghost_exprs(
+    b: &Band,
+    v: &str,
+    ci: &[Expr],
+    ci_sub: &[Expr],
+    shape: &[i64],
+    wrt: Wrt,
+) -> R<Vec<Expr>> {
+    check_rank(v, ci, shape)?;
+    if in_extent(b, ci, shape)? == Some(true) {
+        return Ok(Vec::new());
+    }
+    ghost_conjuncts(b, v, ci, shape, wrt)?; // refuses on the forcing axis
+    let mut out = Vec::new();
+    for (e, n) in ci_sub.iter().zip(shape) {
+        out.push(crate::helpers::op(">=", vec![e.clone(), Expr::Integer(1)]));
+        out.push(crate::helpers::op("<=", vec![e.clone(), Expr::Integer(*n)]));
+    }
+    Ok(out)
+}
+
+/// A band with its coefficient replaced (the hoisted one).
+fn with_coef(b: &Band, coef: &Expr) -> Band {
+    Band {
+        coef: coef.clone(),
+        ..b.clone()
+    }
+}
+
+/// `index(v, idx…)` (bare for a scalar) as an `Expr`.
+fn eread(v: &str, idx: Vec<Expr>) -> Expr {
+    if idx.is_empty() {
+        return Expr::Variable(v.into());
+    }
+    let mut args = vec![Expr::Variable(v.into())];
+    args.extend(idx);
+    crate::helpers::op("index", args)
+}
+
+/// The row point of `b` as index expressions.
+fn rho_e(b: &Band) -> Vec<Expr> {
+    b.ridx
+        .iter()
+        .map(|r| match r {
+            RIdx::Name(s) => Expr::Variable(s.clone()),
+            RIdx::Fixed(n) => Expr::Integer(*n),
+        })
+        .collect()
+}
+
+/// The forward sweep variable of `rec` (`target`): its own bands among
+/// `rows` (with their hoisted coefficients `coefs`), reading a target
+/// column through `dir` and another recurrence's sweep through `sweeps`.
+#[allow(clippy::too_many_arguments)]
+fn tangent(
+    rec: &Recurrence,
+    rows: &[&JacEntry],
+    coefs: &[Expr],
+    target: &str,
+    dir: &IoMap,
+    sweeps: &IoMap,
+    ctx: &Ctx,
+    wrt: Wrt,
+) -> R<Value> {
+    let mut own = Vec::new();
+    let mut cols = Vec::new();
+    for (en, c) in rows.iter().zip(coefs) {
+        if en.u == rec.name {
+            own.push(with_coef(&en.band, c));
+            cols.push(en.v.as_str());
+        }
+    }
+    let own_refs: Vec<&Band> = own.iter().collect();
+    let col = |b: &Band, c: &str, ci: Vec<Expr>| -> R<Option<(Expr, Vec<Expr>)>> {
+        let shape = shape_of(ctx, c);
+        let (nm, w) = match sweeps.get(c) {
+            Some(nm) => (nm.as_str(), Wrt::States),
+            None => (io_name(dir, c)?, wrt),
+        };
+        let conds = ghost_exprs(b, c, &b.cidx, &ci, &shape, w)?;
+        Ok(Some((eread(nm, ci), conds)))
+    };
+    let e = forward_sweep(rec, &own_refs, &cols, target, &col, &Expr::Number(0.0))?;
+    Ok(ser_expr(&e))
+}
+
+/// The adjoint sweep variable of `rec` (`target`, reversed axis) fed by the
+/// cotangent source `src` (a variable of `rec`'s shape): `rec`'s self
+/// bands among `rows`.
+fn adjoint(
+    rec: &Recurrence,
+    rows: &[&JacEntry],
+    coefs: &[Expr],
+    target: &str,
+    src: &str,
+) -> R<Value> {
+    let own: Vec<Band> = rows
+        .iter()
+        .zip(coefs)
+        .filter(|(en, _)| en.u == rec.name && en.v == rec.name)
+        .map(|(en, c)| with_coef(&en.band, c))
+        .collect();
+    let refs: Vec<&Band> = own.iter().collect();
+    let frame: Vec<Expr> = rec
+        .frame
+        .iter()
+        .map(|f| Expr::Variable(f.clone()))
+        .collect();
+    let e = adjoint_sweep(
+        rec,
+        &refs,
+        target,
+        reversed_read(rec, src, frame),
+        &Expr::Number(0.0),
+    )?;
+    Ok(ser_expr(&e))
+}
+
+/// A cotangent read at the row point of `b`: a plain input (`plain`, a
+/// state row) or a reversed adjoint sweep (`rev`, a recurrence row).
+fn cot_read(b: &Band, u: &str, plain: &IoMap, rev: &IoMap, ext: &ExtendedBands) -> R<Value> {
+    match (ext.recurrence(u), rev.get(u)) {
+        (Some(rec), Some(nm)) => Ok(ser_expr(&reversed_read(rec, nm, rho_e(b)))),
+        _ => Ok(sread(io_name(plain, u)?, rho(b))),
+    }
+}
+
+/// The cotangent source of recurrence `v`: Σ over the bands reading `v`
+/// (`entries`, other than `v`'s own) of `coef · λ[row]`, scattered onto
+/// `v`'s cells (an equality-filter scatter, §9.3); zero when none reads it.
+#[allow(clippy::too_many_arguments)]
+fn cot_source(
+    v: &str,
+    entries: &[&JacEntry],
+    coefs: &[Expr],
+    lam: &IoMap,
+    rev: &IoMap,
+    ext: &ExtendedBands,
+    ctx: &Ctx,
+    taken: &HashSet<String>,
+) -> R<Value> {
+    let mut terms = Vec::new();
+    for (en, c) in entries.iter().zip(coefs) {
+        if en.v != v || en.u == v {
+            continue;
+        }
+        let l = cot_read(&en.band, &en.u, lam, rev, ext)?;
+        if let Some(t) = vjp_term_read(en, c, l, ctx, Wrt::States, taken)? {
+            terms.push(t);
+        }
+    }
+    Ok(if terms.is_empty() {
+        zero_of(&shape_of(ctx, v))
+    } else {
+        sfold("+", terms)
+    })
+}
+
+/// A zero value of `shape` (§9.1).
+fn zero_of(shape: &[i64]) -> Value {
+    if shape.is_empty() {
+        json!(0.0)
+    } else {
+        json!({"op": "makearray", "args": [],
+               "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
+               "values": [0.0]})
+    }
+}
+
+/// Fresh names `_<tag><stage>_<V>` for every recurrence, in order.
+fn rec_names(taken: &mut HashSet<String>, ext: &ExtendedBands, tag: &str) -> IoMap {
+    ext.recurrences
+        .iter()
+        .map(|r| (r.name.clone(), fresh(taken, &format!("_{tag}_{}", r.name))))
+        .collect()
+}
+
+fn jvp_sweeps(
+    sv: &SysView,
+    ext: &ExtendedBands,
+    wrt: Wrt,
+    opts: &ProductOptions,
+) -> R<(Value, JvpIo)> {
+    let model = "JvpEval";
+    let all: Vec<&JacEntry> = ext.rows.iter().chain(&ext.rec_rows).collect();
+    let bands: Vec<&Band> = all.iter().map(|en| &en.band).collect();
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
+    let mut taken = doc_names(&d.doc, &d.model);
+    let vin: IoMap = column_vars(sv, wrt, opts.forcing)?
+        .into_iter()
+        .map(|c| {
+            let nm = fresh(&mut taken, &format!("_v_{c}"));
+            (c, nm)
+        })
+        .collect();
+    let vdot = rec_names(&mut taken, ext, "vdot");
+    let out: IoMap = view_states(sv, &observed_defs(sv)?)
+        .into_iter()
+        .map(|r| {
+            let nm = fresh(&mut taken, &format!("_jvp_{r}"));
+            (r, nm)
+        })
+        .collect();
+    for (c, nm) in &vin {
+        d.declare(nm, c, None);
+    }
+    let nrow = ext.rows.len();
+    for rec in &ext.recurrences {
+        let e = tangent(
+            rec,
+            &all[nrow..],
+            &coefs[nrow..],
+            &vdot[&rec.name],
+            &vin,
+            &vdot,
+            &d.ctx,
+            wrt,
+        )?;
+        d.observe(&vdot[&rec.name], &rec.name, e);
+    }
+    let owner: Vec<&str> = ext.rows.iter().map(|en| en.u.as_str()).collect();
+    d.outputs(&out, &owner, |k, ctx| {
+        let en = &ext.rows[k];
+        match vdot.get(&en.v) {
+            Some(nm) => jvp_term(en, &coefs[k], nm, ctx, Wrt::States),
+            None => jvp_term(en, &coefs[k], io_name(&vin, &en.v)?, ctx, wrt),
+        }
+    })?;
+    let io = JvpIo {
+        model: model.into(),
+        v: vin,
+        jvp: out,
+    };
+    Ok((d.finish(model), io))
+}
+
+fn vjp_sweeps(
+    sv: &SysView,
+    ext: &ExtendedBands,
+    wrt: Wrt,
+    opts: &ProductOptions,
+) -> R<(Value, VjpIo)> {
+    let model = "VjpEval";
+    let all: Vec<&JacEntry> = ext.rows.iter().chain(&ext.rec_rows).collect();
+    let bands: Vec<&Band> = all.iter().map(|en| &en.band).collect();
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
+    let mut taken = doc_names(&d.doc, &d.model);
+    let lam: IoMap = view_states(sv, &observed_defs(sv)?)
+        .into_iter()
+        .map(|r| {
+            let nm = fresh(&mut taken, &format!("_lam_{r}"));
+            (r, nm)
+        })
+        .collect();
+    let vbar = rec_names(&mut taken, ext, "vbar");
+    let vrev = rec_names(&mut taken, ext, "vrev");
+    let out: IoMap = column_vars(sv, wrt, opts.forcing)?
+        .into_iter()
+        .map(|c| {
+            let nm = fresh(&mut taken, &format!("_vjp_{c}"));
+            (c, nm)
+        })
+        .collect();
+    for (r, nm) in &lam {
+        d.declare(nm, r, None);
+    }
+    let nrow = ext.rows.len();
+    for rec in &ext.recurrences {
+        let v = &rec.name;
+        let src = cot_source(v, &all, &coefs, &lam, &vrev, ext, &d.ctx, &taken)?;
+        d.observe(&vbar[v], v, src);
+        let e = adjoint(rec, &all[nrow..], &coefs[nrow..], &vrev[v], &vbar[v])?;
+        d.observe(&vrev[v], v, e);
+    }
+    let owner: Vec<&str> = all.iter().map(|en| en.v.as_str()).collect();
+    d.outputs(&out, &owner, |k, ctx| {
+        let en = all[k];
+        let l = cot_read(&en.band, &en.u, &lam, &vrev, ext)?;
+        vjp_term_read(en, &coefs[k], l, ctx, wrt, &taken)
+    })?;
+    let io = VjpIo {
+        model: model.into(),
+        lam,
+        vjp: out,
+    };
+    Ok((d.finish(model), io))
+}
+
+/// The §4.4 contraction through recurrences (§9.7): per stage `i`, the
+/// tangent sweep `V̇ᵢ` of `wᵢ` and the adjoint sweep `Âᵢ` of `μᵢ` over the
+/// first axis's extended system make the contraction's `M` read a
+/// recurrence row's cotangent and a recurrence column's direction; the
+/// second-order bands scattered onto a recurrence column feed one more
+/// adjoint sweep `Ĥ`, which the second axis's recurrence rows carry back to
+/// its columns.
+#[allow(clippy::too_many_arguments)]
+fn hvp_sweeps(
+    sv: &SysView,
+    entries: &[JacEntry2],
+    (e1, e2): (&ExtendedBands, &ExtendedBands),
+    (a1, a2): (Wrt, Wrt),
+    stages: usize,
+    form: HvpForm,
+    model: &str,
+    opts: &ProductOptions,
+) -> R<(Value, HvpIo)> {
+    let first: Vec<&JacEntry> = e1.rows.iter().chain(&e1.rec_rows).collect();
+    let back: Vec<&JacEntry> = e2.rec_rows.iter().collect();
+    let mut bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    bands.extend(first.iter().map(|en| &en.band));
+    bands.extend(back.iter().map(|en| &en.band));
+    let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
+    let n2 = entries.len();
+    let (c2s, c1s, cbs) = (
+        &coefs[..n2],
+        &coefs[n2..n2 + first.len()],
+        &coefs[n2 + first.len()..],
+    );
+    let mut taken = doc_names(&d.doc, &d.model);
+    let states = view_states(sv, &observed_defs(sv)?);
+    let cols1 = if a1 == Wrt::Time {
+        vec!["t".to_string()]
+    } else {
+        states.clone()
+    };
+    let mut mu: Vec<IoMap> = Vec::new();
+    let mut w: Vec<IoMap> = Vec::new();
+    for i in 1..=stages {
+        let mut alloc = |cols: &[String], tag: &str| -> IoMap {
+            cols.iter()
+                .map(|c| (c.clone(), fresh(&mut taken, &format!("_{tag}{i}_{c}"))))
+                .collect()
+        };
+        mu.push(alloc(&states, "mu"));
+        w.push(alloc(&cols1, "w"));
+    }
+    let mut vdot = Vec::new();
+    let mut vbar = Vec::new();
+    let mut vrev = Vec::new();
+    for i in 1..=stages {
+        vdot.push(rec_names(&mut taken, e1, &format!("vdot{i}")));
+        vbar.push(rec_names(&mut taken, e1, &format!("vbar{i}")));
+        vrev.push(rec_names(&mut taken, e1, &format!("vrev{i}")));
+    }
+    let hbar = rec_names(&mut taken, e1, "hbar");
+    let hrev = rec_names(&mut taken, e1, "hrev");
+    let cols2 = match form {
+        HvpForm::Contract => column_vars(sv, a2, opts.forcing)?,
+        HvpForm::Symmetric => states,
+    };
+    let out: IoMap = cols2
+        .into_iter()
+        .map(|c| {
+            let nm = fresh(&mut taken, &format!("_hvp_{c}"));
+            (c, nm)
+        })
+        .collect();
+    if form == HvpForm::Contract {
+        check_columns(
+            &out,
+            entries
+                .iter()
+                .map(|en| en.w.as_str())
+                .filter(|x| !e1.is_recurrence(x)),
+            a2,
+        )?;
+    }
+    for (mi, wi) in mu.iter().zip(&w) {
+        for (r, nm) in mi {
+            d.declare(nm, r, None);
+        }
+        for (c, nm) in wi {
+            d.declare(nm, c, None);
+        }
+    }
+    let nrow = e1.rows.len();
+    for i in 0..stages {
+        for rec in &e1.recurrences {
+            let v = &rec.name;
+            let t = tangent(
+                rec,
+                &first[nrow..],
+                &c1s[nrow..],
+                &vdot[i][v],
+                &w[i],
+                &vdot[i],
+                &d.ctx,
+                a1,
+            )?;
+            d.observe(&vdot[i][v], v, t);
+            let src = cot_source(v, &first, c1s, &mu[i], &vrev[i], e1, &d.ctx, &taken)?;
+            d.observe(&vbar[i][v], v, src);
+            let a = adjoint(rec, &first[nrow..], &c1s[nrow..], &vrev[i][v], &vbar[i][v])?;
+            d.observe(&vrev[i][v], v, a);
+        }
+    }
+    let ctx = d.ctx.clone();
+    // per stage, the cotangent at a row and the direction at a column
+    let cot = |i: usize, b: &Band, u: &str| cot_read(b, u, &mu[i], &vrev[i], e1);
+    let dir = |i: usize, v: &str, ci: &[Expr]| -> R<Value> {
+        Ok(match vdot[i].get(v) {
+            Some(nm) => sread(nm, ser_all(ci)),
+            None => sread(io_name(&w[i], v)?, ser_all(ci)),
+        })
+    };
+    let axis = |v: &str, a: Wrt| if e1.is_recurrence(v) { Wrt::States } else { a };
+    // one second-order entry's scatter term: by `col2` (contract) or by
+    // the first column (symmetric)
+    let term2 = |k: usize, ctx: &Ctx| -> R<Option<Value>> {
+        let en = &entries[k];
+        let b = &en.band;
+        let coef = &c2s[k];
+        let (ci, c2) = (en.col_idx(), en.col2_idx());
+        let mut bodynames = names_of(std::iter::once(coef).chain(ci).chain(c2));
+        bodynames.extend(row_names(b));
+        match form {
+            HvpForm::Contract => {
+                let m = sfold(
+                    "+",
+                    (0..stages)
+                        .map(|i| Ok(sop("*", vec![cot(i, b, &en.u)?, dir(i, &en.v, ci)?])))
+                        .collect::<R<_>>()?,
+                );
+                let shape1 = shape_of(ctx, &en.v);
+                let a = axis(&en.v, a1);
+                let g = if has_names(b) {
+                    ghost_conjuncts(b, &en.v, ci, &shape1, a)?
+                } else if point_in_extent(b, &en.v, ci, &shape1, a)? {
+                    Vec::new()
+                } else {
+                    return Ok(None);
+                };
+                scatter_term(
+                    b,
+                    coef,
+                    &en.w,
+                    c2,
+                    &shape_of(ctx, &en.w),
+                    axis(&en.w, a2),
+                    g,
+                    sop("*", vec![ser_expr(coef), m]),
+                    &bodynames,
+                    &taken,
+                )
+            }
+            HvpForm::Symmetric => {
+                let body = sfold(
+                    "+",
+                    (0..stages)
+                        .map(|i| {
+                            Ok(sop(
+                                "*",
+                                vec![cot(i, b, &en.u)?, ser_expr(coef), dir(i, &en.w, c2)?],
+                            ))
+                        })
+                        .collect::<R<_>>()?,
+                );
+                let shape2 = shape_of(ctx, &en.w);
+                let g = if has_names(b) {
+                    ghost_conjuncts(b, &en.w, c2, &shape2, Wrt::States)?
+                } else if point_in_extent(b, &en.w, c2, &shape2, Wrt::States)? {
+                    Vec::new()
+                } else {
+                    return Ok(None);
+                };
+                scatter_term(
+                    b,
+                    coef,
+                    &en.v,
+                    ci,
+                    &shape_of(ctx, &en.v),
+                    Wrt::States,
+                    g,
+                    body,
+                    &bodynames,
+                    &taken,
+                )
+            }
+        }
+    };
+    let owner2: Vec<&str> = entries
+        .iter()
+        .map(|en| match form {
+            HvpForm::Contract => en.w.as_str(),
+            HvpForm::Symmetric => en.v.as_str(),
+        })
+        .collect();
+    // a recurrence row of the second axis carries Ĥ to its column
+    let back_term = |k: usize, ctx: &Ctx| -> R<Option<Value>> {
+        let en = back[k];
+        let l = cot_read(&en.band, &en.u, &IoMap::new(), &hrev, e2)?;
+        vjp_term_read(en, &cbs[k], l, ctx, axis(&en.v, a2), &taken)
+    };
+    for rec in &e1.recurrences {
+        let v = &rec.name;
+        let mut terms = Vec::new();
+        for k in 0..n2 {
+            if owner2[k] == v {
+                if let Some(t) = term2(k, &ctx)? {
+                    terms.push(t);
+                }
+            }
+        }
+        for k in 0..back.len() {
+            if back[k].v == *v && back[k].u != *v {
+                if let Some(t) = back_term(k, &ctx)? {
+                    terms.push(t);
+                }
+            }
+        }
+        let src = if terms.is_empty() {
+            zero_of(&shape_of(&ctx, v))
+        } else {
+            sfold("+", terms)
+        };
+        d.observe(&hbar[v], v, src);
+        let a = adjoint(rec, &back, cbs, &hrev[v], &hbar[v])?;
+        d.observe(&hrev[v], v, a);
+    }
+    let mut owner: Vec<&str> = owner2.clone();
+    owner.extend(back.iter().map(|en| en.v.as_str()));
+    d.outputs(&out, &owner, |k, ctx| {
+        if k < n2 {
+            term2(k, ctx)
+        } else {
+            back_term(k - n2, ctx)
+        }
+    })?;
     let io = HvpIo {
         model: model.into(),
         mu,

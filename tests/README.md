@@ -73,6 +73,24 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
+  - `recurrence_sweep.esm` — causal recurrences (spec §4.5, §9.7): a Thomas
+    solve per column (forward elimination, forward substitution, back
+    substitution on the REVERSED axis: dense lines), a lag-2 recurrence with
+    a base guard, a non-uniform implicit-trapezoid sweep with a parameter, a
+    Newton iteration on a non-state axis (pointwise), and a window filtered
+    by a `const` mask (a `where` gather)
+  - `pbl_rank1.esm` — mixing toward a column mean plus per-cell titration:
+    the `column_block` plan's `diag_plus_rank1` pattern (spec §6)
+- `goldens/` — `<fixture>.column-<axis>.block.json`: the state block emitted
+  with a column axis (`column_block` and its plan), for `recurrence_sweep`
+  and `pbl_rank1`.
+- `goldens/` — **who writes them.** Every golden is written by the Julia
+  reference (`scripts/regenerate-goldens.jl`,
+  `scripts/regenerate-value-goldens.jl`) except those of `recurrence_sweep`
+  and `pbl_rank1`, which the Rust binding writes
+  (`cargo test --test write_goldens -- --ignored`) until EarthSciAST.jl runs
+  recurrences; Rust and Python compare them byte-exactly, and their values
+  are checked against central differences of the source right-hand side.
 - `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

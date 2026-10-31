@@ -97,23 +97,26 @@ def jacobian_bands2(
 
 
 def _bands2(sv: SysView, a1: str, a2: str, forcing, memo: _FirstOrder | None = None):
-    # (first-order entries, second-order entries). The first-order pass
-    # inlines the observed that move with EITHER axis: one that reads only
-    # parameters (an Arrhenius rate) is opaque on the state axis, and would
-    # hide its parameter sites from the second derivative. `memo` shares
-    # that pass with the other blocks of one emission.
+    # (extended first-order system, second-order entries). The first-order
+    # pass inlines the observed that move with EITHER axis: one that reads
+    # only parameters (an Arrhenius rate) is opaque on the state axis, and
+    # would hide its parameter sites from the second derivative. A
+    # recurrence is a second column too (spec §4.5): the rows and columns
+    # are the extended system's. `memo` shares that pass with the other
+    # blocks of one emission.
     ctx = ctx_of(sv)
     t2 = _targets(sv, a2, forcing, observed_defs(sv))
-    e1 = (memo or _FirstOrder()).bands(sv, a1, a2, forcing, seed=t2)
-    tset = set(t2)
+    e1 = (memo or _FirstOrder()).ext(sv, a1, a2, forcing, seed=t2)
+    tset = set(t2) | {r.name for r in e1.recurrences}
     out: list[JacEntry2] = []
-    for en in e1:
+    for en in e1.rows + e1.rec_rows:
         for w in sorted(free_variables(en.band.coef) & tset):
             for b in merge_bands(_coef_bands(en.band, w, ctx)):
                 out.append(JacEntry2(en.u, en.v, w, normalize_band(b), len(en.band.cidx)))
     if a2 in ("parameters", "forcing"):
         for en in out:
-            _check_closed_col2(en)
+            if not e1.is_recurrence(en.w):
+                _check_closed_col2(en)
     return e1, out
 
 
@@ -228,12 +231,24 @@ def jacobian_block2(
     a1, a2 = wrt
     memo = memo or _FirstOrder()
     e1, entries = _bands2(sv, a1, a2, forcing, memo)
-    return _block(
+    block = _block(
         [a1, a2],
         entries,
         serialize_band2,
         _columns_field(sv, a2, forcing) if a2 in ("parameters", "forcing") else None,
-        structure2(e1, entries, sv, a1, memo),
+        # through a recurrence the contraction is not lane-local (§4.5)
+        None if e1.recurrences else structure2(e1.rows, entries, sv, a1, memo),
         cse,
         cse_min_nodes,
     )
+    if e1.recurrences:
+        block["recurrences"] = recurrences_field(e1.recurrences)
+    return block
+
+
+def recurrences_field(recs) -> list:
+    """A pair block's ``recurrences`` field (spec §4.5): each active
+    recurrence's name and its 1-based recurrence dimension, in recurrence
+    order. Entries naming one as ``row``, ``col`` or ``col2`` are terms of
+    the chain rule through it, which only the §9.7 contraction completes."""
+    return [{"name": r.name, "dim": r.dim + 1} for r in recs]

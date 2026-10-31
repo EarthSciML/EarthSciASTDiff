@@ -19,7 +19,10 @@ and optionally the second derivatives a Rosenbrock adjoint contracts
 (`wrt: [a1, a2]`, §4.4). Coefficients are ordinary ESM expressions over the
 model's own variables, so any binding that evaluates ESM expressions
 evaluates the Jacobian — no binding needs a differentiator to *consume* the
-block.
+block. A right-hand side that reads a causal recurrence (esm-spec
+§4.3.1.1) differentiates through it (§4.5): the block then also carries the
+`auxiliary` recurrences its coefficients read, which a consumer evaluates
+with the same recurrence semantics as the document's own.
 
 Producing the block requires the derivative semantics of §3, defined on the
 **expanded, lowered** expression tree: expression templates expanded
@@ -224,8 +227,8 @@ Reserved (producers MUST fail rather than guess): joins, value-invention
 `faq` nodes, the `bool_and_or` semiring, `argmin`/`argmax`, a `max` or `min`
 over more than one contracted index, singleton `1` output indices,
 `reshape`/`transpose`/`concat` operands. A causal self-reference recurrence
-(esm-spec §4.3.1.1) is not yet differentiated: the inliner finds no
-fixpoint and fails.
+(esm-spec §4.3.1.1) is never inlined (it has no fixpoint); it is
+differentiated as an intermediate, §4.5.
 
 ## 4. The `"jacobians"` top-level block
 
@@ -287,8 +290,13 @@ row)/∂(col)`:
   metaparameters and `const` gathers, never a state, parameter or forcing
   value. A point contributes iff it holds. Produced by a filtered faq
   node's window that no box can express (§3.5: the triangular `gk < gke` of
-  a level scan); producers SHOULD split boxes at affine breakpoints first,
-  so a rectangular window never needs one. Absent for every other entry.
+  a level scan, or a `const` mask `mask[j] == 1`), and by the composition
+  through a recurrence (§4.5); producers SHOULD split boxes at affine
+  breakpoints first, so a rectangular window never needs one. A conjunct
+  that gathers through a `const` table is index-only, hence exact, but has
+  no affine breakpoint: it always stays in `where`, and a consumer folds the
+  gather at each point as it does in `col_idx`. Absent for every other
+  entry.
 
 **Meaning.** For every index point `r` in `rows` AND every point `c` of the
 `contracted` box (the empty product when absent) at which `where(r, c)`
@@ -328,6 +336,15 @@ the axis, whether or not an entry reads it. It fixes the **canonical column
 ordinal**: the variables in this order, each one's cells column-major (first
 index fastest), so a consumer can size and order the column space without
 the source document. Each binding maps the ordinal onto its own memory.
+
+`auxiliary` (present only on a single-axis block whose coefficients read a
+recurrence's transfer variable, §4.5): `[{"name": …, "shape": [...],
+"rhs": <Expression>}]`, one per such recurrence in equation order — each a
+recurrence definition `name ~ rhs` of the declared `shape` (index-set
+names). A consumer evaluates them, with the source document's own observed
+and esm-spec §4.3.1.1's recurrence semantics, before any coefficient.
+`recurrences` (a pair block through a recurrence, §4.5): `[{"name": …,
+"dim": d}]`.
 
 **Several axes per model.** `jacobians.<ModelName>` MAY be an ARRAY of
 blocks with pairwise-distinct `wrt` instead of one block, so a producer
@@ -583,6 +600,153 @@ equivalent form with no `M`, one pass per stage:
 choose by cost; conformance checks both against the oracle. §9.4 gives both
 forms as documents an EarthSciAST evaluator runs.
 
+### 4.5 Recurrences (causal self-reference)
+
+An observed `V` whose defining `faq` reads `V` itself (esm-spec §4.3.1.1)
+has no inlining fixpoint. It is differentiated as an **intermediate**: the
+band calculus runs on its definition as on an equation whose rows are `V`,
+and on every reader with `V` as one more column. The chain rule through the
+sweep is then materialized in the block (below), or left matrix-free in the
+product documents (§9.7).
+
+**Recognition.** A recurrence is an observed (§3.5's inlining sense) whose
+definition — `V ~ faq{…}` or the indexed `faq{expr: V[k…]} ~ …` form — reads
+`V` through `index`, or bare, at a position no `faq` around it binds `V` as an
+index name. Its **frame** is the `faq`'s `output_idx` (one name per
+dimension of `V`), with the `faq`'s ranges (`[1, n]` where none is given),
+and its **axis** `d` is the one frame dimension at which some self-read's
+index argument is not the frame name itself. A bare self-reference, a
+self-read that is the identity on every dimension or that indexes fewer
+dimensions, and self-reads moving along two dimensions MUST be refused.
+Recurrences are listed in equation order.
+
+**Activity.** A recurrence is **active** on a pass when its definition reads,
+directly or through other observed definitions (free names, every `faq`'s
+own bound names excluded), a target of the axis — of either axis on a pair's
+first pass (§4.4). Every recurrence, active or not, is left out of the
+inlining map: an inactive one stays an opaque read, constant with respect to
+every target.
+
+**The extended system.** On a pass with an active recurrence the producer
+differentiates, in this order:
+
+1. every state equation (equation order), with respect to the axis's
+   targets AND the active recurrences — columns sorted by name, as in §4;
+2. every active recurrence (recognition order): its definition, inlined with
+   the pass's inlining map (no recurrence in it), with respect to the same
+   columns, as an equation whose rows are `V` over its frame.
+
+A band of `V`'s definition whose column is `V` is a **self band**. Its column
+index is the row index on every dimension but the axis, where it is `k − ℓ`
+with `k` the row index (or its pinned literal) and `ℓ` the **lag**: the
+second argument of a binary `-` whose first is `k`, or minus the other terms
+of a `+` that holds `k` once (simplified); for a pinned row `c`, `c − e`
+(simplified). A self band of any other form MUST be refused.
+
+**Transfer recurrence.** On each line of `V` along its axis, `dV/dx = (I −
+G)⁻¹ B`, `G` the self bands and `B` the other bands of the definition. The
+inverse is the **transfer** recurrence `T_V`, named `_tr_<V>` (`_` appended
+until clear of every name of the source document and of the transfer names
+before it), of `V`'s shape followed by its axis's once more:
+
+```
+T_V[o…, k, j] = ifelse(k == j, 1, 0) + Σ_{self bands} term
+```
+
+an esm-spec §4.3.1.1 recurrence (it reads itself at `k − ℓ`, `j` the
+identity). `j` is `_tj` (`_j` appended until clear of the frame names and of
+every name in the self bands' coefficients and contracted names). Its self
+bands come from `V`'s definition with every OTHER observed inlined (not the
+pass's map), so `T_V` does not depend on the axis. A band's **term** in any
+sweep body (here and in §9.7), at frame point `F`:
+
+- every row name of the band is replaced by `F`'s frame expression for its
+  dimension; a row dimension whose frame expression is the frame name itself
+  and whose box is the frame's whole range needs no condition, any other
+  adds `F_m >= lo` and `F_m <= hi` (each side only where it narrows the
+  frame range, for a frame name), and a pinned dimension `F_m == c`;
+- a read of the sweep variable itself (a self band) is at
+  `[F_o…, k − ℓ, extra…]` with the conditions `ℓ >= 1` (unless `ℓ` is an
+  integer literal `≥ 1`) and `k − ℓ >= lo` (unless `ℓ` is an integer literal
+  and the band's lowest row on the axis minus `ℓ` is at least `lo`);
+- the band's `where` (substituted) is one more condition;
+- the term is `coef · read` (a binary `*`), as `ifelse(and(conditions),
+  coef · read, zero)` when there is any condition (the conditions in the
+  order above), summed over the band's contracted names by a scalar `faq`
+  (`output_idx: []`, the contracted ranges) when it has any.
+
+The body is a left fold of binary `+` over its terms in band order (the
+`ifelse(k == j, …)` first); `T_V`'s zero is the integer `0`, and its whole
+definition takes wire-canonical literals (§4). Each `ifelse` selects its
+branch before evaluating it (esm-spec §4.3.1.1), so no guarded self-read is
+ever evaluated off the axis.
+
+**Materialization (single-axis blocks).** The block's entries are the state
+bands whose column is a target, plus each state band reading `V` composed
+with `dV/dx`, where `dV/dx` is, per band `b` of `V`'s definition in order (no
+self band): the transfer band of `V` composed with `b` when `b`'s column is a
+target, and with `b` composed with `dW/dx` (each in order) when it is another
+recurrence `W`. The **transfer band** of `V` has rows `V` over its frame
+(row names the frame names), one contracted name `κ` = `<k>_t` (`_t`
+appended until clear of the frame) over the axis range, column `V` at the
+frame with `κ` on the axis, coefficient `_tr_<V>[frame…, κ]` (`κ` last), and
+`where` `κ <= k`.
+
+The **composition** of `outer` (rows `R`, column `V` at `φ`) with `inner`
+(rows `V`, column `x`):
+
+1. an inner contracted name that occurs in `outer` is renamed `<name>_c`
+   (`_c` appended until clear of both bands); the composite's contracted
+   names are the outer's, then the inner's;
+2. each inner row name becomes the outer column index `φ_m` of its
+   dimension; for each dimension, with `[lo, hi]` the inner row range (or its
+   pinned literal) intersected with `[1, shape_m]` (a ghost read of `V`
+   contributes nothing), unless `φ_m`'s span over the outer box (a literal, a
+   bare name, a name `±` a literal, or a literal `−` a name) lies inside
+   `[lo, hi]`: a bare outer row or contracted name has its range intersected,
+   any other `φ_m` adds `φ_m == lo` (when `lo == hi`) or `lo <= φ_m`,
+   `φ_m <= hi` to the composite's `where`;
+3. the column index is inner's, substituted; the coefficient is the
+   simplified `outer.coef · inner.coef` (substituted); `where` is outer's,
+   then the conjuncts of step 2, then inner's (substituted). A `faq` inside
+   inner that binds a name the substitution reads MUST be refused (capture);
+4. the `where` is then decided where the box decides it, to a fixpoint:
+   each conjunct (literals canonical) that is a literal is dropped if
+   nonzero, and empties the band if zero; an order comparison `<=` `<` `>=`
+   `>` both of whose sides have spans is dropped when it holds at every
+   point, empties the band when it holds at none, and otherwise — when one
+   side is a bare row or contracted name and the other a literal — tightens
+   that name's range instead; an `==` of two single values is dropped or
+   empties the band, and one of a bare name and a literal pins the name; a
+   conjunct seen before is dropped; an empty range empties the band. The
+   band is then normalized (§4's singleton pinning).
+
+Per row equation the entries are stably sorted by column name, so a
+column's composites follow its direct bands. Their coefficients read
+`_tr_<V>`, and the block's `auxiliary` field (§4) carries the definition of
+every transfer variable some coefficient reads; the evaluation document
+(§8) declares them as observed (`{"type": "unknown", "shape": …}`) after the
+source's equations, before any hoisted observed.
+
+The pattern of a composite is `κ ≤ k` along the line: the lower triangle,
+the closure of the lag graph when some lag is 1 and a structural superset
+otherwise (§2 allows a superset; it is never probed). A forward sweep
+composed with a reversed one (a Thomas solve's back substitution on the
+reversed axis) is dense on the line; an axis that is not a state axis (an
+iteration counter) leaves the pattern pointwise. The structure class and the
+`column_block` plan (§6) read these points like any other.
+
+**Second order.** A pair through an active recurrence (§4.4) differentiates
+the extended system of its first pass — rows the states then the active
+recurrences, columns the first axis's targets and the recurrences — with
+respect to the second axis's targets AND the active recurrences. Its entries
+may therefore name a recurrence as `row`, `col` or `col2`: they are terms of
+the chain rule through it, which only §9.7's contraction completes. Such a
+block carries `recurrences` (§4: each active recurrence's `name` and its
+1-based `dim`) and no `structure`.
+
+**Fixtures.** `recurrence_sweep.esm` (§5).
+
 ## 5. Conformance
 
 Fixture corpus in `tests/` of this repository:
@@ -638,6 +802,31 @@ Fixture corpus in `tests/` of this repository:
    the box instead) and `semiring_reduce.esm` (a running `max`, a nested
    `min` observed, a suffix product, a `max_product` semiring, and a level
    search used as a subscript — one-hot).
+   The §4.5 recurrence fixture `recurrence_sweep.esm` (two `(col, lev)`
+   states: a Thomas solve per column whose diagonal reads the state — a
+   forward elimination reading itself through a division, a forward
+   substitution reading it, and a back substitution on the REVERSED `lev`
+   axis, so each line is dense; a lag-2 recurrence with a two-cell base
+   guard; a linear implicit-trapezoid sweep on a non-uniform axis with a
+   parameter, the entraining-plume shape; a Newton iteration on a non-state
+   axis read at its last iterate, which stays pointwise; and a filtered
+   window whose filter gathers a `const` mask, a `where` no box split
+   expresses) carries the states and `parameters` goldens above, the CSR
+   plan (§8), the pairs `["states", "states"]` and `["states",
+   "parameters"]`, and `recurrence_sweep.column-lev.block.json`: the state
+   block emitted with column axis `lev` (`column_block`, dense lines). Its
+   `*.hvals.json` key set adds every second-axis column a point of the
+   second axis's recurrence rows (§9.7) reaches. `pbl_rank1.esm` (boundary-
+   layer mixing toward a column mean plus per-cell titration: a
+   `diag_plus_rank1` line block, §6) carries the states goldens, the CSR
+   plan and `pbl_rank1.column-lev.block.json`. Until the Julia reference
+   runs recurrences (EarthSciAST.jl executes none yet, EarthSciAST#546),
+   these two fixtures' goldens are written by the Rust binding
+   (`tests/write_goldens.rs`) and byte-compared by Rust and Python; their
+   values are checked against central differences of the SOURCE right-hand
+   side, evaluated by EarthSciAST, and the three derivations of `J` (the
+   evaluation document through the transfer recurrence, the tangent and the
+   adjoint sweeps) against each other.
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
@@ -697,11 +886,26 @@ A `"column_block"` structure (§4) carries a line-by-line plan:
 - `bandwidth` — `[kl, ku]`, the largest distance below / above the diagonal
   any entry point reaches along the axis (a variable-to-variable coupling
   at one level is distance 0).
-- `pattern` — the name of that coupling: `"dense"` (`kl = ku =
-  line_length − 1`), `"lower"` (`ku = 0`, `kl = line_length − 1`), `"upper"`
-  (the mirror), else `"banded"` — so a solver can pick a column solver
-  (a banded LU, a triangular sweep, a dense LU) without reading the
-  entries.
+- `pattern` — the name of that coupling: `"diag_plus_rank1"` (below),
+  else `"dense"` (`kl = ku = line_length − 1`), `"lower"` (`ku = 0`,
+  `kl = line_length − 1`), `"upper"` (the mirror), else `"banded"` — so a
+  solver can pick a column solver (a banded LU, a triangular sweep, a dense
+  LU, a Sherman–Morrison solve) without reading the entries.
+- `rank1` (with `"diag_plus_rank1"` only) — the line block is `D + Σ uₜ vₜᵀ`:
+  `D` the couplings at distance 0 (a per-level block of `block_vars`) and one
+  rank-one term per listed entry, `[{"entry": e, "u": …, "v": …}]` in entry
+  order. Entry `e` (1-based, in block order) has exactly one contracted name
+  `κ`, which is its column's position on the line, no `where`, and a
+  coefficient that factors as `u · v`: `u` (an Expression over the entry's
+  row index names and model values) times `v` (over `κ` and model values).
+  The pattern is reported when every entry is at distance 0 or such a term
+  and at least one is. The factorization is read off the coefficient: its
+  `*` and `/` factors (a unary minus a factor `-1`), split by whether they
+  read `κ` — a factor reading both `κ` and a row name means no rank-one
+  term — with `u` the product of the others' numerator factors over the
+  product of their denominator factors (`/` only when there is one), `v`
+  likewise, literals canonical. The reseact PBL-mean shape
+  `pbl_f[k] · (mean − x[k]) / τ` is one (`pbl_rank1.esm`).
 
 ## 7. Out of scope (this draft)
 
@@ -809,7 +1013,8 @@ scatter loop between bindings must shift indices to match.
 
 **Status: PROPOSED. Produced by the Julia reference (`jvp_document`,
 `vjp_document`, `hvp_document`) and, byte-identically, by the Rust and
-Python bindings, with goldens (§9.6).** Any change to the text below lands with its goldens.
+Python bindings, with goldens (§9.6); through a recurrence (§9.7) by the
+Rust and Python bindings until the reference runs recurrences.** Any change to the text below lands with its goldens.
 
 A consumer needs more than the coefficients: an implicit integrator applies
 `J` and `Jᵀ` to vectors, and an adjoint contracts the second-order bands
@@ -1064,3 +1269,78 @@ computed from the golden itself (`J v`, `Jᵀ λ` from the `*.jvals.json` at
 seeded `v`, `λ`; the `*.hvals.json` `g` at its pinned stage pairs), under
 §5 item 3's tolerances. No binding needs an evaluator of its own for this
 check.
+
+### 9.7 Through recurrences: tangent and adjoint sweeps
+
+When the axis's pass (a pair's first pass) has an active recurrence (§4.5),
+the product documents are built from the EXTENDED system, not from the
+materialized entries: no transfer recurrence is formed, and each product
+runs one sweep per recurrence instead — `O(N)` per line where the
+materialized `T` costs `O(N²)`. The sweeps are esm-spec §4.3.1.1
+recurrences, which EarthSciAST executes.
+
+**Common form.** The base (§9.1) reads the coefficients, column indices and
+guards of, in this order (which is also the hoisting order): for `JvpEval`
+and `VjpEval`, the extended state bands then the recurrence bands; for
+`HvpEval`, the second-order entries, then the first pass's state and
+recurrence bands, then the recurrence bands of the second axis's extended
+pass (seeded with the first axis's targets, over the same recurrences; the
+first pass's own when the axes are equal). Each intermediate is an
+observed: `{"type": "unknown", "shape": <V's declared shape>}` defined by a
+bare-LHS equation, generated after the inputs and before the outputs in the
+order below, its equation placed after the inputs' and before the outputs'.
+Every sweep is one `faq` over `V`'s frame (the frame names, the frame
+ranges) whose body is a left fold of binary `+` of terms (§4.5's term, zero
+`0.0`), and a recurrence column is read with the `states` ghost rule (§9.1)
+on every axis. `R` is a state, `C` a column variable of the axis, `V`, `W`
+recurrences, `i` a stage.
+
+**Tangent sweep** `_vdot_<V>` (directions `dir`): per band of `V`'s
+definition, in order, a self band reads `_vdot_<V>` itself (§4.5); a band
+whose column is a target `C` reads `dir_C` at its (substituted) column
+index, and one whose column is another recurrence `W` reads `_vdot_<W>`,
+each with §9.1's in-extent conjuncts as conditions (`e_d >= 1`, `e_d <= n_d`
+per dimension, none when every point is in extent; a forcing ghost is
+refused).
+
+**Adjoint sweep** `_vrev_<V>` (cotangent source `src`): the accumulated
+cotangent of `V`, written ascending on the REVERSED axis (`k̃ = lo + hi − k`):
+the body is `src[F_o…, lo + hi − F_d]` followed by one term per self band,
+in order — its axis row at `(lo + hi − F_d) + ℓ` (`ℓ` with the other row
+names substituted), its other rows at the frame names; conditions: the row
+box (both sides on the axis), `ℓ >= 1` (unless an integer literal `≥ 1`),
+`F_d − ℓ >= lo`, then the band's `where`; read `_vrev_<V>[F_o…, F_d − ℓ]`.
+The cotangent of a recurrence row `W` at row point `ρ` is
+`_vrev_<W>[ρ_o…, lo + hi − ρ_d]`.
+
+**Cotangent source** `_vbar_<V>` (cotangents `λ`): the left fold, over the
+extended bands (state bands then recurrence bands) whose column is `V` and
+whose row is not `V`, of §9.3's scatter term onto `V`'s cells with body
+`coef · λ[row]` — `λ_R` for a state row, the reversed read for a recurrence
+row; zero (§9.1) when none reads `V`.
+
+| Document | Intermediates (per recurrence, in recurrence order) | Outputs |
+|---|---|---|
+| `JvpEval` | `_vdot_<V>` (directions `_v_<C>`) | §9.2 over the state bands; a column `V` reads `_vdot_<V>` |
+| `VjpEval` | all `_vbar_<V>` (cotangents `_lam_<R>`), then all `_vrev_<V>`; each `_vbar` equation directly before its `_vrev` | §9.3 over every extended band (state, then recurrence) whose column is `C`, cotangent as above |
+| `HvpEval` | per stage `i`: all `_vdot<i>_<V>` (directions `_w<i>_<C>`), all `_vbar<i>_<V>` (cotangents `_mu<i>_<R>`), all `_vrev<i>_<V>`, the three equations of one recurrence together; then all `_hbar_<V>`, all `_hrev_<V>`, each pair together | below |
+
+**Contraction.** `M_k = Σᵢ cotᵢ[row] · dirᵢ[col]`, with `cotᵢ` the input
+`_mu<i>_<R>` or the reversed `_vrev<i>_<W>`, and `dirᵢ` the input `_w<i>_<C>`
+or `_vdot<i>_<W>`; the symmetric form's body is `Σᵢ cotᵢ[row] · a_k ·
+dirᵢ[col2]`. A second-order entry whose scatter column (`col2` in the
+contract form, `col` in the symmetric one) is a recurrence `V` lands in
+`_hbar_<V>`, followed by, for each second-pass recurrence band of a row
+`W ≠ V` whose column is `V`, the scatter of `coef · Ĥ_W` (`Ĥ_W` the reversed
+read of `_hrev_<W>`); `_hrev_<V>` is the adjoint sweep of `_hbar_<V>` over
+the second pass's self bands. An output `C2` is the fold of the entries
+scattering onto it (§9.4), then of the second pass's recurrence bands whose
+column is `C2`, each `coef · Ĥ_row` scattered by §9.3 (the second axis's
+ghost rule for a target).
+
+This is the Lagrangian of `φ = Σᵢ μᵢᵀ J wᵢ` with `J = F_x + F_V dV/dx`:
+`V̇ᵢ = G V̇ᵢ + B wᵢ` is the tangent sweep, the multiplier `Âᵢ = F_Vᵀ μᵢ +
+Gᵀ Âᵢ` of its residual the adjoint one, the second-order bands of the
+extended system contracted with `(μᵢ, Âᵢ) × (wᵢ, V̇ᵢ)` give the explicit
+gradient and the cotangent `V̄` of `V`, and `Ĥ = V̄ + Gᵀ Ĥ` carries `V̄`
+back through `V`'s own dependence on the second axis.

@@ -20,7 +20,7 @@ use common::load;
 /// Every shared fixture: the single-model ones and the coupled document
 /// (`coupled_chem_advection`, whose chemistry is pointwise-lifted onto the
 /// advection grid).
-const NAMES: [&str; 9] = [
+const NAMES: [&str; 11] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -30,6 +30,8 @@ const NAMES: [&str; 9] = [
     "tgrad_photolysis",
     "forcing_bracket",
     "coupled_chem_advection",
+    "recurrence_sweep",
+    "pbl_rank1",
 ];
 const AXES: [Wrt; 4] = [Wrt::States, Wrt::Parameters, Wrt::Forcing, Wrt::Time];
 const MODEL: &str = "flattened";

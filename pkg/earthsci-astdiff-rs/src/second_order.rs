@@ -20,6 +20,7 @@ use crate::clip::{clip_regions, RIdx};
 use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
 use crate::helpers::{is_zero, ser_expr};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
+use crate::recurrence::{ExtendedBands, Recurrence};
 use crate::reductions::{conj, one_hot};
 use crate::rules::dscalar;
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
@@ -118,7 +119,7 @@ pub(crate) fn bands2_view(
     obs: &HashMap<String, Expr>,
     wrt: (Wrt, Wrt),
     forcing: Option<&[String]>,
-) -> R<(Rc<Vec<JacEntry>>, Vec<JacEntry2>)> {
+) -> R<(Rc<ExtendedBands>, Vec<JacEntry2>)> {
     bands2_memo(sv, ctx, obs, wrt, forcing, &mut FirstOrder::default())
 }
 
@@ -130,13 +131,16 @@ pub(crate) fn bands2_memo(
     wrt: (Wrt, Wrt),
     forcing: Option<&[String]>,
     memo: &mut FirstOrder,
-) -> R<(Rc<Vec<JacEntry>>, Vec<JacEntry2>)> {
+) -> R<(Rc<ExtendedBands>, Vec<JacEntry2>)> {
     let (a1, a2) = wrt;
     let t2 = targets(sv, a2, forcing, obs)?;
-    let e1 = memo.bands(sv, ctx, obs, a1, Some(a2), forcing, &t2)?;
-    let tset: HashSet<String> = t2.into_iter().collect();
+    let e1 = memo.ext(sv, ctx, obs, a1, Some(a2), forcing, &t2)?;
+    // a recurrence is a second column too (spec §4.5): its rows and columns
+    // are the extended system's
+    let mut tset: HashSet<String> = t2.into_iter().collect();
+    tset.extend(e1.recurrences.iter().map(|r| r.name.clone()));
     let mut out = Vec::new();
-    for en in e1.iter() {
+    for en in e1.rows.iter().chain(&e1.rec_rows) {
         let mut ws: Vec<String> = free_variables(&en.band.coef)
             .into_iter()
             .filter(|x| tset.contains(x))
@@ -155,7 +159,7 @@ pub(crate) fn bands2_memo(
         }
     }
     if a2.has_columns() {
-        for en in &out {
+        for en in out.iter().filter(|en| !e1.is_recurrence(&en.w)) {
             check_closed_col2(en)?;
         }
     }
@@ -361,8 +365,18 @@ pub(crate) fn pair_block(
     } else {
         None
     };
-    let structure = structure2(|| memo.structure(a1, Some(a2), &e1, ctx), &entries, ctx, a1);
-    Ok(Value::Object(block_fields(
+    // through a recurrence the contraction is not lane-local (§4.5)
+    let structure = if e1.recurrences.is_empty() {
+        structure2(
+            || memo.structure(a1, Some(a2), &e1.rows, ctx),
+            &entries,
+            ctx,
+            a1,
+        )
+    } else {
+        None
+    };
+    let mut block = block_fields(
         json!([a1.as_str(), a2.as_str()]),
         &entries,
         serialize_band2,
@@ -370,5 +384,21 @@ pub(crate) fn pair_block(
         structure,
         cse,
         cse_min_nodes,
-    )))
+    );
+    if !e1.recurrences.is_empty() {
+        block.insert("recurrences".into(), recurrences_field(&e1.recurrences));
+    }
+    Ok(Value::Object(block))
+}
+
+/// A pair block's `recurrences` field (spec §4.5): each active recurrence's
+/// name and its 1-based recurrence dimension, in recurrence order. Entries
+/// naming one as `row`, `col` or `col2` are terms of the chain rule
+/// through it, which only the §9.7 contraction completes.
+pub(crate) fn recurrences_field(recs: &[Recurrence]) -> Value {
+    Value::Array(
+        recs.iter()
+            .map(|r| json!({"name": r.name, "dim": r.dim + 1}))
+            .collect(),
+    )
 }

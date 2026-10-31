@@ -9,6 +9,7 @@ use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
+use crate::recurrence::{active, materialize, recurrences, ExtendedBands};
 use crate::system::{
     ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
     SysView,
@@ -259,14 +260,69 @@ pub(crate) fn jacobian_bands_seeded(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
+    let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
+    if ext.recurrences.is_empty() {
+        return Ok(ext.rows);
+    }
+    materialize(sv, ctx, &ext)
+}
+
+/// The extended first-order system of axis `wrt` (spec §4.5): every state
+/// equation's bands with respect to the axis's targets and the active
+/// recurrences, and each active recurrence definition's own bands. With
+/// `second` the pass is a pair's first pass: seeded with the second axis's
+/// targets, so the recurrences that move with either axis are active and
+/// the observed that move with either are inlined (spec §4.4). Without a
+/// recurrence `rows` is [`jacobian_bands_view`]'s list and the rest is
+/// empty.
+pub fn extended_bands(
+    sv: &SysView,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    second: Option<Wrt>,
+) -> Result<ExtendedBands, BandError> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    let seed = match second {
+        Some(a2) if a2 != wrt => targets(sv, a2, forcing, &obs)?,
+        _ => Vec::new(),
+    };
+    extended_pass(sv, &ctx, &obs, wrt, forcing, &seed)
+}
+
+/// The extended first-order system of one pass (spec §4.5): the bands of
+/// every state equation with respect to the axis's targets AND the active
+/// recurrences, and the bands of each active recurrence's own definition
+/// (rows `V`). A recurrence is active when it moves with the targets or
+/// `seed` (a pair's second axis); recurrences are never inlined (no
+/// fixpoint exists), so an inactive one stays an opaque read, constant with
+/// respect to every target. Without an active recurrence `rows` is exactly
+/// [`bands_of_view`]'s list.
+pub(crate) fn extended_pass(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+) -> Result<ExtendedBands, BandError> {
+    let src_obs = obs;
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
+    let recs = recurrences(sv, obs, ctx)?;
+    let act = if recs.is_empty() {
+        Vec::new()
+    } else {
+        let mut s: HashSet<String> = tset.clone();
+        s.extend(seed.iter().cloned());
+        active(&recs, obs, &s)
+    };
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
     // opaque reads. Time is not pruned: it also enters implicitly through
     // time-varying data.
     let pruned;
-    let obs = if wrt == Wrt::Time {
+    let mut obs = if wrt == Wrt::Time {
         obs
     } else {
         pruned = if seed.is_empty() {
@@ -278,6 +334,17 @@ pub(crate) fn jacobian_bands_seeded(
         };
         &pruned
     };
+    let unrec;
+    if !recs.is_empty() {
+        let mut m = obs.clone();
+        for r in &recs {
+            m.remove(&r.name);
+        }
+        unrec = m;
+        obs = &unrec;
+    }
+    let mut cols = tset.clone();
+    cols.extend(act.iter().map(|r| r.name.clone()));
     let mut entries = Vec::new();
     let mut obs_names = None;
     for eq in sv.equations {
@@ -287,34 +354,60 @@ pub(crate) fn jacobian_bands_seeded(
             }
             continue;
         };
-        let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
-        let rhs =
-            inline_observed_cached(&eq.rhs, obs, &mut obs_names).map_err(|e| BandError(e.0))?;
-        // Structural occurrence gate, driven from the equation: intersect the
-        // RHS's free variables with the target set (a per-equation scan of
-        // every target is quadratic on scalar-lowered documents). Sorting the
-        // hits keeps the sorted-target entry order.
-        let mut hits: Vec<String> = free_variables(&rhs)
-            .into_iter()
-            .filter(|v| tset.contains(v))
-            .collect();
-        hits.sort();
-        for v in &hits {
-            for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
-                entries.push(JacEntry {
-                    u: u.clone(),
-                    v: v.clone(),
-                    band: normalize_band(&b),
-                });
+        row_bands(&mut entries, &u, &eq.rhs, obs, &mut obs_names, &cols, ctx)?;
+    }
+    let mut rec_rows = Vec::new();
+    for r in &act {
+        let def = &src_obs[&r.name];
+        row_bands(&mut rec_rows, &r.name, def, obs, &mut obs_names, &cols, ctx)?;
+    }
+    if wrt.has_columns() {
+        for en in entries.iter().chain(&rec_rows) {
+            if tset.contains(&en.v) {
+                check_closed_columns(en)?;
             }
         }
     }
-    if wrt.has_columns() {
-        for en in &entries {
-            check_closed_columns(en)?;
+    Ok(ExtendedBands {
+        recurrences: act,
+        rows: entries,
+        rec_rows,
+    })
+}
+
+/// The bands of one row variable `u` (a state, or a recurrence over its
+/// own definition) with respect to every column in `cols` its inlined
+/// right-hand side reads, in sorted column order.
+fn row_bands(
+    out: &mut Vec<JacEntry>,
+    u: &str,
+    rhs: &Expr,
+    obs: &HashMap<String, Expr>,
+    obs_names: &mut Option<HashSet<String>>,
+    cols: &HashSet<String>,
+    ctx: &Ctx,
+) -> Result<(), BandError> {
+    let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
+    let rhs = inline_observed_cached(rhs, obs, obs_names).map_err(|e| BandError(e.0))?;
+    // Structural occurrence gate, driven from the equation: intersect the
+    // RHS's free variables with the column set (a per-equation scan of
+    // every target is quadratic on scalar-lowered documents). Sorting the
+    // hits keeps the sorted-target entry order.
+    let mut hits: Vec<String> = free_variables(&rhs)
+        .into_iter()
+        .filter(|v| cols.contains(v))
+        .collect();
+    hits.sort();
+    for v in &hits {
+        for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
+            out.push(JacEntry {
+                u: u.to_string(),
+                v: v.clone(),
+                band: normalize_band(&b),
+            });
         }
     }
-    Ok(entries)
+    Ok(())
 }
 
 /// A column of the parameters / forcing axes is a cell of a buffer, so it
@@ -374,29 +467,46 @@ pub(crate) fn expr_json(c: &Expr) -> String {
 /// The first-order passes of one emission ([`crate::jacobian_blocks`]), and
 /// the structure class of each. A pass depends only on its axis and the
 /// inlining seed a second axis adds ([`crate::second_order`]); that seed
-/// changes nothing on the time axis (never seeded) or when the second axis
-/// is the first, so those share the plain pass's key: a block list asking
-/// for `States` and `(States, States)` differentiates the system once.
+/// changes nothing when the second axis is the first, so such a pair shares
+/// the plain pass's key: a block list asking for `States` and `(States,
+/// States)` differentiates the system once. (On the time axis the seed
+/// changes no inlining, but it can make a recurrence active, spec §4.5.)
 #[derive(Default)]
 pub(crate) struct FirstOrder {
+    ext: HashMap<(Wrt, Option<Wrt>), Rc<ExtendedBands>>,
     bands: HashMap<(Wrt, Option<Wrt>), Rc<Vec<JacEntry>>>,
     structure: HashMap<(Wrt, Option<Wrt>), &'static str>,
 }
 
 impl FirstOrder {
     fn key(a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
-        (
-            a1,
-            if a1 == Wrt::Time || a2 == Some(a1) {
-                None
-            } else {
-                a2
-            },
-        )
+        (a1, if a2 == Some(a1) { None } else { a2 })
     }
 
-    /// The `a1` pass seeded with `seed`, the targets of `a2` (`None` for a
-    /// plain first-order block).
+    /// The extended `a1` pass seeded with `seed`, the targets of `a2`
+    /// (`None` for a plain first-order block).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ext(
+        &mut self,
+        sv: &SysView,
+        ctx: &Ctx,
+        obs: &HashMap<String, Expr>,
+        a1: Wrt,
+        a2: Option<Wrt>,
+        forcing: Option<&[String]>,
+        seed: &[String],
+    ) -> Result<Rc<ExtendedBands>, BandError> {
+        let key = Self::key(a1, a2);
+        if let Some(e) = self.ext.get(&key) {
+            return Ok(e.clone());
+        }
+        let e = Rc::new(extended_pass(sv, ctx, obs, a1, forcing, seed)?);
+        self.ext.insert(key, e.clone());
+        Ok(e)
+    }
+
+    /// The materialized `a1` pass ([`Self::ext`] composed through its
+    /// recurrences, spec §4.5).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bands(
         &mut self,
@@ -412,7 +522,12 @@ impl FirstOrder {
         if let Some(e) = self.bands.get(&key) {
             return Ok(e.clone());
         }
-        let e = Rc::new(jacobian_bands_seeded(sv, ctx, obs, a1, forcing, seed)?);
+        let ext = self.ext(sv, ctx, obs, a1, a2, forcing, seed)?;
+        let e = Rc::new(if ext.recurrences.is_empty() {
+            ext.rows.clone()
+        } else {
+            materialize(sv, ctx, &ext)?
+        });
         self.bands.insert(key, e.clone());
         Ok(e)
     }

@@ -30,6 +30,8 @@ fn plan_layouts() -> Vec<(&'static str, &'static str, Layout)> {
         ("contracting_observed", "csr", Layout::Csr),
         ("filtered_scan", "csr", Layout::Csr),
         ("semiring_reduce", "csr", Layout::Csr),
+        ("recurrence_sweep", "csr", Layout::Csr),
+        ("pbl_rank1", "csr", Layout::Csr),
     ]
 }
 
