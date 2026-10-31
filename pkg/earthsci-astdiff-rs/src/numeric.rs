@@ -14,7 +14,7 @@ use crate::clip::RIdx;
 use crate::emit::detect_structure;
 use crate::helpers::map_expr_children;
 use crate::inline::inline_observed_cached;
-use crate::jacobian::{column_names, jacobian_bands_view, jacobian_columns, JacEntry, Wrt};
+use crate::jacobian::{bands_of_view, column_names, jacobian_columns, JacEntry, Wrt};
 use crate::second_order::{axis_pair, bands2_view, structure2, JacEntry2};
 use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 
@@ -516,7 +516,7 @@ pub fn prepare_jacobian(
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt, forcing)?;
+    let entries = bands_of_view(&sv, &ctx, &obs, wrt, forcing)?;
     let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let columns = if wrt.has_columns() {
         Some(jacobian_columns(&sv, wrt, forcing)?)
@@ -719,7 +719,7 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
     let sv = sysview(file, model_name)?;
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
-    let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
+    let entries = bands_of_view(&sv, &ctx, &obs, Wrt::States, None)?;
     let shapes: Vec<Vec<i64>> = entries
         .iter()
         .map(|en| crate::scatter::field_shape(en, &ctx))

@@ -209,15 +209,34 @@ pub fn jacobian_bands_with_forcing(
     wrt: Wrt,
     forcing: Option<&[String]>,
 ) -> Result<Vec<JacEntry>, BandError> {
-    let sv = sysview(file, model_name)?;
-    let ctx = ctx_of(&sv)?;
-    let obs = observed_defs(&sv)?;
-    jacobian_bands_view(&sv, &ctx, &obs, wrt, forcing)
+    jacobian_bands_view(&sysview(file, model_name)?, wrt, forcing)
+}
+
+/// [`jacobian_bands_with_forcing`] for a view already built: the reference's
+/// `jacobian_bands(sv::SysView; wrt, forcing)`. With [`crate::sysview_flat`]
+/// this is how a flattened system (a coupled document) is differentiated:
+///
+/// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let file = earthsci_ast::load_path("coupled.esm")?;
+/// let flat = earthsci_ast::flatten(&file)?;
+/// let sv = earthsci_astdiff::sysview_flat(&flat);
+/// let entries = earthsci_astdiff::jacobian_bands_view(&sv, earthsci_astdiff::Wrt::States, None)?;
+/// # Ok(()) }
+/// ```
+pub fn jacobian_bands_view(
+    sv: &SysView,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+) -> Result<Vec<JacEntry>, BandError> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    bands_of_view(sv, &ctx, &obs, wrt, forcing)
 }
 
 /// The body of [`jacobian_bands`], for callers (numeric assembly) that
 /// already hold the view, its context and its observed definitions.
-pub(crate) fn jacobian_bands_view(
+pub(crate) fn bands_of_view(
     sv: &SysView,
     ctx: &Ctx,
     obs: &HashMap<String, Expr>,
@@ -227,7 +246,7 @@ pub(crate) fn jacobian_bands_view(
     jacobian_bands_seeded(sv, ctx, obs, wrt, forcing, &[])
 }
 
-/// [`jacobian_bands_view`] with `seed` added to the inlining seed without
+/// [`bands_of_view`] with `seed` added to the inlining seed without
 /// making those names targets: the second-order driver
 /// ([`crate::second_order`]) differentiates these coefficients again with
 /// respect to its second axis, so an observed that moves only with that axis

@@ -30,11 +30,30 @@ fully usable — a plan is an optimization, never a requirement).
 Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref), and
 `:column_block` (which needs the `column_axis` it was detected with) →
 [`ColumnBlockPlan`](@ref).
+
+Throws an `ArgumentError` when `structure` is not one of
+`STRUCTURE_CLASSES` (a misspelled class never silently gives no
+plan), or when a column of `entries` is a parameter: a `:parameters` or
+`:forcing` band list is a rectangular matrix, which no plan factorizes.
 """
 function plan_factorization(
         entries::Vector{JacEntry}, sv::SysView; column_axis = nothing,
         structure::Symbol = detect_structure(entries, sv; column_axis = column_axis)
     )
+    structure in STRUCTURE_CLASSES || throw(
+        ArgumentError(
+            "unknown structure class :$structure (expected one of $STRUCTURE_CLASSES)"
+        )
+    )
+    for en in entries
+        var = get(sv.variables, en.v, nothing)
+        (var !== nothing && var.type == EarthSciAST.ParameterVariable) && throw(
+            ArgumentError(
+                "no factorization plan for a rectangular band list: column `$(en.v)` " *
+                    "is a parameter (plan a states or time band list)"
+            )
+        )
+    end
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
     if structure == :column_block
         column_axis === nothing &&
@@ -50,6 +69,9 @@ end
 
 _column_block_plan(cl) =
     ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
+
+"The structure classes [`detect_structure`](@ref) reports (spec §4)."
+const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end

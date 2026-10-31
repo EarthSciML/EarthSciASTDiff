@@ -59,4 +59,15 @@ end
     sv2 = sysview(file2, "Adv")
     entries2 = jacobian_bands(sv2)
     @test plan_factorization(entries2, sv2) === nothing
+
+    # A misspelled class is an error, never a silent "no plan".
+    for typo in (Symbol("block-diagonal"), :blockdiagonal, :Block_Diagonal)
+        @test_throws ArgumentError plan_factorization(entries, sv; structure = typo)
+    end
+    # A parameters band list is rectangular: no block LU over states and
+    # parameters, whatever class is named or detected.
+    pentries = jacobian_bands(sv; wrt = :parameters)
+    @test !isempty(pentries)
+    @test_throws ArgumentError plan_factorization(pentries, sv)
+    @test_throws ArgumentError plan_factorization(pentries, sv; structure = :block_diagonal)
 end

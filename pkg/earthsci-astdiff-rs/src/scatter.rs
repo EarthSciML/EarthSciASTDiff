@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::bands::{BandError, Ctx};
 use crate::clip::RIdx;
 use crate::emit::{block_diagonal_lu, detect_structure, offset_class, BlockLu};
-use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
+use crate::jacobian::{bands_of_view, JacEntry, Wrt};
 use crate::numeric::{eval_cidx, foreach_point};
 use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 
@@ -154,7 +154,7 @@ impl ScatterPlan {
         let sv = sysview(file, model_name)?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
+        let entries = bands_of_view(&sv, &ctx, &obs, Wrt::States, None)?;
         ScatterPlan::build(&sv, &entries, layout)
     }
 
@@ -428,7 +428,7 @@ impl ScatterPlan {
         let sv = sysview(file, model_name)?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
+        let entries = bands_of_view(&sv, &ctx, &obs, Wrt::States, None)?;
         self.bind_entries(&sv, &entries, l)
     }
 
