@@ -1,20 +1,28 @@
-//! Uniform system view over one model of a loaded `EsmFile` (the reference's
-//! system.jl; template expansion already happened inside `load`).
+//! Uniform system view over the two differentiable inputs, one model of a
+//! loaded `EsmFile` ([`sysview`]) and a coupled document's
+//! `FlattenedSystem` ([`sysview_flat`]) (the reference's system.jl; template
+//! expansion already happened inside `load`).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
 use earthsci_ast::{
-    free_variables, Equation, EsmFile, Expr, ExpressionNode, Model, ModelVariable, VariableType,
+    free_variables, Equation, EsmFile, Expr, ExpressionNode, FlattenedSystem, Model, ModelVariable,
+    VariableType,
 };
 use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
 
 /// A model as the band calculus sees it: its variables, equations and index
-/// sets. Build one with [`sysview`].
+/// sets. Build one with [`sysview`] (one model of a document) or
+/// [`sysview_flat`] (a flattened system).
+///
+/// `variables` borrows a model's own map; a flattened system keeps its
+/// variables in three maps, so its view owns their union.
 pub struct SysView<'a> {
-    pub variables: &'a IndexMap<String, ModelVariable>,
+    pub variables: Cow<'a, IndexMap<String, ModelVariable>>,
     pub equations: &'a Vec<Equation>,
     pub index_sets: IndexMap<String, IndexSet>,
 }
@@ -47,10 +55,42 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
     Ok(SysView {
-        variables: &model.variables,
+        variables: Cow::Borrowed(&model.variables),
         equations: &model.equations,
         index_sets: file.index_sets.clone().unwrap_or_default(),
     })
+}
+
+/// View a flattened system (EarthSciAST's `flatten` of a coupled document)
+/// for differentiation: the reference's `sysview(flat::FlattenedSystem)`.
+///
+/// The variables are the union of the system's state variables, parameters
+/// and observed variables, merged in that order: a name in more than one map
+/// (an arrayed observed is both a state variable and an observed variable)
+/// keeps its first position and takes the last map's declaration, as the
+/// reference and the Python binding merge them. The equations and index sets
+/// are the system's own, in its order, so every band function gives the same
+/// entries, in the same order, as it gives for a one-model document holding
+/// these variables and equations.
+///
+/// The reference expands surviving `apply_expression_template` references
+/// first (`expand_flattened_refs`); there is nothing to expand here, since
+/// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
+pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
+    let mut variables = IndexMap::new();
+    for (n, v) in flat
+        .state_variables
+        .iter()
+        .chain(&flat.parameters)
+        .chain(&flat.observed_variables)
+    {
+        variables.insert(n.clone(), v.clone());
+    }
+    SysView {
+        variables: Cow::Owned(variables),
+        equations: &flat.equations,
+        index_sets: flat.index_sets.clone(),
+    }
 }
 
 pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
@@ -60,7 +100,7 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
             ctx.index_sets.insert(n.clone(), sz);
         }
     }
-    for (n, var) in sv.variables {
+    for (n, var) in sv.variables.iter() {
         if let Some(shape) = &var.shape {
             if !shape.is_empty() {
                 let dims: Result<Vec<i64>, BandError> = shape

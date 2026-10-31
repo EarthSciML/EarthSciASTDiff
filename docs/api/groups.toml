@@ -12,7 +12,7 @@ ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "jacobi
 id = "structure"
 title = "Sparsity and structure"
 description = "The exact structural sparsity pattern, the structure classification, and the symbolic factorization plan."
-ops = ["jacobian_pattern", "detect_structure", "plan_factorization", "block_diagonal_plan", "lu_fill", "markowitz_ordering"]
+ops = ["jacobian_pattern", "detect_structure", "plan_factorization", "block_diagonal_plan", "serialize_plan", "lu_fill", "markowitz_ordering"]
 
 [[group]]
 id = "evaluate"

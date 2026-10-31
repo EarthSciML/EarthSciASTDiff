@@ -343,6 +343,7 @@ fn nzpairs(m: &[Vec<bool>]) -> Value {
 /// The per-cell block LU of a block-diagonal band list (factorization.jl's
 /// `BlockDiagonalPlan`): block variables in Markowitz order, the 1-based
 /// ordering, and the permuted pattern and its fill-in LU pattern.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockLu {
     pub block_vars: Vec<String>,
     pub ordering: Vec<usize>,
@@ -382,14 +383,53 @@ pub fn block_diagonal_lu(entries: &[JacEntry]) -> BlockLu {
     }
 }
 
+/// The serialized per-cell block LU of a block-diagonal band list: the
+/// `factorization` field of a state block ([`serialize_plan`] of
+/// [`block_diagonal_lu`]).
 pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
-    let b = block_diagonal_lu(entries);
+    serialize_plan(&block_diagonal_lu(entries))
+}
+
+/// Symbolic factorization info for the band list's structure class: the
+/// reference's `plan_factorization(entries, sv; structure)`.
+///
+/// `structure` defaults (`None`) to [`detect_structure`] of `entries` over
+/// the view's context. A `"block_diagonal"` class gives its per-cell block
+/// LU ([`block_diagonal_lu`]); every other class gives `None`, since no plan
+/// is implemented for it yet (the Jacobian is still fully usable: a plan is
+/// an optimization, never a requirement). The error is the view's context
+/// failing to build ([`crate::ctx_of`]), and only when `structure` is `None`.
+pub fn plan_factorization(
+    entries: &[JacEntry],
+    sv: &SysView,
+    structure: Option<&str>,
+) -> Result<Option<BlockLu>, crate::bands::BandError> {
+    let detected;
+    let structure = match structure {
+        Some(s) => s,
+        None => {
+            detected = detect_structure(entries, &crate::system::ctx_of(sv)?);
+            detected
+        }
+    };
+    Ok((structure == "block_diagonal").then(|| block_diagonal_lu(entries)))
+}
+
+/// A factorization plan as the `factorization` field of a `jacobians`
+/// block (spec §4): the reference's `serialize_plan`. The object has
+/// `type` (`"block_diagonal_lu"`), `block_vars` (the block's variables in
+/// elimination order), `ordering` (the 1-based Markowitz ordering of the
+/// name-sorted variables), and `pattern` and `lu_pattern` (the permuted
+/// block's pattern and its LU pattern including fill-in, as sorted 1-based
+/// `[row, column]` pairs). Serialized with [`crate::stable_json`] it is
+/// byte-identical to the Julia and Python bindings' output.
+pub fn serialize_plan(plan: &BlockLu) -> Value {
     json!({
         "type": "block_diagonal_lu",
-        "block_vars": b.block_vars,
-        "ordering": b.ordering,
-        "pattern": nzpairs(&b.pattern),
-        "lu_pattern": nzpairs(&b.lu),
+        "block_vars": plan.block_vars,
+        "ordering": plan.ordering,
+        "pattern": nzpairs(&plan.pattern),
+        "lu_pattern": nzpairs(&plan.lu),
     })
 }
 
