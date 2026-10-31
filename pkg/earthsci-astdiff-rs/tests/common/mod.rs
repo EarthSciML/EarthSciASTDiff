@@ -20,18 +20,39 @@ pub fn load(name: &str) -> earthsci_ast::EsmFile {
 /// The pinned point of `<name>.jvals.json` as an oracle `Env`, plus the
 /// golden itself.
 pub fn jvals_env(name: &str) -> (Env, Value) {
-    let g: Value = serde_json::from_str(&fs::read_to_string(
-        root().join("tests/goldens").join(format!("{name}.jvals.json")))
-        .unwrap()).unwrap();
+    let g: Value = serde_json::from_str(
+        &fs::read_to_string(
+            root()
+                .join("tests/goldens")
+                .join(format!("{name}.jvals.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let params: HashMap<String, Value> = g["params"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let env = cells_env(&g["u"], params, g["t"].as_f64().unwrap());
+    (env, g)
+}
+
+/// An oracle `Env` from cell-named state values (`{"c[2]": 0.5, "S": 1.0}`)
+/// as the value goldens carry them.
+pub fn cells_env(u: &Value, params: HashMap<String, Value>, t: f64) -> Env {
     // cell-named state values → nested arrays
     let mut states: HashMap<String, Value> = HashMap::new();
     let mut cells: HashMap<String, Vec<(Vec<i64>, f64)>> = HashMap::new();
-    for (cellname, v) in g["u"].as_object().unwrap() {
+    for (cellname, v) in u.as_object().unwrap() {
         let val = v.as_f64().unwrap();
         if let Some(br) = cellname.find('[') {
             let base = cellname[..br].to_string();
             let idx: Vec<i64> = cellname[br + 1..cellname.len() - 1]
-                .split(',').map(|x| x.parse().unwrap()).collect();
+                .split(',')
+                .map(|x| x.parse().unwrap())
+                .collect();
             cells.entry(base).or_default().push((idx, val));
         } else {
             states.insert(cellname.clone(), Value::from(val));
@@ -41,7 +62,8 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
         // nested arrays, 1-based cells, any rank
         let rank = pts[0].0.len();
         let shape: Vec<i64> = (0..rank)
-            .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap()).collect();
+            .map(|d| pts.iter().map(|(i, _)| i[d]).max().unwrap())
+            .collect();
         fn full(shape: &[i64]) -> Value {
             match shape.split_first() {
                 None => Value::Null,
@@ -58,12 +80,5 @@ pub fn jvals_env(name: &str) -> (Env, Value) {
         }
         states.insert(base, arr);
     }
-    let params: HashMap<String, Value> = g["params"].as_object().unwrap()
-        .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    let env = Env {
-        states,
-        params,
-        t: g["t"].as_f64().unwrap(),
-    };
-    (env, g)
+    Env { states, params, t }
 }

@@ -38,11 +38,15 @@ using EarthSciASTDiff: skey, _simp
 
     # via the derivative pipeline: d/dx of min(x + y, x + 2) has equal branch
     # derivatives (1 and 1), so the min's condition tree must not survive
-    m = OpExpr("min", ASTExpr[OpExpr("+", ASTExpr[x, y]),
-                              OpExpr("+", ASTExpr[x, NumExpr(2.0)])])
+    m = OpExpr(
+        "min", ASTExpr[
+            OpExpr("+", ASTExpr[x, y]),
+            OpExpr("+", ASTExpr[x, NumExpr(2.0)]),
+        ]
+    )
     d = _simp(dscalar(m, Site(x)))
-    @test d isa Union{NumExpr,IntExpr}   # collapsed to a literal one
-    @test EarthSciAST.evaluate_expr(d, Dict{String,Float64}()) == 1.0
+    @test d isa Union{NumExpr, IntExpr}   # collapsed to a literal one
+    @test EarthSciAST.evaluate_expr(d, Dict{String, Float64}()) == 1.0
 end
 
 @testset "wire-canonical literals" begin
@@ -60,27 +64,46 @@ end
     half = _simp(OpExpr("*", ASTExpr[NumExpr(0.5), IntExpr(3)]))
     @test half isa NumExpr && half.value == 1.5
     # normalization reaches nested positions
-    nested = _simp(OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[
-        VarExpr("x"), OpExpr("*", ASTExpr[IntExpr(4), NumExpr(0.5)])])]))
-    @test skey(EarthSciAST.expression_from_json(
-        EarthSciAST.serialize_expression(nested))) == skey(nested)
+    nested = _simp(
+        OpExpr(
+            "exp", ASTExpr[
+                OpExpr(
+                    "+", ASTExpr[
+                        VarExpr("x"), OpExpr("*", ASTExpr[IntExpr(4), NumExpr(0.5)]),
+                    ]
+                ),
+            ]
+        )
+    )
+    @test skey(
+        EarthSciAST.expression_from_json(
+            EarthSciAST.serialize_expression(nested)
+        )
+    ) == skey(nested)
 end
 
 @testset "cse_templates" begin
     x = VarExpr("x"); y = VarExpr("y")
     # a chunky repeated subtree (> min_nodes when threshold lowered)
-    big = OpExpr("*", ASTExpr[OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, y])]),
-                              OpExpr("log", ASTExpr[OpExpr("+", ASTExpr[x, NumExpr(2.0)])])])
+    big = OpExpr(
+        "*", ASTExpr[
+            OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, y])]),
+            OpExpr("log", ASTExpr[OpExpr("+", ASTExpr[x, NumExpr(2.0)])]),
+        ]
+    )
     e1 = OpExpr("+", ASTExpr[big, VarExpr("a")])
     e2 = OpExpr("-", ASTExpr[big, VarExpr("b")])
     tmpl, rw = cse_templates(ASTExpr[e1, e2]; min_nodes = 4)
     @test !isempty(tmpl)
-    reg = Dict{String,ASTExpr}(tmpl)
+    reg = Dict{String, ASTExpr}(tmpl)
     @test skey(expand_templates(rw[1], reg)) == skey(e1)
     @test skey(expand_templates(rw[2], reg)) == skey(e2)
     # the rewritten forms actually reference a template
-    @test occursin("apply_expression_template", stable_json(
-        EarthSciAST.serialize_expression(rw[1])))
+    @test occursin(
+        "apply_expression_template", stable_json(
+            EarthSciAST.serialize_expression(rw[1])
+        )
+    )
 
     # nothing to share → identity
     tmpl0, rw0 = cse_templates(ASTExpr[e1]; min_nodes = 50)
@@ -88,7 +111,7 @@ end
 
     # unknown reference errors on expansion
     bad = OpExpr("apply_expression_template", ASTExpr[]; name = "nope")
-    @test_throws ArgumentError expand_templates(bad, Dict{String,ASTExpr}())
+    @test_throws ArgumentError expand_templates(bad, Dict{String, ASTExpr}())
 end
 
 @testset "minmod limiter: oracle + swell control" begin
@@ -102,14 +125,16 @@ end
         u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* (1.3 + k)))
         r = assemble_jacobian(file; u = u)
         Jad = ad_jacobian(f!, u, p0, 0.0)
-        @test Matrix(r.J) ≈ Matrix(Jad) rtol = 1e-10
+        @test Matrix(r.J) ≈ Matrix(Jad) rtol = 1.0e-10
         @test all((Jad .!= 0) .<= r.pattern)
     end
 
     # swell regression: the summed coefficient text stays bounded
     # (measured 25,656 chars at introduction; slack for rule evolution)
-    nchars = sum(length(stable_json(EarthSciAST.serialize_expression(e.band.coef)))
-                 for e in entries)
+    nchars = sum(
+        length(stable_json(EarthSciAST.serialize_expression(e.band.coef)))
+            for e in entries
+    )
     @test nchars < 60_000
 
     # CSE'd document: templates present, block smaller, round-trip exact
@@ -120,12 +145,16 @@ end
     @test length(stable_json(d1["jacobians"])) < length(stable_json(d0["jacobians"]))
     _, ents = parse_jacobian_block(b1)
     @test length(ents) == length(entries)
-    @test all(skey(ents[k].band.coef) == skey(entries[k].band.coef)
-              for k in eachindex(entries))
+    @test all(
+        skey(ents[k].band.coef) == skey(entries[k].band.coef)
+            for k in eachindex(entries)
+    )
     # cse=false emits no templates and the same closed coefficients
     b0 = d0["jacobians"][String(mname)]
     @test !haskey(b0, "expression_templates")
     _, ents0 = parse_jacobian_block(b0)
-    @test all(skey(ents0[k].band.coef) == skey(entries[k].band.coef)
-              for k in eachindex(entries))
+    @test all(
+        skey(ents0[k].band.coef) == skey(entries[k].band.coef)
+            for k in eachindex(entries)
+    )
 end

@@ -1,6 +1,8 @@
 //! Expression constructors, structural keys, and the differentiation site
 //! (mirror of the reference's expr_helpers).
 
+use std::collections::HashSet;
+
 use earthsci_ast::canonical_json;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
@@ -121,8 +123,9 @@ fn write_stable(v: &Value, out: &mut String) {
             }
             out.push(']');
         }
-        Value::Number(n) if !(n.is_i64() || n.is_u64()) =>
-            out.push_str(&canonical_float(n.as_f64().unwrap())),
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) => {
+            out.push_str(&canonical_float(n.as_f64().unwrap()))
+        }
         _ => out.push_str(&serde_json::to_string(v).unwrap()),
     }
 }
@@ -134,17 +137,28 @@ mod tests {
     #[test]
     fn canonical_float_matches_the_reference_layout() {
         // CONFORMANCE_SPEC §5.5.3.1's probe table, plus Julia `show` values
-        for (v, want) in [(1.0e-9, "1.0e-9"), (1.5e-5, "1.5e-5"),
-                          (0.000123456, "0.000123456"), (2.5, "2.5"),
-                          (999999.5, "999999.5"), (1000000.5, "1.0000005e6"),
-                          (123456789.25, "1.2345678925e8"), (0.0, "0.0"),
-                          (-0.0, "-0.0"), (1.0, "1.0"), (100.0, "100.0"),
-                          (1.0e6, "1.0e6"), (1.0e22, "1.0e22"), (0.0001, "0.0001"),
-                          (1.0e-5, "1.0e-5"), (-2.5e-7, "-2.5e-7"),
-                          (2440587.5, "2.4405875e6"),
-                          (7.27220521664304e-5, "7.27220521664304e-5"),
-                          (5e-324, "5.0e-324"),
-                          (1.7976931348623157e308, "1.7976931348623157e308")] {
+        for (v, want) in [
+            (1.0e-9, "1.0e-9"),
+            (1.5e-5, "1.5e-5"),
+            (0.000123456, "0.000123456"),
+            (2.5, "2.5"),
+            (999999.5, "999999.5"),
+            (1000000.5, "1.0000005e6"),
+            (123456789.25, "1.2345678925e8"),
+            (0.0, "0.0"),
+            (-0.0, "-0.0"),
+            (1.0, "1.0"),
+            (100.0, "100.0"),
+            (1.0e6, "1.0e6"),
+            (1.0e22, "1.0e22"),
+            (0.0001, "0.0001"),
+            (1.0e-5, "1.0e-5"),
+            (-2.5e-7, "-2.5e-7"),
+            (2440587.5, "2.4405875e6"),
+            (7.27220521664304e-5, "7.27220521664304e-5"),
+            (5e-324, "5.0e-324"),
+            (1.7976931348623157e308, "1.7976931348623157e308"),
+        ] {
             assert_eq!(canonical_float(v), want, "for {v:e}");
         }
     }
@@ -164,6 +178,47 @@ pub fn ckey(e: &Expr) -> String {
     canonical_json(e).expect("scalar-core canonical form")
 }
 
+/// A site's identity key (expr_helpers.jl `_site_key`): the canonical JSON,
+/// or — for an `index` node whose subscripts hold an array op the canonical
+/// form refuses (a level search `u[κ]` with κ a min-faq, spec §3.5) — `~`
+/// followed by its stable JSON, which sorts after every canonical key.
+pub fn site_key(e: &Expr) -> String {
+    match canonical_json(e) {
+        Ok(k) => k,
+        Err(_) => format!("~{}", skey(e)),
+    }
+}
+
+/// The free variables of `e` with every node's own binders subtracted at
+/// that node (a faq's ranges and output indices, an integral's variable),
+/// plus any `wrt` — EarthSciAST.jl's `free_variables`. (`earthsci_ast`'s
+/// `free_variables` subtracts no binder.)
+pub fn free_vars(e: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    match e {
+        Expr::Variable(n) => {
+            out.insert(n.clone());
+        }
+        Expr::Operator(n) => {
+            n.for_each_child(&mut |c: &Expr| out.extend(free_vars(c)));
+            if let Some(v) = &n.int_var {
+                out.remove(v);
+            }
+            for k in n.ranges.iter().flat_map(|r| r.keys()) {
+                out.remove(k);
+            }
+            for k in n.output_idx.iter().flatten() {
+                out.remove(k);
+            }
+            if let Some(w) = &n.wrt {
+                out.insert(w.clone());
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// A bare variable reference or one symbolic `index(v, i…)` cell.
 #[derive(Clone, Debug)]
 pub struct Site {
@@ -173,14 +228,17 @@ pub struct Site {
 
 impl Site {
     pub fn of(e: &Expr) -> Site {
-        Site { expr: e.clone(), key: ckey(e) }
+        Site {
+            expr: e.clone(),
+            key: site_key(e),
+        }
     }
 }
 
 pub fn is_site(e: &Expr, s: &Site) -> bool {
-    let candidate = matches!(e, Expr::Variable(_))
-        || matches!(e, Expr::Operator(n) if n.op == "index");
-    candidate && ckey(e) == s.key
+    let candidate =
+        matches!(e, Expr::Variable(_)) || matches!(e, Expr::Operator(n) if n.op == "index");
+    candidate && site_key(e) == s.key
 }
 
 /// Structural occurrence — THE sparsity primitive (never a zero test).

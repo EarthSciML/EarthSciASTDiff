@@ -3,11 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use earthsci_ast::free_variables;
+use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
-use crate::helpers::{add, is_site, is_zero, mul, neg, occurs, op, Site};
+use crate::helpers::{add, free_vars, is_site, is_zero, mul, neg, occurs, op, Site};
 
 /// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
@@ -25,14 +25,19 @@ type R = Result<Expr, DerivativeRuleError>;
 /// The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
 /// their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
 const PIECEWISE_CONSTANT_DATETIME: &[&str] = &[
-    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
-    "datetime.minute", "datetime.second", "datetime.day_of_year",
+    "datetime.year",
+    "datetime.month",
+    "datetime.day",
+    "datetime.hour",
+    "datetime.minute",
+    "datetime.second",
+    "datetime.day_of_year",
     "datetime.is_leap_year",
 ];
 
 const ZERO_DERIV_OPS: &[&str] = &[
-    "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor",
-    "ceil", "pi", "π", "e", "true", "false", "const", "enum", "Pre",
+    "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor", "ceil", "pi", "π", "e",
+    "true", "false", "const", "enum", "Pre",
 ];
 
 /// The derivative of the scalar expression `e` with respect to the site `s`
@@ -41,7 +46,9 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
     if is_site(e, s) {
         return Ok(Expr::Integer(1));
     }
-    let Expr::Operator(n) = e else { return Ok(Expr::Integer(0)) };
+    let Expr::Operator(n) = e else {
+        return Ok(Expr::Integer(0));
+    };
     if !occurs(e, s) {
         return Ok(Expr::Integer(0));
     }
@@ -67,8 +74,11 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
                 }
                 let mut fac = vec![dx];
                 fac.extend(
-                    a.iter().enumerate().filter(|(j, _)| *j != i)
-                        .map(|(_, y)| y.clone()));
+                    a.iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, y)| y.clone()),
+                );
                 terms.push(mul(fac));
             }
             Ok(add(terms))
@@ -84,8 +94,10 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             let t2 = if is_zero(&dm) {
                 lit(0)
             } else {
-                neg(op("/", vec![mul(vec![nu.clone(), dm]),
-                                 op("^", vec![de.clone(), lit(2)])]))
+                neg(op(
+                    "/",
+                    vec![mul(vec![nu.clone(), dm]), op("^", vec![de.clone(), lit(2)])],
+                ))
             };
             Ok(add(vec![t1, t2]))
         }
@@ -95,102 +107,151 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             let t1 = if is_zero(&db) {
                 lit(0)
             } else {
-                mul(vec![x.clone(),
-                         op("^", vec![b.clone(), add(vec![x.clone(), lit(-1)])]),
-                         db])
+                mul(vec![
+                    x.clone(),
+                    op("^", vec![b.clone(), add(vec![x.clone(), lit(-1)])]),
+                    db,
+                ])
             };
             let t2 = if is_zero(&dx) {
                 lit(0)
             } else {
-                mul(vec![op("^", vec![b.clone(), x.clone()]),
-                         op("log", vec![b.clone()]), dx])
+                mul(vec![
+                    op("^", vec![b.clone(), x.clone()]),
+                    op("log", vec![b.clone()]),
+                    dx,
+                ])
             };
             Ok(add(vec![t1, t2]))
         }
         "exp" => Ok(mul(vec![e.clone(), d(&a[0])?])),
         "log" => Ok(op("/", vec![d(&a[0])?, a[0].clone()])),
-        "log10" => Ok(op("/", vec![d(&a[0])?,
-                                   mul(vec![a[0].clone(),
-                                            op("log", vec![lit(10)])])])),
+        "log10" => Ok(op(
+            "/",
+            vec![d(&a[0])?, mul(vec![a[0].clone(), op("log", vec![lit(10)])])],
+        )),
         "sqrt" => Ok(op("/", vec![d(&a[0])?, mul(vec![lit(2), e.clone()])])),
         "sin" => Ok(mul(vec![op("cos", vec![a[0].clone()]), d(&a[0])?])),
         "cos" => Ok(neg(mul(vec![op("sin", vec![a[0].clone()]), d(&a[0])?]))),
-        "tan" => Ok(mul(vec![add(vec![lit(1), op("^", vec![e.clone(), lit(2)])]),
-                             d(&a[0])?])),
+        "tan" => Ok(mul(vec![
+            add(vec![lit(1), op("^", vec![e.clone(), lit(2)])]),
+            d(&a[0])?,
+        ])),
         "tanh" => Ok(mul(vec![
             add(vec![lit(1), neg(op("^", vec![e.clone(), lit(2)]))]),
-            d(&a[0])?])),
+            d(&a[0])?,
+        ])),
         "sinh" => Ok(mul(vec![op("cosh", vec![a[0].clone()]), d(&a[0])?])),
         "cosh" => Ok(mul(vec![op("sinh", vec![a[0].clone()]), d(&a[0])?])),
-        "asin" => Ok(op("/", vec![d(&a[0])?,
-            op("sqrt", vec![add(vec![lit(1),
-                neg(op("^", vec![a[0].clone(), lit(2)]))])])])),
-        "acos" => Ok(neg(op("/", vec![d(&a[0])?,
-            op("sqrt", vec![add(vec![lit(1),
-                neg(op("^", vec![a[0].clone(), lit(2)]))])])]))),
-        "asinh" => Ok(op("/", vec![d(&a[0])?,
-            op("sqrt", vec![add(vec![op("^", vec![a[0].clone(), lit(2)]),
-                                     lit(1)])])])),
-        "acosh" => Ok(op("/", vec![d(&a[0])?,
-            op("sqrt", vec![add(vec![op("^", vec![a[0].clone(), lit(2)]),
-                                     lit(-1)])])])),
-        "atanh" => Ok(op("/", vec![d(&a[0])?,
-            add(vec![lit(1), neg(op("^", vec![a[0].clone(), lit(2)]))])])),
-        "atan" if a.len() == 1 => Ok(op("/", vec![d(&a[0])?,
-            add(vec![lit(1), op("^", vec![a[0].clone(), lit(2)])])])),
+        "asin" => Ok(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                op(
+                    "sqrt",
+                    vec![add(vec![lit(1), neg(op("^", vec![a[0].clone(), lit(2)]))])],
+                ),
+            ],
+        )),
+        "acos" => Ok(neg(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                op(
+                    "sqrt",
+                    vec![add(vec![lit(1), neg(op("^", vec![a[0].clone(), lit(2)]))])],
+                ),
+            ],
+        ))),
+        "asinh" => Ok(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                op(
+                    "sqrt",
+                    vec![add(vec![op("^", vec![a[0].clone(), lit(2)]), lit(1)])],
+                ),
+            ],
+        )),
+        "acosh" => Ok(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                op(
+                    "sqrt",
+                    vec![add(vec![op("^", vec![a[0].clone(), lit(2)]), lit(-1)])],
+                ),
+            ],
+        )),
+        "atanh" => Ok(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                add(vec![lit(1), neg(op("^", vec![a[0].clone(), lit(2)]))]),
+            ],
+        )),
+        "atan" if a.len() == 1 => Ok(op(
+            "/",
+            vec![
+                d(&a[0])?,
+                add(vec![lit(1), op("^", vec![a[0].clone(), lit(2)])]),
+            ],
+        )),
         "atan" | "atan2" => {
             let (y, x) = (&a[0], &a[1]);
-            let den = add(vec![op("^", vec![x.clone(), lit(2)]),
-                               op("^", vec![y.clone(), lit(2)])]);
-            Ok(op("/", vec![add(vec![mul(vec![x.clone(), d(y)?]),
-                                     neg(mul(vec![y.clone(), d(x)?]))]),
-                            den]))
+            let den = add(vec![
+                op("^", vec![x.clone(), lit(2)]),
+                op("^", vec![y.clone(), lit(2)]),
+            ]);
+            Ok(op(
+                "/",
+                vec![
+                    add(vec![
+                        mul(vec![x.clone(), d(y)?]),
+                        neg(mul(vec![y.clone(), d(x)?])),
+                    ]),
+                    den,
+                ],
+            ))
         }
         "abs" => Ok(mul(vec![
-            op("ifelse", vec![op("<", vec![a[0].clone(), lit(0)]),
-                              lit(-1), lit(1)]),
-            d(&a[0])?])),
+            op(
+                "ifelse",
+                vec![op("<", vec![a[0].clone(), lit(0)]), lit(-1), lit(1)],
+            ),
+            d(&a[0])?,
+        ])),
         "ifelse" => Ok(op("ifelse", vec![a[0].clone(), d(&a[1])?, d(&a[2])?])),
         "max" | "min" => {
             let cmp = if n.op == "max" { ">=" } else { "<=" };
             let mut acc = a[0].clone();
             let mut dacc = d(&a[0])?;
             for x in &a[1..] {
-                dacc = op("ifelse",
-                          vec![op(cmp, vec![acc.clone(), x.clone()]),
-                               dacc, d(x)?]);
+                dacc = op(
+                    "ifelse",
+                    vec![op(cmp, vec![acc.clone(), x.clone()]), dacc, d(x)?],
+                );
                 acc = op(&n.op, vec![acc, x.clone()]);
             }
             Ok(dacc)
         }
-        "faq" if n.output_idx.as_ref().map_or(true, |o| o.is_empty()) =>
-            dsum(n, s),
+        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
         "fn" => dfn(n, s),
         "index" => Err(DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent \
-             index) has no scalar rule".into())),
+             index) has no scalar rule"
+                .into(),
+        )),
         o => Err(DerivativeRuleError(format!(
             "no derivative rule for op `{o}` (rewrite-target ops must be \
-             lowered before differentiation)"))),
+             lowered before differentiation)"
+        ))),
     }
 }
 
-/// A scalar faq sum Σ_k body (scalar_rules.jl `_dsum`): the sum of the
-/// body's derivatives. Bound indices the site's column does not read are
-/// summed; those it does read (`u[i,k]` under Σ_k) are left FREE, for the
-/// band emitter to turn into contracted column dimensions (bands.rs
-/// `lift_nested`). Filter, join and non-`"+"` reductions have no rule.
-/// Whether faq node `n` reduces by ordinary `+` (scalar_rules.jl
-/// `_plain_sum`): a `semiring` supersedes `reduce`, so a `max_product` node
-/// with no `reduce` is a max, not a sum.
-pub(crate) fn plain_sum(n: &ExpressionNode) -> bool {
-    match &n.semiring {
-        None => n.reduce.as_deref().map_or(true, |r| r == "+"),
-        Some(sr) => sr == "sum_product",
-    }
-}
-
+/// A faq node's reduction, for messages ([`crate::reductions::reduce_op`]
+/// decides it).
 pub(crate) fn reduction(n: &ExpressionNode) -> String {
     match &n.semiring {
         None => format!("reduce=`{}`", n.reduce.as_deref().unwrap_or("+")),
@@ -198,20 +259,19 @@ pub(crate) fn reduction(n: &ExpressionNode) -> String {
     }
 }
 
+/// A scalar faq node ⊕_k body (scalar_rules.jl `_dsum`): the `+` of its
+/// body's derivatives, each weighted by what ⊕ does with that term
+/// ([`crate::reductions::window_weight`]). Bound indices the site's column
+/// does not read are summed (a rebuilt `+` node, its filter kept); those it
+/// does read (`u[i,k]` under Σ_k) are left FREE, for the band emitter to
+/// turn into contracted column dimensions (bands.rs `lift_nested`), and once
+/// every index is free the filter becomes `ifelse(φ, ·, 0)`. A join or a
+/// value-invention node has no rule (spec §3.5).
 fn dsum(n: &ExpressionNode, s: &Site) -> R {
-    if n.filter.is_some() {
-        return Err(DerivativeRuleError(
-            "filtered faq nodes are not differentiated (the filter gate would \
-             be dropped from the derivative)".into()));
-    }
-    if n.join.is_some() {
-        return Err(DerivativeRuleError("joined faq nodes are not differentiated".into()));
-    }
-    if !plain_sum(n) {
-        return Err(DerivativeRuleError(format!(
-            "{} (non-smooth semiring reductions have no rule)", reduction(n))));
-    }
-    let body = n.expr.as_deref()
+    let red = crate::reductions::reduce_op(n).map_err(DerivativeRuleError)?;
+    let body = n
+        .expr
+        .as_deref()
         .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;
     let db = dscalar(body, s)?;
     if is_zero(&db) {
@@ -219,23 +279,43 @@ fn dsum(n: &ExpressionNode, s: &Site) -> R {
     }
     let empty = HashMap::new();
     let ranges = n.ranges.as_ref().unwrap_or(&empty);
+    let mut names: Vec<String> = ranges.keys().cloned().collect();
+    names.sort();
+    let db = crate::reductions::window_weight(red, n, &names, db).map_err(DerivativeRuleError)?;
+    // A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+    let plus = |db: Expr, ranges: Option<HashMap<String, RangeSpec>>| {
+        let mut m = n.clone();
+        m.expr = Some(Box::new(db));
+        if let Some(r) = ranges {
+            m.ranges = Some(r);
+        }
+        if red != "+" {
+            m.reduce = Some("+".into());
+            m.semiring = None;
+        }
+        Expr::operator(m)
+    };
     let mut read: HashSet<String> = HashSet::new();
     if let Expr::Operator(sn) = &s.expr {
         for x in &sn.args[1..] {
-            read.extend(free_variables(x));
+            read.extend(free_vars(x));
         }
     }
-    let summed: HashMap<_, _> = ranges.iter()
+    let summed: HashMap<_, _> = ranges
+        .iter()
         .filter(|(k, _)| !read.contains(*k))
-        .map(|(k, v)| (k.clone(), v.clone())).collect();
-    if summed.is_empty() && !ranges.is_empty() {
-        return Ok(db);
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    if summed.len() == ranges.len() {
+        return Ok(plus(db, None));
     }
-    Ok(Expr::operator(ExpressionNode {
-        expr: Some(Box::new(db)),
-        ranges: if summed.len() == ranges.len() { n.ranges.clone() } else { Some(summed) },
-        ..n.clone()
-    }))
+    if summed.is_empty() {
+        return Ok(match &n.filter {
+            None => db,
+            Some(f) => op("ifelse", vec![(**f).clone(), db, Expr::Integer(0)]),
+        });
+    }
+    Ok(plus(db, Some(summed)))
 }
 
 fn const_vector(e: &Expr) -> Option<Vec<f64>> {
@@ -243,7 +323,9 @@ fn const_vector(e: &Expr) -> Option<Vec<f64>> {
     if n.op != "const" {
         return None;
     }
-    let Some(Value::Array(v)) = &n.value else { return None };
+    let Some(Value::Array(v)) = &n.value else {
+        return None;
+    };
     v.iter().map(|x| x.as_f64()).collect()
 }
 
@@ -252,7 +334,9 @@ fn const_matrix(e: &Expr) -> Option<Vec<Vec<f64>>> {
     if n.op != "const" {
         return None;
     }
-    let Some(Value::Array(v)) = &n.value else { return None };
+    let Some(Value::Array(v)) = &n.value else {
+        return None;
+    };
     let rows: Option<Vec<Vec<f64>>> = v
         .iter()
         .map(|r| match r {
@@ -268,41 +352,65 @@ fn const_matrix(e: &Expr) -> Option<Vec<Vec<f64>>> {
 }
 
 /// ∂(bilinear blend)/∂(the axis of `xv`) — see the reference rule (§3.4).
-fn bilinear_partial(t: &[Vec<f64>], xv: &[f64], yv: &[f64],
-                    xe: &Expr, ye: &Expr) -> Expr {
+fn bilinear_partial(t: &[Vec<f64>], xv: &[f64], yv: &[f64], xe: &Expr, ye: &Expr) -> Expr {
     let (nx, ny) = (xv.len(), yv.len());
     let mut out = Expr::Integer(0); // x ≥ axis_x[nx]: flat in x
     for i in (0..nx - 1).rev() {
         let sl = |j: usize| (t[i + 1][j] - t[i][j]) / (xv[i + 1] - xv[i]);
         let mut leaf = Expr::Number(sl(ny - 1)); // y ≥ axis_y[ny]: top edge
         for j in (0..ny - 1).rev() {
-            let wy = op("/", vec![add(vec![ye.clone(),
-                                           Expr::Number(-yv[j])]),
-                                  Expr::Number(yv[j + 1] - yv[j])]);
-            let ex = add(vec![Expr::Number(sl(j)),
-                              mul(vec![wy,
-                                       add(vec![Expr::Number(sl(j + 1)),
-                                                neg(Expr::Number(sl(j)))])])]);
-            leaf = op("ifelse",
-                      vec![op("<", vec![ye.clone(), Expr::Number(yv[j + 1])]),
-                           ex, leaf]);
+            let wy = op(
+                "/",
+                vec![
+                    add(vec![ye.clone(), Expr::Number(-yv[j])]),
+                    Expr::Number(yv[j + 1] - yv[j]),
+                ],
+            );
+            let ex = add(vec![
+                Expr::Number(sl(j)),
+                mul(vec![
+                    wy,
+                    add(vec![Expr::Number(sl(j + 1)), neg(Expr::Number(sl(j)))]),
+                ]),
+            ]);
+            leaf = op(
+                "ifelse",
+                vec![op("<", vec![ye.clone(), Expr::Number(yv[j + 1])]), ex, leaf],
+            );
         }
-        leaf = op("ifelse",
-                  vec![op("<", vec![ye.clone(), Expr::Number(yv[0])]),
-                       Expr::Number(sl(0)), leaf]);
-        out = op("ifelse",
-                 vec![op("<", vec![xe.clone(), Expr::Number(xv[i + 1])]),
-                      leaf, out]);
+        leaf = op(
+            "ifelse",
+            vec![
+                op("<", vec![ye.clone(), Expr::Number(yv[0])]),
+                Expr::Number(sl(0)),
+                leaf,
+            ],
+        );
+        out = op(
+            "ifelse",
+            vec![
+                op("<", vec![xe.clone(), Expr::Number(xv[i + 1])]),
+                leaf,
+                out,
+            ],
+        );
     }
-    op("ifelse", vec![op("<", vec![xe.clone(), Expr::Number(xv[0])]),
-                      Expr::Integer(0), out])
+    op(
+        "ifelse",
+        vec![
+            op("<", vec![xe.clone(), Expr::Number(xv[0])]),
+            Expr::Integer(0),
+            out,
+        ],
+    )
 }
 
 fn dfn(n: &ExpressionNode, s: &Site) -> R {
     let a = &n.args;
-    let name = n.name.as_deref().ok_or_else(|| {
-        DerivativeRuleError("`fn` node without a name".into())
-    })?;
+    let name = n
+        .name
+        .as_deref()
+        .ok_or_else(|| DerivativeRuleError("`fn` node without a name".into()))?;
     if PIECEWISE_CONSTANT_DATETIME.contains(&name) || name == "interp.searchsorted" {
         return Ok(Expr::Integer(0));
     }
@@ -330,23 +438,36 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
         let (Some(yv), Some(xv)) = (yv, xv) else {
             return Err(DerivativeRuleError(
                 "interp.linear table/axis must be literal `const` arrays \
-                 (spec §9.2 interp_table_not_const)".into()));
+                 (spec §9.2 interp_table_not_const)"
+                    .into(),
+            ));
         };
         let nk = xv.len();
         if nk != yv.len() || nk < 2 {
             return Err(DerivativeRuleError(
-                "interp.linear table/axis length mismatch or < 2 knots".into()));
+                "interp.linear table/axis length mismatch or < 2 knots".into(),
+            ));
         }
         let mut slope = Expr::Integer(0); // x ≥ axis[N]: flat
         for k in (0..nk - 1).rev() {
             let sk = (yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]);
-            slope = op("ifelse",
-                       vec![op("<", vec![x.clone(), Expr::Number(xv[k + 1])]),
-                            Expr::Number(sk), slope]);
+            slope = op(
+                "ifelse",
+                vec![
+                    op("<", vec![x.clone(), Expr::Number(xv[k + 1])]),
+                    Expr::Number(sk),
+                    slope,
+                ],
+            );
         }
-        slope = op("ifelse",
-                   vec![op("<", vec![x.clone(), Expr::Number(xv[0])]),
-                        Expr::Integer(0), slope]);
+        slope = op(
+            "ifelse",
+            vec![
+                op("<", vec![x.clone(), Expr::Number(xv[0])]),
+                Expr::Integer(0),
+                slope,
+            ],
+        );
         return Ok(mul(vec![slope, dx]));
     }
     if name == "interp.bilinear" {
@@ -356,17 +477,19 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
         if is_zero(&dx) && is_zero(&dy) {
             return Ok(Expr::Integer(0));
         }
-        let (t, xv, yv) = (const_matrix(table), const_vector(ax),
-                           const_vector(ay));
+        let (t, xv, yv) = (const_matrix(table), const_vector(ax), const_vector(ay));
         let (Some(t), Some(xv), Some(yv)) = (t, xv, yv) else {
             return Err(DerivativeRuleError(
                 "interp.bilinear table/axes must be literal `const` arrays \
-                 (spec §9.2 interp_table_not_const)".into()));
+                 (spec §9.2 interp_table_not_const)"
+                    .into(),
+            ));
         };
         let (nx, ny) = (xv.len(), yv.len());
         if t.len() != nx || t.iter().any(|r| r.len() != ny) || nx < 2 || ny < 2 {
             return Err(DerivativeRuleError(
-                "interp.bilinear table/axis shape mismatch or < 2 knots".into()));
+                "interp.bilinear table/axis shape mismatch or < 2 knots".into(),
+            ));
         }
         let mut terms = Vec::new();
         if !is_zero(&dx) {
@@ -380,7 +503,9 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
         }
         return Ok(add(terms));
     }
-    Err(DerivativeRuleError(format!("unknown closed function `{name}`")))
+    Err(DerivativeRuleError(format!(
+        "unknown closed function `{name}`"
+    )))
 }
 
 #[cfg(test)]
@@ -399,8 +524,10 @@ mod tests {
         let hour = ex(serde_json::json!({"op": "fn", "name": "datetime.hour", "args": ["x"]}));
         assert!(is_zero(&dscalar(&hour, &s).unwrap()));
         // julian_day is continuous: d/dx julian_day(3x) = 3/86400
-        let jd = ex(serde_json::json!({"op": "fn", "name": "datetime.julian_day",
-                                       "args": [{"op": "*", "args": [3, "x"]}]}));
+        let jd = ex(
+            serde_json::json!({"op": "fn", "name": "datetime.julian_day",
+                                       "args": [{"op": "*", "args": [3, "x"]}]}),
+        );
         let d = dscalar(&jd, &s).unwrap();
         let v = earthsci_ast::evaluate(&d, &std::collections::HashMap::new()).unwrap();
         assert!((v - 3.0 / 86400.0).abs() < 1e-18, "{v}");
@@ -409,8 +536,10 @@ mod tests {
         assert!(dscalar(&wk, &s).is_err());
         // a call of the wrong arity is a rule error, not silently
         // differentiated through its first argument
-        let bad = ex(serde_json::json!({"op": "fn", "name": "datetime.julian_day",
-                                        "args": ["x", "x"]}));
+        let bad = ex(
+            serde_json::json!({"op": "fn", "name": "datetime.julian_day",
+                                        "args": ["x", "x"]}),
+        );
         assert!(dscalar(&bad, &s).is_err());
     }
 }

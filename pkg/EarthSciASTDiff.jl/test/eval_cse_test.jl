@@ -7,20 +7,34 @@ using EarthSciASTDiff: Band, hoist_observed, _evaluation_document, skey
 
 # A ≥ 12-node subtree in the row index `n`: sin(u[n]) + cos(u[n+1]) * exp(u[n])
 _bigfrag(n) = begin
-    rd(o) = OpExpr("index", ASTExpr[VarExpr("u"),
-        o == 0 ? VarExpr(n) : OpExpr("+", ASTExpr[VarExpr(n), IntExpr(o)])])
-    OpExpr("+", ASTExpr[OpExpr("sin", ASTExpr[rd(0)]),
-        OpExpr("*", ASTExpr[OpExpr("cos", ASTExpr[rd(1)]),
-                            OpExpr("exp", ASTExpr[rd(0)])])])
+    rd(o) = OpExpr(
+        "index", ASTExpr[
+            VarExpr("u"),
+            o == 0 ? VarExpr(n) : OpExpr("+", ASTExpr[VarExpr(n), IntExpr(o)]),
+        ]
+    )
+    OpExpr(
+        "+", ASTExpr[
+            OpExpr("sin", ASTExpr[rd(0)]),
+            OpExpr(
+                "*", ASTExpr[
+                    OpExpr("cos", ASTExpr[rd(1)]),
+                    OpExpr("exp", ASTExpr[rd(0)]),
+                ]
+            ),
+        ]
+    )
 end
 
-_sv() = EarthSciASTDiff.SysView(Dict{String,Any}(), [], Dict{String,Any}())
+_sv() = EarthSciASTDiff.SysView(Dict{String, Any}(), [], Dict{String, Any}())
 
 @testset "hoist_observed" begin
     # the fragment repeats across two bands → one observed over the union box
     frag = _bigfrag("i")
-    mk(coef, lo, hi) = JacEntry("u", "u",
-        Band([(lo, hi)], Union{String,Int}["i"], ASTExpr[VarExpr("i")], coef))
+    mk(coef, lo, hi) = JacEntry(
+        "u", "u",
+        Band([(lo, hi)], Union{String, Int}["i"], ASTExpr[VarExpr("i")], coef)
+    )
     e1 = mk(OpExpr("*", ASTExpr[frag, NumExpr(2.0)]), 2, 8)
     e2 = mk(OpExpr("+", ASTExpr[frag, NumExpr(1.5)]), 1, 7)
     h = hoist_observed([e1, e2], _sv(); min_nodes = 8)
@@ -42,13 +56,23 @@ _sv() = EarthSciASTDiff.SysView(Dict{String,Any}(), [], Dict{String,Any}())
         @test !occursin("\"sin\"", skey(c))
     end
     # nothing to hoist → nothing (fragments below threshold)
-    @test hoist_observed([mk(VarExpr("a"), 1, 8), mk(VarExpr("a"), 1, 8)],
-                         _sv(); min_nodes = 8) === nothing
+    @test hoist_observed(
+        [mk(VarExpr("a"), 1, 8), mk(VarExpr("a"), 1, 8)],
+        _sv(); min_nodes = 8
+    ) === nothing
 
     # a scalar fragment (no free row-index names) hoists to a scalar observed
-    sfrag = OpExpr("+", ASTExpr[OpExpr("sin", ASTExpr[VarExpr("c")]),
-        OpExpr("*", ASTExpr[OpExpr("cos", ASTExpr[VarExpr("c")]),
-                            OpExpr("exp", ASTExpr[VarExpr("d")])])])
+    sfrag = OpExpr(
+        "+", ASTExpr[
+            OpExpr("sin", ASTExpr[VarExpr("c")]),
+            OpExpr(
+                "*", ASTExpr[
+                    OpExpr("cos", ASTExpr[VarExpr("c")]),
+                    OpExpr("exp", ASTExpr[VarExpr("d")]),
+                ]
+            ),
+        ]
+    )
     s1 = mk(OpExpr("*", ASTExpr[sfrag, VarExpr("i")]), 1, 8)
     s2 = mk(OpExpr("+", ASTExpr[sfrag, VarExpr("i")]), 1, 8)
     hs = hoist_observed([s1, s2], _sv(); min_nodes = 6)
@@ -59,8 +83,12 @@ _sv() = EarthSciASTDiff.SysView(Dict{String,Any}(), [], Dict{String,Any}())
     # an axis name colliding with a using band's missing binder bails out:
     # the fragment is free in "i", but the second band binds only "j"
     t1 = mk(OpExpr("*", ASTExpr[frag, NumExpr(2.0)]), 1, 8)
-    t2 = JacEntry("w", "u", Band([(1, 8)], Union{String,Int}["j"],
-        ASTExpr[VarExpr("j")], OpExpr("+", ASTExpr[frag, NumExpr(1.5)])))
+    t2 = JacEntry(
+        "w", "u", Band(
+            [(1, 8)], Union{String, Int}["j"],
+            ASTExpr[VarExpr("j")], OpExpr("+", ASTExpr[frag, NumExpr(1.5)])
+        )
+    )
     @test hoist_observed([t1, t2], _sv(); min_nodes = 8) === nothing
 end
 
@@ -74,11 +102,13 @@ end
     hoisted = [k for k in keys(vars) if startswith(String(k), "Jcse")]
     @test !isempty(hoisted)
     doc0, _ = _evaluation_document(sv, entries; cse = false)
-    @test !any(startswith(String(k), "Jcse")
-               for k in keys(doc0["models"]["JacobianEval"]["variables"]))
+    @test !any(
+        startswith(String(k), "Jcse")
+            for k in keys(doc0["models"]["JacobianEval"]["variables"])
+    )
     # the CSE'd document is materially smaller
     @test length(EarthSciASTDiff.stable_json(doc)) <
-          length(EarthSciASTDiff.stable_json(doc0))
+        length(EarthSciASTDiff.stable_json(doc0))
 end
 
 @testset "minmod: eval-CSE Jacobian matches the plain path and AD" begin
@@ -92,6 +122,6 @@ end
     Jc = copy(jc.prototype); jc(Jc, u, p0, 0.0)
     Jp = copy(jp.prototype); jp(Jp, u, p0, 0.0)
     @test Jc.colptr == Jp.colptr && Jc.rowval == Jp.rowval
-    @test Matrix(Jc) ≈ Matrix(Jp) rtol = 1e-14
-    @test Matrix(Jc) ≈ Matrix(Jad) rtol = 1e-10
+    @test Matrix(Jc) ≈ Matrix(Jp) rtol = 1.0e-14
+    @test Matrix(Jc) ≈ Matrix(Jad) rtol = 1.0e-10
 end

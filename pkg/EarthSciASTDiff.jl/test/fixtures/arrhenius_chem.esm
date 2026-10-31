@@ -1,0 +1,541 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "ArrheniusChem",
+    "description": "Per-cell NOx-O3 chemistry on a 3-cell column with Arrhenius rate constants read from a temperature parameter T[z] through observed rates: bimolecular terms give second-order state-state entries, the rates give state-parameter ones (esm-jacobian-spec.md \u00a74.4)."
+  },
+  "index_sets": {
+    "z": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Chem": {
+      "variables": {
+        "O3": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.6
+        },
+        "NO": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.3
+        },
+        "NO2": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.4
+        },
+        "O": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.05
+        },
+        "k1": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "k4": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "T": {
+          "type": "parameter",
+          "shape": [
+            "z"
+          ],
+          "default": [
+            290.5,
+            295.25,
+            301.75
+          ]
+        },
+        "A1": {
+          "type": "parameter",
+          "default": 2.5
+        },
+        "E1": {
+          "type": "parameter",
+          "default": 310.5
+        },
+        "A4": {
+          "type": "parameter",
+          "default": 0.75
+        },
+        "E4": {
+          "type": "parameter",
+          "default": 120.5
+        },
+        "jNO2": {
+          "type": "parameter",
+          "default": 0.55
+        },
+        "k3": {
+          "type": "parameter",
+          "default": 1.25
+        }
+      },
+      "equations": [
+        {
+          "lhs": "k1",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "A1",
+                {
+                  "op": "exp",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        -1,
+                        {
+                          "op": "/",
+                          "args": [
+                            "E1",
+                            {
+                              "op": "index",
+                              "args": [
+                                "T",
+                                "i"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "k4",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "A4",
+                {
+                  "op": "exp",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [
+                        "E4",
+                        {
+                          "op": "index",
+                          "args": [
+                            "T",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "O3"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "k1",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "NO",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "O3",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "k3",
+                    {
+                      "op": "index",
+                      "args": [
+                        "O",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "NO"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "k1",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "NO",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "O3",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "jNO2",
+                    {
+                      "op": "index",
+                      "args": [
+                        "NO2",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "k4",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "NO2",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "O",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "NO2"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "k1",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "NO",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "O3",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        "jNO2",
+                        {
+                          "op": "index",
+                          "args": [
+                            "NO2",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "k4",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "NO2",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "O",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "O"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    "jNO2",
+                    {
+                      "op": "index",
+                      "args": [
+                        "NO2",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        "k3",
+                        {
+                          "op": "index",
+                          "args": [
+                            "O",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "k4",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "NO2",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "O",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -12,67 +12,94 @@ using JSON3
 using EarthSciASTDiff: BandError, DerivativeRuleError
 
 @testset "contracting observed keeps its sum" begin
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     idx(v, i...) = O("op" => "index", "args" => Any[v, i...])
     sq(x) = O("op" => "^", "args" => Any[x, 2])
-    sdef(; kw...) = O("op" => "faq", "args" => Any[], "output_idx" => Any["i"],
+    sdef(; kw...) = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any["i"],
         "ranges" => O("i" => Any[1, 2], "k" => Any[1, 3]),
-        "reduce" => "+", "expr" => sq(idx("u", "i", "k")), (String(k) => v for (k, v) in kw)...)
-    doc(rhs_body; oidx = ["i", "k"], s = sdef(), vars = O(), eqs = Any[]) = O("esm" => "1.1.0",
+        "reduce" => "+", "expr" => sq(idx("u", "i", "k")), (String(k) => v for (k, v) in kw)...
+    )
+    doc(rhs_body; oidx = ["i", "k"], s = sdef(), vars = O(), eqs = Any[]) = O(
+        "esm" => "1.1.0",
         "metadata" => O("name" => "ContractObs"),
-        "index_sets" => O("x" => O("kind" => "interval", "size" => 2),
-                          "z" => O("kind" => "interval", "size" => 3)),
-        "models" => O("ContractObs" => O(
-            "variables" => O(
-                "u" => O("type" => "unknown", "shape" => Any["x", "z"], "default" => 0.5),
-                "s" => O("type" => "unknown", "shape" => Any["x"]), vars...),
-            "equations" => Any[
-                O("lhs" => "s", "rhs" => s), eqs...,
-                O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                  "rhs" => O("op" => "faq", "args" => Any[], "output_idx" => Any[oidx...],
-                             "ranges" => O(oidx[1] => Any[1, 2], oidx[2] => Any[1, 3]),
-                             "expr" => rhs_body(oidx)))])))
+        "index_sets" => O(
+            "x" => O("kind" => "interval", "size" => 2),
+            "z" => O("kind" => "interval", "size" => 3)
+        ),
+        "models" => O(
+            "ContractObs" => O(
+                "variables" => O(
+                    "u" => O("type" => "unknown", "shape" => Any["x", "z"], "default" => 0.5),
+                    "s" => O("type" => "unknown", "shape" => Any["x"]), vars...
+                ),
+                "equations" => Any[
+                    O("lhs" => "s", "rhs" => s), eqs...,
+                    O(
+                        "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                        "rhs" => O(
+                            "op" => "faq", "args" => Any[], "output_idx" => Any[oidx...],
+                            "ranges" => O(oidx[1] => Any[1, 2], oidx[2] => Any[1, 3]),
+                            "expr" => rhs_body(oidx)
+                        )
+                    ),
+                ]
+            )
+        )
+    )
     neg(x) = O("op" => "-", "args" => Any[x])
     si(o) = idx("s", o[1])
     bodies = [
-        "-s[i]"         => o -> neg(si(o)),
-        "-s[i]^2"       => o -> neg(sq(si(o))),                 # chain rule through Σ
-        "-s[i]*u[i,k]"  => o -> neg(O("op" => "*", "args" => Any[si(o), idx("u", o...)])),
+        "-s[i]" => o -> neg(si(o)),
+        "-s[i]^2" => o -> neg(sq(si(o))),                 # chain rule through Σ
+        "-s[i]*u[i,k]" => o -> neg(O("op" => "*", "args" => Any[si(o), idx("u", o...)])),
     ]
 
     mul(a...) = O("op" => "*", "args" => Any[a...])
-    ksum(body) = O("op" => "faq", "args" => Any[], "output_idx" => Any[],
-                   "ranges" => O("k" => Any[1, 3]), "expr" => body)
+    ksum(body) = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any[],
+        "ranges" => O("k" => Any[1, 3]), "expr" => body
+    )
     cvar = O("c" => O("type" => "unknown"))
     ceq(rhs) = Any[O("lhs" => "c", "rhs" => rhs)]
     # (label, rhs body, extra variables, extra equations)
     more = [
         # a scalar sum observed (a bare read, no subscripts)
-        ("-c*u[i,k], c = Σ_k u[1,k]", o -> neg(mul("c", idx("u", o...))), cvar,
-         ceq(ksum(idx("u", 1, "k")))),
+        (
+            "-c*u[i,k], c = Σ_k u[1,k]", o -> neg(mul("c", idx("u", o...))), cvar,
+            ceq(ksum(idx("u", 1, "k"))),
+        ),
         # an observed whose sum is NOT its root: spliced as is, then renamed
         # apart from the reading faq's k
-        ("-c*u[i,k], c = 2·Σ_k u[2,k]²", o -> neg(mul("c", idx("u", o...))), cvar,
-         ceq(mul(2, ksum(sq(idx("u", 2, "k")))))),
+        (
+            "-c*u[i,k], c = 2·Σ_k u[2,k]²", o -> neg(mul("c", idx("u", o...))), cvar,
+            ceq(mul(2, ksum(sq(idx("u", 2, "k"))))),
+        ),
         # a hand-written sum shadowing the reading faq's k, with the same
         # site u[i,k] both outside and inside it
-        ("-u[i,k]·Σ_k u[i,k]²", o -> neg(mul(idx("u", o...), ksum(sq(idx("u", "i", "k"))))),
-         O(), Any[]),
+        (
+            "-u[i,k]·Σ_k u[i,k]²", o -> neg(mul(idx("u", o...), ksum(sq(idx("u", "i", "k"))))),
+            O(), Any[],
+        ),
     ]
 
     mktempdir() do d
-        load(dd) = (path = joinpath(d, "contract_obs.esm");
-                    open(io -> JSON3.write(io, dd), path, "w");
-                    EarthSciAST.load_path(path))
+        load(dd) = (
+            path = joinpath(d, "contract_obs.esm");
+            open(io -> JSON3.write(io, dd), path, "w");
+            EarthSciAST.load_path(path)
+        )
         u = collect(0.1:0.1:0.6)
         for (label, body, vars, eqs) in more
             @testset "$label" begin
                 file = load(doc(body; vars = vars, eqs = eqs))
                 f!, _, p, _, _ = build_evaluator(file)
                 Jad = ad_jacobian(f!, u, p, 0.0)
-                res = assemble_jacobian(file; u = u, p = p,
-                                        build_kwargs = (compiler = :interpreter,))
-                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-13
+                res = assemble_jacobian(
+                    file; u = u, p = p,
+                    build_kwargs = (compiler = :interpreter,)
+                )
+                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-13
                 @test res.pattern == (Jad .!= 0)
             end
         end
@@ -84,9 +111,13 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         obs = EarthSciASTDiff._observed_defs(sv)
         eq = only(e for e in sv.equations if EarthSciASTDiff.lhs_state(e) !== nothing)
         sums = OpExpr[]
-        walk(x) = (x isa OpExpr && (x.op == "faq" && isempty(something(x.output_idx, Any[])) &&
-                                    push!(sums, x);
-                                    EarthSciAST.map_children(y -> (walk(y); y), x)); x)
+        walk(x) = (
+            x isa OpExpr && (
+                x.op == "faq" && isempty(something(x.output_idx, Any[])) &&
+                    push!(sums, x);
+                EarthSciAST.map_children(y -> (walk(y); y), x)
+            ); x
+        )
         walk(EarthSciASTDiff.inline_observed(eq.rhs, obs))
         @test length(sums) == 2
         ix = EarthSciASTDiff.StructIndex()
@@ -99,13 +130,17 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         obsk = copy(obs)
         obsk["k"] = NumExpr(7.0)
         @test EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obsk)) ==
-              EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obs))
+            EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obs))
 
         # A scalar sum observed built with `output_idx` absent (the schema
         # requires it on the wire; the typed AST allows `nothing`) inlines
         # like one with an empty list.
-        file = load(doc(o -> neg(mul("c", idx("u", o...))); vars = cvar,
-                        eqs = ceq(ksum(idx("u", 1, "k")))))
+        file = load(
+            doc(
+                o -> neg(mul("c", idx("u", o...))); vars = cvar,
+                eqs = ceq(ksum(idx("u", 1, "k")))
+            )
+        )
         sv = EarthSciASTDiff.sysview(file, "ContractObs")
         obs = EarthSciASTDiff._observed_defs(sv)
         eq = only(e for e in sv.equations if EarthSciASTDiff.lhs_state(e) !== nothing)
@@ -125,29 +160,38 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
                 # The derived model reads the sum per cell, which the native
                 # compiler declines (`compiler_refused_rule`); the interpreter
                 # evaluates every cell.
-                res = assemble_jacobian(file; u = u, p = p,
-                                        build_kwargs = (compiler = :interpreter,))
-                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-13
+                res = assemble_jacobian(
+                    file; u = u, p = p,
+                    build_kwargs = (compiler = :interpreter,)
+                )
+                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-13
                 @test res.pattern == (Jad .!= 0)
             end
         end
 
-        # A filter on the contracting observed is refused, as it is inline
-        # (bands.jl `_bands_faq!`) — never silently dropped.
+        # A filter on the contracting observed keeps its window, and a
+        # `max_product` node (`semiring` supersedes `reduce`) differentiates
+        # as a max, not a sum (spec §3.5): both against the oracle.
         filt = O("op" => "<", "args" => Any["k", 3])
-        file = load(doc(o -> neg(si(o)); s = sdef(filter = filt)))
-        @test_throws Union{BandError,DerivativeRuleError} jacobian_bands(file, "ContractObs")
-
-        # So is a max: `semiring` supersedes `reduce`, and a `max_product`
-        # node with no `reduce` is not a sum.
         mx = sdef(); delete!(mx, "reduce"); mx["semiring"] = "max_product"
-        file = load(doc(o -> neg(si(o)); s = mx))
-        @test_throws Union{BandError,DerivativeRuleError} jacobian_bands(file, "ContractObs")
+        for (label, s) in (("filtered", sdef(filter = filt)), ("max_product", mx))
+            @testset "$label contracting observed" begin
+                file = load(doc(o -> neg(sq(si(o))); s = s))
+                f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+                Jad = ad_jacobian(f!, u, p, 0.0)
+                res = assemble_jacobian(
+                    file; u = u, p = p,
+                    build_kwargs = (compiler = :interpreter,)
+                )
+                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-13
+                @test all(res.pattern .| (Jad .== 0))
+            end
+        end
     end
 
     # A range over an index set the context does not declare is a BandError,
     # not a raw KeyError from inside the band calculus.
-    ctx = EarthSciASTDiff.Ctx(Dict("x" => 2), Dict{String,Vector{Int}}(), Set{String}())
+    ctx = EarthSciASTDiff.Ctx(Dict("x" => 2), Dict{String, Vector{Int}}(), Set{String}())
     @test_throws BandError EarthSciASTDiff._range_of(Dict("from" => "nope"), ctx)
 end
 
@@ -158,8 +202,10 @@ end
     f!, u0, p, _, _ = build_evaluator(file)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:length(u0)]
     Jad = ad_jacobian(f!, u, p, 0.7)
-    res = assemble_jacobian(file; u = u, t = 0.7,
-                            build_kwargs = (compiler = :interpreter,))
-    @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-13
+    res = assemble_jacobian(
+        file; u = u, t = 0.7,
+        build_kwargs = (compiler = :interpreter,)
+    )
+    @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-13
     @test res.pattern == (Jad .!= 0)
 end

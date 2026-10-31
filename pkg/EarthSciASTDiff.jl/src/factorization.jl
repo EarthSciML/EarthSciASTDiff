@@ -27,13 +27,51 @@ Symbolic factorization info for the detected structure class, or `nothing`
 when no plan is implemented for that class (the Jacobian itself is still
 fully usable — a plan is an optimization, never a requirement).
 
-Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref).
+Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref), and
+`:column_block` (which needs the `column_axis` it was detected with) →
+[`ColumnBlockPlan`](@ref).
+
+Throws an `ArgumentError` when `structure` is not one of
+`STRUCTURE_CLASSES` (a misspelled class never silently gives no
+plan), or when a column of `entries` is a parameter: a `:parameters` or
+`:forcing` band list is a rectangular matrix, which no plan factorizes.
 """
-function plan_factorization(entries::Vector{JacEntry}, sv::SysView;
-                            structure::Symbol = detect_structure(entries, sv))
+function plan_factorization(
+        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing,
+        structure::Symbol = detect_structure(entries, sv; column_axis = column_axis)
+    )
+    structure in STRUCTURE_CLASSES || throw(
+        ArgumentError(
+            "unknown structure class :$structure (expected one of $STRUCTURE_CLASSES)"
+        )
+    )
+    for en in entries
+        var = get(sv.variables, en.v, nothing)
+        (var !== nothing && var.type == EarthSciAST.ParameterVariable) && throw(
+            ArgumentError(
+                "no factorization plan for a rectangular band list: column `$(en.v)` " *
+                    "is a parameter (plan a states or time band list)"
+            )
+        )
+    end
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
+    if structure == :column_block
+        column_axis === nothing &&
+            throw(ArgumentError("a :column_block plan needs its `column_axis`"))
+        cl = column_lines(entries, sv, String(column_axis))
+        cl === nothing && throw(
+            ArgumentError("the Jacobian is not :column_block along `$column_axis`")
+        )
+        return _column_block_plan(cl)
+    end
     return nothing
 end
+
+_column_block_plan(cl) =
+    ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
+
+"The structure classes [`detect_structure`](@ref) reports (spec §4)."
+const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end
@@ -88,9 +126,9 @@ function lu_fill(pattern::AbstractMatrix{Bool})::BitMatrix
     P = BitMatrix(pattern)
     n = size(P, 1)
     @assert size(P, 2) == n
-    for k in 1:n, i in (k+1):n
+    for k in 1:n, i in (k + 1):n
         if P[i, k]
-            for j in (k+1):n
+            for j in (k + 1):n
                 P[i, j] |= P[k, j]
             end
         end
@@ -133,14 +171,47 @@ function markowitz_ordering(pattern::AbstractMatrix{Bool})::Vector{Int}
     return order
 end
 
+# ── column blocks: one line along an axis at a time ─────────────────────────
+
+"""
+    ColumnBlockPlan <: FactorizationPlan
+
+Line-by-line factorization info for a `:column_block` Jacobian: every
+coupling stays within one line along `axis`, so the matrix is one
+`(length(block_vars)·line_length)`-square block per line. `pattern` names the
+coupling along the line (`"dense"`, `"lower"`, `"upper"`, `"banded"`) and
+`kl` / `ku` bound it below and above the diagonal, so a solver can pick a
+column solver (banded LU, a triangular sweep, dense LU) without looking at
+the entries.
+"""
+struct ColumnBlockPlan <: FactorizationPlan
+    axis::String
+    line_length::Int
+    block_vars::Vector{String}
+    pattern::String
+    kl::Int
+    ku::Int
+end
+
+serialize_plan(p::ColumnBlockPlan) = OrderedDict{String, Any}(
+    "type" => "column_block",
+    "axis" => p.axis,
+    "line_length" => p.line_length,
+    "block_vars" => p.block_vars,
+    "pattern" => p.pattern,
+    "bandwidth" => Any[p.kl, p.ku],
+)
+
 function serialize_plan(p::BlockDiagonalPlan)
-    nzpairs(M) = Any[Any[ij[1], ij[2]] for ij in
-                     sort!([(i, j) for i in 1:size(M,1), j in 1:size(M,2) if M[i, j]])]
-    OrderedDict{String,Any}(
-        "type"       => "block_diagonal_lu",
+    nzpairs(M) = Any[
+        Any[ij[1], ij[2]] for ij in
+            sort!([(i, j) for i in 1:size(M, 1), j in 1:size(M, 2) if M[i, j]])
+    ]
+    return OrderedDict{String, Any}(
+        "type" => "block_diagonal_lu",
         "block_vars" => p.block_vars,
-        "ordering"   => p.ordering,
-        "pattern"    => nzpairs(p.pattern),
+        "ordering" => p.ordering,
+        "pattern" => nzpairs(p.pattern),
         "lu_pattern" => nzpairs(p.lu),
     )
 end

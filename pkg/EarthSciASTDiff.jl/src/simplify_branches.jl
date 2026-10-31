@@ -54,9 +54,9 @@ simplify_branches(e::ASTExpr)::ASTExpr = _sbr(e, _SbrCtx())
 struct _SbrCtx
     ix::StructIndex
     hx::StructHash
-    seen::Dict{UInt,Int}   # condition hash → surviving `ifelse` nodes already built
+    seen::Dict{UInt, Int}   # condition hash → surviving `ifelse` nodes already built
 end
-_SbrCtx() = _SbrCtx(StructIndex(), StructHash(), Dict{UInt,Int}())
+_SbrCtx() = _SbrCtx(StructIndex(), StructHash(), Dict{UInt, Int}())
 
 _skc(e::ASTExpr, cx::_SbrCtx) = sid(cx.ix, e)
 _note!(cx::_SbrCtx, h::UInt) = (cx.seen[h] = get(cx.seen, h, 0) + 1)
@@ -108,7 +108,7 @@ end
 function _assume(e::ASTExpr, hck::UInt, ck::Int, val::Bool, cx::_SbrCtx)::ASTExpr
     e isa OpExpr || return e
     if e.op == "ifelse" && length(e.args) == 3 &&
-       shash(cx.hx, e.args[1]) == hck && _skc(e.args[1], cx) == ck
+            shash(cx.hx, e.args[1]) == hck && _skc(e.args[1], cx) == ck
         return _assume(e.args[val ? 2 : 3], hck, ck, val, cx)
     end
     return map_children(x -> _assume(x, hck, ck, val, cx), e)
@@ -122,9 +122,11 @@ end
 # round-trips (and cross-binding goldens) change the structural key.
 _canon_lit(e::ASTExpr) = e
 _canon_lit(e::NumExpr) =
-    (isfinite(e.value) && isinteger(e.value) &&
-     typemin(Int64) <= e.value <= typemax(Int64) &&
-     Float64(Int64(e.value)) == e.value) ? IntExpr(Int64(e.value)) : e
+    (
+        isfinite(e.value) && isinteger(e.value) &&
+        typemin(Int64) <= e.value <= typemax(Int64) &&
+        Float64(Int64(e.value)) == e.value
+    ) ? IntExpr(Int64(e.value)) : e
 function _canon_lits(e::ASTExpr)::ASTExpr
     e isa OpExpr && return map_children(_canon_lits, e)
     return _canon_lit(e)

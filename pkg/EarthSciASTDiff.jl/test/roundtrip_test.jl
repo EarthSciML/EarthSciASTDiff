@@ -19,7 +19,7 @@
         @test a.band.rows == b.band.rows
         @test a.band.ridx == b.band.ridx
         @test stable_json(EarthSciAST.serialize_expression(a.band.coef)) ==
-              stable_json(EarthSciAST.serialize_expression(b.band.coef))
+            stable_json(EarthSciAST.serialize_expression(b.band.coef))
     end
 end
 
@@ -34,8 +34,11 @@ end
     # Golden = stable_json of the serialized entries. Regenerate with
     # scripts/regenerate-goldens.jl after an INTENDED rule/format change.
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
-    for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-                 "contracting_observed", "tgrad_photolysis")
+    for name in (
+            "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
+            "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+            "filtered_scan", "semiring_reduce",
+        )
         file = fixture("$name.esm")
         entries = jacobian_bands(file, first(keys(file.models)))
         text = stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries])

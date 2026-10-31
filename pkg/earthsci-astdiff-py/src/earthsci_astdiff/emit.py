@@ -2,19 +2,25 @@
 
 ``stable_json(serialize_band(e) for e in entries)`` is the cross-language
 conformance surface: byte-identical to the Julia reference's goldens."""
+
 from __future__ import annotations
 
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
 
 from .bands import Band
-from .expr_helpers import ser_expr, stable_json
-from .jacobian import JacEntry, jacobian_bands
-from .system import ctx_of, sysview
+from .expr_helpers import ser_expr
+from .jacobian import JacEntry, jacobian_bands, jacobian_columns
+from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
+from .structure import column_lines
+from .system import sysview
 
 
-def serialize_band(en: JacEntry) -> dict:
-    """One entry of the ``jacobians`` block, as a JSON-ready dict (spec §4)."""
+def serialize_band(en: JacEntry | JacEntry2) -> dict:
+    """One entry of the ``jacobians`` block, as a JSON-ready dict (spec §4;
+    a :class:`JacEntry2` adds ``col2`` / ``col2_idx``, §4.4)."""
+    if isinstance(en, JacEntry2):
+        return serialize_band2(en)
     b = en.band
     d = {
         "row": en.u,
@@ -26,6 +32,8 @@ def serialize_band(en: JacEntry) -> dict:
     }
     if b.contracted:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
+    if b.guard is not None:
+        d["where"] = ser_expr(b.guard)
     return d
 
 
@@ -36,6 +44,7 @@ def parse_band(d: dict) -> JacEntry:
         [parse_expression(c) for c in d["col_idx"]],
         parse_expression(d["coef"]),
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
+        parse_expression(d["where"]) if "where" in d else None,
     )
     return JacEntry(str(d["row"]), str(d["col"]), band)
 
@@ -50,17 +59,37 @@ def _fold_const_gathers(e, bind: dict[str, float]):
 
     if not isinstance(e, ExprNode):
         return e
-    if (e.op == "index" and isinstance(e.args[0], ExprNode)
-            and e.args[0].op == "const"):
+    if e.op == "index" and isinstance(e.args[0], ExprNode) and e.args[0].op == "const":
         v = e.args[0].value
         for x in e.args[1:]:
-            v = v[_eval_cidx(x, bind) - 1]      # wire tables are 1-based
+            v = v[_eval_cidx(x, bind) - 1]  # wire tables are 1-based
         return v
     return map_children(e, lambda x: _fold_const_gathers(x, bind))
 
 
 def _eval_cidx(c, bind: dict[str, float]) -> int:
     return int(round(evaluate(_fold_const_gathers(c, bind), bind)))
+
+
+def _eval_guard(g, bind: dict[str, float]) -> bool:
+    return float(evaluate(_fold_const_gathers(g, bind), bind)) != 0
+
+
+def foreach_point(b: Band):
+    """Every point of one band (assemble.jl ``_foreach_point``): yields
+    ``(cell, cc, bind, cidx)`` per (row cell, contracted cell), first index
+    fastest, with ``bind`` the integer binding of the row and contracted
+    names and ``cidx`` the column index evaluated there. A point the band's
+    guard (``where``) excludes is not a point of the band."""
+    for cell in _product(b.rows):
+        for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
+            bind = {r: cell[k] for k, r in enumerate(b.ridx) if isinstance(r, str)}
+            for k, (n, _, _) in enumerate(b.contracted):
+                bind[n] = cc[k]
+            fbind = {k: float(v) for k, v in bind.items()}
+            if b.guard is not None and not _eval_guard(b.guard, fbind):
+                continue
+            yield cell, cc, bind, [_eval_cidx(c, fbind) for c in b.cidx]
 
 
 def _product(ranges):
@@ -79,88 +108,275 @@ def scatter_pairs(sv, entries: list[JacEntry]):
     Julia `_scatter_pairs` (without the derived-model slot names)."""
     pairs = []
     for k, en in enumerate(entries):
-        b = en.band
-        for cell in _product(b.rows):
-            for cc in _product([(lo, hi) for _, lo, hi in b.contracted]):
-                bind = {r: float(cell[k2]) for k2, r in enumerate(b.ridx)
-                        if isinstance(r, str)}
-                for k2, (n, _, _) in enumerate(b.contracted):
-                    bind[n] = float(cc[k2])
-                cidx = [_eval_cidx(c, bind) for c in b.cidx]
-                pairs.append((k, _cellname(en.u, cell),
-                              _cellname(en.v, cidx)))
+        for cell, _, _, cidx in foreach_point(en.band):
+            pairs.append((k, _cellname(en.u, cell), _cellname(en.v, cidx)))
     return pairs
 
 
-def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states"):
+def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", forcing=None):
     """The structural sparsity pattern as sorted (rowname, colname) pairs
-    plus the entries — dependency-light (no scipy)."""
+    plus the entries — dependency-light (no scipy). On the ``"parameters"``
+    and ``"forcing"`` axes the columns are cells of the canonical column
+    space (:func:`jacobian_columns`): a forcing column must resolve to one,
+    and a parameter column outside its variable's extent is a ghost read."""
     from .system import SysView
 
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt)
-    pairs = sorted({(r, c) for _, r, c in scatter_pairs(sv, entries)})
+    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
+    if wrt != "states":
+        triples = scatter_pairs(sv, entries)
+    if wrt in ("parameters", "forcing"):
+        cols = set(column_names(jacobian_columns(sv, wrt=wrt, forcing=forcing)))
+        triples = [(k, r, c) for k, r, c in triples if check_column(c in cols, c, r, wrt)]
+    elif wrt == "states":
+        from .system import ctx_of, view_states
+
+        states = set(view_states(sv))
+        shapes = ctx_of(sv).shapes
+        triples = [
+            (k, _cellname(en.u, cell), _cellname(en.v, cidx))
+            for k, en in enumerate(entries)
+            for cell, _, _, cidx in foreach_point(en.band)
+            if check_state_column(
+                states, shapes, en.v, cidx, _cellname(en.v, cidx), _cellname(en.u, cell)
+            )
+        ]
+    pairs = sorted({(r, c) for _, r, c in triples})
     return pairs, entries
 
 
-def jacobian_block(obj, model_name: str | None = None, wrt: str = "states",
-                   cse: bool = True, cse_min_nodes: int = 12) -> dict:
+def column_names(cols) -> list[str]:
+    """The canonical column names of a :func:`jacobian_columns` space, in
+    ordinal order: variables in order, each one's cells column-major."""
+    names: list[str] = []
+    for v, shape in cols:
+        if not shape:
+            names.append(v)
+        else:
+            names.extend(_cellname(v, c) for c in _product([(1, n) for n in shape]))
+    return names
+
+
+def check_column(ok: bool, colname: str, rowname: str, wrt: str) -> bool:
+    """Whether a column resolves (``ok``), raising where it must. On the
+    forcing axis a column is a cell of a live buffer, and the ghost-read skip
+    that is legitimate for a stencil reading past the domain is not: an
+    unresolvable column there would silently drop a gradient, so it is an
+    error (spec §4). The parameters axis follows the state axis: an array
+    parameter read past its extent is a ghost read, and ``False`` says to
+    skip it."""
+    from .bands import BandError
+
+    if not ok and wrt == "forcing":
+        raise BandError(
+            f"column `{colname}` (row `{rowname}`) is outside the declared extent of its "
+            f"variable; on the {wrt} axis every column must resolve (no ghost skip)"
+        )
+    return ok
+
+
+def check_state_column(
+    states: set, shapes: dict, v: str, cidx: list, colname: str, rowname: str
+) -> bool:
+    """Whether a state column resolves (assemble.jl ``_colmap`` /
+    ``_colslot``): a cell past a state's extent is a ghost read (``False``,
+    skip it), and a column variable that is not a state of the layout at all
+    — an observed the band calculus took for a state, say — resolves nowhere
+    and is refused rather than silently dropped."""
+    from .bands import BandError
+
+    if v not in states:
+        raise BandError(
+            f"column `{colname}` (row `{rowname}`) names no state of the layout; a band "
+            "column must resolve to a state slot or read past a state's extent"
+        )
+    shape = shapes.get(v) or []
+    return len(cidx) == len(shape) and all(1 <= c <= n for c, n in zip(cidx, shape))
+
+
+def jacobian_block(
+    obj,
+    model_name: str | None = None,
+    wrt="states",
+    cse: bool = True,
+    cse_min_nodes: int = 12,
+    forcing=None,
+    column_axis: str | None = None,
+):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
-    default), the structure classification, and the block-local
-    `expression_templates`, plus the `factorization` plan where one exists
-    for the detected structure (per-cell block LU with Markowitz ordering)."""
-    from .bands import Band
-    from .cse import cse_templates
-    from .structure import detect_structure
+    default) and the block-local `expression_templates`; on the state and
+    time axes the structure classification plus the `factorization` plan
+    where one exists for the detected structure (per-cell block LU with
+    Markowitz ordering), on the parameters and forcing axes the column space
+    (`columns`, :func:`jacobian_columns`) instead.
+
+    ``wrt`` may also be a list of distinct axes: the result is then the list
+    of blocks, one per axis in the given order (a model's `jacobians` entry
+    in its array form, spec §4). Inside such a list a ``tuple`` ``(a1, a2)``
+    (or a two-name list) is an axis PAIR, a block of second-order entries
+    (:func:`jacobian_bands2`, §4.4): ``["states", ("states", "states")]``,
+    and ``[("states", "states")]`` for a pair block alone. A bare ``tuple``
+    ``wrt`` is refused: it reads both as a pair and as a list of axes, so
+    neither is assumed.
+
+    ``column_axis`` (an index-set name) lets the state block report the
+    ``"column_block"`` structure class with its line-by-line factorization
+    plan when every coupling stays within one line along that axis
+    (:func:`~earthsci_astdiff.structure.column_lines`)."""
+    from .jacobian import _FirstOrder
     from .system import SysView, sysview
 
+    if isinstance(wrt, tuple):
+        raise ValueError(
+            f"a tuple wrt {wrt!r} is ambiguous: write a list of axes as a list "
+            '(["states", "forcing"]) and a second-order pair inside one '
+            '([("states", "forcing")])'
+        )
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt)
-    structure = detect_structure(entries, sv)
+    memo = _FirstOrder()
+    # One axis is a str (iterating it would split it into characters).
+    if isinstance(wrt, str):
+        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo, column_axis)
+    axes = [_axis_key(w) for w in wrt]
+    if not axes or len(set(axes)) != len(axes):
+        raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
+    return [_block_of(sv, w, forcing, cse, cse_min_nodes, memo, column_axis) for w in axes]
+
+
+def _axis_key(w):
+    return axis_pair(w) if isinstance(w, (tuple, list)) else str(w)
+
+
+def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None) -> dict:
+    if isinstance(w, tuple):
+        # a pair block has no structure class to refine
+        return jacobian_block2(sv, w, forcing, cse, cse_min_nodes, memo)
+    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo, column_axis)
+
+
+def _jacobian_block(
+    sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None
+) -> dict:
+    from .jacobian import _AXES
+
+    if wrt not in _AXES:
+        raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
+    entries = memo.bands(sv, wrt, None, forcing)
+    # A parameter or forcing block describes a rectangular matrix, which the
+    # structure classes and the factorization plan do not: it carries its
+    # column space instead.
+    rect = wrt in ("parameters", "forcing")
+    structure = None if rect else memo.structure(entries, sv)
+    # Line-by-line structure is a property of the square state matrix.
+    # The one point walk both the class and its plan read.
+    cax = column_axis if wrt == "states" else None
+    cl = (
+        None
+        if cax is None or structure in ("empty", "block_diagonal")
+        else column_lines(entries, sv, str(cax))
+    )
+    if cl is not None:
+        structure = "column_block"
+    block = _block(
+        wrt,
+        entries,
+        serialize_band,
+        _columns_field(sv, wrt, forcing) if rect else None,
+        structure,
+        cse,
+        cse_min_nodes,
+    )
+    if not rect:
+        from .factorization import _column_block_plan, plan_factorization, serialize_plan
+
+        plan = (
+            plan_factorization(entries, sv, structure=structure)
+            if cl is None
+            else _column_block_plan(cl)
+        )
+        if plan is not None:
+            block["factorization"] = serialize_plan(plan)
+    return block
+
+
+def _block(wrt, entries, serialize, columns, structure, cse: bool, cse_min_nodes: int) -> dict:
+    # The fields every block shares, in their emitted order: `wrt`, the
+    # entries (coefficients template-CSE'd when `cse`), the `columns` of a
+    # parameter or forcing axis and the `structure` class (each when given),
+    # and the block-local `expression_templates`.
+    from dataclasses import replace
+
+    from .cse import cse_templates
+
     ser_entries = entries
     templates: dict = {}
     if cse:
         templates, rewritten = cse_templates(
-            [en.band.coef for en in entries], min_nodes=cse_min_nodes)
+            [en.band.coef for en in entries], min_nodes=cse_min_nodes
+        )
         if templates:
-            ser_entries = [JacEntry(en.u, en.v,
-                                    Band(en.band.rows, en.band.ridx,
-                                         en.band.cidx, rewritten[k],
-                                         en.band.contracted))
-                           for k, en in enumerate(entries)]
-    block: dict = {
-        "wrt": wrt,
-        "entries": [serialize_band(en) for en in ser_entries],
-        "structure": structure,
-    }
+            ser_entries = [
+                replace(en, band=replace(en.band, coef=rewritten[k]))
+                for k, en in enumerate(entries)
+            ]
+    block: dict = {"wrt": wrt, "entries": [serialize(en) for en in ser_entries]}
+    if columns is not None:
+        block["columns"] = columns
+    if structure is not None:
+        block["structure"] = structure
     if templates:
         block["expression_templates"] = {
-            n: {"params": [], "body": ser_expr(b)}
-            for n, b in templates.items()}
-    from .factorization import plan_factorization, serialize_plan
-
-    plan = plan_factorization(entries, sv, structure=structure)
-    if plan is not None:
-        block["factorization"] = serialize_plan(plan)
+            n: {"params": [], "body": ser_expr(b)} for n, b in templates.items()
+        }
     return block
+
+
+def _columns_field(sv, wrt: str, forcing) -> list:
+    return [
+        {"name": n, "shape": list(shape)}
+        for n, shape in jacobian_columns(sv, wrt=wrt, forcing=forcing)
+    ]
 
 
 def parse_jacobian_block(block: dict):
     """Inverse of the block emission: expands `apply_expression_template`
-    references back, so the returned entries are always closed."""
-    from .bands import Band
+    references back, so the returned entries are always closed. A block
+    whose ``wrt`` is a pair holds second-order entries (§4.4): it returns
+    ``((a1, a2), [JacEntry2, ...])``."""
+    from dataclasses import replace
+
     from .cse import expand_templates
 
-    wrt = block["wrt"]
-    entries = [parse_band(d) for d in block["entries"]]
+    pair = isinstance(block["wrt"], list)
+    wrt = axis_pair(block["wrt"]) if pair else block["wrt"]
+    parse = parse_band2 if pair else parse_band
+    entries = [parse(d) for d in block["entries"]]
     if "expression_templates" in block:
-        reg = {str(n): parse_expression(t["body"])
-               for n, t in block["expression_templates"].items()}
-        entries = [JacEntry(en.u, en.v,
-                            Band(en.band.rows, en.band.ridx,
-                                 [expand_templates(c, reg)
-                                  for c in en.band.cidx],
-                                 expand_templates(en.band.coef, reg),
-                                 en.band.contracted))
-                   for en in entries]
+        reg = {
+            str(n): parse_expression(t["body"]) for n, t in block["expression_templates"].items()
+        }
+        entries = [
+            replace(
+                en,
+                band=replace(
+                    en.band,
+                    cidx=[expand_templates(c, reg) for c in en.band.cidx],
+                    coef=expand_templates(en.band.coef, reg),
+                ),
+            )
+            for en in entries
+        ]
     return wrt, entries
+
+
+def parse_jacobian_blocks(x) -> list:
+    """:func:`parse_jacobian_block` over a model's `jacobians` entry, which
+    is either one block or a list of blocks with distinct `wrt` (spec §4);
+    returns one ``(wrt, entries)`` per block, in order (``wrt`` a str, or a
+    tuple for a second-order pair)."""
+    blocks = [x] if isinstance(x, dict) else list(x)
+    out = [parse_jacobian_block(b) for b in blocks]
+    ws = [w for w, _ in out]
+    if len(set(ws)) != len(ws):
+        raise ValueError("a model's jacobian blocks must have distinct `wrt`")
+    return out

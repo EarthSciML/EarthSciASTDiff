@@ -72,8 +72,7 @@ fn affine(e: &Expr, name: &str) -> Option<(i64, i64)> {
 }
 
 fn sole_name<'a>(e: &Expr, names: &'a [String]) -> Option<&'a str> {
-    fn walk<'a>(x: &Expr, names: &'a [String], found: &mut Option<&'a str>,
-                ok: &mut bool) {
+    fn walk<'a>(x: &Expr, names: &'a [String], found: &mut Option<&'a str>, ok: &mut bool) {
         if let Expr::Variable(v) = x {
             if let Some(nm) = names.iter().find(|n| *n == v) {
                 match found {
@@ -125,8 +124,7 @@ fn cmp_truth(o: &str, al: i64, be: i64, i: i64) -> bool {
     }
 }
 
-fn breakpoints(bp: &mut BTreeMap<String, BTreeSet<i64>>, e: &Expr,
-               names: &[String]) {
+fn breakpoints(bp: &mut BTreeMap<String, BTreeSet<i64>>, e: &Expr, names: &[String]) {
     let Expr::Operator(n) = e else { return };
     if CMP_OPS.contains(&n.op.as_str()) && n.args.len() == 2 {
         if let Some(nm) = sole_name(e, names) {
@@ -135,9 +133,7 @@ fn breakpoints(bp: &mut BTreeMap<String, BTreeSet<i64>>, e: &Expr,
                 if al != 0 {
                     let q = fld(-be, al);
                     for c in [q, q + 1] {
-                        if cmp_truth(&n.op, al, be, c - 1)
-                            != cmp_truth(&n.op, al, be, c)
-                        {
+                        if cmp_truth(&n.op, al, be, c - 1) != cmp_truth(&n.op, al, be, c) {
                             bp.entry(nm.to_string()).or_default().insert(c);
                         }
                     }
@@ -157,8 +153,7 @@ fn uniform(cond: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Option<bool> {
         let keys: Vec<String> = env.keys().cloned().collect();
         let nm = sole_name(cond, &keys)?;
         let (lo, hi) = *env.get(nm)?;
-        let (al, be) = affine(&op("-", vec![n.args[0].clone(),
-                                            n.args[1].clone()]), nm)?;
+        let (al, be) = affine(&op("-", vec![n.args[0].clone(), n.args[1].clone()]), nm)?;
         let (vlo, vhi) = (al * lo + be, al * hi + be);
         let (a, b) = (vlo.min(vhi), vlo.max(vhi));
         let f = |x: i64| match n.op.as_str() {
@@ -179,7 +174,11 @@ fn uniform(cond: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Option<bool> {
                     Some(true) => {}
                 }
             }
-            if anynone { None } else { Some(true) }
+            if anynone {
+                None
+            } else {
+                Some(true)
+            }
         }
         "or" => {
             let mut anynone = false;
@@ -190,15 +189,21 @@ fn uniform(cond: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Option<bool> {
                     Some(false) => {}
                 }
             }
-            if anynone { None } else { Some(false) }
+            if anynone {
+                None
+            } else {
+                Some(false)
+            }
         }
         "not" if n.args.len() == 1 => uniform(&n.args[0], env).map(|u| !u),
         _ => None,
     }
 }
 
-fn decide(e: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Expr {
-    let Expr::Operator(n) = e else { return e.clone() };
+pub(crate) fn decide(e: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Expr {
+    let Expr::Operator(n) = e else {
+        return e.clone();
+    };
     if n.op == "ifelse" && n.args.len() == 3 {
         match uniform(&n.args[0], env) {
             Some(true) => return decide(&n.args[1], env),
@@ -222,12 +227,18 @@ pub enum RIdx {
 
 /// Partition `rows` at every decidable comparison's breakpoints; collapse
 /// decided guards per cell. First dimension cycles fastest (golden order).
-pub fn clip_regions(body: &Expr, ridx: &[RIdx], rows: &[(i64, i64)])
-                    -> Vec<(Vec<(i64, i64)>, Expr)> {
-    let names: Vec<String> = ridx.iter().filter_map(|r| match r {
-        RIdx::Name(n) => Some(n.clone()),
-        _ => None,
-    }).collect();
+pub fn clip_regions(
+    body: &Expr,
+    ridx: &[RIdx],
+    rows: &[(i64, i64)],
+) -> Vec<(Vec<(i64, i64)>, Expr)> {
+    let names: Vec<String> = ridx
+        .iter()
+        .filter_map(|r| match r {
+            RIdx::Name(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
     if names.is_empty() {
         return vec![(rows.to_vec(), body.clone())];
     }
@@ -242,8 +253,11 @@ pub fn clip_regions(body: &Expr, ridx: &[RIdx], rows: &[(i64, i64)])
         let (lo, hi) = rows[k];
         match r {
             RIdx::Name(nm) if bp.contains_key(nm) => {
-                let cuts: Vec<i64> = bp[nm].iter().cloned()
-                    .filter(|c| lo < *c && *c <= hi).collect();
+                let cuts: Vec<i64> = bp[nm]
+                    .iter()
+                    .cloned()
+                    .filter(|c| lo < *c && *c <= hi)
+                    .collect();
                 let mut ivs = Vec::new();
                 let mut a = lo;
                 for c in cuts {
@@ -268,8 +282,7 @@ pub fn clip_regions(body: &Expr, ridx: &[RIdx], rows: &[(i64, i64)])
     let mut out = Vec::new();
     let mut idx = vec![0usize; dims.len()];
     loop {
-        let rows2: Vec<(i64, i64)> =
-            idx.iter().enumerate().map(|(k, &i)| dims[k][i]).collect();
+        let rows2: Vec<(i64, i64)> = idx.iter().enumerate().map(|(k, &i)| dims[k][i]).collect();
         let mut env = BTreeMap::new();
         for (k, nm) in dimname.iter().enumerate() {
             if let Some(nm) = nm {

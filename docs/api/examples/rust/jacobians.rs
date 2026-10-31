@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use earthsci_ast::load_path;
 use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::{
-    assemble_jacobian, block_diagonal_lu, detect_structure, jacobian_block, jacobian_bands, sysview,
-    ctx_of, Wrt,
+    assemble_jacobian, ctx_of, detect_structure, jacobian_block, jacobian_bands,
+    plan_factorization, sysview, FactorizationPlan, Wrt,
 };
 use earthsci_astdiff_api_examples::fixture;
 use serde_json::json;
@@ -30,7 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // region: structure ops=detect_structure,plan_factorization
     let ctx = ctx_of(&view)?;
     assert_eq!(detect_structure(&entries, &ctx), "block_diagonal");
-    let plan = block_diagonal_lu(&entries);
+    let Some(FactorizationPlan::BlockDiagonal(plan)) =
+        plan_factorization(&entries, &view, &ctx, None)?
+    else {
+        unreachable!("a block-diagonal Jacobian has a block LU plan")
+    };
     let mut vars = plan.block_vars.clone();
     vars.sort();
     assert_eq!(vars, ["A", "B", "C"]);

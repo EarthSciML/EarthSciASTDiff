@@ -4,6 +4,7 @@ Deterministic and byte-compatible with the Julia reference: same interning
 (first-encounter) order, same largest-first tie-break, same `jt` naming —
 the cross-runtime block goldens pin it.
 """
+
 from __future__ import annotations
 
 from earthsci_ast.esm_types import Expr, ExprNode
@@ -53,6 +54,7 @@ def _replace_id(e: Expr, it: _Intern, target: int, repl: Expr):
     childids: list[int] = []
     newchildren: list[Expr] = []
     if isinstance(e, ExprNode):
+
         def visit(c: Expr) -> Expr:
             nc, cid = _replace_id(c, it, target, repl)
             childids.append(cid)
@@ -75,8 +77,7 @@ def _replace_id(e: Expr, it: _Intern, target: int, repl: Expr):
     return e, eid
 
 
-def cse_templates(exprs: list[Expr], min_nodes: int = 12,
-                  prefix: str = "jt"):
+def cse_templates(exprs: list[Expr], min_nodes: int = 12, prefix: str = "jt"):
     """Greedy largest-first extraction of repeated subtrees. Returns
     (templates: {name: body}, rewritten exprs)."""
     work = list(exprs)
@@ -104,7 +105,7 @@ def cse_templates(exprs: list[Expr], min_nodes: int = 12,
         repl = ExprNode(op="apply_expression_template", args=[], name=name)
         body = it.reps[best - 1]
         work = [_replace_id(e, it, best, repl)[0] for e in work]
-        work.append(body)          # later rounds may factor the body itself
+        work.append(body)  # later rounds may factor the body itself
     templates = {n: work[nin + k] for k, n in enumerate(names)}
     return templates, work[:nin]
 
@@ -116,6 +117,7 @@ def expand_templates(e: Expr, registry: dict[str, Expr]) -> Expr:
         if e.name is None or e.name not in registry:
             raise ValueError(
                 f"apply_expression_template reference `{e.name}` not in the "
-                "block's expression_templates")
+                "block's expression_templates"
+            )
         return expand_templates(registry[e.name], registry)
     return map_children(e, lambda x: expand_templates(x, registry))

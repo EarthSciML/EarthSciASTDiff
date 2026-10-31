@@ -7,8 +7,11 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
 
 @testset "evaluation document: goldens" begin
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
-    for name in ("bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-                 "contracting_observed", "tgrad_photolysis")
+    for name in (
+            "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
+            "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+            "filtered_scan", "semiring_reduce",
+        )
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
         doc, _ = _evaluation_document(sv, jacobian_bands(sv))
@@ -17,13 +20,16 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
         doc0, _ = _evaluation_document(sv, jacobian_bands(sv); cse = false)
         p0 = joinpath(golden_dir, "$name.evaldoc-nocse.json")
         @test stable_json(doc0) ==
-              read(isfile(p0) ? p0 : joinpath(golden_dir, "$name.evaldoc.json"), String)
+            read(isfile(p0) ? p0 : joinpath(golden_dir, "$name.evaldoc.json"), String)
     end
 end
 
 @testset "evaluation document: no source right-hand side survives" begin
-    for name in ("bd_chem", "adv_interior", "adv_react_2d", "contracted_ops",
-                 "flux_form_adv", "minmod_adv", "contracting_observed", "tgrad_photolysis")
+    for name in (
+            "bd_chem", "adv_interior", "adv_react_2d", "contracted_ops",
+            "flux_form_adv", "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+            "filtered_scan", "semiring_reduce",
+        )
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
         states = Set(String(u) for u in (lhs_state(eq) for eq in sv.equations) if u !== nothing)
@@ -31,17 +37,21 @@ end
         doc, _ = _evaluation_document(sv, jacobian_bands(sv))
         eqs = doc["models"]["JacobianEval"]["equations"]
         for u in states
-            mine = [eq for eq in eqs if eq["lhs"] isa AbstractDict &&
-                    eq["lhs"]["op"] == "D" && eq["lhs"]["args"] == Any[u]]
+            mine = [
+                eq for eq in eqs if eq["lhs"] isa AbstractDict &&
+                    eq["lhs"]["op"] == "D" && eq["lhs"]["args"] == Any[u]
+            ]
             @test length(mine) == 1                   # exactly one, and zero
             rhs = only(mine)["rhs"]
             @test rhs == 0.0 || (rhs["op"] == "makearray" && rhs["values"] == Any[0.0])
         end
         # no lifted (faq-LHS) source derivative is left behind either; an
         # indexed observed definition `faq{index(y, i)} ~ …` is not one
-        @test !any(eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "faq" &&
-                   eq["lhs"]["expr"] isa AbstractDict && eq["lhs"]["expr"]["op"] == "D"
-                   for eq in eqs)
+        @test !any(
+            eq["lhs"] isa AbstractDict && eq["lhs"]["op"] == "faq" &&
+                eq["lhs"]["expr"] isa AbstractDict && eq["lhs"]["expr"]["op"] == "D"
+                for eq in eqs
+        )
     end
 end
 
@@ -49,10 +59,12 @@ end
     # flux_form_adv's flux F, contracting_observed's s and c and
     # contracted_ops's conn feed only f: inlined into every coefficient, so
     # nothing in the derived document reads them. minmod_adv's dx is read.
-    for (name, gone, kept) in (("flux_form_adv", ["F"], String[]),
-                               ("contracting_observed", ["s", "c"], String[]),
-                               ("contracted_ops", ["conn"], String[]),
-                               ("minmod_adv", String[], ["dx"]))
+    for (name, gone, kept) in (
+            ("flux_form_adv", ["F"], String[]),
+            ("contracting_observed", ["s", "c"], String[]),
+            ("contracted_ops", ["conn"], String[]),
+            ("minmod_adv", String[], ["dx"]),
+        )
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
         doc, _ = _evaluation_document(sv, jacobian_bands(sv))
@@ -70,17 +82,36 @@ end
 @testset "evaluation document: an element derivative LHS is refused" begin
     # `D(index(u, 1)) = …` is no form lhs_state knows: dropping it would lose
     # its rows from the Jacobian and keep its RHS in the evaluation document.
-    doc = EarthSciAST.load_document(Dict{String,Any}(
-        "esm" => "1.1.0", "metadata" => Dict("name" => "Elem"),
-        "index_sets" => Dict("x" => Dict("kind" => "interval", "size" => 3)),
-        "models" => Dict("Elem" => Dict(
-            "variables" => Dict("u" => Dict("type" => "unknown", "shape" => ["x"],
-                                            "default" => 1.0)),
-            "equations" => [Dict(
-                "lhs" => Dict("op" => "D", "wrt" => "t", "args" => [
-                    Dict("op" => "index", "args" => ["u", 1])]),
-                "rhs" => Dict("op" => "-", "args" => [
-                    Dict("op" => "index", "args" => ["u", 1])]))]))))
+    doc = EarthSciAST.load_document(
+        Dict{String, Any}(
+            "esm" => "1.1.0", "metadata" => Dict("name" => "Elem"),
+            "index_sets" => Dict("x" => Dict("kind" => "interval", "size" => 3)),
+            "models" => Dict(
+                "Elem" => Dict(
+                    "variables" => Dict(
+                        "u" => Dict(
+                            "type" => "unknown", "shape" => ["x"],
+                            "default" => 1.0
+                        )
+                    ),
+                    "equations" => [
+                        Dict(
+                            "lhs" => Dict(
+                                "op" => "D", "wrt" => "t", "args" => [
+                                    Dict("op" => "index", "args" => ["u", 1]),
+                                ]
+                            ),
+                            "rhs" => Dict(
+                                "op" => "-", "args" => [
+                                    Dict("op" => "index", "args" => ["u", 1]),
+                                ]
+                            )
+                        ),
+                    ]
+                )
+            )
+        )
+    )
     sv = sysview(doc, "Elem")
     @test_throws EarthSciASTDiff.BandError jacobian_bands(sv)
     @test_throws EarthSciASTDiff.BandError _evaluation_document(sv, JacEntry[])
@@ -100,6 +131,6 @@ end
         J = copy(jac.prototype)
         jac(J, uA, p0, 0.0)
         jac(J, uB, p0, 0.0)
-        @test Matrix(J) ≈ Matrix(ad_jacobian(f!, uB, p0, 0.0)) rtol = 1e-10
+        @test Matrix(J) ≈ Matrix(ad_jacobian(f!, uB, p0, 0.0)) rtol = 1.0e-10
     end
 end

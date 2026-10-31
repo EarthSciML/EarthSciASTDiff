@@ -19,28 +19,42 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
 
 @testset "inline pruning: target-independent observed" begin
     K = 3.0
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     _idx(v, i) = O("op" => "index", "args" => Any[v, i])
     # D(u)[i] = -(src * u[i]) + src, with `src = 2k` an observed that depends on
     # the PARAMETER k and on no state.
-    body = O("op" => "+", "args" => Any[
-        O("op" => "-", "args" => Any[O("op" => "*", "args" => Any["src", _idx("u", "i")])]),
-        "src"])
-    rhs = O("op" => "faq", "args" => Any[], "output_idx" => Any["i"],
-            "ranges" => O("i" => Any[1, 4]), "expr" => body)
-    doc = O("esm" => "1.1.0",
-            "metadata" => O("name" => "PruneProbe"),
-            "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
-            "models" => O("PruneProbe" => O(
+    body = O(
+        "op" => "+", "args" => Any[
+            O("op" => "-", "args" => Any[O("op" => "*", "args" => Any["src", _idx("u", "i")])]),
+            "src",
+        ]
+    )
+    rhs = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any["i"],
+        "ranges" => O("i" => Any[1, 4]), "expr" => body
+    )
+    doc = O(
+        "esm" => "1.1.0",
+        "metadata" => O("name" => "PruneProbe"),
+        "index_sets" => O("x" => O("kind" => "interval", "size" => 4)),
+        "models" => O(
+            "PruneProbe" => O(
                 "variables" => O(
                     "u" => O("type" => "unknown", "shape" => Any["x"], "default" => 0.5),
                     "k" => O("type" => "parameter", "default" => K),
                     # esm 1.0.0: definition moves from the variable to an equation
-                    "src" => O("type" => "unknown")),
+                    "src" => O("type" => "unknown")
+                ),
                 "equations" => Any[
                     O("lhs" => "src", "rhs" => O("op" => "*", "args" => Any["k", 2])),
-                    O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                      "rhs" => rhs)])))
+                    O(
+                        "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                        "rhs" => rhs
+                    ),
+                ]
+            )
+        )
+    )
 
     mktempdir() do d
         path = joinpath(d, "prune_probe.esm")
@@ -62,7 +76,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
 
         res = assemble_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
-        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-14
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         # The pruned observed really is in the coefficient: ∂/∂u[i] = -2k, so a
         # coefficient that silently dropped it would read -1, and one that
         # zeroed it would read 0.
@@ -74,7 +88,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
             pp = NamedTuple{keys(p)}(Tuple(q))
             du = similar(q, length(u)); f!(du, u, pp, 0.0); du
         end
-        @test maximum(abs.(Matrix(resp.J) .- Jp_ad)) ≤ 1e-12
+        @test maximum(abs.(Matrix(resp.J) .- Jp_ad)) ≤ 1.0e-12
         # THE anti-silent-zero assertion: ∂f/∂k = 2 − 2u[i] flows THROUGH the
         # observed the state axis prunes. A parameter-axis prune would make the
         # whole column zero and every other check here would still pass.

@@ -49,16 +49,33 @@ fn lifted_lhs_is_an_array_state_equation() {
 /// non-empty band set. A tag mismatch makes all of these silently empty.
 #[test]
 fn array_models_differentiate_to_a_non_empty_band_set() {
-    for name in ["adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
-                 "adv_react_2d", "bd_chem", "contracting_observed"] {
+    for name in [
+        "adv_interior",
+        "flux_form_adv",
+        "minmod_adv",
+        "contracted_ops",
+        "adv_react_2d",
+        "bd_chem",
+        "contracting_observed",
+        "forcing_bracket",
+        "filtered_scan",
+        "semiring_reduce",
+    ] {
         let file = fixture(name);
         let sv = sysview(&file, None).unwrap();
-        assert!(!view_states(&sv, &observed_defs(&sv).unwrap()).is_empty(),
-                "{name}: no states");
+        assert!(
+            !view_states(&sv, &observed_defs(&sv).unwrap()).is_empty(),
+            "{name}: no states"
+        );
         let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
-        assert!(!entries.is_empty(), "{name}: EMPTY band list (the silent zero)");
-        assert!(entries.iter().any(|e| !e.band.rows.is_empty()),
-                "{name}: no array-valued band");
+        assert!(
+            !entries.is_empty(),
+            "{name}: EMPTY band list (the silent zero)"
+        );
+        assert!(
+            entries.iter().any(|e| !e.band.rows.is_empty()),
+            "{name}: no array-valued band"
+        );
     }
 }
 
@@ -80,7 +97,9 @@ fn alias_doc(tag: &str, version: &str) -> EsmFile {
 #[test]
 fn deprecated_alias_differentiates_identically() {
     let ser = |f: &EsmFile| -> Vec<String> {
-        jacobian_bands(f, None, Wrt::States).unwrap().iter()
+        jacobian_bands(f, None, Wrt::States)
+            .unwrap()
+            .iter()
             .map(|e| format!("{}|{}|{}", e.u, e.v, stable_json(&serialize_band(e))))
             .collect()
     };

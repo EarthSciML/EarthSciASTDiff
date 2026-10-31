@@ -32,17 +32,21 @@
 
 # The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
 # their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
-const PIECEWISE_CONSTANT_DATETIME = Set([
-    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
-    "datetime.minute", "datetime.second", "datetime.day_of_year",
-    "datetime.is_leap_year",
-])
+const PIECEWISE_CONSTANT_DATETIME = Set(
+    [
+        "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
+        "datetime.minute", "datetime.second", "datetime.day_of_year",
+        "datetime.is_leap_year",
+    ]
+)
 
-const ZERO_DERIV_OPS = Set([
-    "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
-    "sign", "floor", "ceil", "pi", "π", "e", "true", "false", "const", "enum",
-    "Pre",
-])
+const ZERO_DERIV_OPS = Set(
+    [
+        "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
+        "sign", "floor", "ceil", "pi", "π", "e", "true", "false", "const", "enum",
+        "Pre",
+    ]
+)
 
 """
     DerivativeRuleError(msg)
@@ -61,16 +65,12 @@ Derivative of the scalar expression `e` with respect to site `s`, as a new
 ESM expression. Structural rules only; a subtree in which `s` does not occur
 differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
-filtered or semiring `faq` nodes in scalar position, unknown closed
+joined or value-invention `faq` nodes in scalar position, unknown closed
 functions).
 """
-dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr,Bool}())
+dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr, Bool}())
 
-# Whether faq node `e` reduces by ordinary `+`. A `semiring` supersedes
-# `reduce` (EarthSciAST: absent ⇒ "sum_product"), so `reduce` alone is not
-# enough: a `max_product` node with no `reduce` is a max, not a sum.
-_plain_sum(e::OpExpr)::Bool = e.semiring === nothing ?
-    (e.reduce === nothing || e.reduce == "+") : e.semiring == "sum_product"
+# A faq node's reduction, for messages (`_reduce_op` decides it, reductions.jl).
 _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" :
     "semiring=`$(e.semiring)`"
 
@@ -84,28 +84,31 @@ _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" 
 #     the band emitter turns it into a contracted column dimension (§4,
 #     `_lift_nested` in bands.jl). Bound indices the column does not read
 #     are still summed.
-# A filter, a join or a non-`"+"` reduction has no rule (spec §3.5).
-function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
-    e.filter === nothing || throw(DerivativeRuleError(
-        "filtered faq nodes are not differentiated (the filter gate would " *
-        "be dropped from the derivative)"))
-    e.join === nothing || throw(DerivativeRuleError(
-        "joined faq nodes are not differentiated"))
-    _plain_sum(e) || throw(DerivativeRuleError(
-        "$(_reduction(e)) (non-smooth semiring reductions have no rule)"))
+# A `max`, `min` or `*` reduction differentiates the same way once each
+# term's derivative is weighted by what the reduction does with it
+# (`_window_weight`, reductions.jl), and the result is a `+` sum. A filter
+# keeps its window — the remaining sum's filter, or an `ifelse` once every
+# bound index is left free — and its own Dirac term is dropped. A join or a
+# value-invention node has no rule (spec §3.5).
+function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
+    red = _reduce_op(e, DerivativeRuleError)
     db = dscalar(e.expr_body, s, occ)
     iszero_lit(db) && return lit(0)
-    ranges = e.ranges === nothing ? Dict{String,Any}() : e.ranges
+    ranges = e.ranges === nothing ? Dict{String, Any}() : e.ranges
+    db = _window_weight(red, e, sort!(String.(collect(keys(ranges)))), db, DerivativeRuleError)
+    # A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+    plus(kw...) = red == "+" ? EarthSciAST.reconstruct(e; expr_body = db, kw...) :
+        EarthSciAST.reconstruct(e; expr_body = db, reduce = "+", semiring = nothing, kw...)
     read = Set{String}()
     if s.expr isa OpExpr
         for x in s.expr.args[2:end]
             union!(read, free_variables(x))
         end
     end
-    summed = Dict{String,Any}(n => r for (n, r) in ranges if !(n in read))
-    length(summed) == length(ranges) && return EarthSciAST.reconstruct(e; expr_body = db)
-    isempty(summed) && return db
-    return EarthSciAST.reconstruct(e; expr_body = db, ranges = summed)
+    summed = Dict{String, Any}(n => r for (n, r) in ranges if !(n in read))
+    length(summed) == length(ranges) && return plus()
+    isempty(summed) && return e.filter === nothing ? db : op("ifelse", e.filter, db, lit(0))
+    return plus(ranges = summed)
 end
 
 # `occ` is the occurrence memo threaded through ONE derivative scan (see
@@ -116,7 +119,7 @@ end
 # RHS a lowered transport operator produces, that quadratic was half of
 # `jacobian_bands`' entire runtime (measured). Memoized it is Θ(n) per site,
 # and the derivative walk itself is Θ(n).
-function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
+function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
     is_site(e, s) && return lit(1)
     e isa OpExpr || return lit(0)          # literal, or a different variable
     occurs(e, s, occ) || return lit(0)     # structural short-circuit
@@ -145,21 +148,36 @@ function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         t1 = iszero_lit(db) ? lit(0) : mul(x, op("^", b, add(x, lit(-1))), db)
         t2 = iszero_lit(dx) ? lit(0) : mul(op("^", b, x), op("log", b), dx)
         return add(t1, t2)
-    elseif o == "exp";   return mul(e, d(a[1]))
-    elseif o == "log";   return op("/", d(a[1]), a[1])
-    elseif o == "log10"; return op("/", d(a[1]), mul(a[1], op("log", lit(10))))
-    elseif o == "sqrt";  return op("/", d(a[1]), mul(lit(2), e))
-    elseif o == "sin";   return mul(op("cos", a[1]), d(a[1]))
-    elseif o == "cos";   return neg(mul(op("sin", a[1]), d(a[1])))
-    elseif o == "tan";   return mul(add(lit(1), op("^", e, lit(2))), d(a[1]))
-    elseif o == "tanh";  return mul(add(lit(1), neg(op("^", e, lit(2)))), d(a[1]))
-    elseif o == "sinh";  return mul(op("cosh", a[1]), d(a[1]))
-    elseif o == "cosh";  return mul(op("sinh", a[1]), d(a[1]))
-    elseif o == "asin";  return op("/", d(a[1]), op("sqrt", add(lit(1), neg(op("^", a[1], lit(2))))))
-    elseif o == "acos";  return neg(op("/", d(a[1]), op("sqrt", add(lit(1), neg(op("^", a[1], lit(2)))))))
-    elseif o == "asinh"; return op("/", d(a[1]), op("sqrt", add(op("^", a[1], lit(2)), lit(1))))
-    elseif o == "acosh"; return op("/", d(a[1]), op("sqrt", add(op("^", a[1], lit(2)), lit(-1))))
-    elseif o == "atanh"; return op("/", d(a[1]), add(lit(1), neg(op("^", a[1], lit(2)))))
+    elseif o == "exp"
+        return mul(e, d(a[1]))
+    elseif o == "log"
+        return op("/", d(a[1]), a[1])
+    elseif o == "log10"
+        return op("/", d(a[1]), mul(a[1], op("log", lit(10))))
+    elseif o == "sqrt"
+        return op("/", d(a[1]), mul(lit(2), e))
+    elseif o == "sin"
+        return mul(op("cos", a[1]), d(a[1]))
+    elseif o == "cos"
+        return neg(mul(op("sin", a[1]), d(a[1])))
+    elseif o == "tan"
+        return mul(add(lit(1), op("^", e, lit(2))), d(a[1]))
+    elseif o == "tanh"
+        return mul(add(lit(1), neg(op("^", e, lit(2)))), d(a[1]))
+    elseif o == "sinh"
+        return mul(op("cosh", a[1]), d(a[1]))
+    elseif o == "cosh"
+        return mul(op("sinh", a[1]), d(a[1]))
+    elseif o == "asin"
+        return op("/", d(a[1]), op("sqrt", add(lit(1), neg(op("^", a[1], lit(2))))))
+    elseif o == "acos"
+        return neg(op("/", d(a[1]), op("sqrt", add(lit(1), neg(op("^", a[1], lit(2)))))))
+    elseif o == "asinh"
+        return op("/", d(a[1]), op("sqrt", add(op("^", a[1], lit(2)), lit(1))))
+    elseif o == "acosh"
+        return op("/", d(a[1]), op("sqrt", add(op("^", a[1], lit(2)), lit(-1))))
+    elseif o == "atanh"
+        return op("/", d(a[1]), add(lit(1), neg(op("^", a[1], lit(2)))))
     elseif o == "atan" && length(a) == 1
         return op("/", d(a[1]), add(lit(1), op("^", a[1], lit(2))))
     elseif o == "atan" || o == "atan2"   # atan(y, x)
@@ -191,12 +209,19 @@ function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         # A site-bearing `index` that is not itself the site: index of a
         # non-variable array expression, or index expressions that depend on
         # the site (neither occurs in a lowered model RHS).
-        throw(DerivativeRuleError(
-            "`index` of a non-variable array expression (or a site-dependent " *
-            "index) has no scalar rule: $(skey(e))"))
+        throw(
+            DerivativeRuleError(
+                "`index` of a non-variable array expression (or a site-dependent " *
+                    "index) has no scalar rule: $(skey(e))"
+            )
+        )
     else
-        throw(DerivativeRuleError("no derivative rule for op `$o` " *
-            "(rewrite-target ops must be lowered before differentiation)"))
+        throw(
+            DerivativeRuleError(
+                "no derivative rule for op `$o` " *
+                    "(rewrite-target ops must be lowered before differentiation)"
+            )
+        )
     end
 end
 
@@ -232,37 +257,42 @@ end
 # convention matches spec §9.2 step 2 (a query exactly on an interior knot
 # selects the cell whose weight is 0). ∂/∂y is this function on the
 # transposed table with the axes and query expressions swapped.
-function _bilinear_partial(T::Matrix{Float64}, xv::Vector{Float64},
-                           yv::Vector{Float64}, xe::ASTExpr, ye::ASTExpr)::ASTExpr
+function _bilinear_partial(
+        T::Matrix{Float64}, xv::Vector{Float64},
+        yv::Vector{Float64}, xe::ASTExpr, ye::ASTExpr
+    )::ASTExpr
     nx, ny = length(xv), length(yv)
     out = lit(0)                              # x ≥ axis_x[nx]: flat in x
-    for i in (nx-1):-1:1
-        sl(j) = (T[i+1, j] - T[i, j]) / (xv[i+1] - xv[i])
+    for i in (nx - 1):-1:1
+        sl(j) = (T[i + 1, j] - T[i, j]) / (xv[i + 1] - xv[i])
         leaf = lit(sl(ny))                    # y ≥ axis_y[ny]: top edge row
-        for j in (ny-1):-1:1
-            wy = op("/", add(ye, lit(-yv[j])), lit(yv[j+1] - yv[j]))
+        for j in (ny - 1):-1:1
+            wy = op("/", add(ye, lit(-yv[j])), lit(yv[j + 1] - yv[j]))
             e = add(lit(sl(j)), mul(wy, add(lit(sl(j + 1)), neg(lit(sl(j))))))
-            leaf = op("ifelse", op("<", ye, lit(yv[j+1])), e, leaf)
+            leaf = op("ifelse", op("<", ye, lit(yv[j + 1])), e, leaf)
         end
         leaf = op("ifelse", op("<", ye, lit(yv[1])), lit(sl(1)), leaf)  # bottom edge
-        out = op("ifelse", op("<", xe, lit(xv[i+1])), leaf, out)
+        out = op("ifelse", op("<", xe, lit(xv[i + 1])), leaf, out)
     end
     return op("ifelse", op("<", xe, lit(xv[1])), lit(0), out)
 end
 
 # Closed-function derivative table (esm-spec §9.2: exactly 12 names, all
 # decided here — an unknown name is a spec violation, not a fallthrough).
-dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr,Bool}())
+dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr, Bool}())
 
-function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
+function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
     name = e.name
     a = e.args
     if name in PIECEWISE_CONSTANT_DATETIME || name == "interp.searchsorted"
         return lit(0)
     elseif name == "datetime.julian_day"
         # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
-        length(a) == 1 || throw(DerivativeRuleError(
-            "`datetime.julian_day` takes 1 argument, got $(length(a))"))
+        length(a) == 1 || throw(
+            DerivativeRuleError(
+                "`datetime.julian_day` takes 1 argument, got $(length(a))"
+            )
+        )
         dx = dscalar(a[1], s, occ); iszero_lit(dx) && return lit(0)
         return op("/", dx, lit(86400))
     elseif name == "interp.linear"
@@ -275,16 +305,22 @@ function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         table, axis, x = a[1], a[2], a[3]
         dx = dscalar(x, s, occ); iszero_lit(dx) && return lit(0)
         yv = _const_vector(table); xv = _const_vector(axis)
-        (yv === nothing || xv === nothing) && throw(DerivativeRuleError(
-            "interp.linear table/axis must be literal `const` arrays " *
-            "(spec §9.2 interp_table_not_const)"))
+        (yv === nothing || xv === nothing) && throw(
+            DerivativeRuleError(
+                "interp.linear table/axis must be literal `const` arrays " *
+                    "(spec §9.2 interp_table_not_const)"
+            )
+        )
         n = length(xv)
-        (n == length(yv) && n >= 2) || throw(DerivativeRuleError(
-            "interp.linear table/axis length mismatch or < 2 knots"))
-        slopes = [(yv[k+1] - yv[k]) / (xv[k+1] - xv[k]) for k in 1:(n-1)]
+        (n == length(yv) && n >= 2) || throw(
+            DerivativeRuleError(
+                "interp.linear table/axis length mismatch or < 2 knots"
+            )
+        )
+        slopes = [(yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]) for k in 1:(n - 1)]
         slope = lit(0)                                # x ≥ axis[N]: flat
-        for k in (n-1):-1:1
-            slope = op("ifelse", op("<", x, lit(xv[k+1])), lit(slopes[k]), slope)
+        for k in (n - 1):-1:1
+            slope = op("ifelse", op("<", x, lit(xv[k + 1])), lit(slopes[k]), slope)
         end
         slope = op("ifelse", op("<", x, lit(xv[1])), lit(0), slope)  # flat below
         return mul(slope, dx)
@@ -300,12 +336,18 @@ function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr,Bool})::ASTExpr
         dx = dscalar(x, s, occ); dy = dscalar(y, s, occ)
         iszero_lit(dx) && iszero_lit(dy) && return lit(0)
         T = _const_matrix(table); xv = _const_vector(ax); yv = _const_vector(ay)
-        (T === nothing || xv === nothing || yv === nothing) && throw(DerivativeRuleError(
-            "interp.bilinear table/axes must be literal `const` arrays " *
-            "(spec §9.2 interp_table_not_const)"))
+        (T === nothing || xv === nothing || yv === nothing) && throw(
+            DerivativeRuleError(
+                "interp.bilinear table/axes must be literal `const` arrays " *
+                    "(spec §9.2 interp_table_not_const)"
+            )
+        )
         nx, ny = length(xv), length(yv)
-        (size(T) == (nx, ny) && nx >= 2 && ny >= 2) || throw(DerivativeRuleError(
-            "interp.bilinear table/axis shape mismatch or < 2 knots"))
+        (size(T) == (nx, ny) && nx >= 2 && ny >= 2) || throw(
+            DerivativeRuleError(
+                "interp.bilinear table/axis shape mismatch or < 2 knots"
+            )
+        )
         terms = ASTExpr[]
         iszero_lit(dx) || push!(terms, mul(_bilinear_partial(T, xv, yv, x, y), dx))
         iszero_lit(dy) ||

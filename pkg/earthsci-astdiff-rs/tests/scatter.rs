@@ -4,8 +4,7 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout,
-    ScatterPlan, Wrt,
+    assemble_jacobian, band_fields, jacobian_bands, stable_json, sysview, Layout, ScatterPlan, Wrt,
 };
 
 mod common;
@@ -28,6 +27,8 @@ fn plan_layouts() -> Vec<(&'static str, &'static str, Layout)> {
         ("minmod_adv", "csr", Layout::Csr),
         ("contracted_ops", "csr", Layout::Csr),
         ("contracting_observed", "csr", Layout::Csr),
+        ("filtered_scan", "csr", Layout::Csr),
+        ("semiring_reduce", "csr", Layout::Csr),
     ]
 }
 
@@ -36,8 +37,16 @@ fn plan_goldens() {
     for (name, tag, layout) in plan_layouts() {
         let plan = ScatterPlan::from_file(&load(name), None, &layout).unwrap();
         let golden = fs::read_to_string(
-            root().join("tests/goldens").join(format!("{name}.{tag}.plan.json"))).unwrap();
-        assert_eq!(stable_json(&plan.to_json()), golden, "plan golden diverges: {name}.{tag}");
+            root()
+                .join("tests/goldens")
+                .join(format!("{name}.{tag}.plan.json")),
+        )
+        .unwrap();
+        assert_eq!(
+            stable_json(&plan.to_json()),
+            golden,
+            "plan golden diverges: {name}.{tag}"
+        );
     }
 }
 
@@ -62,8 +71,11 @@ fn scattered_values_match_the_oracle() {
                     Some(rc) => {
                         let want = oracle.get(rc).copied().unwrap_or(0.0);
                         let tol = 1e-13 * want.abs().max(1.0);
-                        assert!((out[pos] - want).abs() <= tol,
-                                "{name}.{tag} L={l}: {rc:?} {} vs {want}", out[pos]);
+                        assert!(
+                            (out[pos] - want).abs() <= tol,
+                            "{name}.{tag} L={l}: {rc:?} {} vs {want}",
+                            out[pos]
+                        );
                         covered.insert(rc.clone());
                     }
                 }
@@ -77,13 +89,12 @@ fn scattered_values_match_the_oracle() {
 
 #[test]
 fn refusals() {
-    let refused = |name: &str, layout: Layout| {
-        ScatterPlan::from_file(&load(name), None, &layout).is_err()
-    };
+    let refused =
+        |name: &str, layout: Layout| ScatterPlan::from_file(&load(name), None, &layout).is_err();
     assert!(refused("adv_interior", Layout::LaneBlocks));
     assert!(refused("adv_interior", Layout::LaneSparseBlocks));
-    assert!(refused("minmod_adv", cb("x")));            // periodic wrap
-    assert!(refused("adv_react_2d", cb("lon")));        // scalar state
+    assert!(refused("minmod_adv", cb("x"))); // periodic wrap
+    assert!(refused("adv_react_2d", cb("lon"))); // scalar state
     assert!(refused("bd_chem", cb("nope")));
     let file = load("bd_chem");
     let sv = sysview(&file, None).unwrap();
@@ -98,6 +109,40 @@ fn refusals() {
     con[0].band.contracted = vec![("kk".into(), 1, 3)];
     assert!(ScatterPlan::build(&sv, &con, &Layout::LaneBlocks).is_err());
     assert!(ScatterPlan::build(&sv, &con, &Layout::LaneSparseBlocks).is_err());
+    // a guarded band's points differ from lane to lane: the lane and column
+    // layouts refuse it, the CSR plan takes the guarded point set
+    let mut gd = jacobian_bands(&file, None, Wrt::States).unwrap();
+    let r = match &gd[0].band.ridx[0] {
+        earthsci_astdiff::RIdx::Name(n) => n.clone(),
+        other => panic!("{other:?}"),
+    };
+    gd[0].band.guard = Some(earthsci_ast::Expr::operator(earthsci_ast::ExpressionNode {
+        op: ">".into(),
+        args: vec![
+            earthsci_ast::Expr::Variable(r),
+            earthsci_ast::Expr::Integer(1),
+        ],
+        ..Default::default()
+    }));
+    assert!(ScatterPlan::build(&sv, &gd, &Layout::LaneBlocks).is_err());
+    assert!(ScatterPlan::build(&sv, &gd, &Layout::LaneSparseBlocks).is_err());
+    assert!(ScatterPlan::build(&sv, &gd, &cb("z")).is_err());
+    let pg = ScatterPlan::build(&sv, &gd, &Layout::Csr).unwrap();
+    let p0 = ScatterPlan::build(
+        &sv,
+        &jacobian_bands(&file, None, Wrt::States).unwrap(),
+        &Layout::Csr,
+    )
+    .unwrap();
+    let nitems = |p: &ScatterPlan| match &p.kind {
+        earthsci_astdiff::PlanKind::Csr { items, .. } => items.len(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        nitems(&pg) + 1,
+        nitems(&p0),
+        "the one excluded point (row 1)"
+    );
     // binding: a plan from another document, a short capacity
     let adv = load("adv_interior");
     let other = ScatterPlan::from_file(&adv, None, &Layout::Csr).unwrap();
@@ -115,7 +160,10 @@ fn refusals() {
         let real = ScatterPlan::build(&asv, &ae, &layout).unwrap();
         assert!(real.bind_entries(&asv, &ae, real.lanes()).is_ok());
         let bad = ScatterPlan::build(&asv, &mirrored, &layout).unwrap();
-        assert!(bad.bind_entries(&asv, &ae, bad.lanes()).is_err(), "{layout:?}");
+        assert!(
+            bad.bind_entries(&asv, &ae, bad.lanes()).is_err(),
+            "{layout:?}"
+        );
     }
     // scatter-time checks: wrong output length, wrong fields
     let (env, _) = jvals_env("bd_chem");
@@ -130,9 +178,11 @@ fn lane_templates_are_per_cell() {
     let file = load("bd_chem");
     let plan = ScatterPlan::from_file(&file, None, &Layout::LaneBlocks).unwrap();
     match &plan.kind {
-        earthsci_astdiff::PlanKind::LaneBlocks { block_vars, items, .. } => {
-            assert_eq!(items.len(), 6);                // one per band, any grid
-            assert_eq!(block_vars, &["C", "A", "B"]);  // Markowitz order
+        earthsci_astdiff::PlanKind::LaneBlocks {
+            block_vars, items, ..
+        } => {
+            assert_eq!(items.len(), 6); // one per band, any grid
+            assert_eq!(block_vars, &["C", "A", "B"]); // Markowitz order
         }
         _ => unreachable!(),
     }

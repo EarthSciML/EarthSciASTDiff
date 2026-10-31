@@ -1,0 +1,413 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "FilteredScan",
+  "description": "Filtered faq nodes (spec \u00a73.5): an inclusive forward scan of a (gathered, a `where` guard j <= i) minus an exclusive reverse scan of b\u00b2 (j > i); b reads a filtered contracting observed s[i] = \u03a3_{j<=i} a[j]\u00b2 (a nested filtered sum: its lifted column takes the guard) and a window with an index conjunct j < i and a value conjunct a[j] > 0.4 (the value gate stays in the coefficient, the pattern is the whole window); q is reseact's Mz shape, an exclusive level scan gk < gke over (gi, gke) rows, plus a window clipped by a constant (gk >= 2) that splits the box instead of guarding it."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 5
+  },
+  "y": {
+   "kind": "interval",
+   "size": 3
+  },
+  "z": {
+   "kind": "interval",
+   "size": 4
+  }
+ },
+ "models": {
+  "FilteredScan": {
+   "variables": {
+    "a": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.5
+    },
+    "b": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.4
+    },
+    "q": {
+     "type": "unknown",
+     "shape": [
+      "y",
+      "z"
+     ],
+     "default": 0.3
+    },
+    "s": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ]
+    },
+    "w": {
+     "type": "parameter",
+     "default": 0.7
+    }
+   },
+   "equations": [
+    {
+     "lhs": "s",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        1,
+        5
+       ],
+       "j": [
+        1,
+        5
+       ]
+      },
+      "expr": {
+       "op": "^",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "a",
+          "j"
+         ]
+        },
+        2
+       ]
+      },
+      "filter": {
+       "op": "<=",
+       "args": [
+        "j",
+        "i"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "a"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "ranges": {
+         "i": [
+          1,
+          5
+         ],
+         "j": [
+          1,
+          5
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            "w"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "a",
+            "j"
+           ]
+          }
+         ]
+        },
+        "filter": {
+         "op": "<=",
+         "args": [
+          "j",
+          "i"
+         ]
+        }
+       },
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "ranges": {
+         "i": [
+          1,
+          5
+         ],
+         "j": [
+          1,
+          5
+         ]
+        },
+        "expr": {
+         "op": "^",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "b",
+            "j"
+           ]
+          },
+          2
+         ]
+        },
+        "filter": {
+         "op": ">",
+         "args": [
+          "j",
+          "i"
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "b"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "ranges": {
+         "i": [
+          1,
+          5
+         ]
+        },
+        "expr": {
+         "op": "-",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "s",
+              "i"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "b",
+              "i"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       },
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "ranges": {
+         "i": [
+          1,
+          5
+         ],
+         "j": [
+          1,
+          5
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "a",
+            "j"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "b",
+            "i"
+           ]
+          }
+         ]
+        },
+        "filter": {
+         "op": "and",
+         "args": [
+          {
+           "op": "<",
+           "args": [
+            "j",
+            "i"
+           ]
+          },
+          {
+           "op": ">",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "a",
+              "j"
+             ]
+            },
+            0.4
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "q"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "gi",
+         "gke"
+        ],
+        "ranges": {
+         "gi": [
+          1,
+          3
+         ],
+         "gke": [
+          1,
+          4
+         ],
+         "gk": [
+          1,
+          4
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          "w",
+          {
+           "op": "index",
+           "args": [
+            "q",
+            "gi",
+            "gk"
+           ]
+          }
+         ]
+        },
+        "filter": {
+         "op": "<",
+         "args": [
+          "gk",
+          "gke"
+         ]
+        }
+       },
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "gi",
+         "gke"
+        ],
+        "ranges": {
+         "gi": [
+          1,
+          3
+         ],
+         "gke": [
+          1,
+          4
+         ],
+         "gk": [
+          1,
+          4
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "q",
+            "gi",
+            "gk"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "q",
+            "gi",
+            "gke"
+           ]
+          }
+         ]
+        },
+        "filter": {
+         "op": ">=",
+         "args": [
+          "gk",
+          2
+         ]
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

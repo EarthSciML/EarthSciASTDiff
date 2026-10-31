@@ -4,6 +4,7 @@ Mirrors the Julia reference's ``expr_helpers.jl``. Python atoms are the
 wire scalars themselves (``int`` / ``float`` literals, ``str`` variable
 references); only operator nodes are ``ExprNode``.
 """
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from earthsci_ast.canonicalize import canonical_json
+from earthsci_ast.canonicalize import CanonicalizeError, canonical_json
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.serialize import _serialize_expression
@@ -75,7 +76,7 @@ def canonical_float(f: float) -> str:
         if e10 < 0:
             body = "0." + "0" * (-e10 - 1) + ds
         else:
-            body = ds[:e10 + 1].ljust(e10 + 1, "0") + "." + (ds[e10 + 1:] or "0")
+            body = ds[: e10 + 1].ljust(e10 + 1, "0") + "." + (ds[e10 + 1 :] or "0")
     else:
         body = ds[0] + "." + (ds[1:] or "0") + "e" + str(e10)
     return ("-" if sign else "") + body
@@ -96,8 +97,7 @@ def _key_str(k: Any) -> str:
 
 def _write_stable(x: Any, out: list) -> None:
     if isinstance(x, dict):
-        items = sorted(((_key_str(k), v) for k, v in x.items()),
-                       key=lambda kv: kv[0])
+        items = sorted(((_key_str(k), v) for k, v in x.items()), key=lambda kv: kv[0])
         out.append("{")
         for i, (k, v) in enumerate(items):
             if i:
@@ -136,8 +136,7 @@ def key_json(x: Any) -> str:
     the C ``json.dumps`` with sorted keys. Never written out, so it need not
     match the reference's float layout, and a non-finite constant (``inf``
     from folding ``1.0/0.0``) still gets a key."""
-    return json.dumps(x, sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False)
+    return json.dumps(x, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def skey(e: Expr) -> str:
@@ -150,6 +149,18 @@ def ckey(e: Expr) -> str:
     return canonical_json(e)
 
 
+def site_key(e: Expr) -> str:
+    """A site's identity key (expr_helpers.jl ``_site_key``): the canonical
+    JSON, or — for an ``index`` node whose subscripts hold an array op the
+    canonical form refuses (a level search ``u[κ]`` with κ a min-faq, spec
+    §3.5) — ``~`` followed by its stable JSON, which sorts after every
+    canonical key."""
+    try:
+        return ckey(e)
+    except CanonicalizeError:
+        return "~" + stable_json(ser_expr(e))
+
+
 @dataclass(frozen=True)
 class Site:
     """A bare variable reference or one symbolic ``index(v, i…)`` cell."""
@@ -158,13 +169,13 @@ class Site:
     key: str
 
     @staticmethod
-    def of(e: Expr) -> "Site":
-        return Site(e, ckey(e))
+    def of(e: Expr) -> Site:
+        return Site(e, site_key(e))
 
 
 def is_site(e: Expr, s: Site) -> bool:
     if isinstance(e, str) or (isinstance(e, ExprNode) and e.op == "index"):
-        return ckey(e) == s.key
+        return site_key(e) == s.key
     return False
 
 

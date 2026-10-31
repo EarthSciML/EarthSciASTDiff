@@ -2,13 +2,14 @@
 the per-cell block (chemistry-shaped) LU as the first implementation —
 Markowitz elimination ordering + LU pattern including fill-in, decided at
 generation time (the KPP precedent)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .jacobian import JacEntry
-from .structure import detect_structure
-from .system import SysView
+from .structure import column_lines, detect_structure
+from .system import SysView, _var_type
 
 
 @dataclass
@@ -19,8 +20,25 @@ class BlockDiagonalPlan:
 
     block_vars: list[str]
     pattern: list[list[bool]]
-    ordering: list[int]                    # 1-based, matching the reference
+    ordering: list[int]  # 1-based, matching the reference
     lu: list[list[bool]]
+
+
+@dataclass
+class ColumnBlockPlan:
+    """Line-by-line factorization info for a ``"column_block"`` Jacobian:
+    every coupling stays within one line along ``axis``, so the matrix is one
+    ``(len(block_vars)·line_length)``-square block per line. ``pattern``
+    names the coupling along the line (``"dense"``, ``"lower"``,
+    ``"upper"``, ``"banded"``) and ``kl`` / ``ku`` bound it below and above
+    the diagonal."""
+
+    axis: str
+    line_length: int
+    block_vars: list[str]
+    pattern: str
+    kl: int
+    ku: int
 
 
 def lu_fill(pattern: list[list[bool]]) -> list[list[bool]]:
@@ -59,26 +77,64 @@ def markowitz_ordering(pattern: list[list[bool]]) -> list[int]:
     return [i + 1 for i in order]
 
 
-def plan_factorization(entries: list[JacEntry], sv: SysView,
-                       structure: str | None = None):
+#: The structure classes :func:`detect_structure` reports (spec §4).
+STRUCTURE_CLASSES = ("empty", "block_diagonal", "banded", "general", "column_block")
+
+
+def plan_factorization(
+    entries: list[JacEntry],
+    sv: SysView,
+    structure: str | None = None,
+    column_axis: str | None = None,
+):
     """Symbolic factorization info for the detected structure.
 
     Returns a :class:`BlockDiagonalPlan` when the structure is
-    ``"block_diagonal"`` and ``None`` otherwise; banded and general plans are
-    not implemented yet.
+    ``"block_diagonal"``, a :class:`ColumnBlockPlan` for ``"column_block"``
+    (which needs the ``column_axis`` it was detected with), and ``None``
+    otherwise; banded and general plans are not implemented yet.
+
+    Raises ``ValueError`` when ``structure`` is not one of
+    :data:`STRUCTURE_CLASSES` (a misspelled class never silently gives no
+    plan), or when a column of ``entries`` is a parameter: a parameters or
+    forcing band list is a rectangular matrix, which no plan factorizes.
     """
     if structure is None:
-        structure = detect_structure(entries, sv)
+        structure = detect_structure(entries, sv, column_axis=column_axis)
+    elif structure not in STRUCTURE_CLASSES:
+        raise ValueError(
+            f"unknown structure class {structure!r} (expected one of {STRUCTURE_CLASSES})"
+        )
+    for en in entries:
+        var = sv.variables.get(en.v)
+        if var is not None and _var_type(var) == "parameter":
+            raise ValueError(
+                f"no factorization plan for a rectangular band list: column `{en.v}` "
+                "is a parameter (plan a states or time band list)"
+            )
     if structure == "block_diagonal":
         return _block_diagonal_plan(entries)
+    if structure == "column_block":
+        if column_axis is None:
+            raise ValueError("a column_block plan needs its `column_axis`")
+        cl = column_lines(entries, sv, str(column_axis))
+        if cl is None:
+            raise ValueError(f"the Jacobian is not column_block along `{column_axis}`")
+        return _column_block_plan(cl)
     return None
+
+
+def _column_block_plan(cl: dict) -> ColumnBlockPlan:
+    return ColumnBlockPlan(
+        cl["axis"], cl["line_length"], cl["block_vars"], cl["pattern"], cl["kl"], cl["ku"]
+    )
 
 
 def _block_diagonal_plan(entries: list[JacEntry]) -> BlockDiagonalPlan:
     vars = sorted({en.u for en in entries} | {en.v for en in entries})
     slot = {v: i for i, v in enumerate(vars)}
     ns = len(vars)
-    P = [[i == j for j in range(ns)] for i in range(ns)]   # W = I − γJ diag
+    P = [[i == j for j in range(ns)] for i in range(ns)]  # W = I − γJ diag
     for en in entries:
         P[slot[en.u]][slot[en.v]] = True
     ordering = markowitz_ordering(P)
@@ -87,12 +143,22 @@ def _block_diagonal_plan(entries: list[JacEntry]) -> BlockDiagonalPlan:
     return BlockDiagonalPlan([vars[i] for i in idx], Pp, ordering, lu_fill(Pp))
 
 
-def serialize_plan(p: BlockDiagonalPlan) -> dict:
+def serialize_plan(p) -> dict:
+    if isinstance(p, ColumnBlockPlan):
+        return {
+            "type": "column_block",
+            "axis": p.axis,
+            "line_length": p.line_length,
+            "block_vars": list(p.block_vars),
+            "pattern": p.pattern,
+            "bandwidth": [p.kl, p.ku],
+        }
+
     def nzpairs(M):
-        return [[i + 1, j + 1]
-                for i, j in sorted((i, j)
-                                   for i in range(len(M))
-                                   for j in range(len(M[i])) if M[i][j])]
+        return [
+            [i + 1, j + 1]
+            for i, j in sorted((i, j) for i in range(len(M)) for j in range(len(M[i])) if M[i][j])
+        ]
 
     return {
         "type": "block_diagonal_lu",

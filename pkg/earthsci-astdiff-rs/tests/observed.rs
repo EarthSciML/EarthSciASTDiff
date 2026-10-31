@@ -8,11 +8,11 @@
 
 use std::collections::HashMap;
 
+use earthsci_ast::RegionBound;
 use earthsci_astdiff::bands::region_bounds;
 use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{observed_defs, view_states};
 use earthsci_astdiff::{assemble_jacobian, jacobian_bands, sysview, Wrt};
-use earthsci_ast::RegionBound;
 use serde_json::{json, Value};
 
 const K: f64 = 3.0;
@@ -51,8 +51,11 @@ fn indexed_observed_is_inlined() {
     let sv = sysview(&file, None).unwrap();
     let obs = observed_defs(&sv).unwrap();
     assert!(obs.contains_key("y"));
-    assert_eq!(view_states(&sv, &obs), vec!["u".to_string()],
-               "y must not be a solver slot");
+    assert_eq!(
+        view_states(&sv, &obs),
+        vec!["u".to_string()],
+        "y must not be a solver slot"
+    );
     let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
     assert!(!entries.is_empty() && entries.iter().all(|e| e.v == "u"));
     let u = [0.3, 0.7, 1.1, 1.9];

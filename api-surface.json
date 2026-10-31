@@ -43,6 +43,26 @@
       }
     },
     {
+      "name": "column_block_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ColumnBlockPlan",
+        "python": "ColumnBlockPlan",
+        "rust": "ColumnLines"
+      }
+    },
+    {
+      "name": "column_lines",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "column_lines",
+        "python": "column_lines",
+        "rust": "column_lines"
+      }
+    },
+    {
       "name": "cse_templates",
       "kind": "function",
       "tier": "stable",
@@ -83,6 +103,36 @@
       }
     },
     {
+      "name": "forcing_names",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "forcing_names",
+        "python": "forcing_names",
+        "rust": "forcing_names"
+      }
+    },
+    {
+      "name": "hvp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hvp!",
+        "python": "hvp",
+        "rust": "hvp"
+      }
+    },
+    {
+      "name": "hvp_evaluator",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "HVPEvaluator",
+        "python": "HVPEvaluator",
+        "rust": "HvpEvaluator"
+      }
+    },
+    {
       "name": "jac_entry",
       "kind": "type",
       "tier": "stable",
@@ -90,6 +140,16 @@
         "julia": "JacEntry",
         "python": "JacEntry",
         "rust": "JacEntry"
+      }
+    },
+    {
+      "name": "jac_entry2",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "JacEntry2",
+        "python": "JacEntry2",
+        "rust": "JacEntry2"
       }
     },
     {
@@ -108,6 +168,17 @@
         "julia": "jacobian_bands",
         "python": "jacobian_bands",
         "rust": "jacobian_bands"
+      },
+      "notes": "Julia and Python also take a view; Rust differentiates a view (a flattened system's, from `sysview_flat`) through `jacobian_bands_view`."
+    },
+    {
+      "name": "jacobian_bands2",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_bands2",
+        "python": "jacobian_bands2",
+        "rust": "jacobian_bands2"
       }
     },
     {
@@ -117,6 +188,16 @@
       "bindings": {
         "python": "jacobian_block",
         "rust": "jacobian_block"
+      }
+    },
+    {
+      "name": "jacobian_columns",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_columns",
+        "python": "jacobian_columns",
+        "rust": "jacobian_columns"
       }
     },
     {
@@ -132,7 +213,9 @@
       "kind": "type",
       "tier": "stable",
       "bindings": {
-        "julia": "JacobianEvaluator"
+        "julia": "JacobianEvaluator",
+        "python": "JacobianEvaluator",
+        "rust": "JacobianEvaluator"
       }
     },
     {
@@ -172,22 +255,44 @@
       }
     },
     {
+      "name": "parse_jacobian_blocks",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "parse_jacobian_blocks",
+        "python": "parse_jacobian_blocks",
+        "rust": "parse_jacobian_blocks"
+      }
+    },
+    {
       "name": "plan_factorization",
       "kind": "function",
       "tier": "stable",
       "bindings": {
         "julia": "plan_factorization",
         "python": "plan_factorization",
-        "rust": "block_diagonal_lu"
+        "rust": "plan_factorization"
       },
-      "notes": "Rust exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+      "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`. A `column_block` plan needs the column axis the class was detected with: a `column_axis` keyword in Julia and Python, `plan_factorization_along(entries, sv, ctx, structure, column_axis)` in Rust."
+    },
+    {
+      "name": "prepare_hvp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "prepare_hvp",
+        "python": "prepare_hvp",
+        "rust": "prepare_hvp"
+      }
     },
     {
       "name": "prepare_jacobian",
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "prepare_jacobian"
+        "julia": "prepare_jacobian",
+        "python": "prepare_jacobian",
+        "rust": "prepare_jacobian"
       }
     },
     {
@@ -214,6 +319,16 @@
       "bindings": {
         "python": "serialize_band",
         "rust": "serialize_band"
+      }
+    },
+    {
+      "name": "serialize_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "serialize_plan",
+        "python": "serialize_plan",
+        "rust": "serialize_plan"
       }
     },
     {
@@ -264,6 +379,27 @@
         "julia": "sysview",
         "python": "sysview",
         "rust": "sysview"
+      },
+      "notes": "Julia and Python take a document's model or a flattened system through one `sysview`; Rust views a flattened system through `sysview_flat`."
+    },
+    {
+      "name": "vjp",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp!",
+        "python": "vjp",
+        "rust": "vjp"
+      }
+    },
+    {
+      "name": "vjp_forcing",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_forcing!",
+        "python": "vjp_forcing",
+        "rust": "vjp_forcing"
       }
     }
   ]

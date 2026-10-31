@@ -29,9 +29,13 @@ fn is_lit_val(e: &Expr, v: f64) -> bool {
 }
 
 pub fn simplify_jl(e: &Expr) -> Expr {
-    let Expr::Operator(_) = e else { return e.clone() };
+    let Expr::Operator(_) = e else {
+        return e.clone();
+    };
     let node_e = map_expr_children(e, &mut |c| simplify_jl(c));
-    let Expr::Operator(node) = &node_e else { unreachable!() };
+    let Expr::Operator(node) = &node_e else {
+        unreachable!()
+    };
     let args = &node.args;
     let o = node.op.as_str();
 
@@ -42,11 +46,7 @@ pub fn simplify_jl(e: &Expr) -> Expr {
         if let Ok(rv) = evaluate(&node_e, &HashMap::new()) {
             if !rv.is_nan() {
                 let all_int = args.iter().all(|a| matches!(a, Expr::Integer(_)));
-                if all_int
-                    && rv.is_finite()
-                    && rv == rv.trunc()
-                    && rv.abs() <= TWO63
-                {
+                if all_int && rv.is_finite() && rv == rv.trunc() && rv.abs() <= TWO63 {
                     if rv.abs() != TWO63 {
                         return Expr::Integer(rv as i64);
                     }
@@ -66,8 +66,11 @@ pub fn simplify_jl(e: &Expr) -> Expr {
 
     match o {
         "+" => {
-            let nz: Vec<Expr> =
-                args.iter().filter(|a| !is_lit_val(a, 0.0)).cloned().collect();
+            let nz: Vec<Expr> = args
+                .iter()
+                .filter(|a| !is_lit_val(a, 0.0))
+                .cloned()
+                .collect();
             match nz.len() {
                 0 => Expr::Number(0.0),
                 1 => nz.into_iter().next().unwrap(),
@@ -78,8 +81,11 @@ pub fn simplify_jl(e: &Expr) -> Expr {
             if args.iter().any(|a| is_lit_val(a, 0.0)) {
                 return Expr::Number(0.0);
             }
-            let no: Vec<Expr> =
-                args.iter().filter(|a| !is_lit_val(a, 1.0)).cloned().collect();
+            let no: Vec<Expr> = args
+                .iter()
+                .filter(|a| !is_lit_val(a, 1.0))
+                .cloned()
+                .collect();
             match no.len() {
                 0 => Expr::Number(1.0),
                 1 => no.into_iter().next().unwrap(),
@@ -94,9 +100,7 @@ pub fn simplify_jl(e: &Expr) -> Expr {
             if is_lit_val(expo, 1.0) {
                 return base.clone();
             }
-            if is_lit_val(base, 0.0)
-                && lit_val(expo).map(|v| v > 0.0).unwrap_or(false)
-            {
+            if is_lit_val(base, 0.0) && lit_val(expo).map(|v| v > 0.0).unwrap_or(false) {
                 return Expr::Number(0.0);
             }
             if is_lit_val(base, 1.0) {

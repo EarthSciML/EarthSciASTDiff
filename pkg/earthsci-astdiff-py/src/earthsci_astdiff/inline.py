@@ -1,4 +1,5 @@
 """Observed inlining and `index`-of-array-expression β-reduction (inline.jl)."""
+
 from __future__ import annotations
 
 import re
@@ -17,8 +18,7 @@ class InlineError(Exception):
     pass
 
 
-def inline_observed(e: Expr, obs: dict[str, Expr],
-                    obs_names: list | None = None) -> Expr:
+def inline_observed(e: Expr, obs: dict[str, Expr], obs_names: list | None = None) -> Expr:
     """Inline observed reads, β-reduce `index`-of-`faq`, lower
     `index`-of-`makearray` to region membership `ifelse`. Fixpoint-iterated.
     Every substitution is capture-avoiding, and a faq node binding a name an
@@ -33,8 +33,7 @@ def inline_observed(e: Expr, obs: dict[str, Expr],
         if skey(e2) == skey(e):
             return e2
         e = e2
-    raise InlineError(
-        f"no fixpoint after {MAX_INLINE_PASSES} passes (cyclic observed?)")
+    raise InlineError(f"no fixpoint after {MAX_INLINE_PASSES} passes (cyclic observed?)")
 
 
 _GEN = re.compile(r"^_c\d+_")
@@ -66,8 +65,7 @@ class _Fresh:
         while True:
             n += 1
             c = f"_c{n}_{base}"
-            if c not in self.taken and c not in self.obs_names[0] \
-                    and c not in avoid:
+            if c not in self.taken and c not in self.obs_names[0] and c not in avoid:
                 return c
 
 
@@ -98,8 +96,7 @@ def _rename_binders(e: ExprNode, names, fresh: _Fresh, avoid) -> ExprNode:
     """Rename the binders ``names`` of faq node ``e`` to fresh ones, clear of
     ``avoid`` and of every name under ``e``."""
     if e.join is not None:
-        raise InlineError("cannot rename the indices of a joined faq node "
-                          "(join keys name them)")
+        raise InlineError("cannot rename the indices of a joined faq node (join keys name them)")
     av = all_names(e, set(avoid))
     ren: dict[str, Expr] = {}
     for n in names:
@@ -109,12 +106,15 @@ def _rename_binders(e: ExprNode, names, fresh: _Fresh, avoid) -> ExprNode:
     fv = set(ren.values())
     return replace(
         e,
-        ranges=None if e.ranges is None
+        ranges=None
+        if e.ranges is None
         else {ren.get(str(n), str(n)): r for n, r in e.ranges.items()},
-        output_idx=None if e.output_idx is None
+        output_idx=None
+        if e.output_idx is None
         else [ren.get(x, x) if isinstance(x, str) else x for x in e.output_idx],
         expr=_csubst(e.expr, ren, fv, fresh),
-        filter=None if e.filter is None else _csubst(e.filter, ren, fv, fresh))
+        filter=None if e.filter is None else _csubst(e.filter, ren, fv, fresh),
+    )
 
 
 def _csubst(e: Expr, m: dict, fv: set, fresh: _Fresh) -> Expr:
@@ -148,8 +148,7 @@ def _beta_faq(de: ExprNode, sub: list[Expr], fresh: _Fresh, scope) -> Expr:
     around the reading site (``scope``), is renamed apart."""
     oidx = [str(x) for x in (de.output_idx or [])]
     if len(sub) != len(oidx):
-        raise InlineError(
-            f"index arity {len(sub)} ≠ rank {len(oidx)} of a faq read")
+        raise InlineError(f"index arity {len(sub)} ≠ rank {len(oidx)} of a faq read")
     ranges = de.ranges or {}
     cnames = sorted(str(n) for n in ranges if str(n) not in oidx)
     subst: dict[str, Expr] = {n: sub[k] for k, n in enumerate(oidx)}
@@ -159,8 +158,9 @@ def _beta_faq(de: ExprNode, sub: list[Expr], fresh: _Fresh, scope) -> Expr:
     if not cnames and de.filter is None:
         return _csubst(de.expr, subst, fv, fresh)
     if de.join is not None:
-        raise InlineError("cannot inline a read of a joined faq definition "
-                          "(join keys name its indices)")
+        raise InlineError(
+            "cannot inline a read of a joined faq definition (join keys name its indices)"
+        )
     newranges = {}
     av = fv | set(scope) | set(cnames)
     for n in cnames:
@@ -172,10 +172,13 @@ def _beta_faq(de: ExprNode, sub: list[Expr], fresh: _Fresh, scope) -> Expr:
         else:
             newranges[n] = ranges[n]
     fv2 = fv | {x for x in subst.values() if isinstance(x, str)}
-    return replace(de, output_idx=[], ranges=newranges,
-                   expr=_csubst(de.expr, subst, fv2, fresh),
-                   filter=None if de.filter is None
-                   else _csubst(de.filter, subst, fv2, fresh))
+    return replace(
+        de,
+        output_idx=[],
+        ranges=newranges,
+        expr=_csubst(de.expr, subst, fv2, fresh),
+        filter=None if de.filter is None else _csubst(de.filter, subst, fv2, fresh),
+    )
 
 
 def _needs_inline(e: Expr, scope=frozenset()) -> bool:
@@ -202,8 +205,9 @@ def _needs_inline(e: Expr, scope=frozenset()) -> bool:
     return found
 
 
-def _index_makearray(ma: ExprNode, idx: list[Expr], obs: dict[str, Expr],
-                     fresh: _Fresh, scope) -> Expr:
+def _index_makearray(
+    ma: ExprNode, idx: list[Expr], obs: dict[str, Expr], fresh: _Fresh, scope
+) -> Expr:
     """index(makearray(regions, values), e…) → nested region ifelse.
     Fold from the FIRST region outward so later regions override (§4.3.2)."""
     result: Expr = 0
@@ -219,21 +223,21 @@ def _index_makearray(ma: ExprNode, idx: list[Expr], obs: dict[str, Expr],
             oidx = [str(x) for x in val.output_idx]
             if len(oidx) != len(sub_idx):
                 raise InlineError(
-                    f"makearray value rank {len(oidx)} ≠ region free rank "
-                    f"{len(sub_idx)}")
+                    f"makearray value rank {len(oidx)} ≠ region free rank {len(sub_idx)}"
+                )
             v = _beta_faq(val, sub_idx, fresh, scope)
-        elif isinstance(val, str) or (isinstance(val, ExprNode) and
-                                      val.op in ("makearray", "index")):
+        elif isinstance(val, str) or (
+            isinstance(val, ExprNode) and val.op in ("makearray", "index")
+        ):
             v = _inline_once(op("index", val, *sub_idx), obs, fresh, scope)
         else:
-            v = val                      # scalar broadcast over the region
+            v = val  # scalar broadcast over the region
         cond = conds[0] if len(conds) == 1 else op("and", *conds)
         result = op("ifelse", cond, v, result)
     return result
 
 
-def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh,
-                 scope: frozenset) -> Expr:
+def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh, scope: frozenset) -> Expr:
     """One pass; ``scope`` is the index names the enclosing faq nodes bind."""
     if isinstance(e, str):
         # A name an enclosing faq binds is that index, not an observed read.
@@ -251,8 +255,7 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh,
         if t.op == "makearray":
             return _index_makearray(t, args(), obs, fresh, scope)
         if t.op == "faq":
-            return _inline_once(_beta_faq(t, args(), fresh, scope), obs, fresh,
-                                scope)
+            return _inline_once(_beta_faq(t, args(), fresh, scope), obs, fresh, scope)
     if e.op == "faq":
         # A faq node binding a name already bound around it is renamed apart:
         # the band calculus reads a free index in a derivative by name.
@@ -263,22 +266,42 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh,
             b = binders(e)
         inner = scope | frozenset(b)
         return map_children(e, lambda x: _inline_once(x, obs, fresh, inner))
-    if (e.op == "index" and isinstance(e.args[0], str) and e.args[0] in obs
-            and e.args[0] not in scope):
+    if (
+        e.op == "index"
+        and isinstance(e.args[0], str)
+        and e.args[0] in obs
+        and e.args[0] not in scope
+    ):
         name = e.args[0]
         de = obs[name]
         if isinstance(de, ExprNode) and de.op == "faq":
             oidx = de.output_idx or []
             if len(oidx) != len(e.args) - 1:
                 raise InlineError(
-                    f"index arity {len(e.args) - 1} ≠ rank {len(oidx)} of "
-                    f"observed `{name}`")
+                    f"index arity {len(e.args) - 1} ≠ rank {len(oidx)} of observed `{name}`"
+                )
             return _beta_faq(de, args(), fresh, scope)
         if isinstance(de, ExprNode) and de.op == "makearray":
             return _index_makearray(de, args(), obs, fresh, scope)
         if isinstance(de, ExprNode) and de.op == "const":
             return op("index", de, *args())
         raise InlineError(
-            f"index into observed `{name}` whose definition is not an "
-            "faq, makearray or const")
+            f"index into observed `{name}` whose definition is not an faq, makearray or const"
+        )
     return map_children(e, lambda x: _inline_once(x, obs, fresh, scope))
+
+
+def subst_free(e: Expr, m: dict) -> Expr:
+    """Substitution that does not descend into a faq for the names it binds
+    (bands.jl ``_subst_free``)."""
+    if isinstance(e, str):
+        return m.get(e, e)
+    if not isinstance(e, ExprNode):
+        return e
+    if e.op == "faq":
+        bound = binders(e)
+        if any(n in m for n in bound):
+            m = {k: v for k, v in m.items() if k not in bound}
+            if not m:
+                return e
+    return map_children(e, lambda x: subst_free(x, m))

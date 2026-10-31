@@ -38,8 +38,10 @@ defining expression), β-reduce `index`-of-`faq`, and lower
 `obs_names` caches the names used by `obs`'s definitions; a caller inlining
 many expressions against one `obs` passes one `Ref` to all of them.
 """
-function inline_observed(e::ASTExpr, obs::Dict{String,ASTExpr};
-                         obs_names = Ref{Union{Nothing,Set{String}}}(nothing))::ASTExpr
+function inline_observed(
+        e::ASTExpr, obs::Dict{String, ASTExpr};
+        obs_names = Ref{Union{Nothing, Set{String}}}(nothing)
+    )::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
     # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
     # "did this pass change anything?", and `skey(e2) == skey(e)` answers it
@@ -74,9 +76,9 @@ end
 # a tree needing no rename pays nothing for it.
 mutable struct _Fresh
     root::ASTExpr
-    obs::Dict{String,ASTExpr}
-    obs_names::Base.RefValue{Union{Nothing,Set{String}}}
-    taken::Union{Set{String},Nothing}
+    obs::Dict{String, ASTExpr}
+    obs_names::Base.RefValue{Union{Nothing, Set{String}}}
+    taken::Union{Set{String}, Nothing}
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -97,6 +99,7 @@ function (f::_Fresh)(name::String, avoid)::String
         c = "_c$(n)_$base"
         c in f.taken || c in f.obs_names[] || c in avoid || return c
     end
+    return
 end
 
 # Every variable name and every faq-bound index name in `e`.
@@ -113,7 +116,7 @@ end
 # The index names a faq node binds: its ranges (sorted, so renaming is
 # deterministic across bindings) and its named output indices.
 function _binders(e::OpExpr)::Vector{String}
-    b = sort!(String[String(n) for n in keys(something(e.ranges, Dict{String,Any}()))])
+    b = sort!(String[String(n) for n in keys(something(e.ranges, Dict{String, Any}()))])
     for x in something(e.output_idx, Any[])
         x isa AbstractString && !(String(x) in b) && push!(b, String(x))
     end
@@ -123,10 +126,13 @@ end
 # Rename the binders `names` of faq node `e` to fresh ones (clear of `avoid`
 # and of every name under `e`, so no inner binder can capture them).
 function _rename_binders(e::OpExpr, names, fresh::_Fresh, avoid)::OpExpr
-    e.join === nothing || throw(InlineError(
-        "cannot rename the indices of a joined faq node (join keys name them)"))
+    e.join === nothing || throw(
+        InlineError(
+            "cannot rename the indices of a joined faq node (join keys name them)"
+        )
+    )
     av = _all_names!(Set{String}(avoid), e)
-    ren = Dict{String,ASTExpr}()
+    ren = Dict{String, ASTExpr}()
     for n in names
         f = fresh(n, av)
         push!(av, f)
@@ -134,27 +140,31 @@ function _rename_binders(e::OpExpr, names, fresh::_Fresh, avoid)::OpExpr
     end
     rn(n) = haskey(ren, String(n)) ? ren[String(n)].name : n
     fv = Set{String}(x.name for x in values(ren))
-    return EarthSciAST.reconstruct(e;
+    return EarthSciAST.reconstruct(
+        e;
         ranges = e.ranges === nothing ? nothing :
-                 Dict{String,Any}(rn(n) => r for (n, r) in e.ranges),
+            Dict{String, Any}(rn(n) => r for (n, r) in e.ranges),
         output_idx = e.output_idx === nothing ? nothing :
-                     Any[x isa AbstractString ? rn(x) : x for x in e.output_idx],
+            Any[x isa AbstractString ? rn(x) : x for x in e.output_idx],
         expr_body = _csubst(e.expr_body, ren, fv, fresh),
-        filter = e.filter === nothing ? nothing : _csubst(e.filter, ren, fv, fresh))
+        filter = e.filter === nothing ? nothing : _csubst(e.filter, ren, fv, fresh)
+    )
 end
 
 # CAPTURE-AVOIDING substitution (upstream `substitute` is not): a faq node
 # shadows the names it binds, and one binding a name free in a replacement
 # (`fv`) is renamed apart before the substitution enters it.
-function _csubst(e::ASTExpr, m::Dict{String,ASTExpr}, fv::Set{String},
-                 fresh::_Fresh)::ASTExpr
+function _csubst(
+        e::ASTExpr, m::Dict{String, ASTExpr}, fv::Set{String},
+        fresh::_Fresh
+    )::ASTExpr
     isempty(m) && return e
     e isa VarExpr && return get(m, e.name, e)
     e isa OpExpr || return e
     if e.op == "faq"
         b = _binders(e)
         if any(n -> haskey(m, n), b)
-            m = Dict{String,ASTExpr}(k => v for (k, v) in m if !(k in b))
+            m = Dict{String, ASTExpr}(k => v for (k, v) in m if !(k in b))
             isempty(m) && return e
         end
         clash = [n for n in b if n in fv]
@@ -178,20 +188,26 @@ end
 # written inline.
 function _beta_faq(def::OpExpr, sub::Vector{ASTExpr}, fresh::_Fresh, scope)::ASTExpr
     oidx = [String(x) for x in something(def.output_idx, Any[])]
-    length(sub) == length(oidx) || throw(InlineError(
-        "index arity $(length(sub)) ≠ rank $(length(oidx)) of a faq read"))
-    ranges = def.ranges === nothing ? Dict{String,Any}() : def.ranges
+    length(sub) == length(oidx) || throw(
+        InlineError(
+            "index arity $(length(sub)) ≠ rank $(length(oidx)) of a faq read"
+        )
+    )
+    ranges = def.ranges === nothing ? Dict{String, Any}() : def.ranges
     cnames = sort!([String(n) for n in keys(ranges) if !(String(n) in oidx)])
-    subst = Dict{String,ASTExpr}(n => sub[k] for (k, n) in enumerate(oidx))
+    subst = Dict{String, ASTExpr}(n => sub[k] for (k, n) in enumerate(oidx))
     fv = Set{String}()
     for x in sub
         union!(fv, free_variables(x))
     end
     isempty(cnames) && def.filter === nothing &&
         return _csubst(def.expr_body, subst, fv, fresh)
-    def.join === nothing || throw(InlineError(
-        "cannot inline a read of a joined faq definition (join keys name its indices)"))
-    newranges = Dict{String,Any}()
+    def.join === nothing || throw(
+        InlineError(
+            "cannot inline a read of a joined faq definition (join keys name its indices)"
+        )
+    )
+    newranges = Dict{String, Any}()
     av = union(fv, scope, cnames)
     for n in cnames
         if n in fv || n in scope
@@ -207,10 +223,12 @@ function _beta_faq(def::OpExpr, sub::Vector{ASTExpr}, fresh::_Fresh, scope)::AST
     for x in values(subst)
         x isa VarExpr && push!(fv2, x.name)
     end
-    return EarthSciAST.reconstruct(def; output_idx = Any[], ranges = newranges,
-                                   expr_body = _csubst(def.expr_body, subst, fv2, fresh),
-                                   filter = def.filter === nothing ? nothing :
-                                            _csubst(def.filter, subst, fv2, fresh))
+    return EarthSciAST.reconstruct(
+        def; output_idx = Any[], ranges = newranges,
+        expr_body = _csubst(def.expr_body, subst, fv2, fresh),
+        filter = def.filter === nothing ? nothing :
+            _csubst(def.filter, subst, fv2, fresh)
+    )
 end
 
 # Whether a pass could change `e` with no observed to inline: an
@@ -262,12 +280,15 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
             # (`shift = lo - origins[kk]`). No fixture in this suite exercises
             # a shifted value range on this path, so the two are consistent
             # only where the shift is zero.
-            tgt = length(oidx) == length(idx)     ? idx :
-                  length(oidx) == length(sub_idx) ? sub_idx :
-                  throw(InlineError(
-                      "makearray value rank $(length(oidx)) matches neither the " *
-                      "region rank $(length(idx)) nor the region free rank " *
-                      "$(length(sub_idx))"))
+            tgt = length(oidx) == length(idx) ? idx :
+                length(oidx) == length(sub_idx) ? sub_idx :
+                throw(
+                    InlineError(
+                        "makearray value rank $(length(oidx)) matches neither the " *
+                        "region rank $(length(idx)) nor the region free rank " *
+                        "$(length(sub_idx))"
+                    )
+                )
             _beta_faq(val, tgt, fresh, scope)
         elseif val isa VarExpr || (val isa OpExpr && val.op in ("makearray", "index"))
             _inline_once(op("index", val, sub_idx...), obs, fresh, scope)
@@ -312,8 +333,11 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
             def = obs[e.args[1].name]
             if def isa OpExpr && def.op == "faq"
                 oidx = something(def.output_idx, Any[])
-                length(oidx) == length(e.args) - 1 || throw(InlineError(
-                    "index arity $(length(e.args)-1) ≠ rank $(length(oidx)) of observed `$(e.args[1].name)`"))
+                length(oidx) == length(e.args) - 1 || throw(
+                    InlineError(
+                        "index arity $(length(e.args) - 1) ≠ rank $(length(oidx)) of observed `$(e.args[1].name)`"
+                    )
+                )
                 return _beta_faq(def, args(), fresh, scope)
             elseif def isa OpExpr && def.op == "makearray"
                 # A named flux-style field: same lowering as an anonymous
@@ -327,8 +351,11 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
                 # a closed `index(const, …)` form.
                 return op("index", def, args()...)
             else
-                throw(InlineError(
-                    "index into observed `$(e.args[1].name)` whose definition is not a faq, makearray or const"))
+                throw(
+                    InlineError(
+                        "index into observed `$(e.args[1].name)` whose definition is not a faq, makearray or const"
+                    )
+                )
             end
         end
         return map_children(x -> _inline_once(x, obs, fresh, scope), e)

@@ -4,6 +4,7 @@ Must match esm-jacobian-spec.md §3 row-for-row (the same table the Julia
 reference implements in ``scalar_rules.jl``); the shared band-list goldens
 pin the two implementations against each other.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -12,18 +13,41 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expression import free_variables
 
 from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
+from .reductions import reduce_op, window_weight
 
 # The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
 # their time argument, so a.e. zero. ``datetime.julian_day`` is not one of them.
 PIECEWISE_CONSTANT_DATETIME = {
-    "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
-    "datetime.minute", "datetime.second", "datetime.day_of_year",
+    "datetime.year",
+    "datetime.month",
+    "datetime.day",
+    "datetime.hour",
+    "datetime.minute",
+    "datetime.second",
+    "datetime.day_of_year",
     "datetime.is_leap_year",
 }
 
 ZERO_DERIV_OPS = {
-    "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
-    "sign", "floor", "ceil", "pi", "π", "e", "true", "false", "const", "enum",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "==",
+    "!=",
+    "and",
+    "or",
+    "not",
+    "sign",
+    "floor",
+    "ceil",
+    "pi",
+    "π",
+    "e",
+    "true",
+    "false",
+    "const",
+    "enum",
     "Pre",
 }
 
@@ -37,9 +61,9 @@ def dscalar(e: Expr, s: Site) -> Expr:
     if is_site(e, s):
         return 1
     if not isinstance(e, ExprNode):
-        return 0                     # literal, or a different variable
+        return 0  # literal, or a different variable
     if not occurs(e, s):
-        return 0                     # structural short-circuit
+        return 0  # structural short-circuit
     o, a = e.op, e.args
 
     def d(x: Expr) -> Expr:
@@ -103,7 +127,7 @@ def dscalar(e: Expr, s: Site) -> Expr:
         return op("/", d(a[0]), add(1, neg(op("^", a[0], 2))))
     if o == "atan" and len(a) == 1:
         return op("/", d(a[0]), add(1, op("^", a[0], 2)))
-    if o in ("atan", "atan2"):       # atan(y, x)
+    if o in ("atan", "atan2"):  # atan(y, x)
         y, x = a[0], a[1]
         den = add(op("^", x, 2), op("^", y, 2))
         return op("/", add(mul(x, d(y)), neg(mul(y, d(x)))), den)
@@ -128,64 +152,63 @@ def dscalar(e: Expr, s: Site) -> Expr:
     if o == "index":
         raise DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent "
-            "index) has no scalar rule")
+            "index) has no scalar rule"
+        )
     raise DerivativeRuleError(
         f"no derivative rule for op `{o}` "
-        "(rewrite-target ops must be lowered before differentiation)")
-
-
-def plain_sum(e: ExprNode) -> bool:
-    """Whether faq node ``e`` reduces by ordinary ``+`` (scalar_rules.jl
-    ``_plain_sum``): a ``semiring`` supersedes ``reduce``, so a
-    ``max_product`` node with no ``reduce`` is a max, not a sum."""
-    if e.semiring is None:
-        return e.reduce in (None, "+")
-    return e.semiring == "sum_product"
+        "(rewrite-target ops must be lowered before differentiation)"
+    )
 
 
 def reduction(e: ExprNode) -> str:
-    return (f"reduce=`{e.reduce}`" if e.semiring is None
-            else f"semiring=`{e.semiring}`")
+    """A faq node's reduction, for messages (``reduce_op`` decides it,
+    reductions.py)."""
+    return f"reduce=`{e.reduce}`" if e.semiring is None else f"semiring=`{e.semiring}`"
 
 
 def _dsum(e: ExprNode, s: Site) -> Expr:
-    """A scalar faq sum Σ_k body (scalar_rules.jl ``_dsum``): the sum of the
-    body's derivatives. Bound indices the site's column does not read are
-    summed; those it does read (``u[i,k]`` under Σ_k) are left FREE, for the
-    band emitter to turn into contracted column dimensions (bands.py
-    ``_lift_nested``). Filter, join and non-``"+"`` reductions have no rule."""
-    if e.filter is not None:
-        raise DerivativeRuleError(
-            "filtered faq nodes are not differentiated (the filter gate "
-            "would be dropped from the derivative)")
-    if e.join is not None:
-        raise DerivativeRuleError("joined faq nodes are not differentiated")
-    if not plain_sum(e):
-        raise DerivativeRuleError(
-            f"{reduction(e)} (non-smooth semiring reductions have no rule)")
+    """A scalar faq reduction (scalar_rules.jl ``_dsum``): the ``+`` sum of
+    the body's derivatives, each weighted by what the reduction does with its
+    term (``window_weight``, reductions.py). Bound indices the site's column
+    does not read are summed; those it does read (``u[i,k]`` under Σ_k) are
+    left FREE, for the band emitter to turn into contracted column dimensions
+    (bands.py ``_lift_nested``). A filter keeps its window — the remaining
+    sum's filter, or an ``ifelse`` once every bound index is left free — and
+    its own Dirac term is dropped. A join or a value-invention node has no
+    rule (spec §3.5)."""
+    red = reduce_op(e, DerivativeRuleError)
     db = dscalar(e.expr, s)
     if is_zero(db):
         return 0
     ranges = e.ranges or {}
+    db = window_weight(red, e, sorted(str(n) for n in ranges), db, DerivativeRuleError)
+
+    def plus(**kw):
+        # A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+        if red == "+":
+            return replace(e, expr=db, **kw)
+        return replace(e, expr=db, reduce="+", semiring=None, **kw)
+
     read: set[str] = set()
     if isinstance(s.expr, ExprNode):
         for x in s.expr.args[1:]:
             read |= set(free_variables(x))
     summed = {n: r for n, r in ranges.items() if n not in read}
     if len(summed) == len(ranges):
-        return replace(e, expr=db)
+        return plus()
     if not summed:
-        return db
-    return replace(e, expr=db, ranges=summed)
+        return db if e.filter is None else op("ifelse", e.filter, db, 0)
+    return plus(ranges=summed)
 
 
 def _const_vector(e: Expr) -> list[float] | None:
     if not (isinstance(e, ExprNode) and e.op == "const"):
         return None
     v = e.value
-    if not (isinstance(v, list) and
-            all(isinstance(x, (int, float)) and not isinstance(x, bool)
-                for x in v)):
+    if not (
+        isinstance(v, list)
+        and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v)
+    ):
         return None
     return [float(x) for x in v]
 
@@ -199,9 +222,10 @@ def _const_matrix(e: Expr) -> list[list[float]] | None:
         return None
     rows = []
     for r in v:
-        if not (isinstance(r, list) and
-                all(isinstance(x, (int, float)) and not isinstance(x, bool)
-                    for x in r)):
+        if not (
+            isinstance(r, list)
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in r)
+        ):
             return None
         rows.append([float(x) for x in r])
     if any(len(r) != len(rows[0]) for r in rows):
@@ -209,22 +233,23 @@ def _const_matrix(e: Expr) -> list[list[float]] | None:
     return rows
 
 
-def _bilinear_partial(T: list[list[float]], xv: list[float], yv: list[float],
-                      xe: Expr, ye: Expr) -> Expr:
+def _bilinear_partial(
+    T: list[list[float]], xv: list[float], yv: list[float], xe: Expr, ye: Expr
+) -> Expr:
     """∂(bilinear blend)/∂(the axis of ``xv``) — see scalar_rules.jl."""
     nx, ny = len(xv), len(yv)
-    out: Expr = 0                            # x ≥ axis_x[nx]: flat in x
-    for i in range(nx - 2, -1, -1):          # 0-based cell i ↔ knots i, i+1
+    out: Expr = 0  # x ≥ axis_x[nx]: flat in x
+    for i in range(nx - 2, -1, -1):  # 0-based cell i ↔ knots i, i+1
 
-        def sl(j: int) -> float:
+        def sl(j: int, i: int = i) -> float:
             return (T[i + 1][j] - T[i][j]) / (xv[i + 1] - xv[i])
 
-        leaf: Expr = sl(ny - 1)              # y ≥ axis_y[ny]: top edge row
+        leaf: Expr = sl(ny - 1)  # y ≥ axis_y[ny]: top edge row
         for j in range(ny - 2, -1, -1):
             wy = op("/", add(ye, -yv[j]), yv[j + 1] - yv[j])
             ex = add(sl(j), mul(wy, add(sl(j + 1), neg(sl(j)))))
             leaf = op("ifelse", op("<", ye, yv[j + 1]), ex, leaf)
-        leaf = op("ifelse", op("<", ye, yv[0]), sl(0), leaf)   # bottom edge
+        leaf = op("ifelse", op("<", ye, yv[0]), sl(0), leaf)  # bottom edge
         out = op("ifelse", op("<", xe, xv[i + 1]), leaf, out)
     return op("ifelse", op("<", xe, xv[0]), 0, out)
 
@@ -240,8 +265,7 @@ def dfn(e: ExprNode, s: Site) -> Expr:
     if name == "datetime.julian_day":
         # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
         if len(a) != 1:
-            raise DerivativeRuleError(
-                f"`datetime.julian_day` takes 1 argument, got {len(a)}")
+            raise DerivativeRuleError(f"`datetime.julian_day` takes 1 argument, got {len(a)}")
         dx = dscalar(a[0], s)
         if is_zero(dx):
             return 0
@@ -255,17 +279,16 @@ def dfn(e: ExprNode, s: Site) -> Expr:
         if yv is None or xv is None:
             raise DerivativeRuleError(
                 "interp.linear table/axis must be literal `const` arrays "
-                "(spec §9.2 interp_table_not_const)")
+                "(spec §9.2 interp_table_not_const)"
+            )
         n = len(xv)
         if n != len(yv) or n < 2:
-            raise DerivativeRuleError(
-                "interp.linear table/axis length mismatch or < 2 knots")
-        slopes = [(yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k])
-                  for k in range(n - 1)]
-        slope: Expr = 0                        # x ≥ axis[N]: flat
+            raise DerivativeRuleError("interp.linear table/axis length mismatch or < 2 knots")
+        slopes = [(yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]) for k in range(n - 1)]
+        slope: Expr = 0  # x ≥ axis[N]: flat
         for k in range(n - 2, -1, -1):
             slope = op("ifelse", op("<", x, xv[k + 1]), slopes[k], slope)
-        slope = op("ifelse", op("<", x, xv[0]), 0, slope)      # flat below
+        slope = op("ifelse", op("<", x, xv[0]), 0, slope)  # flat below
         return mul(slope, dx)
     if name == "interp.bilinear":
         table, ax, ay, x, y = a[0], a[1], a[2], a[3], a[4]
@@ -277,11 +300,11 @@ def dfn(e: ExprNode, s: Site) -> Expr:
         if T is None or xv is None or yv is None:
             raise DerivativeRuleError(
                 "interp.bilinear table/axes must be literal `const` arrays "
-                "(spec §9.2 interp_table_not_const)")
+                "(spec §9.2 interp_table_not_const)"
+            )
         nx, ny = len(xv), len(yv)
         if len(T) != nx or any(len(r) != ny for r in T) or nx < 2 or ny < 2:
-            raise DerivativeRuleError(
-                "interp.bilinear table/axis shape mismatch or < 2 knots")
+            raise DerivativeRuleError("interp.bilinear table/axis shape mismatch or < 2 knots")
         terms = []
         if not is_zero(dx):
             terms.append(mul(_bilinear_partial(T, xv, yv, x, y), dx))

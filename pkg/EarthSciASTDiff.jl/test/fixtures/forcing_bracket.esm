@@ -1,0 +1,510 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "ForcingBracket",
+    "description": "Forcing-axis golden fixture (esm-jacobian-spec.md \u00a74.3): an array state c and a scalar state S read a two-record forcing bracket F (a leading length-2 record axis) through a frac-blend weight w(t), a dPSdt-style record difference, and a gather at a constant offset (F's lon axis is one cell wider); a regrid-like reduce-+ contraction with const weights over one record of a native-grid forcing G; and a CONST array parameter E standing in for an emission field (a column of the parameters axis, not of the forcing axis)."
+  },
+  "data_sources": {
+    "MET": {
+      "kind": "grid",
+      "source": {
+        "url_template": "file:///met/{date:%Y%m%d}.nc"
+      }
+    }
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 4
+    },
+    "xf": {
+      "kind": "interval",
+      "size": 5
+    },
+    "xs": {
+      "kind": "interval",
+      "size": 3
+    },
+    "rec": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Bracket": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.5
+        },
+        "S": {
+          "type": "unknown",
+          "default": 1.0
+        },
+        "w": {
+          "type": "unknown"
+        },
+        "Fb": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ]
+        },
+        "dFdt": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ]
+        },
+        "Gr": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ]
+        },
+        "F": {
+          "type": "parameter",
+          "shape": [
+            "rec",
+            "xf"
+          ],
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "PS"
+            }
+          },
+          "default": [
+            [
+              1.0,
+              1.25,
+              1.5,
+              1.75,
+              2.0
+            ],
+            [
+              1.5,
+              1.25,
+              2.0,
+              1.0,
+              0.75
+            ]
+          ]
+        },
+        "G": {
+          "type": "parameter",
+          "shape": [
+            "rec",
+            "xs"
+          ],
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "EMIS"
+            }
+          },
+          "default": [
+            [
+              0.2,
+              0.4,
+              0.6
+            ],
+            [
+              0.3,
+              0.5,
+              0.1
+            ]
+          ]
+        },
+        "E": {
+          "type": "parameter",
+          "shape": [
+            "x"
+          ],
+          "default": [
+            0.1,
+            0.2,
+            0.3,
+            0.4
+          ]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.7
+        },
+        "dt": {
+          "type": "parameter",
+          "default": 1.0
+        },
+        "t_ref": {
+          "type": "parameter",
+          "default": 0.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": "w",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      "t",
+                      "t_ref"
+                    ]
+                  },
+                  "dt"
+                ]
+              },
+              {
+                "op": "floor",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "t",
+                          "t_ref"
+                        ]
+                      },
+                      "dt"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "Fb",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1,
+                        "w"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            "i",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w",
+                    {
+                      "op": "index",
+                      "args": [
+                        "F",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            "i",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "dFdt",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "-",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "F",
+                        2,
+                        {
+                          "op": "+",
+                          "args": [
+                            "i",
+                            1
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "F",
+                        1,
+                        {
+                          "op": "+",
+                          "args": [
+                            "i",
+                            1
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "dt"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "Gr",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "m": {
+                "from": "xs"
+              }
+            },
+            "reduce": "+",
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "const",
+                      "args": [],
+                      "value": [
+                        [
+                          0.5,
+                          0.25,
+                          0.125
+                        ],
+                        [
+                          0.25,
+                          0.5,
+                          0.25
+                        ],
+                        [
+                          0.125,
+                          0.5,
+                          0.5
+                        ],
+                        [
+                          0.125,
+                          0.25,
+                          0.75
+                        ]
+                      ]
+                    },
+                    "i",
+                    "m"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "G",
+                    1,
+                    "m"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    "k",
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Fb",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "E",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "dFdt",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "Gr",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "S"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "k",
+                  {
+                    "op": "index",
+                    "args": [
+                      "c",
+                      1
+                    ]
+                  }
+                ]
+              },
+              {
+                "op": "*",
+                "args": [
+                  "S",
+                  {
+                    "op": "^",
+                    "args": [
+                      {
+                        "op": "index",
+                        "args": [
+                          "F",
+                          1,
+                          1
+                        ]
+                      },
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -32,6 +32,15 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     binds the same `k` (the capture case), squared (chain rule through the
     nested sum), and a scalar observed whose sum is not its root — nested
     sums renamed apart, column-reading sites as `contracted` dimensions
+  - `filtered_scan.esm` — filtered faq nodes (§3.5): an inclusive forward
+    and an exclusive reverse scan, a filtered contracting observed read
+    through a nested sum, a window with an index conjunct and a value
+    conjunct, reseact's `Mz` level scan (`gk < gke` over `(gi, gke)` rows)
+    and a constant-clipped window — the `where` entry-field (§4) target
+  - `semiring_reduce.esm` — non-`+` reductions (§3.5): a running `max`
+    (first argmax), a nested `min` observed, a suffix product (exclusion
+    products), a `max_product` semiring, and a level search used as a
+    subscript (one-hot over the axis)
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a

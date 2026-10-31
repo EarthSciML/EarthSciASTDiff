@@ -2,6 +2,7 @@
 exactly by splitting band row ranges at their affine breakpoints. Everything
 here is conservative — an undecidable condition contributes no breakpoints
 and the result degrades to branch-union behavior."""
+
 from __future__ import annotations
 
 from itertools import product
@@ -45,7 +46,7 @@ def _affine(e: Expr, name: str):
                 return None
             return (t1[0] - t2[0], t1[1] - t2[1])
         if e.op == "*":
-            al, be = 0, 1     # product of affines: at most one sloped factor
+            al, be = 0, 1  # product of affines: at most one sloped factor
             for x in a:
                 t = _affine(x, name)
                 if t is None:
@@ -92,7 +93,7 @@ def _cmp_truth(o: str, al: int, be: int, i: int) -> bool:
 
 
 def _floor_div(a: int, b: int) -> int:
-    return a // b            # Python // is floor division, like Julia fld
+    return a // b  # Python // is floor division, like Julia fld
 
 
 def _breakpoints(bp: dict[str, set[int]], e: Expr, names) -> None:
@@ -106,8 +107,7 @@ def _breakpoints(bp: dict[str, set[int]], e: Expr, names) -> None:
             if t is not None and t[0] != 0:
                 q = _floor_div(-t[1], t[0])
                 for c in (q, q + 1):
-                    if (_cmp_truth(e.op, t[0], t[1], c - 1)
-                            != _cmp_truth(e.op, t[0], t[1], c)):
+                    if _cmp_truth(e.op, t[0], t[1], c - 1) != _cmp_truth(e.op, t[0], t[1], c):
                         bp.setdefault(n, set()).add(c)
     map_children(e, lambda c: (_breakpoints(bp, c, names), c)[1])
 
@@ -126,8 +126,12 @@ def _uniform(cond: Expr, env: dict[str, tuple[int, int]]):
         lo, hi = env[n]
         vlo, vhi = t[0] * lo + t[1], t[0] * hi + t[1]
         a, b = min(vlo, vhi), max(vlo, vhi)
-        f = {"<": lambda x: x < 0, "<=": lambda x: x <= 0,
-             ">": lambda x: x > 0, ">=": lambda x: x >= 0}[cond.op]
+        f = {
+            "<": lambda x: x < 0,
+            "<=": lambda x: x <= 0,
+            ">": lambda x: x > 0,
+            ">=": lambda x: x >= 0,
+        }[cond.op]
         return f(a) if f(a) == f(b) else None
     if cond.op == "and":
         anynone = False
@@ -204,7 +208,6 @@ def clip_regions(body: Expr, ridx, rows):
     # cycles the last. Golden band order pins the Julia order.
     for cell_r in product(*reversed(dims)):
         rows2 = list(reversed(cell_r))
-        env = {dimname[k]: rows2[k] for k in range(len(rows2))
-               if dimname[k] is not None}
+        env = {dimname[k]: rows2[k] for k in range(len(rows2)) if dimname[k] is not None}
         out.append((rows2, _decide(body, env)))
     return out

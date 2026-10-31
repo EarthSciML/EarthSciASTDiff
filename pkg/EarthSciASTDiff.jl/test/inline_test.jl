@@ -15,34 +15,54 @@
 using JSON3
 
 @testset "inline: full-rank faq value over a pinned makearray region" begin
-    O(kv...) = Dict{String,Any}(kv...)
+    O(kv...) = Dict{String, Any}(kv...)
     _u(i, j) = O("op" => "index", "args" => Any["u", i, j])
     # F = makearray( 0 over [1,3]x[1,2] ; 2*u[i,j] over the PINNED row i=2 )
-    face = O("op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
-             "ranges" => O("i" => Any[2, 2], "j" => Any[1, 2]),
-             "expr" => O("op" => "*", "args" => Any[2.0, _u("i", "j")]))
-    Fdef = O("op" => "makearray", "args" => Any[],
-             "regions" => Any[Any[Any[1, 3], Any[1, 2]], Any[Any[2, 2], Any[1, 2]]],
-             "values" => Any[0.0, face])
-    rhs = O("op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
-            "ranges" => O("i" => Any[1, 3], "j" => Any[1, 2]),
-            "expr" => O("op" => "+", "args" => Any[
+    face = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
+        "ranges" => O("i" => Any[2, 2], "j" => Any[1, 2]),
+        "expr" => O("op" => "*", "args" => Any[2.0, _u("i", "j")])
+    )
+    Fdef = O(
+        "op" => "makearray", "args" => Any[],
+        "regions" => Any[Any[Any[1, 3], Any[1, 2]], Any[Any[2, 2], Any[1, 2]]],
+        "values" => Any[0.0, face]
+    )
+    rhs = O(
+        "op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
+        "ranges" => O("i" => Any[1, 3], "j" => Any[1, 2]),
+        "expr" => O(
+            "op" => "+", "args" => Any[
                 O("op" => "-", "args" => Any[_u("i", "j")]),
-                O("op" => "index", "args" => Any["F", "i", "j"])]))
-    doc = O("esm" => "1.1.0",
-            "metadata" => O("name" => "PinnedFace"),
-            "index_sets" => O("x" => O("kind" => "interval", "size" => 3),
-                              "y" => O("kind" => "interval", "size" => 2)),
-            "models" => O("PinnedFace" => O(
+                O("op" => "index", "args" => Any["F", "i", "j"]),
+            ]
+        )
+    )
+    doc = O(
+        "esm" => "1.1.0",
+        "metadata" => O("name" => "PinnedFace"),
+        "index_sets" => O(
+            "x" => O("kind" => "interval", "size" => 3),
+            "y" => O("kind" => "interval", "size" => 2)
+        ),
+        "models" => O(
+            "PinnedFace" => O(
                 "variables" => O(
                     "u" => O("type" => "unknown", "shape" => Any["x", "y"], "default" => 0.5),
                     # esm 1.0.0: an observed is an unknown DEFINED by a
                     # bare-variable-LHS equation; `variable.expression` is gone.
-                    "F" => O("type" => "unknown", "shape" => Any["x", "y"])),
+                    "F" => O("type" => "unknown", "shape" => Any["x", "y"])
+                ),
                 "equations" => Any[
                     O("lhs" => "F", "rhs" => Fdef),
-                    O("lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
-                      "rhs" => rhs)])))
+                    O(
+                        "lhs" => O("op" => "D", "args" => Any["u"], "wrt" => "t"),
+                        "rhs" => rhs
+                    ),
+                ]
+            )
+        )
+    )
 
     mktempdir() do d
         path = joinpath(d, "pinned_face.esm")
@@ -53,7 +73,7 @@ using JSON3
 
         res = assemble_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
-        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-14
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         @test all((Jad .!= 0) .<= res.pattern)
         # The pinned row really carries the +2, and no other row does: a
         # diagonal of -1 with +2 added only where the region's singleton dim

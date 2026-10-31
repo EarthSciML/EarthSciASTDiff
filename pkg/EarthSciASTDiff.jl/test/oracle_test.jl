@@ -9,7 +9,7 @@
         u = 0.3 .+ rand(length(u0))
         res = assemble_jacobian(file; u = u, p = p)
         Jad = ad_jacobian(f!, u, p, 0.0)
-        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-14
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
         @test all((Jad .!= 0) .<= res.pattern)      # global ⊇ local
     end
 end
@@ -25,7 +25,7 @@ end
         du = similar(q, length(u)); f!(du, u, pp, 0.0); du
     end
     @test res.colnames == [String(k) for k in keys(p)]
-    @test maximum(abs.(Matrix(res.J) .- Jp_ad)) ≤ 1e-12
+    @test maximum(abs.(Matrix(res.J) .- Jp_ad)) ≤ 1.0e-12
 end
 
 @testset "oracle: prepared evaluator reuse" begin
@@ -37,7 +37,7 @@ end
         u = 0.2 .+ rand(length(u0))
         jac(J, u, p, 0.0)
         Jad = ad_jacobian(f!, u, p, 0.0)
-        @test maximum(abs.(Matrix(J) .- Matrix(Jad))) ≤ 1e-14
+        @test maximum(abs.(Matrix(J) .- Matrix(Jad))) ≤ 1.0e-14
     end
 end
 
@@ -49,7 +49,7 @@ end
     res = assemble_jacobian(flat; u = u, p = p)
     Jad = ad_jacobian(f!, u, p, 0.0)
     scale = maximum(abs.(Jad))
-    @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1e-12 * max(scale, 1.0)
+    @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-12 * max(scale, 1.0)
     @test all((Jad .!= 0) .<= res.pattern)
     @test res.structure == :general      # chemistry blocks ⊕ transport + faces
 end

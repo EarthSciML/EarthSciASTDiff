@@ -6,6 +6,7 @@ strips exact 0/1 literals, order-preserving, and folds all-literal nodes
 through the evaluator). Band goldens pin the JULIA behavior, so the
 band calculus uses this port instead of ``earthsci_ast.expression.simplify``.
 """
+
 from __future__ import annotations
 
 import math
@@ -14,7 +15,7 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.numpy_interpreter import evaluate
 
-_TWO63 = 2.0 ** 63
+_TWO63 = 2.0**63
 
 
 def _is_lit(x: Expr) -> bool:
@@ -35,20 +36,22 @@ def simplify_jl(e: Expr) -> Expr:
     # Constant folding, delegated to the official evaluator; a node the
     # evaluator cannot run without bindings declines to fold (algebraic
     # rules below). Mirrors expression.jl's `_foldable_failure` set.
-    if all(_is_lit(a) for a in args):
+    # An aggregate's empty ``args`` are vacuously "all literal", but the
+    # reference's tree-walk declines to evaluate a faq node without bindings
+    # (a sum of a literal body stays a sum, e.g. ``Σ_j 0``).
+    if o != "faq" and all(_is_lit(a) for a in args):
         try:
             rv = float(evaluate(node, {}))
             all_int = all(isinstance(a, int) for a in args)
-            if (all_int and math.isfinite(rv) and rv == math.trunc(rv)
-                    and abs(rv) <= _TWO63):
-                if abs(rv) == _TWO63:      # Julia Int64() InexactError
-                    pass                   # → decline to fold
+            if all_int and math.isfinite(rv) and rv == math.trunc(rv) and abs(rv) <= _TWO63:
+                if abs(rv) == _TWO63:  # Julia Int64() InexactError
+                    pass  # → decline to fold
                 else:
                     return int(rv)
             else:
                 return rv
-        except Exception:                  # any evaluator refusal (unbound
-            pass                           # names, domain errors) declines
+        except Exception:  # any evaluator refusal (unbound
+            pass  # names, domain errors) declines
 
     if o == "+":
         nz = [a for a in args if not _is_lit_val(a, 0.0)]
@@ -57,6 +60,7 @@ def simplify_jl(e: Expr) -> Expr:
         if len(nz) == 1:
             return nz[0]
         from dataclasses import replace
+
         return replace(node, args=nz)
     if o == "*":
         if any(_is_lit_val(a, 0.0) for a in args):
@@ -67,6 +71,7 @@ def simplify_jl(e: Expr) -> Expr:
         if len(no) == 1:
             return no[0]
         from dataclasses import replace
+
         return replace(node, args=no)
     if o == "^" and len(args) == 2:
         base, expo = args

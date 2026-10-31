@@ -4,7 +4,8 @@ Analytical sparse Jacobians for [EarthSciAST](https://github.com/EarthSciML/Eart
 (`.esm`) models, by symbolic differentiation of the expression AST.
 
 Given an arbitrary `.esm` model (or a coupled document's flattened system),
-EarthSciASTDiff computes `∂f/∂u` (states) and `∂f/∂p` (parameters) of the ODE
+EarthSciASTDiff computes `∂f/∂u` (states), `∂f/∂p` (parameters, array-valued
+ones cell by cell), `∂f/∂B` (live forcing buffers) and `∂f/∂t` of the ODE
 right-hand side as a list of structured **bands** — rectangular index
 regions with symbolic column-index expressions and ESM coefficient
 expressions. From the bands it derives, without any numeric probing:
@@ -12,13 +13,16 @@ expressions. From the bands it derives, without any numeric probing:
 - the exact **structural sparsity pattern** (global: `ifelse`/`min`/`max`
   branches unioned, so it is valid at every point),
 - a **structure classification** (`:block_diagonal` / `:banded` /
-  `:general`) for choosing a matrix type,
+  `:general`, and `:column_block` along a column axis the caller names) for
+  choosing a matrix type,
 - optional **symbolic factorization info** (general interface; per-cell
   block LU with Markowitz ordering and fill-in — the chemistry shape — is
   the first implementation),
 - a serialized **`"jacobians"` document block**, so the Jacobian is itself
   an ESM artifact any language binding can evaluate,
-- a prepared evaluator `jac!(J, u, p, t)` over a fixed sparse prototype.
+- a prepared evaluator `jac!(J, u, p, t)` over a fixed sparse prototype,
+- **second-order bands** for Rosenbrock discrete adjoints, contracted to
+  `∇(μᵀ J w)` per step without ever forming a Hessian.
 
 Correctness contract: the derivative is taken on the *same* expanded,
 lowered tree `EarthSciAST.build_evaluator` compiles, and the test suite pins
@@ -44,7 +48,28 @@ flat = flatten(file)
 res = assemble_jacobian(flat; u = u, p = p)   # one-shot: J, pattern, entries…
 ```
 
-`∂f/∂p`: pass `wrt = :parameters` to any of the above.
+`∂f/∂p`: pass `wrt = :parameters` to any of the above. `∂f/∂B`, with respect
+to the cells of the forcing buffers (by default every array parameter with a
+`data` update; pass `forcing = [names…]` to choose), is `wrt = :forcing`:
+
+```julia
+jac = prepare_jacobian(file; wrt = :forcing,
+                       build_kwargs = (param_arrays = buffers,))  # live buffers
+ḡ = Dict(n => zeros(size(buffers[n])) for n in keys(buffers))
+vjp_forcing!(ḡ, jac, λ, u, p, t)         # ḡ_B += (∂f/∂B)ᵀ λ, no matrix formed
+```
+
+Second order, for a Rosenbrock adjoint: an axis pair `(a1, a2)`,
+`a1 ∈ (:states, :time)`, `a2 ∈ (:states, :parameters, :forcing)`:
+
+```julia
+hv = prepare_hvp(file; wrt = (:states, :states))
+hvp!(g, hv, [(μ₁, w₁), (μ₂, w₂)], u, p, t)   # g += ∇_u Σᵢ μᵢᵀ J(u) wᵢ
+doc = jacobian_document(file, "MyModel"; wrt = [:states, (:states, :states)])
+```
+
+In `jacobian_document` a single pair block is `wrt = :states => :states`; a
+bare tuple there is refused, since it also reads as a list of axes.
 
 Solving with the analytical Jacobian (any stiff OrdinaryDiffEq solver;
 loading one activates the SciMLBase package extension):
@@ -156,8 +181,7 @@ EarthSciAST implementation and is gated by the same goldens.
       columns (`u[j]`, `u[i+k]`, `u[conn[i,k]]` const tables) emit entries
       with free `contracted` column dimensions (accumulating at assembly);
       contraction-independent columns emit ordinary entries with a
-      symbolic-sum coefficient. Filtered faq nodes and non-`"+"` semirings
-      still fail loudly.
+      symbolic-sum coefficient.
 - [x] `interp.bilinear` derivative (two clamped-weight partials, per-cell
       slope constants precomputed into nested segment `ifelse`, spec §3.4)
       and `tgrad` (`wrt = :time` through the same band calculus;
@@ -173,8 +197,46 @@ EarthSciAST implementation and is gated by the same goldens.
       differentiates to `1/86400` (it is continuous; the other `datetime.*`
       fields stay 0), and the Rust and Python golden writers emit floats in
       the reference's layout (`2.4405875e6`, not `2440587.5`).
-- [ ] Forcing-buffer columns (∂f/∂(streamed forcing values), the EarthSciIO
-      coupling) — needs the streaming-forcing representation to settle.
+- [x] Forcing-buffer and array-parameter columns
+      ([#1](https://github.com/EarthSciML/EarthSciASTDiff/issues/1), spec
+      §4.3): `wrt: "forcing"` over the cells of the live data buffers (the
+      forcing set inferred from `data` updates or passed in), the record
+      bracket an ordinary leading length-2 axis so the time blend's chain rule
+      falls out of `*`/`+`; array parameters are real columns of
+      `wrt: "parameters"` instead of being dropped at assembly. Blocks carry
+      their `columns` (the canonical column ordinal) and a model's
+      `"jacobians"` entry may be an array of blocks. `vjp_forcing!` applies
+      the transposed bands as a scatter-add into buffer-shaped accumulators
+      (Python and Rust: `prepare_jacobian` once, then `vjp_forcing` per stage).
+      Pinned by `forcing_bracket.{forcing,parameters}.*` goldens.
+- [x] Second-order bands for Rosenbrock discrete adjoints
+      ([#2](https://github.com/EarthSciML/EarthSciASTDiff/issues/2), spec
+      §4.4): the band calculus applied to first-order coefficients, emitted
+      as `wrt: [a1, a2]` blocks (`col2`, `col2_idx`), and contracted per
+      adjoint step by `hvp!` (`g[col2] += coef2 · Σᵢ μᵢ[row] wᵢ[col]`, or
+      the symmetric form on the state pair) — checked against ForwardDiff
+      over ForwardDiff. Pinned by `<fixture>.<a1>-<a2>.*` goldens on
+      `bd_chem`, `arrhenius_chem`, `forcing_bracket` and `minmod_adv`.
+      Python and Rust reproduce the band and block goldens byte-for-byte
+      and the contraction values (`prepare_hvp` once, then `hvp` per
+      step) on their numeric oracles. Rust also contracts them on its
+      production path (below): `HvpProgram` compiles the second-order band
+      fields through the same `RhsProgram` route, and an `HvpPlan`
+      contracts them against the integrator's own layout (whole-domain
+      only for now).
+- [x] Filtered faq nodes, `max`/`min`/`*` reductions and value-indexed reads
+      ([#3](https://github.com/EarthSciML/EarthSciASTDiff/issues/3), spec
+      §3.5): a filter is a gate whose Dirac term is dropped; its index-only
+      conjuncts split the band box exactly and leave a triangular window as
+      the entry's `where` guard (a level scan's `gk < gke`), its value
+      conjuncts stay in the coefficient. `max`/`min` weight each term by the
+      first-extremum indicator (the left-fold tie rule), products by the
+      exclusion product (no division). A subscript that reads a value (a
+      level search `x[κ(u)]`) is one-hot over the axis. `detect_structure(…;
+      column_axis)` reports `:column_block` with a line-by-line
+      factorization plan. Pinned by `filtered_scan` and `semiring_reduce`
+      goldens. Causal recurrences (tangent/adjoint sweeps) are the
+      remaining part of #3.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package
@@ -221,8 +283,14 @@ EarthSciAST implementation and is gated by the same goldens.
       per call (lane layouts fastest, CSR slowest) and builds in
       milliseconds where `prepare_jacobian` takes ~55 s
       (`examples/bench_production.rs`, `scripts/bench-production.jl`).
-      Still to come: tile (stencil) programs, U8's second-order `Contract`,
-      the reseact / CBM-Z benchmarks (B2, B3), and lane programs for
+      U8's second-order contraction rides the same route: `HvpProgram`
+      compiles the second-order band fields (an empty list, as on
+      `minmod_adv`, is a no-op program), and an `HvpPlan` resolves each
+      point to the source's `u ++ aux`, `p` or forcing slots by name for
+      `contract` (both forms), equal to the `hvp` oracle and the `hvals`
+      goldens to 1e-10. Still to come: tile (stencil) programs, a lane
+      form of the second-order contraction (refused today; the domain
+      plan covers it), the reseact / CBM-Z benchmarks (B2, B3), and lane programs for
       column bands that stop short of the column ends (refused by
       earthsci-ast's lane rewrite today; the domain plan covers them).
 - [ ] diffsol solver integration — not needed by EarthSciIntegrator, which

@@ -10,9 +10,9 @@ Uniform system view: `variables` (name → `ModelVariable`), `equations`, and
 the document's `index_sets`. Construct with [`sysview`](@ref).
 """
 struct SysView
-    variables::Dict{String,Any}
+    variables::Dict{String, Any}
     equations::Vector
-    index_sets::Dict{String,Any}
+    index_sets::Dict{String, Any}
 end
 
 # `expanded_model` is EarthSciAST's public template-expansion seam
@@ -40,9 +40,11 @@ import EarthSciAST: expanded_model, expand_flattened_refs
 """
 function sysview(file::EarthSciAST.EsmFile, model_name)
     model = expanded_model(file, model_name === nothing ? nothing : String(model_name))
-    SysView(Dict{String,Any}(String(k) => v for (k, v) in model.variables),
-            model.equations,
-            Dict{String,Any}(String(k) => v for (k, v) in file.index_sets))
+    return SysView(
+        Dict{String, Any}(String(k) => v for (k, v) in model.variables),
+        model.equations,
+        Dict{String, Any}(String(k) => v for (k, v) in file.index_sets)
+    )
 end
 
 function sysview(flat::EarthSciAST.FlattenedSystem)
@@ -58,21 +60,23 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
     # references survived (empty registry), so single-model and
     # `ESS_TEMPLATE_REF_DISABLE=1` documents are byte-identical to before.
     flat = expand_flattened_refs(flat)
-    vars = Dict{String,Any}()
+    vars = Dict{String, Any}()
     for d in (flat.state_variables, flat.parameters, flat.observed_variables),
-        (k, v) in d
+            (k, v) in d
         vars[String(k)] = v
     end
-    SysView(vars, flat.equations,
-            Dict{String,Any}(String(k) => v for (k, v) in flat.index_sets))
+    return SysView(
+        vars, flat.equations,
+        Dict{String, Any}(String(k) => v for (k, v) in flat.index_sets)
+    )
 end
 
 function _ctx(sv::SysView)
-    isets = Dict{String,Int}()
+    isets = Dict{String, Int}()
     for (n, s) in sv.index_sets
         s.size === nothing || (isets[String(n)] = s.size)
     end
-    shapes = Dict{String,Vector{Int}}(); params = Set{String}()
+    shapes = Dict{String, Vector{Int}}(); params = Set{String}()
     for (n, var) in sv.variables
         if var.shape !== nothing && !isempty(var.shape)
             shapes[String(n)] =
@@ -114,8 +118,10 @@ end
 # Whether an equation's LHS is a time derivative of any form — including ones
 # `lhs_state` does not recognize (`D(index(u, 1))`), which no pass supports
 # and none may silently skip.
-_is_derivative(eq) = eq.lhs isa OpExpr && (eq.lhs.op == "D" ||
-    (eq.lhs.op == "faq" && eq.lhs.expr_body isa OpExpr && eq.lhs.expr_body.op == "D"))
+_is_derivative(eq) = eq.lhs isa OpExpr && (
+    eq.lhs.op == "D" ||
+        (eq.lhs.op == "faq" && eq.lhs.expr_body isa OpExpr && eq.lhs.expr_body.op == "D")
+)
 
 """
     lhs_definition(eq) -> Union{String,Nothing}
@@ -151,8 +157,12 @@ function _indexed_definition(eq)
     names = String[x.name for x in sub]
     (String[String(x) for x in f.output_idx] == names && allunique(names)) ||
         return (name, nothing)
-    return (name, OpExpr("faq", ASTExpr[]; output_idx = Any[names...],
-                         expr_body = eq.rhs, ranges = f.ranges))
+    return (
+        name, OpExpr(
+            "faq", ASTExpr[]; output_idx = Any[names...],
+            expr_body = eq.rhs, ranges = f.ranges
+        ),
+    )
 end
 
 # The variable a non-derivative equation defines: a bare LHS (`y ~ …`) or an
@@ -187,7 +197,7 @@ function _observed_defs(sv::SysView)
     for eq in sv.equations
         n = lhs_state(eq); n === nothing || push!(states, String(n))
     end
-    defs = Dict{String,ASTExpr}()
+    defs = Dict{String, ASTExpr}()
     indexed = Set{String}()
     for eq in sv.equations
         bare = lhs_definition(eq)
@@ -197,13 +207,19 @@ function _observed_defs(sv::SysView)
         n in states && continue
         var = get(sv.variables, n, nothing)
         (var !== nothing && var.type == EarthSciAST.UnknownVariable) || continue
-        d === nothing && throw(BandError(
-            "arrayed observed `$n`: defining LHS subscripts must be the " *
-            "distinct output indices (partial definitions are not supported)"))
+        d === nothing && throw(
+            BandError(
+                "arrayed observed `$n`: defining LHS subscripts must be the " *
+                    "distinct output indices (partial definitions are not supported)"
+            )
+        )
         if haskey(defs, n)
-            (n in indexed || bare === nothing) && throw(BandError(
-                "arrayed observed `$n` is defined by more than one equation " *
-                "(piecewise definitions are not supported)"))
+            (n in indexed || bare === nothing) && throw(
+                BandError(
+                    "arrayed observed `$n` is defined by more than one equation " *
+                        "(piecewise definitions are not supported)"
+                )
+            )
             continue
         end
         defs[n] = d
@@ -223,8 +239,12 @@ implicitly (an algebraic unknown) still counts as a slot instead of vanishing
 caller already holds it.
 """
 function view_states(sv::SysView, obs = _observed_defs(sv))
-    return sort!(String[String(n) for (n, var) in sv.variables
-                        if var.type == EarthSciAST.UnknownVariable && !haskey(obs, String(n))])
+    return sort!(
+        String[
+            String(n) for (n, var) in sv.variables
+                if var.type == EarthSciAST.UnknownVariable && !haskey(obs, String(n))
+        ]
+    )
 end
 
 # ── inline pruning: which observed the calculus must descend into ─────────────
@@ -322,10 +342,12 @@ Inlining a body splices it in at its use site, so a body kept for either
 reason can expose fresh subscript occurrences: the scan is iterated to a
 fixpoint over the equations plus the currently-kept bodies.
 """
-function inlinable_observed(obs::Dict{String,ASTExpr}, equations,
-                            targets::AbstractSet{String})::Dict{String,ASTExpr}
-    fvs = Dict{String,Set{String}}(n => free_variables(e) for (n, e) in obs)
-    readers = Dict{String,Vector{String}}()      # name → observed that read it
+function inlinable_observed(
+        obs::Dict{String, ASTExpr}, equations,
+        targets::AbstractSet{String}
+    )::Dict{String, ASTExpr}
+    fvs = Dict{String, Set{String}}(n => free_variables(e) for (n, e) in obs)
+    readers = Dict{String, Vector{String}}()      # name → observed that read it
     work = String[]
     for (n, fv) in fvs
         (isdisjoint(fv, targets) && !_opaque_deps(obs[n])) || push!(work, n)
@@ -357,5 +379,5 @@ function inlinable_observed(obs::Dict{String,ASTExpr}, equations,
         isempty(added) && break
         union!(keep, added)
     end
-    return Dict{String,ASTExpr}(n => obs[n] for n in keep)
+    return Dict{String, ASTExpr}(n => obs[n] for n in keep)
 end
