@@ -45,6 +45,13 @@ Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
 Two Rust-specific parity traps are already handled — Julia `fld` is floor
 division (NOT `div_euclid`, which differs for negative divisors), and
 `simplify_port.rs` carries the same Julia-simplify port as Python.
+No binding evaluates anything: the values are EarthSciAST's, from the
+emitted documents. Rust's `points.rs` is the structural point walk (band
+point → row/column cell) the patterns and scatter plans share. The bindings'
+value tests run a TEST-ONLY oracle against the Julia value goldens
+(`pkg/earthsci-astdiff-rs/tests/common/oracle.rs`,
+`pkg/earthsci-astdiff-py/tests/bandvals.py`) until they emit the product
+documents — never move it back into the package.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

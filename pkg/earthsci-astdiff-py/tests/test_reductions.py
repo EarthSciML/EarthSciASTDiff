@@ -6,9 +6,9 @@ an EXACT pattern — the window's points, no padding."""
 
 import earthsci_ast as ea
 import pytest
+from bandvals import assemble_jacobian
 from earthsci_astdiff import (
     BandError,
-    assemble_jacobian,
     column_lines,
     detect_structure,
     jacobian_bands,

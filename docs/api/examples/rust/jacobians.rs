@@ -1,15 +1,12 @@
-//! Differentiate a model, read its sparsity and structure, and evaluate the Jacobian.
-
-use std::collections::HashMap;
+//! Differentiate a model, read its sparsity and structure, and emit the Jacobian
+//! as a document EarthSciAST evaluates.
 
 use earthsci_ast::load_path;
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::{
-    assemble_jacobian, ctx_of, detect_structure, jacobian_block, jacobian_bands,
+    ctx_of, detect_structure, evaluation_document, jacobian_block, jacobian_bands,
     plan_factorization, sysview, FactorizationPlan, Wrt,
 };
 use earthsci_astdiff_api_examples::fixture;
-use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // region: bands ops=jacobian_bands,sysview
@@ -40,23 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(vars, ["A", "B", "C"]);
     // endregion
 
-    // region: assemble ops=assemble_jacobian
-    let env = Env {
-        states: HashMap::from([
-            ("A".to_string(), json!([2.0, 2.0, 2.0, 2.0])),
-            ("B".to_string(), json!([0.5, 0.5, 0.5, 0.5])),
-            ("C".to_string(), json!([0.1, 0.1, 0.1, 0.1])),
-        ]),
-        params: HashMap::from([
-            ("k1".to_string(), json!(0.04)),
-            ("k2".to_string(), json!(3.0)),
-            ("k3".to_string(), json!(1.0)),
-        ]),
-        t: 0.0,
-    };
-    let values = assemble_jacobian(&file, None, Wrt::States, &env)?;
-    assert_eq!(values[&("A[1]".to_string(), "A[1]".to_string())], -0.04); // -k1
-    assert_eq!(values[&("B[1]".to_string(), "B[1]".to_string())], -3.0); // -2 k2 B
+    // region: evaluate ops=evaluation_document
+    // EarthSciASTDiff evaluates nothing: it emits the band fields `J_k` as a
+    // derived ESM model that EarthSciAST evaluates.
+    let (doc, fields) = evaluation_document(&view, &entries, true, 12)?;
+    assert!(doc["models"]["JacobianEval"].is_object());
+    assert_eq!(fields.len(), entries.len());
     // endregion
 
     // region: block ops=jacobian_block

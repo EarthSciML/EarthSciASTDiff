@@ -71,7 +71,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   compare byte-exactly; Python does not port scatter plans yet.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
-  numeric assemblies must reproduce the exact (row, col) key set and every
+  value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
 - `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,

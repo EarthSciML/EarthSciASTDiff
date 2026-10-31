@@ -6,20 +6,16 @@ test_blocks.py and test_values.py."""
 import earthsci_ast as ea
 import numpy as np
 import pytest
+from bandvals import JacobianEvaluator, assemble_jacobian, prepare_jacobian, vjp, vjp_forcing
 from earthsci_astdiff import (
     BandError,
-    JacobianEvaluator,
-    assemble_jacobian,
     column_names,
     forcing_names,
     jacobian_bands,
     jacobian_block,
     jacobian_columns,
     jacobian_pattern,
-    prepare_jacobian,
     sysview,
-    vjp,
-    vjp_forcing,
 )
 
 

@@ -8,13 +8,14 @@
 use std::collections::{BTreeMap, HashMap};
 
 use earthsci_ast::{esm_problem, rhs_program, EsmFile, ProblemOptions};
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::{
-    assemble_jacobian, column_lines, ctx_of, detect_structure, detect_structure_along,
-    jacobian_bands, jacobian_block, jacobian_block_with, prepare_jacobian, sysview, BlockOptions,
-    JacEntry, Wrt,
+    column_lines, ctx_of, detect_structure, detect_structure_along, jacobian_bands, jacobian_block,
+    jacobian_block_with, sysview, BlockOptions, JacEntry, Wrt,
 };
 use serde_json::{json, Map, Value};
+
+mod common;
+use common::oracle::{assemble_jacobian, prepare_jacobian, Env};
 
 fn idx(v: &str, i: &[Value]) -> Value {
     let mut args = vec![json!(v)];

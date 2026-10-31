@@ -2,7 +2,8 @@
 //! calculus applied once more, to the coefficients of the first-order bands.
 //! A Rosenbrock step contains J(uₙ) explicitly, so its discrete adjoint
 //! needs ∇(μᵀ J(u) w) once per step; that is a contraction of these entries
-//! ([`crate::numeric::HvpEvaluator`]), never a Hessian tensor.
+//! (the `hvp` product document of the reference, spec §9), never a Hessian
+//! tensor.
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;

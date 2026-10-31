@@ -9,10 +9,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use earthsci_astdiff::numeric::Env;
 use earthsci_astdiff::system::{inlinable_observed, observed_defs};
-use earthsci_astdiff::{assemble_jacobian, sysview, Wrt};
+use earthsci_astdiff::{sysview, Wrt};
 use serde_json::{json, Value};
+
+mod common;
+use common::oracle::{assemble_jacobian, Env};
 
 const K: f64 = 3.0;
 

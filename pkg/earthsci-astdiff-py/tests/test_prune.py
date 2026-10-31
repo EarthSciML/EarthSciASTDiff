@@ -10,7 +10,8 @@ against the analytic Jacobian on both axes: ``src = 2k`` is state-independent
 
 import earthsci_ast as ea
 import pytest
-from earthsci_astdiff import assemble_jacobian, sysview
+from bandvals import assemble_jacobian
+from earthsci_astdiff import sysview
 from earthsci_astdiff.system import inlinable_observed, observed_defs
 
 K = 3.0
