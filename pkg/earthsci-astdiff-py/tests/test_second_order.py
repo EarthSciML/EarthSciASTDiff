@@ -9,7 +9,6 @@ import earthsci_ast as ea
 import pytest
 from earthsci_ast.expression import free_variables
 from earthsci_astdiff import (
-    BandError,
     JacEntry2,
     hvp,
     jacobian_bands2,
@@ -31,6 +30,8 @@ SECOND_ORDER = (
     ("forcing_bracket", ("states", "forcing")),
     ("forcing_bracket", ("time", "states")),
     ("minmod_adv", ("states", "states")),
+    ("filtered_scan", ("states", "states")),
+    ("semiring_reduce", ("states", "states")),
 )
 
 
@@ -197,8 +198,9 @@ def test_refusals(valid_dir):
         hvp([0.0] * (len(hp.col2names) + 1), hp, (mu, mu), t=0.37)
 
 
-def test_unclosed_second_column_on_forcing_is_refused():
-    # a second column read through a parameter offset cannot be placed
+def test_value_offset_second_column_is_one_hot():
+    # a second column read through a parameter offset is one-hot over the
+    # buffer's extent (spec §3.5), every point a placeable column
     def ix(v, *i):
         return {"op": "index", "args": [v, *i]}
 
@@ -240,5 +242,5 @@ def test_unclosed_second_column_on_forcing_is_refused():
             }
         )
     )
-    with pytest.raises(BandError, match="second column index"):
-        jacobian_bands2(sysview(doc, "B"), wrt=("states", "forcing"), forcing=["F"])
+    e2 = jacobian_bands2(sysview(doc, "B"), wrt=("states", "forcing"), forcing=["F"])
+    assert e2 and all(any(c[0].startswith("_oh") for c in en.band.contracted) for en in e2)

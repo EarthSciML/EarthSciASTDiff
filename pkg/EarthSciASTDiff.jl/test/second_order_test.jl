@@ -13,8 +13,14 @@ const SECOND_ORDER = (
     ("forcing_bracket", (:states, :forcing)),
     ("forcing_bracket", (:time, :states)),
     ("minmod_adv", (:states, :states)),
+    ("filtered_scan", (:states, :states)),
+    ("semiring_reduce", (:states, :states)),
 )
 _pairtag((a1, a2)) = "$a1-$a2"
+# The native compiler declines a model whose coefficients carry a filtered or
+# non-`+` faq node (`compiler_refused_rule`); the interpreter evaluates them.
+_hkw(name) = name in ("filtered_scan", "semiring_reduce") ?
+    (compiler = :interpreter,) : NamedTuple()
 
 # The oracle's document: the second axis's parameters (scalar or array)
 # promoted to states with a zero derivative, so ForwardDiff with respect to
@@ -56,7 +62,7 @@ function _oracle_hvp(name, hv, u, ps, t)
     a1, a2 = hv.wrt
     promote = a2 == :states ? String[] : unique(first.(something(hv.columns, [])))
     src = isempty(promote) ? file : _promoted_any(path, model, promote)
-    f!, x0, pp, _, vm = build_evaluator(src)
+    f!, x0, pp, _, vm = build_evaluator(src; _hkw(name)...)
     x = copy(x0)
     rows = [vm[r] for r in hv.rownames]
     x[rows] .= u
@@ -138,7 +144,7 @@ end
 @testset "second order: values against ForwardDiff over ForwardDiff" begin
     for (name, wrt) in SECOND_ORDER
         file = fixture("$name.esm")
-        hv = prepare_hvp(file; wrt = wrt)
+        hv = prepare_hvp(file; wrt = wrt, build_kwargs = _hkw(name))
         u = _hpoint(length(hv.rownames))
         ps = _hpairs(length(hv.rownames), length(hv.colnames), wrt[1])
         t = _ht(name)
@@ -165,7 +171,7 @@ end
             read(joinpath(golden_dir, "$name.$(_pairtag(wrt)).hvals.json"), String),
             Dict{String, Any}
         )
-        hv = prepare_hvp(fixture("$name.esm"); wrt = wrt)
+        hv = prepare_hvp(fixture("$name.esm"); wrt = wrt, build_kwargs = _hkw(name))
         @test gd["wrt"] == Any[String(wrt[1]), String(wrt[2])]
         u = [Float64(gd["u"][r]) for r in hv.rownames]
         ps = [
@@ -227,7 +233,8 @@ end
     ht = prepare_hvp(fixture("forcing_bracket.esm"); wrt = (:time, :states))
     m = length(ht.rownames)
     @test_throws ArgumentError hvp!(zeros(m), ht, (ones(m), 1.0), ones(m), nothing, 0.37; form = :symmetric)
-    # a second column read through a state offset cannot be placed
+    # a second column read through a parameter offset is one-hot over the
+    # buffer's extent (spec §3.5), every point a placeable column
     O(kv...) = Dict{String, Any}(kv...)
     ix(v, i...) = O("op" => "index", "args" => Any[v, i...])
     body = O("op" => "*", "args" => Any[ix("c", "i"), ix("c", "i"), ix("F", 1, O("op" => "+", "args" => Any["i", "s"]))])
@@ -252,5 +259,6 @@ end
             )
         )
     )
-    @test_throws BandError jacobian_bands2(sysview(doc, "B"); wrt = (:states, :forcing), forcing = ["F"])
+    e2 = jacobian_bands2(sysview(doc, "B"); wrt = (:states, :forcing), forcing = ["F"])
+    @test !isempty(e2) && all(en -> any(c -> startswith(c[1], "_oh"), en.band.contracted), e2)
 end

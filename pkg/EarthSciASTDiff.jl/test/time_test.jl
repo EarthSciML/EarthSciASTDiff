@@ -40,7 +40,7 @@ end
 @testset "time bands: empty list for an autonomous model (f_t ≡ 0)" begin
     for name in (
             "bd_chem", "adv_interior", "flux_form_adv", "minmod_adv",
-            "contracted_ops", "contracting_observed",
+            "contracted_ops", "contracting_observed", "filtered_scan", "semiring_reduce",
         )
         file = fixture("$name.esm")
         @test isempty(jacobian_bands(file, first(keys(file.models)); wrt = :time))

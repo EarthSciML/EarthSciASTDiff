@@ -1,0 +1,282 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "SemiringReduce",
+  "description": "Non-'+' reductions (spec \u00a73.5): a running max of c\u00b2 (j <= i; the first argmax takes the derivative), a scalar min observed cmin = min_j c[j] read as a factor (a nested min), a suffix product of (1 - c[j]) (j >= i; exclusion products, no division), a level search kap = min{k : c[k] > 0.3} used as a subscript c[kap] (one-hot over the axis, its own derivative zero), and a max_product semiring whose column e[i] reads no contracted index."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 5
+  }
+ },
+ "models": {
+  "SemiringReduce": {
+   "variables": {
+    "c": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.5
+    },
+    "e": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.6
+    },
+    "cmin": {
+     "type": "unknown"
+    },
+    "kap": {
+     "type": "unknown"
+    },
+    "w": {
+     "type": "parameter",
+     "default": 0.1
+    }
+   },
+   "equations": [
+    {
+     "lhs": "cmin",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [],
+      "ranges": {
+       "j": [
+        1,
+        5
+       ]
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "c",
+        "j"
+       ]
+      },
+      "reduce": "min"
+     }
+    },
+    {
+     "lhs": "kap",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [],
+      "ranges": {
+       "k": [
+        1,
+        5
+       ]
+      },
+      "expr": "k",
+      "reduce": "min",
+      "filter": {
+       "op": ">",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "c",
+          "k"
+         ]
+        },
+        0.3
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "c"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        1,
+        5
+       ]
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "+",
+         "args": [
+          {
+           "op": "faq",
+           "args": [],
+           "output_idx": [],
+           "ranges": {
+            "j": [
+             1,
+             5
+            ]
+           },
+           "expr": {
+            "op": "^",
+            "args": [
+             {
+              "op": "index",
+              "args": [
+               "c",
+               "j"
+              ]
+             },
+             2
+            ]
+           },
+           "reduce": "max",
+           "filter": {
+            "op": "<=",
+            "args": [
+             "j",
+             "i"
+            ]
+           }
+          },
+          {
+           "op": "*",
+           "args": [
+            "cmin",
+            {
+             "op": "index",
+             "args": [
+              "c",
+              "i"
+             ]
+            }
+           ]
+          },
+          {
+           "op": "*",
+           "args": [
+            "w",
+            {
+             "op": "faq",
+             "args": [],
+             "output_idx": [],
+             "ranges": {
+              "j": [
+               1,
+               5
+              ]
+             },
+             "expr": {
+              "op": "-",
+              "args": [
+               1,
+               {
+                "op": "index",
+                "args": [
+                 "c",
+                 "j"
+                ]
+               }
+              ]
+             },
+             "reduce": "*",
+             "filter": {
+              "op": ">=",
+              "args": [
+               "j",
+               "i"
+              ]
+             }
+            }
+           ]
+          },
+          {
+           "op": "*",
+           "args": [
+            0.2,
+            {
+             "op": "index",
+             "args": [
+              "c",
+              "kap"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "c",
+              "i"
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "e"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "-",
+      "args": [
+       {
+        "op": "faq",
+        "args": [],
+        "output_idx": [
+         "i"
+        ],
+        "ranges": {
+         "i": [
+          1,
+          5
+         ],
+         "j": [
+          1,
+          5
+         ]
+        },
+        "expr": {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            "c",
+            "j"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "e",
+            "i"
+           ]
+          }
+         ]
+        },
+        "semiring": "max_product"
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

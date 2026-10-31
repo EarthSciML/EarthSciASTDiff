@@ -19,6 +19,8 @@ const PLAN_LAYOUTS = [
     ("minmod_adv", "csr", Csr()),
     ("contracted_ops", "csr", Csr()),
     ("contracting_observed", "csr", Csr()),
+    ("filtered_scan", "csr", Csr()),
+    ("semiring_reduce", "csr", Csr()),
 ]
 
 @testset "scatter plans: goldens" begin
@@ -31,12 +33,12 @@ const PLAN_LAYOUTS = [
 end
 
 @testset "scatter plans: bound values equal the CSC jac!" begin
-    # The two contracted-band fixtures are excluded only because their derived
+    # The contracted-band fixtures are excluded only because their derived
     # documents do not compile on the current EarthSciAST (EarthSciAST#547);
     # their plan goldens are still pinned above.
     cases = [
         (n, t, l) for (n, t, l) in PLAN_LAYOUTS
-            if !(n in ("contracted_ops", "contracting_observed"))
+            if !(n in ("contracted_ops", "contracting_observed", "filtered_scan", "semiring_reduce"))
     ]
     push!(cases, ("adv_react_2d", "csr", Csr()))
     for (name, tag, layout) in cases

@@ -43,6 +43,26 @@
       }
     },
     {
+      "name": "column_block_plan",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "julia": "ColumnBlockPlan",
+        "python": "ColumnBlockPlan",
+        "rust": "ColumnLines"
+      }
+    },
+    {
+      "name": "column_lines",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "column_lines",
+        "python": "column_lines",
+        "rust": "column_lines"
+      }
+    },
+    {
       "name": "cse_templates",
       "kind": "function",
       "tier": "stable",
@@ -253,7 +273,7 @@
         "python": "plan_factorization",
         "rust": "plan_factorization"
       },
-      "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+      "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`. A `column_block` plan needs the column axis the class was detected with: a `column_axis` keyword in Julia and Python, `plan_factorization_along(entries, sv, ctx, structure, column_axis)` in Rust."
     },
     {
       "name": "prepare_hvp",

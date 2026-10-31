@@ -120,11 +120,14 @@ def test_array_parameter_columns_are_real(bracket):
 
 
 def test_refused_rather_than_silently_wrong():
-    # a column index that reads a parameter cannot be placed at build time
+    # a column index that reads a parameter is integer-valued, so piecewise
+    # constant: its dimension becomes one-hot over the buffer's extent, every
+    # point of which is a placeable column (spec §3.5)
     off = {"off": {"type": "parameter", "default": 1}}
-    bad = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", "off"))), off)
-    with pytest.raises(BandError):
-        jacobian_bands(bad, "B", wrt="forcing", forcing=["F"])
+    hot = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", "off"))), off)
+    (en,) = jacobian_bands(hot, "B", wrt="forcing", forcing=["F"])
+    assert [n for n, _, _ in en.band.contracted] == ["_oh2"]
+    assert en.band.cidx[1] == "_oh2"
     # a literal offset is closed
     ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
     assert len(jacobian_bands(ok, "B", wrt="forcing", forcing=["F"])) == 1

@@ -691,7 +691,8 @@ fn block_order(
     states: &[(String, Vec<i64>)],
 ) -> R<(BlockLu, Vec<String>)> {
     // A lane template reads one field cell per lane; a contracted band's
-    // field has a cell per contracted point too, which it would drop.
+    // field has a cell per contracted point too, which it would drop, and a
+    // guarded band's points differ from lane to lane.
     for (k, en) in entries.iter().enumerate() {
         if !en.band.contracted.is_empty() {
             return err(
@@ -702,6 +703,12 @@ fn block_order(
                     en.u,
                     en.v
                 ),
+            );
+        }
+        if en.band.guard.is_some() {
+            return err(
+                layout,
+                format!("band {} ({} ← {}) has a `where` guard", k + 1, en.u, en.v),
             );
         }
     }
@@ -784,6 +791,12 @@ fn column_banded(
                     en.u,
                     en.v
                 ),
+            );
+        }
+        if b.guard.is_some() {
+            return err(
+                layout,
+                format!("band {} ({} ← {}) has a `where` guard", k + 1, en.u, en.v),
             );
         }
         for (m, (c, r)) in b.cidx.iter().zip(&b.ridx).enumerate() {

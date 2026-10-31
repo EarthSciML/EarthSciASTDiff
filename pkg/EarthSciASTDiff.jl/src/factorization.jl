@@ -27,7 +27,9 @@ Symbolic factorization info for the detected structure class, or `nothing`
 when no plan is implemented for that class (the Jacobian itself is still
 fully usable — a plan is an optimization, never a requirement).
 
-Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref).
+Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref), and
+`:column_block` (which needs the `column_axis` it was detected with) →
+[`ColumnBlockPlan`](@ref).
 
 Throws an `ArgumentError` when `structure` is not one of
 `STRUCTURE_CLASSES` (a misspelled class never silently gives no
@@ -35,8 +37,8 @@ plan), or when a column of `entries` is a parameter: a `:parameters` or
 `:forcing` band list is a rectangular matrix, which no plan factorizes.
 """
 function plan_factorization(
-        entries::Vector{JacEntry}, sv::SysView;
-        structure::Symbol = detect_structure(entries, sv)
+        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing,
+        structure::Symbol = detect_structure(entries, sv; column_axis = column_axis)
     )
     structure in STRUCTURE_CLASSES || throw(
         ArgumentError(
@@ -53,11 +55,23 @@ function plan_factorization(
         )
     end
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
+    if structure == :column_block
+        column_axis === nothing &&
+            throw(ArgumentError("a :column_block plan needs its `column_axis`"))
+        cl = column_lines(entries, sv, String(column_axis))
+        cl === nothing && throw(
+            ArgumentError("the Jacobian is not :column_block along `$column_axis`")
+        )
+        return _column_block_plan(cl)
+    end
     return nothing
 end
 
+_column_block_plan(cl) =
+    ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
+
 "The structure classes [`detect_structure`](@ref) reports (spec §4)."
-const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general)
+const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end
@@ -156,6 +170,37 @@ function markowitz_ordering(pattern::AbstractMatrix{Bool})::Vector{Int}
     end
     return order
 end
+
+# ── column blocks: one line along an axis at a time ─────────────────────────
+
+"""
+    ColumnBlockPlan <: FactorizationPlan
+
+Line-by-line factorization info for a `:column_block` Jacobian: every
+coupling stays within one line along `axis`, so the matrix is one
+`(length(block_vars)·line_length)`-square block per line. `pattern` names the
+coupling along the line (`"dense"`, `"lower"`, `"upper"`, `"banded"`) and
+`kl` / `ku` bound it below and above the diagonal, so a solver can pick a
+column solver (banded LU, a triangular sweep, dense LU) without looking at
+the entries.
+"""
+struct ColumnBlockPlan <: FactorizationPlan
+    axis::String
+    line_length::Int
+    block_vars::Vector{String}
+    pattern::String
+    kl::Int
+    ku::Int
+end
+
+serialize_plan(p::ColumnBlockPlan) = OrderedDict{String, Any}(
+    "type" => "column_block",
+    "axis" => p.axis,
+    "line_length" => p.line_length,
+    "block_vars" => p.block_vars,
+    "pattern" => p.pattern,
+    "bandwidth" => Any[p.kl, p.ku],
+)
 
 function serialize_plan(p::BlockDiagonalPlan)
     nzpairs(M) = Any[

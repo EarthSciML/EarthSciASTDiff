@@ -13,7 +13,8 @@ expressions. From the bands it derives, without any numeric probing:
 - the exact **structural sparsity pattern** (global: `ifelse`/`min`/`max`
   branches unioned, so it is valid at every point),
 - a **structure classification** (`:block_diagonal` / `:banded` /
-  `:general`) for choosing a matrix type,
+  `:general`, and `:column_block` along a column axis the caller names) for
+  choosing a matrix type,
 - optional **symbolic factorization info** (general interface; per-cell
   block LU with Markowitz ordering and fill-in — the chemistry shape — is
   the first implementation),
@@ -180,8 +181,7 @@ EarthSciAST implementation and is gated by the same goldens.
       columns (`u[j]`, `u[i+k]`, `u[conn[i,k]]` const tables) emit entries
       with free `contracted` column dimensions (accumulating at assembly);
       contraction-independent columns emit ordinary entries with a
-      symbolic-sum coefficient. Filtered faq nodes and non-`"+"` semirings
-      still fail loudly.
+      symbolic-sum coefficient.
 - [x] `interp.bilinear` derivative (two clamped-weight partials, per-cell
       slope constants precomputed into nested segment `ifelse`, spec §3.4)
       and `tgrad` (`wrt = :time` through the same band calculus;
@@ -224,6 +224,19 @@ EarthSciAST implementation and is gated by the same goldens.
       fields through the same `RhsProgram` route, and an `HvpPlan`
       contracts them against the integrator's own layout (whole-domain
       only for now).
+- [x] Filtered faq nodes, `max`/`min`/`*` reductions and value-indexed reads
+      ([#3](https://github.com/EarthSciML/EarthSciASTDiff/issues/3), spec
+      §3.5): a filter is a gate whose Dirac term is dropped; its index-only
+      conjuncts split the band box exactly and leave a triangular window as
+      the entry's `where` guard (a level scan's `gk < gke`), its value
+      conjuncts stay in the coefficient. `max`/`min` weight each term by the
+      first-extremum indicator (the left-fold tie rule), products by the
+      exclusion product (no division). A subscript that reads a value (a
+      level search `x[κ(u)]`) is one-hot over the axis. `detect_structure(…;
+      column_axis)` reports `:column_block` with a line-by-line
+      factorization plan. Pinned by `filtered_scan` and `semiring_reduce`
+      goldens. Causal recurrences (tangent/adjoint sweeps) are the
+      remaining part of #3.
 - [x] Public expansion seam in EarthSciAST (`EarthSciAST.expanded_model`,
       ≥ 0.9.1) and `ODEFunction(f!; jac, jac_prototype)` / `ODEProblem`
       wiring (`odefunction` / `odeproblem` via the SciMLBase package

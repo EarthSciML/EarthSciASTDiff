@@ -49,7 +49,7 @@ def test_guards(valid_dir):
                             "op": "faq",
                             "args": [],
                             "output_idx": ["i"],
-                            "reduce": "min",
+                            "semiring": "bool_and_or",
                             "ranges": {"i": [1, 3], "j": [1, 3]},
                             "expr": {"op": "index", "args": ["u", "j"]},
                         },
@@ -58,6 +58,8 @@ def test_guards(valid_dir):
             }
         },
     }
+    # a boolean semiring has no derivative rule (spec §3.5); a filter and a
+    # max/min/* reduction do (test_reductions.py)
     file = ea.load_document(doc)
     with pytest.raises(BandError):
         jacobian_bands(file, "G")

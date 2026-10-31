@@ -169,17 +169,24 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
             end
         end
 
-        # A filter on the contracting observed is refused, as it is inline
-        # (bands.jl `_bands_faq!`) — never silently dropped.
+        # A filter on the contracting observed keeps its window, and a
+        # `max_product` node (`semiring` supersedes `reduce`) differentiates
+        # as a max, not a sum (spec §3.5): both against the oracle.
         filt = O("op" => "<", "args" => Any["k", 3])
-        file = load(doc(o -> neg(si(o)); s = sdef(filter = filt)))
-        @test_throws Union{BandError, DerivativeRuleError} jacobian_bands(file, "ContractObs")
-
-        # So is a max: `semiring` supersedes `reduce`, and a `max_product`
-        # node with no `reduce` is not a sum.
         mx = sdef(); delete!(mx, "reduce"); mx["semiring"] = "max_product"
-        file = load(doc(o -> neg(si(o)); s = mx))
-        @test_throws Union{BandError, DerivativeRuleError} jacobian_bands(file, "ContractObs")
+        for (label, s) in (("filtered", sdef(filter = filt)), ("max_product", mx))
+            @testset "$label contracting observed" begin
+                file = load(doc(o -> neg(sq(si(o))); s = s))
+                f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+                Jad = ad_jacobian(f!, u, p, 0.0)
+                res = assemble_jacobian(
+                    file; u = u, p = p,
+                    build_kwargs = (compiler = :interpreter,)
+                )
+                @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-13
+                @test all(res.pattern .| (Jad .== 0))
+            end
+        end
     end
 
     # A range over an index set the context does not declare is a BandError,

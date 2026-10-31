@@ -2,7 +2,7 @@
 //! per-cell read resolution to literals, then the official evaluator.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use earthsci_ast::evaluate;
 use earthsci_ast::substitute;
@@ -16,13 +16,14 @@ use crate::helpers::map_expr_children;
 use crate::inline::inline_observed_cached;
 use crate::jacobian::{bands_of_view, column_names, jacobian_columns, JacEntry, Wrt};
 use crate::second_order::{axis_pair, bands2_view, structure2, JacEntry2};
-use crate::system::{ctx_of, observed_defs, sysview, SysView};
+use crate::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 
 type R<T> = Result<T, BandError>;
 
 /// `foreach_point`'s callback: `(row cell, contracted cell, index binding,
 /// column cell)`.
 type PointFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()> + 'a;
+type PointWhileFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<bool> + 'a;
 
 /// `for_each_value`'s callback: `(k, entry, row cell, contracted cell,
 /// column cell, value)`.
@@ -110,12 +111,11 @@ fn resolve(e: &Expr, env: &Env, ctx: &Ctx) -> R<Expr> {
                     "array-producing faq in scalar coefficient".into(),
                 ));
             }
-            if !crate::rules::plain_sum(n) {
-                return Err(BandError(format!(
-                    "{} in scalar coefficient",
-                    crate::rules::reduction(n)
-                )));
-            }
+            // ⊕ per esm-spec: a filtered-out term is skipped; the empty
+            // reduction is the semiring identity (0, 1, -inf, +inf); terms
+            // fold in ascending order, first index fastest.
+            let red = crate::reductions::reduce_op(n)
+                .map_err(|m| BandError(format!("{m} in scalar coefficient")))?;
             let empty = HashMap::new();
             let ranges = n.ranges.as_ref().unwrap_or(&empty);
             let mut names: Vec<String> = ranges.keys().cloned().collect();
@@ -128,30 +128,45 @@ fn resolve(e: &Expr, env: &Env, ctx: &Ctx) -> R<Expr> {
                 .expr
                 .as_deref()
                 .ok_or_else(|| BandError("faq without body".into()))?;
-            let mut total = 0.0;
-            let mut cell: Vec<i64> = boxes.iter().map(|(lo, _)| *lo).collect();
-            'outer: loop {
+            let mut total = match red {
+                "+" => 0.0,
+                "*" => 1.0,
+                "max" => f64::NEG_INFINITY,
+                _ => f64::INFINITY,
+            };
+            if boxes.iter().any(|(lo, hi)| hi < lo) {
+                return Ok(Expr::Number(total));
+            }
+            for cell in product_first_fastest(&boxes) {
                 let binds: HashMap<String, Expr> = names
                     .iter()
                     .cloned()
                     .zip(cell.iter().map(|c| Expr::Integer(*c)))
                     .collect();
-                total += as_lit(&resolve(&substitute(body, &binds), env, ctx)?)?;
-                let mut k = 0;
-                loop {
-                    if k == cell.len() {
-                        break 'outer;
+                if let Some(f) = &n.filter {
+                    if as_lit(&resolve(&substitute(f, &binds), env, ctx)?)? == 0.0 {
+                        continue;
                     }
-                    cell[k] += 1;
-                    if cell[k] <= boxes[k].1 {
-                        break;
+                }
+                let x = as_lit(&resolve(&substitute(body, &binds), env, ctx)?)?;
+                total = match red {
+                    "+" => total + x,
+                    "*" => total * x,
+                    "max" => {
+                        if x > total {
+                            x
+                        } else {
+                            total
+                        }
                     }
-                    cell[k] = boxes[k].0;
-                    k += 1;
-                }
-                if cell.is_empty() {
-                    break;
-                }
+                    _ => {
+                        if x < total {
+                            x
+                        } else {
+                            total
+                        }
+                    }
+                };
             }
             Ok(Expr::Number(total))
         }
@@ -240,6 +255,15 @@ pub(crate) fn eval_cidx(c: &Expr, bind: &HashMap<String, f64>) -> R<i64> {
         .map_err(|er| BandError(format!("evaluate cidx: {er:?}")))
 }
 
+/// A band guard at one point (assemble.jl `_eval_guard`): `const` gathers
+/// folded like column indices, then evaluated; nonzero holds.
+pub(crate) fn eval_guard(g: &Expr, bind: &HashMap<String, f64>) -> R<bool> {
+    let folded = fold_const_gathers(g, bind)?;
+    evaluate(&folded, bind)
+        .map(|v| v != 0.0)
+        .map_err(|er| BandError(format!("evaluate guard: {er:?}")))
+}
+
 pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
     let mut out = Vec::new();
     let mut cell: Vec<i64> = ranges.iter().map(|(lo, _)| *lo).collect();
@@ -263,11 +287,21 @@ pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
     }
 }
 
-/// Every point of one band: `f(row cell, contracted cell, index binding,
+/// Every point of one band (a point its `where` guard excludes is none):
+/// `f(row cell, contracted cell, index binding,
 /// column cell)` per (row cell, contracted cell), first index fastest, with
 /// the column index evaluated there (ghost reads included). The one point
 /// walk shared by numeric assembly and the CSR scatter plan.
 pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
+    all_points(b, &mut |cell, cc, ibind, cidx| {
+        f(cell, cc, ibind, cidx).map(|()| true)
+    })?;
+    Ok(())
+}
+
+/// As [`foreach_point`], stopping at the first point where `f` returns
+/// false; whether it never did.
+pub(crate) fn all_points(b: &Band, f: &mut PointWhileFn<'_>) -> R<bool> {
     let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
     for cell in product_first_fastest(&b.rows) {
         for cc in product_first_fastest(&cranges) {
@@ -282,15 +316,22 @@ pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
             }
             let fbind: HashMap<String, f64> =
                 ibind.iter().map(|(k, v)| (k.clone(), *v as f64)).collect();
+            if let Some(g) = &b.guard {
+                if !eval_guard(g, &fbind)? {
+                    continue; // a point the `where` guard excludes
+                }
+            }
             let cidx: Vec<i64> = b
                 .cidx
                 .iter()
                 .map(|c| eval_cidx(c, &fbind))
                 .collect::<Result<_, _>>()?;
-            f(&cell, &cc, &ibind, &cidx)?;
+            if !f(&cell, &cc, &ibind, &cidx)? {
+                return Ok(false);
+            }
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The coefficient of every band with the observed it reads spliced in.
@@ -330,18 +371,29 @@ fn point_value(coef0: &Expr, ibind: &HashMap<String, i64>, env: &Env, ctx: &Ctx)
 /// On the forcing axis the ghost skip is an error instead: a column there is
 /// a cell of a live buffer, and an unresolvable one would silently drop a
 /// gradient (spec §4). The parameters axis follows the state axis: an array
-/// parameter read past its extent is a ghost read.
+/// parameter read past its extent is a ghost read. On the states axis a
+/// column whose variable is not a state at all (`states`) resolves nowhere
+/// and is an error rather than a silently dropped derivative.
 fn for_each_value(
     ctx: &Ctx,
     entries: &[JacEntry],
     coefs: &[Expr],
     env: &Env,
     wrt: Wrt,
+    states: Option<&HashSet<String>>,
     f: &mut ValueFn<'_>,
 ) -> R<()> {
     for (k, (en, coef0)) in entries.iter().zip(coefs).enumerate() {
+        // Checked at the entry's first point, as the reference resolves
+        // columns: an entry with no point (its guard excludes every one)
+        // has no column to resolve.
+        let mut checked = states.is_none();
         let vshape = ctx.shapes.get(&en.v);
         foreach_point(&en.band, &mut |cell, cc, ibind, cidx| {
+            if !checked {
+                check_state_column(states.expect("checked otherwise"), &en.v, &en.u)?;
+                checked = true;
+            }
             if let Some(vshape) = vshape {
                 if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
                     if wrt == Wrt::Forcing {
@@ -362,6 +414,20 @@ fn for_each_value(
         })?;
     }
     Ok(())
+}
+
+/// A state column whose variable the layout does not hold at all resolves
+/// nowhere — an observed the band calculus took for a state, say — and is
+/// refused (assemble.jl `_colslot`); a cell past a state's extent is still a
+/// ghost read.
+pub(crate) fn check_state_column(states: &HashSet<String>, v: &str, u: &str) -> R<()> {
+    if states.contains(v) {
+        return Ok(());
+    }
+    Err(BandError(format!(
+        "column `{v}` (row `{u}`) names no state of the layout; a band column must \
+         resolve to a state slot or read past a state's extent"
+    )))
 }
 
 /// A value of `shape` with every cell `x`, as row-major nested arrays (the
@@ -435,6 +501,8 @@ pub struct JacobianEvaluator {
     coefs: Vec<Expr>,
     slot: HashMap<String, usize>,
     defaults: HashMap<String, Value>,
+    /// The state variables, on the states axis (columns must name one).
+    states: Option<HashSet<String>>,
 }
 
 /// Build a [`JacobianEvaluator`] once: differentiation, observed inlining,
@@ -462,6 +530,7 @@ pub fn prepare_jacobian(
         .map(|(i, n)| (n.clone(), i))
         .collect();
     let defaults = parameter_defaults(&sv, &ctx);
+    let states = (wrt == Wrt::States).then(|| view_states(&sv, &obs).into_iter().collect());
     Ok(JacobianEvaluator {
         wrt,
         entries,
@@ -471,13 +540,22 @@ pub fn prepare_jacobian(
         coefs,
         slot,
         defaults,
+        states,
     })
 }
 
 impl JacobianEvaluator {
     fn each_value(&self, env: &Env, f: &mut ValueFn<'_>) -> R<()> {
         let env = with_defaults(&self.defaults, env);
-        for_each_value(&self.ctx, &self.entries, &self.coefs, &env, self.wrt, f)
+        for_each_value(
+            &self.ctx,
+            &self.entries,
+            &self.coefs,
+            &env,
+            self.wrt,
+            self.states.as_ref(),
+            f,
+        )
     }
 
     /// The band entries at a point, as [`assemble_jacobian`] returns them.
@@ -652,12 +730,14 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
         .collect();
     let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let env = with_defaults(&parameter_defaults(&sv, &ctx), env);
+    let states: HashSet<String> = view_states(&sv, &obs).into_iter().collect();
     for_each_value(
         &ctx,
         &entries,
         &coefs,
         &env,
         Wrt::States,
+        Some(&states),
         &mut |k, _, cell, cc, _, val| {
             let full: Vec<i64> = cell.iter().chain(cc.iter()).copied().collect();
             fields[k][crate::scatter::flat(&full, &shapes[k])] = val;
@@ -703,6 +783,7 @@ pub struct HvpEvaluator {
     ctx: Ctx,
     coefs: Vec<Expr>,
     defaults: HashMap<String, Value>,
+    states: HashSet<String>,
 }
 
 /// Build an [`HvpEvaluator`] once for the axis pair `wrt` (first axis states
@@ -727,6 +808,7 @@ pub fn prepare_hvp(
     let colnames = columns.as_deref().map(column_names).unwrap_or_default();
     let structure = structure2(|| detect_structure(&e1, &ctx), &entries, &ctx, wrt.0);
     let defaults = parameter_defaults(&sv, &ctx);
+    let states = view_states(&sv, &obs).into_iter().collect();
     Ok(HvpEvaluator {
         wrt,
         entries,
@@ -736,6 +818,7 @@ pub fn prepare_hvp(
         ctx,
         coefs,
         defaults,
+        states,
     })
 }
 
@@ -752,9 +835,20 @@ impl HvpEvaluator {
     fn each_point(&self, env: &Env, f: &mut dyn FnMut(&str, &str, &str, f64) -> R<()>) -> R<()> {
         let env = with_defaults(&self.defaults, env);
         for (en, coef0) in self.entries.iter().zip(&self.coefs) {
+            // Checked at the entry's first point (see `for_each_value`).
+            let mut checked = false;
             let vshape = self.ctx.shapes.get(&en.v);
             let wshape = self.ctx.shapes.get(&en.w);
             foreach_point(&en.band, &mut |cell, _, ibind, cidx| {
+                if !checked {
+                    if self.wrt.0 == Wrt::States {
+                        check_state_column(&self.states, &en.v, &en.u)?;
+                    }
+                    if self.wrt.1 == Wrt::States {
+                        check_state_column(&self.states, &en.w, &en.u)?;
+                    }
+                    checked = true;
+                }
                 let (c1, c2) = cidx.split_at(en.ncol);
                 if outside(wshape, c2) {
                     if self.wrt.1 == Wrt::Forcing {
