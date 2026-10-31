@@ -28,14 +28,36 @@ when no plan is implemented for that class (the Jacobian itself is still
 fully usable — a plan is an optimization, never a requirement).
 
 Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref).
+
+Throws an `ArgumentError` when `structure` is not one of
+`STRUCTURE_CLASSES` (a misspelled class never silently gives no
+plan), or when a column of `entries` is a parameter: a `:parameters` or
+`:forcing` band list is a rectangular matrix, which no plan factorizes.
 """
 function plan_factorization(
         entries::Vector{JacEntry}, sv::SysView;
         structure::Symbol = detect_structure(entries, sv)
     )
+    structure in STRUCTURE_CLASSES || throw(
+        ArgumentError(
+            "unknown structure class :$structure (expected one of $STRUCTURE_CLASSES)"
+        )
+    )
+    for en in entries
+        var = get(sv.variables, en.v, nothing)
+        (var !== nothing && var.type == EarthSciAST.ParameterVariable) && throw(
+            ArgumentError(
+                "no factorization plan for a rectangular band list: column `$(en.v)` " *
+                    "is a parameter (plan a states or time band list)"
+            )
+        )
+    end
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
     return nothing
 end
+
+"The structure classes [`detect_structure`](@ref) reports (spec §4)."
+const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end

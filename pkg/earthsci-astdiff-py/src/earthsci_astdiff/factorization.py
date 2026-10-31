@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .jacobian import JacEntry
 from .structure import detect_structure
-from .system import SysView
+from .system import SysView, _var_type
 
 
 @dataclass
@@ -60,15 +60,35 @@ def markowitz_ordering(pattern: list[list[bool]]) -> list[int]:
     return [i + 1 for i in order]
 
 
+#: The structure classes :func:`detect_structure` reports (spec §4).
+STRUCTURE_CLASSES = ("empty", "block_diagonal", "banded", "general")
+
+
 def plan_factorization(entries: list[JacEntry], sv: SysView, structure: str | None = None):
     """Symbolic factorization info for the detected structure.
 
     Returns a :class:`BlockDiagonalPlan` when the structure is
     ``"block_diagonal"`` and ``None`` otherwise; banded and general plans are
     not implemented yet.
+
+    Raises ``ValueError`` when ``structure`` is not one of
+    :data:`STRUCTURE_CLASSES` (a misspelled class never silently gives no
+    plan), or when a column of ``entries`` is a parameter: a parameters or
+    forcing band list is a rectangular matrix, which no plan factorizes.
     """
     if structure is None:
         structure = detect_structure(entries, sv)
+    elif structure not in STRUCTURE_CLASSES:
+        raise ValueError(
+            f"unknown structure class {structure!r} (expected one of {STRUCTURE_CLASSES})"
+        )
+    for en in entries:
+        var = sv.variables.get(en.v)
+        if var is not None and _var_type(var) == "parameter":
+            raise ValueError(
+                f"no factorization plan for a rectangular band list: column `{en.v}` "
+                "is a parameter (plan a states or time band list)"
+            )
     if structure == "block_diagonal":
         return _block_diagonal_plan(entries)
     return None

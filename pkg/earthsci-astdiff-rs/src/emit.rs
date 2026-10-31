@@ -343,6 +343,7 @@ fn nzpairs(m: &[Vec<bool>]) -> Value {
 /// The per-cell block LU of a block-diagonal band list (factorization.jl's
 /// `BlockDiagonalPlan`): block variables in Markowitz order, the 1-based
 /// ordering, and the permuted pattern and its fill-in LU pattern.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockLu {
     pub block_vars: Vec<String>,
     pub ordering: Vec<usize>,
@@ -382,15 +383,90 @@ pub fn block_diagonal_lu(entries: &[JacEntry]) -> BlockLu {
     }
 }
 
+/// The serialized per-cell block LU of a block-diagonal band list: the
+/// `factorization` field of a state block ([`serialize_plan`] of
+/// [`block_diagonal_lu`]).
 pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
-    let b = block_diagonal_lu(entries);
-    json!({
-        "type": "block_diagonal_lu",
-        "block_vars": b.block_vars,
-        "ordering": b.ordering,
-        "pattern": nzpairs(&b.pattern),
-        "lu_pattern": nzpairs(&b.lu),
-    })
+    serialize_plan(&FactorizationPlan::BlockDiagonal(block_diagonal_lu(
+        entries,
+    )))
+}
+
+/// The structure classes [`detect_structure`] reports (spec §4).
+pub const STRUCTURE_CLASSES: [&str; 4] = ["empty", "block_diagonal", "banded", "general"];
+
+/// Symbolic factorization info for one structure class (factorization.jl's
+/// `FactorizationPlan` subtypes). Non-exhaustive: a plan for another class
+/// is a new variant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FactorizationPlan {
+    /// The per-cell block LU of a `"block_diagonal"` Jacobian.
+    BlockDiagonal(BlockLu),
+}
+
+/// Symbolic factorization info for the band list's structure class: the
+/// reference's `plan_factorization(entries, sv; structure)`.
+///
+/// `structure` defaults (`None`) to [`detect_structure`] of `entries` over
+/// `ctx` (the view's context, [`crate::ctx_of`]). A `"block_diagonal"`
+/// class gives its per-cell block LU ([`FactorizationPlan::BlockDiagonal`]);
+/// every other class gives `None`, since no plan is implemented for it yet
+/// (the Jacobian is still fully usable: a plan is an optimization, never a
+/// requirement).
+///
+/// Errors: `structure` is not one of [`STRUCTURE_CLASSES`], or `entries`
+/// has a parameter column (a parameters or forcing band list is a
+/// rectangular matrix, which no plan factorizes).
+pub fn plan_factorization(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    structure: Option<&str>,
+) -> Result<Option<FactorizationPlan>, crate::bands::BandError> {
+    let structure = match structure {
+        Some(s) if STRUCTURE_CLASSES.contains(&s) => s,
+        Some(s) => {
+            return Err(crate::bands::BandError(format!(
+                "unknown structure class `{s}` (expected one of {STRUCTURE_CLASSES:?})"
+            )))
+        }
+        None => detect_structure(entries, ctx),
+    };
+    if let Some(en) = entries.iter().find(|en| {
+        sv.variables
+            .get(&en.v)
+            .is_some_and(|v| v.var_type == VariableType::Parameter)
+    }) {
+        return Err(crate::bands::BandError(format!(
+            "no factorization plan for a rectangular band list: column `{}` is a \
+             parameter (plan a states or time band list)",
+            en.v
+        )));
+    }
+    Ok((structure == "block_diagonal")
+        .then(|| FactorizationPlan::BlockDiagonal(block_diagonal_lu(entries))))
+}
+
+/// A factorization plan as the `factorization` field of a `jacobians`
+/// block (spec §4): the reference's `serialize_plan`. A block LU is an
+/// object with `type` (`"block_diagonal_lu"`), `block_vars` (the block's
+/// variables in elimination order), `ordering` (the 1-based Markowitz
+/// ordering of the name-sorted variables), and `pattern` and `lu_pattern`
+/// (the permuted block's pattern and its LU pattern including fill-in, as
+/// sorted 1-based `[row, column]` pairs). Serialized with
+/// [`crate::stable_json`] it is byte-identical to the Julia and Python
+/// bindings' output.
+pub fn serialize_plan(plan: &FactorizationPlan) -> Value {
+    match plan {
+        FactorizationPlan::BlockDiagonal(b) => json!({
+            "type": "block_diagonal_lu",
+            "block_vars": b.block_vars,
+            "ordering": b.ordering,
+            "pattern": nzpairs(&b.pattern),
+            "lu_pattern": nzpairs(&b.lu),
+        }),
+    }
 }
 
 // ── the block ────────────────────────────────────────────────────────────────
@@ -534,8 +610,10 @@ fn axis_block(
         cse,
         cse_min_nodes,
     );
-    if structure == Some("block_diagonal") {
-        block.insert("factorization".into(), block_diagonal_plan(&entries));
+    if let Some(st) = structure {
+        if let Some(plan) = plan_factorization(&entries, sv, ctx, Some(st))? {
+            block.insert("factorization".into(), serialize_plan(&plan));
+        }
     }
     Ok(Value::Object(block))
 }

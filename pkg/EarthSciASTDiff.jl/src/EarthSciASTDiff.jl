@@ -67,7 +67,7 @@ export Site, dscalar, simplify_branches,
     JacEntry2, jacobian_bands2, col_idx, col2_idx, prepare_hvp, HVPEvaluator, hvp!,
     ode_components, odefunction, odeproblem,
     detect_structure, jac_prototype,
-    FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
+    FactorizationPlan, BlockDiagonalPlan, plan_factorization, serialize_plan, lu_fill,
     StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
     ScatterPlan, scatter_plan, serialize_scatter_plan,
     BoundScatter, bind_plan, jac_into!, scatter_targets
