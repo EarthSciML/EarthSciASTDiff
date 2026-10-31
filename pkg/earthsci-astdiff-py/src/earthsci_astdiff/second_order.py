@@ -6,7 +6,6 @@ Rosenbrock step contains J(uₙ) explicitly, so its discrete adjoint needs
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 from earthsci_ast.expression import free_variables
@@ -26,10 +25,10 @@ from .bands import (
 )
 from .clip import clip_regions
 from .expr_helpers import is_zero, ser_expr
-from .jacobian import JacEntry, _jacobian_bands, _targets
+from .jacobian import JacEntry, _check_closed, _FirstOrder, _json, _targets
 from .scalar_rules import dscalar
 from .simplify_branches import simp
-from .structure import _offset_class, detect_structure
+from .structure import _offset_class
 from .system import SysView, ctx_of, observed_defs, sysview
 
 
@@ -96,15 +95,15 @@ def jacobian_bands2(
     return _bands2(sv, a1, a2, forcing)[1]
 
 
-def _bands2(sv: SysView, a1: str, a2: str, forcing):
+def _bands2(sv: SysView, a1: str, a2: str, forcing, memo: _FirstOrder | None = None):
     # (first-order entries, second-order entries). The first-order pass
     # inlines the observed that move with EITHER axis: one that reads only
     # parameters (an Arrhenius rate) is opaque on the state axis, and would
-    # hide its parameter sites from the second derivative.
+    # hide its parameter sites from the second derivative. `memo` shares
+    # that pass with the other blocks of one emission.
     ctx = ctx_of(sv)
-    obs = observed_defs(sv)
-    t2 = _targets(sv, a2, forcing, obs)
-    e1 = _jacobian_bands(sv, ctx, obs, a1, forcing, seed=t2)
+    t2 = _targets(sv, a2, forcing, observed_defs(sv))
+    e1 = (memo or _FirstOrder()).bands(sv, a1, a2, forcing, seed=t2)
     tset = set(t2)
     out: list[JacEntry2] = []
     for en in e1:
@@ -143,25 +142,25 @@ def _coef_bands(b: Band, w: str, ctx: Ctx) -> list[Band]:
 
 def _check_closed_col2(en: JacEntry2) -> None:
     # `_check_closed_columns` for the second column of a pair.
-    b = en.band
-    bound = {r for r in b.ridx if isinstance(r, str)}
-    bound.update(n for n, _, _ in b.contracted)
-    for c in en.col2_idx:
-        for n in sorted(free_variables(c)):
-            if n not in bound:
-                raise BandError(
-                    f"second column index {json.dumps(ser_expr(c), separators=(',', ':'))} "
-                    f"of `{en.w}` in ∂²({en.u})/∂{en.v}∂{en.w} reads `{n}`, which is not "
-                    "closed at build time"
-                )
+    _check_closed(
+        en.band,
+        en.col2_idx,
+        lambda c: f"second column index {_json(c)} of `{en.w}` in ∂²({en.u})/∂{en.v}∂{en.w}",
+    )
 
 
-def structure2(e1: list[JacEntry], entries: list[JacEntry2], sv: SysView, a1: str):
+def structure2(
+    e1: list[JacEntry],
+    entries: list[JacEntry2],
+    sv: SysView,
+    a1: str,
+    memo: _FirstOrder | None = None,
+):
     """``"block_diagonal"`` when the first-order state block is and every
     second column sits on the row's own cell, so the contraction is
     lane-local; ``None`` (field omitted) otherwise, and always on a time
     pair."""
-    if a1 != "states" or detect_structure(e1, sv) != "block_diagonal":
+    if a1 != "states" or (memo or _FirstOrder()).structure(e1, sv) != "block_diagonal":
         return None
     ctx = ctx_of(sv)
     for en in entries:
@@ -214,48 +213,23 @@ def parse_band2(d: dict) -> JacEntry2:
     )
 
 
-def jacobian_block2(sv: SysView, wrt, forcing, cse: bool, cse_min_nodes: int) -> dict:
+def jacobian_block2(
+    sv: SysView, wrt, forcing, cse: bool, cse_min_nodes: int, memo: _FirstOrder | None = None
+) -> dict:
     # The `jacobians` block of one axis pair (spec §4.4): no factorization,
     # `structure` only when the contraction is lane-local, and the second
     # axis's `columns` when it is a parameter or forcing axis.
-    from .cse import cse_templates
-    from .jacobian import jacobian_columns
+    from .emit import _block, _columns_field
 
     a1, a2 = wrt
-    e1, entries = _bands2(sv, a1, a2, forcing)
-    ser_entries = entries
-    templates: dict = {}
-    if cse:
-        templates, rewritten = cse_templates(
-            [en.band.coef for en in entries], min_nodes=cse_min_nodes
-        )
-        if templates:
-            ser_entries = [
-                JacEntry2(
-                    en.u,
-                    en.v,
-                    en.w,
-                    Band(
-                        en.band.rows, en.band.ridx, en.band.cidx, rewritten[k], en.band.contracted
-                    ),
-                    en.ncol,
-                )
-                for k, en in enumerate(entries)
-            ]
-    block: dict = {
-        "wrt": [a1, a2],
-        "entries": [serialize_band2(en) for en in ser_entries],
-    }
-    if a2 in ("parameters", "forcing"):
-        block["columns"] = [
-            {"name": n, "shape": list(shape)}
-            for n, shape in jacobian_columns(sv, wrt=a2, forcing=forcing)
-        ]
-    st = structure2(e1, entries, sv, a1)
-    if st is not None:
-        block["structure"] = st
-    if templates:
-        block["expression_templates"] = {
-            n: {"params": [], "body": ser_expr(b)} for n, b in templates.items()
-        }
-    return block
+    memo = memo or _FirstOrder()
+    e1, entries = _bands2(sv, a1, a2, forcing, memo)
+    return _block(
+        [a1, a2],
+        entries,
+        serialize_band2,
+        _columns_field(sv, a2, forcing) if a2 in ("parameters", "forcing") else None,
+        structure2(e1, entries, sv, a1, memo),
+        cse,
+        cse_min_nodes,
+    )

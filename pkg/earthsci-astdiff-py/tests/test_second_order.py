@@ -46,7 +46,7 @@ def test_second_order_goldens(name, wrt, valid_dir, golden_dir):
     entries = jacobian_bands2(file, model, wrt=wrt)
     bands = stable_json([serialize_band(en) for en in entries])
     assert bands == (golden_dir / f"{name}.{tag}.bands.json").read_text()
-    block = jacobian_block(file, model, wrt=wrt)
+    (block,) = jacobian_block(file, model, wrt=[wrt])
     assert block["wrt"] == list(wrt)
     assert "factorization" not in block
     assert ("columns" in block) == (wrt[1] in ("parameters", "forcing"))
@@ -97,7 +97,7 @@ def test_what_the_entries_are(valid_dir):
 
 def test_structure(valid_dir):
     def blk(name, wrt):
-        return jacobian_block(*_load(valid_dir, name), wrt=wrt)
+        return jacobian_block(*_load(valid_dir, name), wrt=[wrt])[0]
 
     assert blk("bd_chem", ("states", "states"))["structure"] == "block_diagonal"
     assert blk("arrhenius_chem", ("states", "states"))["structure"] == "block_diagonal"
@@ -155,6 +155,18 @@ def test_document_forms(valid_dir, golden_dir):
     assert all(isinstance(en, JacEntry2) for en in parsed[1][1])
     with pytest.raises(ValueError):
         jacobian_block(file, model, wrt=[("states", "states"), ["states", "states"]])
+    # a bare tuple reads both as a pair and as a list of axes: refused
+    with pytest.raises(ValueError, match="ambiguous"):
+        jacobian_block(file, model, wrt=("states", "forcing"))
+
+
+@pytest.mark.parametrize("name", ["arrhenius_chem", "bd_chem"])
+def test_one_emission_shares_its_first_order_passes(name, valid_dir):
+    # the blocks of one call equal those emitted alone
+    file, model = _load(valid_dir, name)
+    wrts = ["states", ("states", "states"), ("states", "parameters"), "time"]
+    both = jacobian_block(file, model, wrt=wrts)
+    assert both == [jacobian_block(file, model, wrt=[w])[0] for w in wrts]
 
 
 def test_refusals(valid_dir):

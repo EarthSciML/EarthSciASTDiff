@@ -159,39 +159,80 @@ def jacobian_block(
 
     ``wrt`` may also be a list of distinct axes: the result is then the list
     of blocks, one per axis in the given order (a model's `jacobians` entry
-    in its array form, spec §4). A ``tuple`` ``(a1, a2)`` is an axis PAIR, a
-    block of second-order entries (:func:`jacobian_bands2`, §4.4), alone or
-    in such a list, where a two-name list is a pair too
-    (``["states", ("states", "states")]``)."""
+    in its array form, spec §4). Inside such a list a ``tuple`` ``(a1, a2)``
+    (or a two-name list) is an axis PAIR, a block of second-order entries
+    (:func:`jacobian_bands2`, §4.4): ``["states", ("states", "states")]``,
+    and ``[("states", "states")]`` for a pair block alone. A bare ``tuple``
+    ``wrt`` is refused: it reads both as a pair and as a list of axes, so
+    neither is assumed."""
+    from .jacobian import _FirstOrder
     from .system import SysView, sysview
 
+    if isinstance(wrt, tuple):
+        raise ValueError(
+            f"a tuple wrt {wrt!r} is ambiguous: write a list of axes as a list "
+            '(["states", "forcing"]) and a second-order pair inside one '
+            '([("states", "forcing")])'
+        )
     sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
-    # One axis is a str (iterating it would split it into characters); a
-    # tuple is one axis pair.
-    if isinstance(wrt, (str, tuple)):
-        return _block_of(sv, _axis_key(wrt), forcing, cse, cse_min_nodes)
+    memo = _FirstOrder()
+    # One axis is a str (iterating it would split it into characters).
+    if isinstance(wrt, str):
+        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo)
     axes = [_axis_key(w) for w in wrt]
     if not axes or len(set(axes)) != len(axes):
         raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
-    return [_block_of(sv, w, forcing, cse, cse_min_nodes) for w in axes]
+    return [_block_of(sv, w, forcing, cse, cse_min_nodes, memo) for w in axes]
 
 
 def _axis_key(w):
     return axis_pair(w) if isinstance(w, (tuple, list)) else str(w)
 
 
-def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int) -> dict:
+def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int, memo) -> dict:
     if isinstance(w, tuple):
-        return jacobian_block2(sv, w, forcing, cse, cse_min_nodes)
-    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes)
+        return jacobian_block2(sv, w, forcing, cse, cse_min_nodes, memo)
+    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo)
 
 
-def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int) -> dict:
-    from .bands import Band
+def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo) -> dict:
+    from .jacobian import _AXES
+
+    if wrt not in _AXES:
+        raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
+    entries = memo.bands(sv, wrt, None, forcing)
+    # A parameter or forcing block describes a rectangular matrix, which the
+    # structure classes and the factorization plan do not: it carries its
+    # column space instead.
+    rect = wrt in ("parameters", "forcing")
+    structure = None if rect else memo.structure(entries, sv)
+    block = _block(
+        wrt,
+        entries,
+        serialize_band,
+        _columns_field(sv, wrt, forcing) if rect else None,
+        structure,
+        cse,
+        cse_min_nodes,
+    )
+    if not rect:
+        from .factorization import plan_factorization, serialize_plan
+
+        plan = plan_factorization(entries, sv, structure=structure)
+        if plan is not None:
+            block["factorization"] = serialize_plan(plan)
+    return block
+
+
+def _block(wrt, entries, serialize, columns, structure, cse: bool, cse_min_nodes: int) -> dict:
+    # The fields every block shares, in their emitted order: `wrt`, the
+    # entries (coefficients template-CSE'd when `cse`), the `columns` of a
+    # parameter or forcing axis and the `structure` class (each when given),
+    # and the block-local `expression_templates`.
+    from dataclasses import replace
+
     from .cse import cse_templates
-    from .structure import detect_structure
 
-    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     ser_entries = entries
     templates: dict = {}
     if cse:
@@ -200,40 +241,26 @@ def _jacobian_block(sv, wrt: str, forcing, cse: bool, cse_min_nodes: int) -> dic
         )
         if templates:
             ser_entries = [
-                JacEntry(
-                    en.u,
-                    en.v,
-                    Band(
-                        en.band.rows, en.band.ridx, en.band.cidx, rewritten[k], en.band.contracted
-                    ),
-                )
+                replace(en, band=replace(en.band, coef=rewritten[k]))
                 for k, en in enumerate(entries)
             ]
-    block: dict = {
-        "wrt": wrt,
-        "entries": [serialize_band(en) for en in ser_entries],
-    }
-    # A parameter or forcing block describes a rectangular matrix, which the
-    # structure classes and the factorization plan do not: it carries its
-    # column space instead.
-    if wrt in ("parameters", "forcing"):
-        block["columns"] = [
-            {"name": n, "shape": list(shape)}
-            for n, shape in jacobian_columns(sv, wrt=wrt, forcing=forcing)
-        ]
-    else:
-        block["structure"] = detect_structure(entries, sv)
+    block: dict = {"wrt": wrt, "entries": [serialize(en) for en in ser_entries]}
+    if columns is not None:
+        block["columns"] = columns
+    if structure is not None:
+        block["structure"] = structure
     if templates:
         block["expression_templates"] = {
             n: {"params": [], "body": ser_expr(b)} for n, b in templates.items()
         }
-    if wrt in ("states", "time"):
-        from .factorization import plan_factorization, serialize_plan
-
-        plan = plan_factorization(entries, sv, structure=block["structure"])
-        if plan is not None:
-            block["factorization"] = serialize_plan(plan)
     return block
+
+
+def _columns_field(sv, wrt: str, forcing) -> list:
+    return [
+        {"name": n, "shape": list(shape)}
+        for n, shape in jacobian_columns(sv, wrt=wrt, forcing=forcing)
+    ]
 
 
 def parse_jacobian_block(block: dict):
