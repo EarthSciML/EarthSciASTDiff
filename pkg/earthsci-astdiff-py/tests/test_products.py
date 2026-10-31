@@ -363,3 +363,102 @@ def test_refusals(valid_dir):
         hvp_document(file, stages=0)
     with pytest.raises(ValueError):
         hvp_document(file, stages=2, form="dense")
+
+
+# ── build-time extent decisions (products_test.jl) ───────────────────────────
+
+
+def _bx():
+    from earthsci_ast.esm_types import ExprNode
+    from earthsci_astdiff.bands import Band
+
+    def op(o, *a):
+        return ExprNode(op=o, args=list(a))
+
+    def rows(lo, hi):
+        return Band([(lo, hi)], ["i"], ["i"], 1.0)
+
+    def lit(*ci):
+        return Band([(3, 3)], [3], list(ci), 1.0)
+
+    return op, rows, lit, Band
+
+
+def test_extent_bounds_decide_what_a_walk_would():
+    from dataclasses import replace
+
+    from earthsci_astdiff.emit import foreach_point
+    from earthsci_astdiff.products import _in_extent
+
+    op, _, _, Band = _bx()
+    b = Band([(2, 7)], ["i"], ["i"], 1.0, [("k", 1, 3)])
+
+    def walk(e, n):
+        return all(1 <= c[0] <= n for *_, c in foreach_point(replace(b, cidx=[e])))
+
+    for e in (
+        "i",
+        op("+", "i", 1),
+        op("-", "i", 2),
+        op("+", "i", "k"),
+        op("-", "i", "k"),
+        op("*", 2, "i"),
+        op("-", op("*", 2, "i"), "k"),
+        op("-", "i", "i"),
+        op("+", "i", "i"),
+    ):
+        for n in (5, 8, 10, 13):
+            assert _in_extent(b, [e], [n]) is walk(e, n), (e, n)
+
+
+def test_extent_guards_gathers_and_failures():
+    from dataclasses import replace
+
+    from earthsci_astdiff.products import _in_extent
+
+    op, rows, _, _ = _bx()
+    # a guard that drops the out-of-extent corner: decided by the walk
+    gb = replace(rows(1, 8), guard=op(">=", "i", 2))
+    assert _in_extent(gb, [op("-", "i", 1)], [8]) is True
+    assert _in_extent(rows(1, 8), [op("-", "i", 1)], [8]) is False
+    # an index through a table that is not `const` has no build-time answer
+    assert _in_extent(rows(1, 8), [op("index", "tbl", "i")], [8]) is None
+    # a guard that is not closed cannot drop a point: only an all-inside box decides
+    ob = replace(rows(1, 8), guard=op(">", "u", 0.0))
+    assert _in_extent(ob, ["i"], [8]) is True
+    assert _in_extent(ob, [op("+", "i", 1)], [8]) is None
+    # a real evaluation failure is not taken for "not closed"
+    from earthsci_ast.esm_types import ExprNode
+
+    tbl = ExprNode(op="const", args=[], value=[1, 2, 3])
+    with pytest.raises(IndexError):
+        _in_extent(rows(1, 8), [op("index", tbl, "i")], [8])
+    with pytest.raises(IndexError):  # below 1: never wraps to the table's end
+        _in_extent(rows(1, 8), [op("index", tbl, op("-", "i", 1))], [8])
+
+
+def test_extent_band_with_no_index_names():
+    from dataclasses import replace
+
+    from earthsci_astdiff.products import _point_in_extent
+
+    op, _, lit, _ = _bx()
+    # an open column index is §9.2's refusal, not an evaluation error
+    nb = lit(op("index", "tbl", 2))
+    with pytest.raises(BandError, match=r"§9\.2"):
+        _point_in_extent(nb, "v", nb.cidx, [8], "states")
+    b = lit(9)
+    assert _point_in_extent(b, "v", b.cidx, [8], "states") is False
+    with pytest.raises(BandError):
+        _point_in_extent(b, "v", b.cidx, [8], "forcing")
+    shut = replace(lit(9), guard=op("<", 2, 1))
+    assert _point_in_extent(shut, "v", shut.cidx, [8], "forcing") is False  # no point
+    # an open `where` is §9.2's refusal
+    opened = replace(lit(2), guard=op(">", "u", 0))
+    with pytest.raises(BandError, match=r"§9\.2"):
+        _point_in_extent(opened, "v", opened.cidx, [8], "states")
+    # more indices than dimensions
+    two = lit(1, 1)
+    for wrt in ("states", "parameters", "forcing"):
+        with pytest.raises(BandError, match="dimensions"):
+            _point_in_extent(two, "c", two.cidx, [4], wrt)

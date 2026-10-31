@@ -64,7 +64,10 @@ def _fold_const_gathers(e, bind: dict[str, float]):
     if e.op == "index" and isinstance(e.args[0], ExprNode) and e.args[0].op == "const":
         v = e.args[0].value
         for x in e.args[1:]:
-            v = v[_eval_cidx(x, bind) - 1]  # wire tables are 1-based
+            k = _eval_cidx(x, bind)
+            if k < 1:  # wire tables are 1-based; never wrap to the end
+                raise IndexError(f"const gather index {k} out of range")
+            v = v[k - 1]
         return v
     return map_children(e, lambda x: _fold_const_gathers(x, bind))
 

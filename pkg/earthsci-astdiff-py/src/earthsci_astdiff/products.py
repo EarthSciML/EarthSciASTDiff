@@ -13,10 +13,18 @@ from __future__ import annotations
 from dataclasses import replace
 from functools import reduce
 
+from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expression import free_variables
 
 from .bands import Band, BandError
-from .emit import _base_document, _derived_version, _hoist, _zero_source_derivatives, foreach_point
+from .emit import (
+    _base_document,
+    _derived_version,
+    _eval_guard,
+    _hoist,
+    _zero_source_derivatives,
+    foreach_point,
+)
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_bands2
@@ -127,19 +135,102 @@ def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cs
     return doc, m, ctx, _hoist(doc, m, sv, entries, cse, cse_min_nodes)
 
 
+def _walk_band(b: Band, ci: list, guard) -> Band:
+    """The point walk of ``b`` reading ``ci``, under ``guard``."""
+    return replace(b, cidx=list(ci), guard=guard)
+
+
+def _index_box(b: Band) -> dict[str, tuple[int, int]]:
+    """A band's index names (row names, then contracted names) and their
+    ranges."""
+    box = {r: tuple(b.rows[k]) for k, r in enumerate(b.ridx) if isinstance(r, str)}
+    for n, lo, hi in b.contracted:
+        box[n] = (lo, hi)
+    return box
+
+
+def _index_only(e, box) -> bool:
+    """Whether ``e`` reads only the band's index names."""
+    return set(free_variables(e)) <= box.keys()
+
+
+def _index_bounds(e, box):
+    """Bounds ``(lo, hi, exact, names read)`` of an index expression over
+    ``box``, by interval arithmetic over the integer ``+``, ``-``, ``*``
+    core; ``None`` outside it (a ``const`` gather, a division, …). The bounds
+    always enclose every value; ``exact`` when they are also attained at
+    corners of the box: an affine expression reading each name at most
+    once."""
+    if isinstance(e, bool):
+        return None
+    if isinstance(e, int):
+        return (e, e, True, [])
+    if isinstance(e, float):
+        return (int(e), int(e), True, []) if e.is_integer() else None
+    if isinstance(e, str):
+        if e not in box:
+            return None
+        lo, hi = box[e]
+        return (lo, hi, True, [e])
+    if isinstance(e, ExprNode) and e.op in ("+", "-", "*") and e.args:
+        parts = [_index_bounds(a, box) for a in e.args]
+        if any(p is None for p in parts):
+            return None
+        lo, hi, ex, ns = parts[0]
+        ns = list(ns)
+        if e.op == "-" and len(parts) == 1:
+            return (-hi, -lo, ex, ns)
+        for plo, phi, pex, pns in parts[1:]:
+            if e.op == "+":
+                lo, hi = lo + plo, hi + phi
+            elif e.op == "-":
+                lo, hi = lo - phi, hi - plo
+            else:
+                # affine only while one factor is a constant
+                ex = ex and (not ns or not pns)
+                c = (lo * plo, lo * phi, hi * plo, hi * phi)
+                lo, hi = min(c), max(c)
+            ex = ex and pex
+            ns.extend(pns)
+        return (lo, hi, ex and len(set(ns)) == len(ns), ns)
+    return None
+
+
 def _in_extent(b: Band, ci: list, shape: list[int]):
     """Whether every point of ``b`` reads ``ci`` inside ``shape``; ``None``
-    when an index is not closed at build time (a gather through a table that
-    is not ``const``), so the question has no build-time answer."""
+    when that has no build-time answer: an index not closed (a gather through
+    a table that is not ``const``), or a ``where`` guard not closed that a
+    point outside the extent depends on. Decided from the indices' bounds
+    where they settle it (§9.1's affine breakpoints), by walking the band's
+    points otherwise. An evaluation failure of that walk propagates, never
+    taken for "not closed"."""
     if not ci:
         return True
-    try:
-        return all(
-            all(1 <= c[d] <= shape[d] for d in range(len(c)))
-            for _, _, _, c in foreach_point(replace(b, cidx=ci))
-        )
-    except Exception:
+    if len(ci) > len(shape):
         return None
+    box = _index_box(b)
+    if any(lo > hi for lo, hi in box.values()):
+        return True  # no points
+    if not all(_index_only(e, box) for e in ci):
+        return None
+    bounds = [_index_bounds(e, box) for e in ci]
+    if all(x is not None for x in bounds):
+        if all(1 <= bounds[d][0] and bounds[d][1] <= shape[d] for d in range(len(ci))):
+            return True
+        # a corner outside the extent is a point of the band unless a guard
+        # may drop it
+        if b.guard is None and all(x[2] for x in bounds):
+            return False
+
+    def inside(walk):
+        return all(
+            all(1 <= c[d] <= shape[d] for d in range(len(c))) for _, _, _, c in foreach_point(walk)
+        )
+
+    if b.guard is not None and not _index_only(b.guard, box):
+        # a guard not closed cannot drop a point: only an all-inside box decides
+        return True if inside(_walk_band(b, ci, None)) else None
+    return inside(_walk_band(b, ci, b.guard))
 
 
 def _check_rank(v: str, ci: list, shape: list[int]) -> None:
@@ -151,22 +242,31 @@ def _check_rank(v: str, ci: list, shape: list[int]) -> None:
         )
 
 
+def _forcing_ghost(v: str, ok) -> BandError:
+    """The forcing axis has no ghost read (§9.1): a point outside its buffer
+    is refused rather than dropped."""
+    why = (
+        " or where that is not decidable at build time (an index or `where` guard not closed)"
+        if ok is None
+        else ""
+    )
+    return BandError(
+        f"a point of a band reads forcing buffer `{v}` outside its extent{why}; "
+        "a product document would drop it (esm-jacobian-spec.md §9.1)"
+    )
+
+
 def _ghost_conjuncts(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> list:
     """§9.1's ghost rule for a read of column variable ``v`` at ``ci`` on axis
     ``wrt``: the in-extent conjuncts ``G`` to filter by, as ``(conjunct,
     names)`` pairs; none when every point is in extent (the region split
-    then leaves the box whole). On the forcing axis there is no ghost read:
-    a point outside its buffer is refused."""
+    then leaves the box whole)."""
     _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     if ok is True:
         return []
     if wrt == "forcing":
-        raise BandError(
-            f"a point of a band reads forcing buffer `{v}` outside its extent"
-            + (" or at an index not closed at build time" if ok is None else "")
-            + "; a product document would drop it (esm-jacobian-spec.md §9.1)"
-        )
+        raise _forcing_ghost(v, ok)
     out = []
     for d, e in enumerate(ci):
         ns = set(free_variables(e))
@@ -178,17 +278,20 @@ def _ghost_conjuncts(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> l
 def _point_in_extent(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> bool:
     """A band with no index names has one point (none when its closed
     ``where`` fails), and §9.2 has its column indices closed: whether that
-    point reads ``v`` inside its extent. A ghost is dropped, except on the
-    forcing axis."""
+    point exists and reads ``v`` inside its extent. A ghost is dropped,
+    except on the forcing axis, where it is refused. Decided from the
+    literal indices."""
     _check_rank(v, ci, shape)
-    ok = _in_extent(b, ci, shape)
-    if ok is None:
+    if not all(not free_variables(e) for e in ci):
         raise BandError(
             f"a band with no index names reads `{v}` at an index not closed at build "
             "time (esm-jacobian-spec.md §9.2)"
         )
+    if not _closed_point(b):
+        return False
+    ok = _in_extent(_walk_band(b, ci, None), ci, shape) is True
     if not ok and wrt == "forcing":
-        _ghost_conjuncts(b, v, ci, shape, wrt)  # raises
+        raise _forcing_ghost(v, False)
     return ok
 
 
@@ -209,9 +312,16 @@ def _names_of(es) -> set[str]:
 
 
 def _closed_point(b: Band) -> bool:
-    """Whether a band with no index names has its one point: its closed
-    ``where`` guard holds."""
-    return next(foreach_point(b), None) is not None
+    """Whether a band with no index names has its one point: its ``where``
+    guard, which §9.2 has closed, holds."""
+    if b.guard is None:
+        return True
+    if free_variables(b.guard):
+        raise BandError(
+            "a band with no index names has a `where` guard not closed at build "
+            "time (esm-jacobian-spec.md §9.2)"
+        )
+    return _eval_guard(b.guard, {})
 
 
 def _rho(b: Band) -> list:
@@ -279,7 +389,7 @@ def _jvp_term(en: JacEntry, coef, vin: str, ctx, wrt: str):
         val = _term_faq(b, out, (), conj, body, bodynames)
     else:
         # no index names: `where` and the column are closed, decided here
-        if not (_closed_point(b) and _point_in_extent(b, en.v, b.cidx, shape_v, wrt)):
+        if not _point_in_extent(b, en.v, b.cidx, shape_v, wrt):
             return None
         val = body
     if not shape_u:
@@ -360,9 +470,12 @@ def _hvp_term(en: JacEntry2, coef, mu, w, ctx, a1: str, a2: str, taken: set[str]
         ],
     )
     shape1 = ctx.shapes.get(en.v) or []
-    if not _has_names(b) and not _point_in_extent(b, en.v, ci, shape1, a1):
+    if _has_names(b):
+        g = _ghost_conjuncts(b, en.v, ci, shape1, a1)
+    elif _point_in_extent(b, en.v, ci, shape1, a1):
+        g = []
+    else:
         return None
-    g = _ghost_conjuncts(b, en.v, ci, shape1, a1)
     return _scatter_term(
         b,
         coef,
@@ -394,9 +507,12 @@ def _hvp_sym_term(en: JacEntry2, coef, mu, w, ctx, taken: set[str]):
         ],
     )
     shape2 = ctx.shapes.get(en.w) or []
-    if not _has_names(b) and not _point_in_extent(b, en.w, c2, shape2, "states"):
+    if _has_names(b):
+        g = _ghost_conjuncts(b, en.w, c2, shape2, "states")
+    elif _point_in_extent(b, en.w, c2, shape2, "states"):
+        g = []
+    else:
         return None
-    g = _ghost_conjuncts(b, en.w, c2, shape2, "states")
     return _scatter_term(
         b,
         coef,

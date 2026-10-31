@@ -7,7 +7,7 @@
 //! inside its extent, over closed column indices. Byte-gated by the
 //! `*.{jvp,vjp,hvp,hvp-sym}.evaldoc.json` goldens.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::{free_variables, Expr};
 use indexmap::IndexMap;
@@ -18,7 +18,7 @@ use crate::clip::RIdx;
 use crate::emit::{base_document, derived_version, hoist, zero_source_derivatives};
 use crate::helpers::ser_expr;
 use crate::jacobian::{jacobian_columns, JacEntry, Wrt};
-use crate::points::all_points;
+use crate::points::{all_points, eval_guard};
 use crate::second_order::{axis_pair, JacEntry2};
 use crate::system::{ctx_of, observed_defs, view_states, SysView};
 
@@ -340,28 +340,134 @@ fn product_base<'s, 'a>(
     ))
 }
 
-fn with_cidx(b: &Band, ci: &[Expr]) -> Band {
+/// The point walk of `b` reading `ci`, under `guard`: the band's index
+/// structure only, so a large coefficient is never copied.
+fn walk_band(b: &Band, ci: &[Expr], guard: Option<Expr>) -> Band {
     Band {
+        rows: b.rows.clone(),
+        ridx: b.ridx.clone(),
         cidx: ci.to_vec(),
-        ..b.clone()
+        coef: Expr::Integer(0),
+        contracted: b.contracted.clone(),
+        guard,
     }
 }
 
-/// Whether every point of `b` reads `ci` inside `shape`; `None` when an
-/// index is not closed at build time (a gather through a table that is not
-/// `const`), or when `ci` has more indices than `shape` has dimensions, so
-/// the question has no build-time answer.
-fn in_extent(b: &Band, ci: &[Expr], shape: &[i64]) -> Option<bool> {
+/// A band's index names (row names, then contracted names) and their ranges.
+fn index_box(b: &Band) -> HashMap<String, (i64, i64)> {
+    let mut bx = HashMap::new();
+    for (k, r) in b.ridx.iter().enumerate() {
+        if let RIdx::Name(n) = r {
+            bx.insert(n.clone(), b.rows[k]);
+        }
+    }
+    for (n, lo, hi) in &b.contracted {
+        bx.insert(n.clone(), (*lo, *hi));
+    }
+    bx
+}
+
+/// Whether `e` reads only the band's index names.
+fn index_only(e: &Expr, bx: &HashMap<String, (i64, i64)>) -> bool {
+    free_variables(e).iter().all(|n| bx.contains_key(n))
+}
+
+/// Bounds `(lo, hi, exact, names read)` of an index expression over `bx`, by
+/// interval arithmetic over the integer `+`, `-`, `*` core; `None` outside
+/// it (a `const` gather, a division, …). The bounds always enclose every
+/// value; `exact` when they are also attained at corners of the box: an
+/// affine expression reading each name at most once.
+fn index_bounds(
+    e: &Expr,
+    bx: &HashMap<String, (i64, i64)>,
+) -> Option<(i64, i64, bool, Vec<String>)> {
+    match e {
+        Expr::Integer(n) => Some((*n, *n, true, Vec::new())),
+        Expr::Number(x) if x.fract() == 0.0 => Some((*x as i64, *x as i64, true, Vec::new())),
+        Expr::Variable(n) => bx.get(n).map(|&(lo, hi)| (lo, hi, true, vec![n.clone()])),
+        Expr::Operator(nd) if matches!(nd.op.as_str(), "+" | "-" | "*") && !nd.args.is_empty() => {
+            let parts: Vec<_> = nd
+                .args
+                .iter()
+                .map(|a| index_bounds(a, bx))
+                .collect::<Option<_>>()?;
+            let mut it = parts.into_iter();
+            let (mut lo, mut hi, mut ex, mut ns) = it.next()?;
+            if nd.op == "-" && nd.args.len() == 1 {
+                return Some((-hi, -lo, ex, ns));
+            }
+            for (plo, phi, pex, pns) in it {
+                match nd.op.as_str() {
+                    "+" => (lo, hi) = (lo + plo, hi + phi),
+                    "-" => (lo, hi) = (lo - phi, hi - plo),
+                    _ => {
+                        // affine only while one factor is a constant
+                        ex &= ns.is_empty() || pns.is_empty();
+                        let c = [lo * plo, lo * phi, hi * plo, hi * phi];
+                        (lo, hi) = (*c.iter().min()?, *c.iter().max()?);
+                    }
+                }
+                ex &= pex;
+                ns.extend(pns);
+            }
+            let unique = ns.iter().collect::<HashSet<_>>().len() == ns.len();
+            Some((lo, hi, ex && unique, ns))
+        }
+        _ => None,
+    }
+}
+
+/// Whether every point of `b` reads `ci` inside `shape`; `None` when that has
+/// no build-time answer: an index not closed (a gather through a table that
+/// is not `const`), or a `where` guard not closed that a point outside the
+/// extent depends on. Decided from the indices' bounds where they settle it
+/// (§9.1's affine breakpoints), by walking the band's points otherwise. An
+/// evaluation failure of that walk is an error, never taken for "not
+/// closed".
+fn in_extent(b: &Band, ci: &[Expr], shape: &[i64]) -> R<Option<bool>> {
     if ci.is_empty() {
-        return Some(true);
+        return Ok(Some(true));
     }
     if ci.len() > shape.len() {
-        return None;
+        return Ok(None);
     }
-    all_points(&with_cidx(b, ci), &mut |_, _, _, c| {
+    let bx = index_box(b);
+    if bx.values().any(|(lo, hi)| lo > hi) {
+        return Ok(Some(true)); // no points
+    }
+    if !ci.iter().all(|e| index_only(e, &bx)) {
+        return Ok(None);
+    }
+    let bounds: Option<Vec<_>> = ci.iter().map(|e| index_bounds(e, &bx)).collect();
+    if let Some(bounds) = bounds {
+        if bounds
+            .iter()
+            .zip(shape)
+            .all(|((lo, hi, _, _), n)| 1 <= *lo && hi <= n)
+        {
+            return Ok(Some(true));
+        }
+        // a corner outside the extent is a point of the band unless a guard
+        // may drop it
+        if b.guard.is_none() && bounds.iter().all(|x| x.2) {
+            return Ok(Some(false));
+        }
+    }
+    let mut inside = |_: &[i64], _: &[i64], _: &HashMap<String, i64>, c: &[i64]| {
         Ok(c.iter().zip(shape).all(|(x, n)| 1 <= *x && x <= n))
-    })
-    .ok()
+    };
+    if let Some(g) = &b.guard {
+        if !index_only(g, &bx) {
+            // a guard not closed cannot drop a point: only an all-inside
+            // box decides
+            let all = all_points(&walk_band(b, ci, None), &mut inside)?;
+            return Ok(all.then_some(true));
+        }
+    }
+    Ok(Some(all_points(
+        &walk_band(b, ci, b.guard.clone()),
+        &mut inside,
+    )?))
 }
 
 /// Refuse a read of `v` with more indices than its shape has dimensions.
@@ -376,29 +482,34 @@ fn check_rank(v: &str, ci: &[Expr], shape: &[i64]) -> R<()> {
     Ok(())
 }
 
+/// The forcing axis has no ghost read (§9.1): a point outside its buffer is
+/// refused rather than dropped.
+fn forcing_ghost(v: &str, ok: Option<bool>) -> BandError {
+    let why = if ok.is_none() {
+        " or where that is not decidable at build time (an index or `where` guard not closed)"
+    } else {
+        ""
+    };
+    BandError(format!(
+        "a point of a band reads forcing buffer `{v}` outside its extent{why}; a product \
+         document would drop it (esm-jacobian-spec.md §9.1)"
+    ))
+}
+
 /// An extra conjunct of a filter, with the index names it reads.
 type Conj = (Value, HashSet<String>);
 
 /// §9.1's ghost rule for a read of column variable `v` at `ci` on axis
 /// `wrt`: the in-extent conjuncts to filter by, none when every point is in
-/// extent (the region split then leaves the box whole). On the forcing axis
-/// there is no ghost read: a point outside its buffer is refused.
+/// extent (the region split then leaves the box whole).
 fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<Vec<Conj>> {
     check_rank(v, ci, shape)?;
-    let ok = in_extent(b, ci, shape);
+    let ok = in_extent(b, ci, shape)?;
     if ok == Some(true) {
         return Ok(Vec::new());
     }
     if wrt == Wrt::Forcing {
-        return Err(BandError(format!(
-            "a point of a band reads forcing buffer `{v}` outside its extent{}; a product \
-             document would drop it (esm-jacobian-spec.md §9.1)",
-            if ok.is_none() {
-                " or at an index not closed at build time"
-            } else {
-                ""
-            }
-        )));
+        return Err(forcing_ghost(v, ok));
     }
     let mut out = Vec::new();
     for (e, n) in ci.iter().zip(shape) {
@@ -410,18 +521,23 @@ fn ghost_conjuncts(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R
 }
 
 /// A band with no index names has one point (none when its closed `where`
-/// fails), and §9.2 has its column indices closed: whether that point reads
-/// `v` inside its extent. A ghost is dropped, except on the forcing axis.
+/// fails), and §9.2 has its column indices closed: whether that point exists
+/// and reads `v` inside its extent. A ghost is dropped, except on the
+/// forcing axis, where it is refused. Decided from the literal indices.
 fn point_in_extent(b: &Band, v: &str, ci: &[Expr], shape: &[i64], wrt: Wrt) -> R<bool> {
     check_rank(v, ci, shape)?;
-    let Some(ok) = in_extent(b, ci, shape) else {
+    if !ci.iter().all(|e| free_variables(e).is_empty()) {
         return Err(BandError(format!(
             "a band with no index names reads `{v}` at an index not closed at build time \
              (esm-jacobian-spec.md §9.2)"
         )));
-    };
+    }
+    if !closed_point(b)? {
+        return Ok(false);
+    }
+    let ok = in_extent(&walk_band(b, ci, None), ci, shape)? == Some(true);
     if !ok && wrt == Wrt::Forcing {
-        ghost_conjuncts(b, v, ci, shape, wrt)?; // refuses
+        return Err(forcing_ghost(v, Some(false)));
     }
     Ok(ok)
 }
@@ -451,10 +567,20 @@ fn names_of<'e>(es: impl IntoIterator<Item = &'e Expr>) -> HashSet<String> {
     es.into_iter().flat_map(free_variables).collect()
 }
 
-/// Whether a band with no index names has its one point: its closed `where`
-/// guard holds.
+/// Whether a band with no index names has its one point: its `where` guard,
+/// which §9.2 has closed, holds.
 fn closed_point(b: &Band) -> R<bool> {
-    Ok(!all_points(b, &mut |_, _, _, _| Ok(false))?)
+    let Some(g) = &b.guard else {
+        return Ok(true);
+    };
+    if !free_variables(g).is_empty() {
+        return Err(BandError(
+            "a band with no index names has a `where` guard not closed at build time \
+             (esm-jacobian-spec.md §9.2)"
+                .into(),
+        ));
+    }
+    eval_guard(g, &HashMap::new())
 }
 
 /// The row index of `b` as a read: its names and fixed indices.
@@ -578,7 +704,7 @@ fn jvp_term(en: &JacEntry, coef: &Expr, vin: &str, ctx: &Ctx, wrt: Wrt) -> R<Opt
         term_faq(b, out, &[], conj, body, &bodynames)?
     } else {
         // no index names: `where` and the column are closed, decided here
-        if !(closed_point(b)? && point_in_extent(b, &en.v, &b.cidx, &shape_v, wrt)?) {
+        if !point_in_extent(b, &en.v, &b.cidx, &shape_v, wrt)? {
             return Ok(None);
         }
         body
@@ -699,10 +825,13 @@ fn hvp_term(
             .collect::<R<_>>()?,
     );
     let shape1 = shape_of(ctx, &en.v);
-    if !has_names(b) && !point_in_extent(b, &en.v, ci, &shape1, a1)? {
+    let g = if has_names(b) {
+        ghost_conjuncts(b, &en.v, ci, &shape1, a1)?
+    } else if point_in_extent(b, &en.v, ci, &shape1, a1)? {
+        Vec::new()
+    } else {
         return Ok(None);
-    }
-    let g = ghost_conjuncts(b, &en.v, ci, &shape1, a1)?;
+    };
     let mut bodynames = names_of(std::iter::once(coef).chain(ci));
     bodynames.extend(row_names(b));
     scatter_term(
@@ -747,10 +876,13 @@ fn hvp_sym_term(
             .collect::<R<_>>()?,
     );
     let shape2 = shape_of(ctx, &en.w);
-    if !has_names(b) && !point_in_extent(b, &en.w, c2, &shape2, Wrt::States)? {
+    let g = if has_names(b) {
+        ghost_conjuncts(b, &en.w, c2, &shape2, Wrt::States)?
+    } else if point_in_extent(b, &en.w, c2, &shape2, Wrt::States)? {
+        Vec::new()
+    } else {
         return Ok(None);
-    }
-    let g = ghost_conjuncts(b, &en.w, c2, &shape2, Wrt::States)?;
+    };
     let mut bodynames = names_of(std::iter::once(coef).chain(c2));
     bodynames.extend(row_names(b));
     scatter_term(
@@ -983,28 +1115,137 @@ pub fn hvp_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::op;
 
-    /// One point (row 1), reading its column at the literal index `ci`.
-    fn band(ci: &[i64]) -> Band {
+    fn var(n: &str) -> Expr {
+        Expr::Variable(n.into())
+    }
+    fn int(n: i64) -> Expr {
+        Expr::Integer(n)
+    }
+    fn add(a: Expr, b: Expr) -> Expr {
+        op("+", vec![a, b])
+    }
+    fn sub(a: Expr, b: Expr) -> Expr {
+        op("-", vec![a, b])
+    }
+    fn mul(a: Expr, b: Expr) -> Expr {
+        op("*", vec![a, b])
+    }
+    /// A band over rows `i ∈ lo..hi`, reading column `i`.
+    fn rows(lo: i64, hi: i64) -> Band {
         Band {
-            rows: vec![(1, 1)],
-            ridx: vec![RIdx::Fixed(1)],
-            cidx: ci.iter().map(|n| Expr::Integer(*n)).collect(),
+            rows: vec![(lo, hi)],
+            ridx: vec![RIdx::Name("i".into())],
+            cidx: vec![var("i")],
             coef: Expr::Number(1.0),
             contracted: Vec::new(),
             guard: None,
         }
     }
+    /// One point (row 3), reading its column at the literal index `ci`.
+    fn lit(ci: &[i64]) -> Band {
+        Band {
+            rows: vec![(3, 3)],
+            ridx: vec![RIdx::Fixed(3)],
+            cidx: ci.iter().map(|n| int(*n)).collect(),
+            coef: Expr::Number(1.0),
+            contracted: Vec::new(),
+            guard: None,
+        }
+    }
+    fn walk(b: &Band, ci: &[Expr], n: i64) -> bool {
+        all_points(&walk_band(b, ci, b.guard.clone()), &mut |_, _, _, c| {
+            Ok(c.iter().all(|x| 1 <= *x && *x <= n))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn bounds_decide_what_a_walk_would() {
+        let mut b = rows(2, 7);
+        b.contracted = vec![("k".into(), 1, 3)];
+        let (i, k) = (var("i"), var("k"));
+        for e in [
+            i.clone(),
+            add(i.clone(), int(1)),
+            sub(i.clone(), int(2)),
+            add(i.clone(), k.clone()),
+            sub(i.clone(), k.clone()),
+            mul(int(2), i.clone()),
+            sub(mul(int(2), i.clone()), k.clone()),
+            sub(i.clone(), i.clone()),
+            add(i.clone(), i.clone()),
+        ] {
+            for n in [5, 8, 10, 13] {
+                let ci = [e.clone()];
+                assert_eq!(
+                    in_extent(&b, &ci, &[n]).unwrap(),
+                    Some(walk(&b, &ci, n)),
+                    "{e:?} over {n}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn guards_gathers_and_failures() {
+        let i = var("i");
+        let im1 = [sub(i.clone(), int(1))];
+        // a guard that drops the out-of-extent corner: decided by the walk
+        let mut gb = rows(1, 8);
+        gb.guard = Some(op(">=", vec![i.clone(), int(2)]));
+        assert_eq!(in_extent(&gb, &im1, &[8]).unwrap(), Some(true));
+        assert_eq!(in_extent(&rows(1, 8), &im1, &[8]).unwrap(), Some(false));
+        // an index through a table that is not `const` has no build-time answer
+        let gather = [op("index", vec![var("tbl"), i.clone()])];
+        assert_eq!(in_extent(&rows(1, 8), &gather, &[8]).unwrap(), None);
+        // a guard that is not closed cannot drop a point: only an all-inside
+        // box decides
+        let mut ob = rows(1, 8);
+        ob.guard = Some(op(">", vec![var("u"), Expr::Number(0.0)]));
+        assert_eq!(
+            in_extent(&ob, std::slice::from_ref(&i), &[8]).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            in_extent(&ob, &[add(i.clone(), int(1))], &[8]).unwrap(),
+            None
+        );
+        // a real evaluation failure is not taken for "not closed"
+        let tbl: Expr =
+            serde_json::from_value(json!({"op": "const", "args": [], "value": [1, 2, 3]})).unwrap();
+        let bad = [op("index", vec![tbl, i.clone()])];
+        assert!(in_extent(&rows(1, 8), &bad, &[8]).is_err());
+    }
+
+    #[test]
+    fn a_band_with_no_index_names() {
+        // an open column index is §9.2's refusal, not an evaluation error
+        let mut nb = lit(&[1]);
+        nb.cidx = vec![op("index", vec![var("tbl"), int(2)])];
+        let e = point_in_extent(&nb, "v", &nb.cidx, &[8], Wrt::States).unwrap_err();
+        assert!(e.0.contains("§9.2"), "{}", e.0);
+        let b = lit(&[9]);
+        assert!(!point_in_extent(&b, "v", &b.cidx, &[8], Wrt::States).unwrap());
+        assert!(point_in_extent(&b, "v", &b.cidx, &[8], Wrt::Forcing).is_err());
+        let mut shut = lit(&[9]);
+        shut.guard = Some(op("<", vec![int(2), int(1)]));
+        // no point, so nothing to refuse
+        assert!(!point_in_extent(&shut, "v", &shut.cidx, &[8], Wrt::Forcing).unwrap());
+        // an open `where` is §9.2's refusal
+        let mut open = lit(&[2]);
+        open.guard = Some(op(">", vec![var("u"), int(0)]));
+        assert!(point_in_extent(&open, "v", &open.cidx, &[8], Wrt::States).is_err());
+    }
 
     #[test]
     fn a_read_with_more_indices_than_dimensions_is_refused() {
-        let b = band(&[1, 1]);
-        // one index past the shape's dimensions has no build-time answer, as
-        // in the reference (an out-of-bounds `shape[d]`), not `Some(true)`
-        assert_eq!(in_extent(&b, &b.cidx, &[4]), None);
-        assert_eq!(in_extent(&b, &b.cidx, &[]), None);
-        assert_eq!(in_extent(&b, &b.cidx, &[4, 4]), Some(true));
-        assert_eq!(in_extent(&b, &b.cidx[..1], &[4, 4]), Some(true));
+        let b = lit(&[1, 1]);
+        assert_eq!(in_extent(&b, &b.cidx, &[4]).unwrap(), None);
+        assert_eq!(in_extent(&b, &b.cidx, &[]).unwrap(), None);
+        assert_eq!(in_extent(&b, &b.cidx, &[4, 4]).unwrap(), Some(true));
+        assert_eq!(in_extent(&b, &b.cidx[..1], &[4, 4]).unwrap(), Some(true));
         for wrt in [Wrt::States, Wrt::Parameters, Wrt::Forcing] {
             assert!(ghost_conjuncts(&b, "c", &b.cidx, &[4], wrt).is_err());
             assert!(point_in_extent(&b, "c", &b.cidx, &[4], wrt).is_err());
