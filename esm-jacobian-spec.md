@@ -831,8 +831,13 @@ evaluation document does). On top of that base:
   No equation may read an output, and an output's own state value is never
   read.
 - **Names.** Inputs and outputs take the names below, with `_` appended
-  until clear of every name in the document. `R` is a row variable, `C` a
-  column variable, `C2` a second-axis column variable, and `i` a 1-based
+  until clear of every name in the document and of every name generated
+  before it. Names are generated in one fixed order, so every binding reaches
+  the same names: the table's input column, then its output column; within a
+  column by stage number `i` ascending, then by variable in canonical order
+  (states in the canonical state order of §8, the columns of a `parameters`
+  or `forcing` axis in `columns` order, then `t`). `R` is a row variable, `C`
+  a column variable, `C2` a second-axis column variable, and `i` a 1-based
   stage number.
 
 | Product | Model | Inputs | Outputs |
@@ -841,18 +846,35 @@ evaluation document does). On top of that base:
 | `Jᵀλ` | `VjpEval` | `_lam_<R>` per state | `_vjp_<C>` per column variable |
 | §4.4 contraction | `HvpEval` | `_mu<i>_<R>`, `_w<i>_<C>` per stage | `_hvp_<C2>` per second-axis column variable |
 
-The column variables of an axis are every state (`wrt: "states"`) or every
-entry of the block's `columns` (`"parameters"`, `"forcing"`), whether or not
+The column variables of an axis are every state (`wrt: "states"`), every
+entry of the block's `columns` (`"parameters"`, `"forcing"`), or the single
+scalar `t` (`"time"`, §4.2: input `_v_t`, output `_vjp_t`), whether or not
 an entry reaches them: an output nothing reaches is `0`. The number of stages
 `S` of an `HvpEval` document is an input to the producer.
 
-**Notation.** For entry `k`: `R_k` its `row` with row box `rows_k` and
-free row-index names `ρ_k` (a singleton dimension's literal stays a
-literal), `γ_k` its `contracted` names with their ranges, `C_k` its `col`
-with index expressions `e_k(ρ, γ)`, `a_k(ρ, γ)` its `coef` and `ω_k(ρ, γ)` its
-`where` (`true` when absent). `n_{C,d}` is the extent of dimension `d` of
-`C`. Each product below is a `+` over entries in entry order (a left fold),
-so the association is fixed.
+**Notation.** For entry `k`: `R_k` its `row` with row box `rows_k`;
+`ρ_k` its `row_idx` read as an index tuple (names, and the literal of each
+singleton dimension), `ρ̂_k` the same tuple as a `faq` `output_idx` (each
+literal replaced by the reshape singleton `1`, esm-spec §4.3.1), and
+"`rows_k` over `ρ_k`" one `ranges` entry per NAME of `ρ_k` (a literal
+dimension has none); `γ_k` its `contracted` names with their ranges, `C_k`
+its `col` with index expressions `e_k(ρ, γ)`, `a_k(ρ, γ)` its `coef` and
+`ω_k(ρ, γ)` its `where` (`true` when absent). `n_{C,d}` is the extent of
+dimension `d` of `C`. Fresh output-index names `j = (j_1, …, j_n)` are
+`_j1`, …, `_jn`, each with `_` appended until clear of every name in the
+entry and the document. Each product below is a `+` over entries in entry
+order (a left fold), so the association is fixed.
+
+**Every reduced name occurs in `expr`.** esm-spec §4.3.1 reduces a `faq`
+over the index names that occur in `expr` and not in `output_idx`; a name
+that occurs only in `ranges` or `filter` is not iterated. Where a body below
+does not read a non-output range name `ν` (a contracted name that appears
+only in an `e_k` the filter carries, as in §9.3), the producer MUST write
+`expr` as `ifelse(Φ, body, 0)`, `Φ` the conjunction of the filter's
+conjuncts that read such names, in filter order. `Φ` holds at every point
+the filter admits, so the value is unchanged; the guard exists only to
+make `ν` occur. A producer that cannot make every name occur this way MUST
+fail.
 
 **Ghost reads.** On the `states` and `parameters` axes a point whose column
 falls outside `C`'s extent contributes nothing (§4). Where a product reads
@@ -870,7 +892,7 @@ For each state `R`,
 
 ```
 D(_jvp_R) = Σ_{k : R_k = R} makearray( 0 over shape(R),
-               rows_k ← faq{ output_idx: ρ_k,
+               rows_k ← faq{ output_idx: ρ̂_k,
                              ranges:     rows_k over ρ_k, the ranges of γ_k,
                              filter:     and(ω_k, G_k),
                              expr:       a_k · index(_v_C_k, e_k) } )
@@ -878,16 +900,18 @@ D(_jvp_R) = Σ_{k : R_k = R} makearray( 0 over shape(R),
 
 with `reduce: "+"`. The contracted names are reduced; the row names are
 the output. A scalar `R` with no `contracted` drops the `makearray` and the
-`faq`: the term is `a_k · index(_v_C_k, e_k)` (a scalar `_v_C_k` read bare),
-and a ghost column (§9.1) drops the term outright, since `e_k` is then
-literal. This is a gather: every output cell reads its own row point, and no
-optimization beyond what a `faq` already gets is needed.
+`faq`: the term is `a_k · index(_v_C_k, e_k)` (a scalar `_v_C_k` read bare).
+Such an entry has no index names, so `e_k`, `G_k` and `ω_k` read only
+literals, folded metaparameters and `const` gathers, and the producer
+decides them at build time: it drops the term outright when `ω_k` is false
+or the column is a ghost (§9.1), and otherwise emits it unguarded. This is
+a gather: every output cell reads its own row point, and no optimization
+beyond what a `faq` already gets is needed.
 
 ### 9.3 `Jᵀλ` (`VjpEval`)
 
 For each column variable `C` of the axis, with fresh output-index names
-`j = (j_1, …, j_n)` (`n` the rank of `C`; renamed apart from every name in
-the entry),
+`j = (j_1, …, j_n)` (`n` the rank of `C`, §9.1),
 
 ```
 D(_vjp_C) = Σ_{k : C_k = C} faq{ output_idx: j,
@@ -900,10 +924,12 @@ D(_vjp_C) = Σ_{k : C_k = C} faq{ output_idx: j,
 with `reduce: "+"`. This is §4's meaning transposed: output cell `j`
 receives `a_k · λ[row]` from every point whose column is `j`. The output
 range is exactly `C`'s extent, so ghost points never satisfy the equality
-and need no `G_k`. A scalar `C` has no output index and no equality: the
-term is the filtered sum over the entry's points. On `wrt: "forcing"` this is
-§4.3's `ḡ_B` scatter-add; on `wrt: "parameters"` it is the parameter
-cotangent.
+and need no `G_k`. A contracted name that `e_k` reads but `a_k` does not
+occurs in this body only through the filter, so `expr` takes §9.1's
+`ifelse` guard. A scalar `C` has no output index and no equality: the
+term is the filtered sum over the entry's points (on `wrt: "time"`,
+`_vjp_t = Σ_k Σ_rows a_k · λ[row]`). On `wrt: "forcing"` this is §4.3's
+`ḡ_B` scatter-add; on `wrt: "parameters"` it is the parameter cotangent.
 
 None of the conjuncts compares a contracted name with the node's own output
 index by `<`, `<=`, `>` or `>=`, so the node is not a scan (esm-spec
@@ -915,18 +941,28 @@ costs `|output box| × |row box × contracted box|`: quadratic in the grid for a
 state vjp. An evaluator used for production MUST recognize the
 **equality-filter scatter**: a `faq` whose `filter` is a conjunction that
 contains, for an output index `j_d`, a conjunct `j_d == e` or `e == j_d` with
-`e` reading none of the node's output indices. It evaluates such a node in
-ONE pass over the box of the non-output names, in the same ascending order
-the naive evaluation visits them: at each point where the remaining
-conjuncts hold, it computes `e`, skips the point if `e` is not an integer in
-`j_d`'s range, and folds the body into output cell `j`. Each output cell then
-receives exactly the terms it receives naively, in the same order, so the
-result is bit-identical (the license has the form of esm-spec §4.3.1's
-running-accumulation license); the cost is `|row box × contracted box|`.
-Output indices with no equality conjunct iterate outside the pass as
-ordinary output indices. Because `e_k` reads only index names, literals,
-folded metaparameters and `const` gathers (§4, §4.3), an evaluator MAY also
-compute the scatter map once at build time.
+`e` reading none of the node's output indices (the first such conjunct per
+`j_d`, in filter order; any later one is an ordinary conjunct). Output
+indices with no equality conjunct iterate outside the pass as ordinary
+output indices. The evaluator evaluates such a node in ONE pass over the
+box of the non-output names, in the same ascending order the naive
+evaluation visits them. At each point it computes every bound `e` (none
+reads an output index), skips the point if one is not an integer in its
+`j_d`'s range, binds each `j_d := e`, and only then evaluates the remaining
+conjuncts and, where they hold, the body, folding it into output cell `j`.
+The remaining conjuncts and the body may read the output indices: with
+`j_d` bound to `e` they see exactly the values the naive evaluation gives
+them at that point of cell `j`, where every other `j_d` fails its equality.
+Each output cell then receives exactly the terms it receives naively, in
+the same order, so the result is bit-identical (the license has the form of
+esm-spec §4.3.1's running-accumulation license); the cost is
+`|row box × contracted box|`. When every bound `e` is closed at build time
+(it reads only index names, literals, folded metaparameters and `const`
+gathers: always for `col_idx` on the `parameters` and `forcing` axes, §4.3,
+and for `col2_idx` on those second axes, §4.4), an evaluator MAY compute
+the scatter map once at build time. A states-axis `col_idx` that gathers
+through a table that is not `const` is not closed, and the map is then
+recomputed at each call.
 
 This optimization is an EarthSciAST change in each language, tracked
 there; until it lands, `VjpEval` documents are correct but quadratic.
@@ -949,11 +985,23 @@ D(_hvp_C2) = Σ_{k : col2_k = C2} faq{ output_idx: j,
 with `G_k` the first column's in-extent conjunct (§9.1) and `col2_idx_k == j`
 the per-dimension equalities. This is §4.4's `contract` form: the same
 equality-filter scatter as `Jᵀλ`. On a `["states", "states"]` pair the
-producer MAY instead emit the `symmetric` form: the output is indexed by
-`col`, the equalities are `e_k == j`, `G_k` is `col2`'s in-extent conjunct,
-and the body is `Σ_i index(_mu<i>_R_k, ρ_k) · a_k · index(_w<i>_C2_k,
-col2_idx_k)`. The document records which form it holds in its model name
-(`HvpEval` or `HvpEvalSymmetric`).
+producer MAY instead emit the `symmetric` form, which sums over the FIRST
+column and scatters by it: for each state `C`,
+
+```
+D(_hvp_C) = Σ_{k : C_k = C} faq{ output_idx: j,
+                                 ranges:     j over C's extent, rows_k, γ_k,
+                                 filter:     and(ω_k, G2_k, e_k == j),
+                                 expr:       Σ_i index(_mu<i>_R_k, ρ_k) · a_k
+                                                 · index(_w<i>_col2_k, col2_idx_k) }
+```
+
+with `G2_k` `col2`'s in-extent conjunct (§9.1's `G_k` for `col2_k` at
+`col2_idx_k`). Both forms give the same `g` (§4.4), but their outputs
+gather different entries, so neither may be emitted with the other's
+summation. The document records which form it holds in its model name
+(`HvpEval` or `HvpEvalSymmetric`). Both forms take §9.1's `ifelse` guard
+where their body does not read a reduced name.
 
 ### 9.5 Matrix storage and scatter plans
 
@@ -964,11 +1012,21 @@ consumer's (an integrator's) work, not this repository's.
 
 ### 9.6 Conformance (when produced)
 
-Each fixture that carries `*.jvals.json` will carry `<name>.jvp.evaldoc.json`
-and `<name>.vjp.evaldoc.json` per axis, and each second-order pair
-`<name>.<a1>-<a2>.hvp.evaldoc.json`, byte-compared across bindings. Their
-values are checked by evaluating the document with EarthSciAST at the pinned
-point of the value golden and comparing with the product computed from the
-golden itself (`J v`, `Jᵀ λ` from `*.jvals.json` at seeded `v`, `λ`; the
-`*.hvals.json` `g` at its pinned stage pairs), under §5 item 3's tolerances.
-No binding needs an evaluator of its own for this check.
+File names follow §5's per-axis naming: the states axis has no infix, every
+other axis is named, `<name>.<axis>.*`. Each axis whose value golden exists
+(`<name>.jvals.json`, `<name>.<axis>.jvals.json`) will carry
+`<name>[.<axis>].jvp.evaldoc.json` and `<name>[.<axis>].vjp.evaldoc.json`
+(`tgrad_photolysis.time.jvp.evaldoc.json`, `forcing_bracket.forcing.vjp.evaldoc.json`).
+A `.w0` value golden is a second point of the same axis and adds no
+document. Each second-order pair will carry
+`<name>.<a1>-<a2>.hvp.evaldoc.json` (`HvpEval`) and, on a
+`["states", "states"]` pair, also `<name>.states-states.hvp-sym.evaldoc.json`
+(`HvpEvalSymmetric`), so both contraction forms are checked (§5 item 3).
+Their stage count `S` is the number of stage pairs in the pair's
+`*.hvals.json` (two). All are byte-compared across bindings. Their
+values are checked by evaluating the document with EarthSciAST at each
+pinned point of the axis's value goldens and comparing with the product
+computed from the golden itself (`J v`, `Jᵀ λ` from the `*.jvals.json` at
+seeded `v`, `λ`; the `*.hvals.json` `g` at its pinned stage pairs), under
+§5 item 3's tolerances. No binding needs an evaluator of its own for this
+check.
