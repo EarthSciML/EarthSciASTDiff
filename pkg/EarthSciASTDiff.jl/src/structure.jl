@@ -101,7 +101,7 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     for en in entries, n in (en.u, en.v)
         s = get(sv.variables, n, nothing)
         (s === nothing || s.shape === nothing || isempty(s.shape)) && return nothing
-        sh = String[String(x) for x in s.shape]
+        sh = String[string(x) for x in s.shape]
         shape === nothing && (shape = sh)
         sh == shape || return nothing
     end
@@ -109,16 +109,16 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     length(dim) == 1 || return nothing
     dim = only(dim)
     N = _ctx(sv).index_sets[axis]
-    kl = 0; ku = 0; ok = true
+    kl = 0; ku = 0
     for en in entries
-        _foreach_point(en.band) do cell, _, cidx
-            ok || return
+        ok = _all_points(en.band) do cell, _, cidx
             for d in eachindex(cidx)
-                d == dim || cidx[d] == cell[d] || (ok = false; return)
+                d == dim || cidx[d] == cell[d] || return false
             end
-            1 <= cidx[dim] <= N || return                 # ghost read
+            1 <= cidx[dim] <= N || return true            # ghost read
             off = cidx[dim] - cell[dim]
             kl = max(kl, -off); ku = max(ku, off)
+            return true
         end
         ok || return nothing
     end

@@ -107,34 +107,42 @@ end
 # different ranges at different occurrences of the site — which
 # `_lift_nested` refuses if the column reads it. The inliner renames apart
 # every such shadowing it produces, so this fires only on a hand-written
-# shadowing sum. Each site also keeps the filters of the sums around it
-# (`filters`): the same list at every occurrence, or `:mixed`.
+# shadowing sum. Each site under a sum also keeps the filters of the sums
+# around it (`filters`): the same list at every such occurrence, or `:mixed`
+# — compared by structural id (`fids`, one `StructIndex` per walk), so an
+# occurrence costs no re-serialization of its filters.
 struct _Nested
     ranges::Dict{String, Dict{String, Any}}
     filters::Dict{String, Any}            # site key → Vector{ASTExpr} | :mixed
+    fids::Dict{String, Vector{Int}}       # site key → sid of each filter
+    ix::StructIndex
 end
 
 function _nested_sums(e::ASTExpr, v::String, outer)
-    acc = _Nested(Dict{String, Dict{String, Any}}(), Dict{String, Any}())
-    _nested_sums!(acc, e, v, Set{String}(outer), Pair{String, Any}[], ASTExpr[])
+    acc = _Nested(
+        Dict{String, Dict{String, Any}}(), Dict{String, Any}(),
+        Dict{String, Vector{Int}}(), StructIndex()
+    )
+    _nested_sums!(acc, e, v, Set{String}(outer), Pair{String, Any}[], ASTExpr[], Int[])
     return acc
 end
 
-function _nested_sums!(acc::_Nested, e::ASTExpr, v::String, outer::Set{String}, stack, fstack)
+function _nested_sums!(
+        acc::_Nested, e::ASTExpr, v::String, outer::Set{String}, stack, fstack, fids
+    )
     if (e isa VarExpr && e.name == v) || (
             e isa OpExpr && e.op == "index" &&
                 e.args[1] isa VarExpr && e.args[1].name == v
         )
+        isempty(stack) && return
         key = Site(e).key
         f = get(acc.filters, key, nothing)
         if f === nothing
             acc.filters[key] = copy(fstack)
-        elseif f !== :mixed && (
-                length(f) != length(fstack) || any(skey(a) != skey(b) for (a, b) in zip(f, fstack))
-            )
+            acc.fids[key] = copy(fids)
+        elseif f !== :mixed && acc.fids[key] != fids
             acc.filters[key] = :mixed
         end
-        isempty(stack) && return
         d = get!(() -> Dict{String, Any}(), acc.ranges, key)
         seen = Set{String}()
         for (n, r) in stack
@@ -151,13 +159,15 @@ function _nested_sums!(acc::_Nested, e::ASTExpr, v::String, outer::Set{String}, 
             push!(stack, String(n) => r)
             pushed += 1
         end
-        e.filter === nothing || (push!(fstack, e.filter); filtered = true)
+        e.filter === nothing || (
+            push!(fstack, e.filter); push!(fids, sid(acc.ix, e.filter)); filtered = true
+        )
     end
-    map_children(x -> (_nested_sums!(acc, x, v, outer, stack, fstack); x), e)
+    map_children(x -> (_nested_sums!(acc, x, v, outer, stack, fstack, fids); x), e)
     for _ in 1:pushed
         pop!(stack)
     end
-    filtered && pop!(fstack)
+    filtered && (pop!(fstack); pop!(fids))
     return
 end
 
@@ -475,9 +485,13 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                 )
                 # The column is independent of every contracted index: a
                 # plain band whose coefficient is the (scalar) `reduce: "+"`
-                # of the site derivative over the contraction.
+                # of the site derivative over the contraction. A guard
+                # conjunct reading a contracted name — the piece's own, or a
+                # nested sum's filter tied to it (`Σ_k Σ_{j≤k}`) — is no
+                # condition on the band's point: it filters that sum.
                 gc = ASTExpr[]; gr = ASTExpr[]
-                guard === nothing || for c in _conjuncts(guard)
+                gg = _conj(guard, g)
+                gg === nothing || for c in _conjuncts(gg)
                     push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
                 end
                 red_sum = OpExpr(
@@ -490,7 +504,7 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                 )
                 coef = _simp(mul(red_sum, scale...))
                 iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(_conj(gr), g), v, ctx)
+                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
             else
                 # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
                 # with free contracted column dimensions; entries landing on

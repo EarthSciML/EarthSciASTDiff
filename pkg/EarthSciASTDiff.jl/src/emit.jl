@@ -187,15 +187,18 @@ function _jacobian_block(
     rect = wrt in (:parameters, :forcing)
     structure = rect ? nothing : _structure!(memo, entries, sv)
     # Line-by-line structure is a property of the square state matrix.
+    # The one point walk both the class and its plan read.
     cax = wrt == :states ? column_axis : nothing
-    cax === nothing || structure in (:empty, :block_diagonal) ||
-        column_lines(entries, sv, String(cax)) === nothing || (structure = :column_block)
+    cl = cax === nothing || structure in (:empty, :block_diagonal) ? nothing :
+        column_lines(entries, sv, String(cax))
+    cl === nothing || (structure = :column_block)
     block = _block(
         String(wrt), entries, rect ? _columns_field(sv, wrt, forcing) : nothing,
         structure, cse, cse_min_nodes
     )
     if !rect
-        plan = plan_factorization(entries, sv; structure = structure, column_axis = cax)
+        plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
+            _column_block_plan(cl)
         plan === nothing || (block["factorization"] = serialize_plan(plan))
     end
     return block

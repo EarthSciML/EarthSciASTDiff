@@ -108,10 +108,35 @@ function _window_weight(red::String, e::OpExpr, cn::Vector{String}, d::ASTExpr, 
     return op("ifelse", first_ext, d, lit(0))
 end
 
+const _LIT_CMP = Dict{String, Function}(
+    "<" => <, "<=" => <=, ">" => >, ">=" => >=, "==" => ==, "!=" => !=,
+)
+
+# The value of a literal, or of `+` / `-` / `*` over literals; else `nothing`.
+function _lit_value(e::ASTExpr)
+    (e isa IntExpr || e isa NumExpr) && return e.value
+    (e isa OpExpr && e.op in ("+", "-", "*") && !isempty(e.args)) || return nothing
+    xs = Any[]
+    for x in e.args
+        t = _lit_value(x)
+        t === nothing && return nothing
+        push!(xs, t)
+    end
+    e.op == "+" && return sum(xs)
+    e.op == "*" && return prod(xs)
+    return length(xs) == 1 ? -xs[1] : length(xs) == 2 ? xs[1] - xs[2] : nothing
+end
+
 # Truth of a decided predicate: `true` / `false`, or the residual expression.
 function _bool_fold(g::ASTExpr)
     (g isa IntExpr || g isa NumExpr) && return g.value != 0
     g isa OpExpr || return g
+    if haskey(_LIT_CMP, g.op) && length(g.args) == 2
+        # A comparison of literals — what pinning one-value names leaves of
+        # `k != i` (`_decide` folds only the affine `<`/`<=`/`>`/`>=`).
+        a = _lit_value(g.args[1]); b = _lit_value(g.args[2])
+        (a === nothing || b === nothing) || return _LIT_CMP[g.op](a, b)
+    end
     if g.op == "and" || g.op == "or"
         absorb = g.op == "or"                     # the value that decides it
         rest = ASTExpr[]
@@ -187,6 +212,12 @@ function _one_hot(cidx::Vector{ASTExpr}, coef::ASTExpr, contracted, ridx, v::Str
     foreach(c -> _all_names!(taken, c), cidx)
     cidx = copy(cidx); contracted = collect(Tuple{String, Int, Int}, contracted)
     for k in hot
+        k <= length(shape) || throw(
+            BandError(
+                "column dimension $k of `$v` reads a value, but `$v` has no static " *
+                    "extent along it"
+            )
+        )
         f = _fresh!(taken, "_oh$k", "_j")
         coef = op("ifelse", op("==", VarExpr(f), cidx[k]), coef, lit(0))
         cidx[k] = VarExpr(f)

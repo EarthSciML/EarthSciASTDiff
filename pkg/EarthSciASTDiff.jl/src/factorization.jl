@@ -43,10 +43,13 @@ function plan_factorization(
         cl === nothing && throw(
             ArgumentError("the Jacobian is not :column_block along `$column_axis`")
         )
-        return ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
+        return _column_block_plan(cl)
     end
     return nothing
 end
+
+_column_block_plan(cl) =
+    ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end

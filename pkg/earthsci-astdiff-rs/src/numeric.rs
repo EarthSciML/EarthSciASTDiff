@@ -23,6 +23,7 @@ type R<T> = Result<T, BandError>;
 /// `foreach_point`'s callback: `(row cell, contracted cell, index binding,
 /// column cell)`.
 type PointFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<()> + 'a;
+type PointWhileFn<'a> = dyn FnMut(&[i64], &[i64], &HashMap<String, i64>, &[i64]) -> R<bool> + 'a;
 
 /// `for_each_value`'s callback: `(k, entry, row cell, contracted cell,
 /// column cell, value)`.
@@ -292,6 +293,15 @@ pub(crate) fn product_first_fastest(ranges: &[(i64, i64)]) -> Vec<Vec<i64>> {
 /// the column index evaluated there (ghost reads included). The one point
 /// walk shared by numeric assembly and the CSR scatter plan.
 pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
+    all_points(b, &mut |cell, cc, ibind, cidx| {
+        f(cell, cc, ibind, cidx).map(|()| true)
+    })?;
+    Ok(())
+}
+
+/// As [`foreach_point`], stopping at the first point where `f` returns
+/// false; whether it never did.
+pub(crate) fn all_points(b: &Band, f: &mut PointWhileFn<'_>) -> R<bool> {
     let cranges: Vec<(i64, i64)> = b.contracted.iter().map(|(_, lo, hi)| (*lo, *hi)).collect();
     for cell in product_first_fastest(&b.rows) {
         for cc in product_first_fastest(&cranges) {
@@ -316,10 +326,12 @@ pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
                 .iter()
                 .map(|c| eval_cidx(c, &fbind))
                 .collect::<Result<_, _>>()?;
-            f(&cell, &cc, &ibind, &cidx)?;
+            if !f(&cell, &cc, &ibind, &cidx)? {
+                return Ok(false);
+            }
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The coefficient of every band with the observed it reads spliced in.
@@ -372,11 +384,16 @@ fn for_each_value(
     f: &mut ValueFn<'_>,
 ) -> R<()> {
     for (k, (en, coef0)) in entries.iter().zip(coefs).enumerate() {
-        if let Some(states) = states {
-            check_state_column(states, &en.v, &en.u)?;
-        }
+        // Checked at the entry's first point, as the reference resolves
+        // columns: an entry with no point (its guard excludes every one)
+        // has no column to resolve.
+        let mut checked = states.is_none();
         let vshape = ctx.shapes.get(&en.v);
         foreach_point(&en.band, &mut |cell, cc, ibind, cidx| {
+            if !checked {
+                check_state_column(states.expect("checked otherwise"), &en.v, &en.u)?;
+                checked = true;
+            }
             if let Some(vshape) = vshape {
                 if cidx.iter().zip(vshape.iter()).any(|(c, s)| *c < 1 || c > s) {
                     if wrt == Wrt::Forcing {
@@ -818,15 +835,20 @@ impl HvpEvaluator {
     fn each_point(&self, env: &Env, f: &mut dyn FnMut(&str, &str, &str, f64) -> R<()>) -> R<()> {
         let env = with_defaults(&self.defaults, env);
         for (en, coef0) in self.entries.iter().zip(&self.coefs) {
-            if self.wrt.0 == Wrt::States {
-                check_state_column(&self.states, &en.v, &en.u)?;
-            }
-            if self.wrt.1 == Wrt::States {
-                check_state_column(&self.states, &en.w, &en.u)?;
-            }
+            // Checked at the entry's first point (see `for_each_value`).
+            let mut checked = false;
             let vshape = self.ctx.shapes.get(&en.v);
             let wshape = self.ctx.shapes.get(&en.w);
             foreach_point(&en.band, &mut |cell, _, ibind, cidx| {
+                if !checked {
+                    if self.wrt.0 == Wrt::States {
+                        check_state_column(&self.states, &en.v, &en.u)?;
+                    }
+                    if self.wrt.1 == Wrt::States {
+                        check_state_column(&self.states, &en.w, &en.u)?;
+                    }
+                    checked = true;
+                }
                 let (c1, c2) = cidx.split_at(en.ncol);
                 if outside(wshape, c2) {
                     if self.wrt.1 == Wrt::Forcing {

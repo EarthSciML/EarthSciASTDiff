@@ -27,7 +27,11 @@ _eval_guard(g::ASTExpr, bind::Dict{String, Float64})::Bool =
 # first index fastest, with the column index evaluated there. Column index
 # expressions are evaluated per cell ONCE (build-time, not solve-time). A
 # point the band's guard (`where`) excludes is not a point of the band.
-function _foreach_point(f, b::Band)
+_foreach_point(f, b::Band) = (_all_points((a...) -> (f(a...); true), b); nothing)
+
+# As `_foreach_point`, stopping at the first point where `f` returns false;
+# whether it never did.
+function _all_points(f, b::Band)::Bool
     rowcells = isempty(b.rows) ? [Int[]] :
         [collect(c) for c in Iterators.product(((lo:hi) for (lo, hi) in b.rows)...)]
     ccells = isempty(b.contracted) ? [Int[]] :
@@ -43,9 +47,9 @@ function _foreach_point(f, b::Band)
             bind[n] = Float64(cc[k2])
         end
         b.guard === nothing || _eval_guard(b.guard, bind) || continue
-        f(cell, cc, [_eval_cidx(c, bind) for c in b.cidx])
+        f(cell, cc, [_eval_cidx(c, bind) for c in b.cidx]) || return false
     end
-    return nothing
+    return true
 end
 
 # Enumerate every (band, row cell) → (row name, col name) pair.

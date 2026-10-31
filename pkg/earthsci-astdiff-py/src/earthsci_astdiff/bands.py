@@ -100,13 +100,15 @@ _MIXED = object()
 class _Nested:
     """``_nested_sums``' result (bands.jl ``_Nested``): per site key, the
     indices the enclosing sums bind (``ranges``) and the filters of those
-    sums (``filters``: the same list at every occurrence, or ``_MIXED``)."""
+    sums (``filters``: the same list at every occurrence under a sum, or
+    ``_MIXED``), compared by keys taken once per filter (``fkeys``)."""
 
-    __slots__ = ("filters", "ranges")
+    __slots__ = ("filters", "fkeys", "ranges")
 
     def __init__(self):
         self.ranges: dict = {}
         self.filters: dict = {}
+        self.fkeys: dict = {}
 
 
 def _nested_sums(e: Expr, v: str, outer) -> _Nested:
@@ -117,24 +119,25 @@ def _nested_sums(e: Expr, v: str, outer) -> _Nested:
     occurrences}, plus the filters of those sums. Position-aware: a sum
     elsewhere in the body does not affect a site outside it."""
     acc = _Nested()
-    _nested_walk(acc, e, v, set(outer), [], [])
+    _nested_walk(acc, e, v, set(outer), [], [], [])
     return acc
 
 
-def _nested_walk(acc: _Nested, e: Expr, v: str, outer: set, stack: list, fstack: list) -> None:
+def _nested_walk(
+    acc: _Nested, e: Expr, v: str, outer: set, stack: list, fstack: list, fkeys: list
+) -> None:
     if (isinstance(e, str) and e == v) or (
         isinstance(e, ExprNode) and e.op == "index" and e.args[0] == v
     ):
+        if not stack:
+            return
         key = Site.of(e).key
         f = acc.filters.get(key)
         if f is None:
             acc.filters[key] = list(fstack)
-        elif f is not _MIXED and (
-            len(f) != len(fstack) or any(skey(a) != skey(b) for a, b in zip(f, fstack))
-        ):
+            acc.fkeys[key] = list(fkeys)
+        elif f is not _MIXED and acc.fkeys[key] != fkeys:
             acc.filters[key] = _MIXED
-        if not stack:
-            return
         d = acc.ranges.setdefault(key, {})
         seen: set = set()
         for n, r in stack:
@@ -152,11 +155,13 @@ def _nested_walk(acc: _Nested, e: Expr, v: str, outer: set, stack: list, fstack:
             pushed += 1
         if e.filter is not None:
             fstack.append(e.filter)
+            fkeys.append(skey(e.filter))
             filtered = True
-    map_children(e, lambda x: (_nested_walk(acc, x, v, outer, stack, fstack), x)[1])
+    map_children(e, lambda x: (_nested_walk(acc, x, v, outer, stack, fstack, fkeys), x)[1])
     del stack[len(stack) - pushed :]
     if filtered:
         fstack.pop()
+        fkeys.pop()
 
 
 def _lift_nested(
@@ -401,11 +406,16 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                 elif not any(any(n in free_variables(c) for c in cidx) for n, _, _ in crange):
                     # The column is independent of every contracted index: a
                     # plain band whose coefficient is the (scalar) `reduce:
-                    # "+"` of the site derivative over the contraction.
+                    # "+"` of the site derivative over the contraction. A
+                    # guard conjunct reading a contracted name — the piece's
+                    # own, or a nested sum's filter tied to it (`Σ_k Σ_{j≤k}`)
+                    # — is no condition on the band's point: it filters that
+                    # sum.
                     gc: list = []
                     gr: list = []
-                    if guard is not None:
-                        for c in conjuncts(guard):
+                    gg = conj(guard, g)
+                    if gg is not None:
+                        for c in conjuncts(gg):
                             fv = free_variables(c)
                             (gc if any(n in cnames for n in fv) else gr).append(c)
                     red_sum = ExprNode(
@@ -420,7 +430,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                     coef = simp(mul(red_sum, *scale))
                     if is_zero(coef):
                         continue
-                    _push_band(out, rows2, oidx, cidx, coef, extra, conj(conj_list(gr), g), v, ctx)
+                    _push_band(out, rows2, oidx, cidx, coef, extra, conj_list(gr), v, ctx)
                 else:
                     # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a
                     # band with free contracted column dimensions; entries

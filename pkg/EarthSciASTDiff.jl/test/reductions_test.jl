@@ -112,6 +112,21 @@ end
         u = u5, label = "nested filtered sum", npat = 15
     )
     @test any(en -> en.band.guard !== nothing, res.entries)
+    # the nested filter tied to the node's own contraction (Σ_k Σ_{j≤k}):
+    # it filters the band's sum over k, never guards the band's point
+    res, _ = check(
+        U.doc(
+            faq(
+                ["i"], ["i" => Any[1, 5], "k" => Any[1, 5]],
+                neg(op("*", idx("s", "k"), idx("u", "i")))
+            ); vars = svar, eqs = seq
+        ),
+        u = u5, label = "nested filter over a contracted index", npat = 25
+    )
+    @test all(
+        en -> en.band.guard === nothing ||
+            !("k" in EarthSciAST.free_variables(en.band.guard)), res.entries
+    )
 
     # ── max / min ──
     mx(f; red = "max") = oi(op("*", idx("u", "j"), idx("u", "j")); filter = f, reduce = red)
@@ -168,6 +183,22 @@ end
         u = u5, label = "level search as an index", npat = 25
     )
     @test any(en -> any(c -> startswith(c[1], "_oh"), en.band.contracted), res.entries)
+    # …of a variable with no static extent along that axis: refused by name
+    E = EarthSciASTDiff
+    ctx = E.Ctx(Dict("x" => 5), Dict{String, Vector{Int}}(), Set{String}())
+    @test_throws BandError E._one_hot(
+        EarthSciAST.ASTExpr[EarthSciAST.VarExpr("kap")], E.lit(1),
+        Tuple{String, Int, Int}[], Union{String, Int}["i"], "q", ctx
+    )
+
+    # ── guard cells pinned to literal comparisons are decided ──
+    V = EarthSciAST.VarExpr
+    @test isempty(E._split_guard(E.op("!=", V("k"), V("i")), ["k", "i"], [(3, 3), (3, 3)]))
+    @test E._split_guard(E.op("==", V("k"), E.op("+", V("i"), E.lit(1))), ["k", "i"], [(4, 4), (3, 3)]) ==
+        [([(4, 4), (3, 3)], nothing)]
+    cells = E._split_guard(E.op("!=", V("k"), V("i")), ["k", "i"], [(1, 4), (3, 3)])
+    @test length(cells) == 1 && cells[1][1] == [(1, 4), (3, 3)] &&
+        E.skey(cells[1][2]) == E.skey(E.op("!=", V("k"), E.lit(3)))
 end
 
 @testset "column_block structure" begin
@@ -209,6 +240,13 @@ end
     file3 = load(U.doc(loc; n = 3, nz = 4, ushape = ["x", "z"]))
     sv3 = sysview(file3, "U9")
     @test detect_structure(jacobian_bands(sv3), sv3; column_axis = "z") == :block_diagonal
+    # a literal extent in the shape (a typed model may carry one; the schema
+    # does not) is no index-set name, and no error
+    u3 = sv3.variables["u"]
+    vars4 = copy(sv3.variables)
+    vars4["u"] = (shape = Any["x", 4], type = u3.type)
+    sv4 = EarthSciASTDiff.SysView(vars4, sv3.equations, sv3.index_sets)
+    @test column_lines(jacobian_bands(sv3), sv4, "x") !== nothing
 end
 
 @testset "silent paths: faq-LHS observed, unresolvable columns" begin

@@ -180,6 +180,39 @@ def test_nested_filtered_sum():
     assert any(en.band.guard is not None for en in jacobian_bands(file))
 
 
+def test_nested_filter_over_a_contracted_index():
+    # the nested filter tied to the node's own contraction (Σ_k Σ_{j≤k}): it
+    # filters the band's sum over k, never guards the band's point
+    svar = {"s": {"type": "unknown", "shape": ["x"]}}
+    seq = [{"lhs": "s", "rhs": oi(op("^", idx("u", "j"), 2), filter=le("j", "i"))}]
+    file = doc(
+        faq(["i"], {"i": [1, 5], "k": [1, 5]}, neg(op("*", idx("s", "k"), idx("u", "i")))),
+        variables=svar,
+        eqs=seq,
+    )
+    check_against_fd(file, U5, npat=25)
+    for en in jacobian_bands(file):
+        assert en.band.guard is None or "k" not in ea.expression.free_variables(en.band.guard)
+
+
+def test_one_hot_without_a_static_extent_is_refused():
+    from types import SimpleNamespace
+
+    from earthsci_astdiff.reductions import one_hot
+
+    with pytest.raises(BandError):
+        one_hot(["kap"], 1, [], ["i"], "q", SimpleNamespace(shapes={}))
+
+
+def test_pinned_literal_comparisons_are_decided():
+    from earthsci_astdiff.expr_helpers import op as node
+    from earthsci_astdiff.reductions import split_guard
+
+    assert split_guard(node("!=", "k", "i"), ["k", "i"], [(3, 3), (3, 3)]) == []
+    cells = split_guard(node("==", "k", node("+", "i", 1)), ["k", "i"], [(4, 4), (3, 3)])
+    assert [(list(map(tuple, c)), g) for c, g in cells] == [([(4, 4), (3, 3)], None)]
+
+
 def test_exact_ties_take_the_first_extremum():
     rhs, _ = FILTERED["running max"]
     utie = [0.3, 0.9, 0.2, 0.9, 0.45]

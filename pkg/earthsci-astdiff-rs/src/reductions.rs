@@ -232,6 +232,27 @@ pub(crate) fn bool_fold(g: &Expr) -> Result<bool, Expr> {
     match g {
         Expr::Integer(i) => Ok(*i != 0),
         Expr::Number(x) => Ok(*x != 0.0),
+        // A comparison of literals — what pinning one-value names leaves of
+        // `k != i` (`decide` folds only the affine `<`/`<=`/`>`/`>=`).
+        Expr::Operator(n)
+            if n.args.len() == 2
+                && matches!(n.op.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=")
+                && lit_value(&n.args[0]).is_some()
+                && lit_value(&n.args[1]).is_some() =>
+        {
+            let (a, b) = (
+                lit_value(&n.args[0]).unwrap(),
+                lit_value(&n.args[1]).unwrap(),
+            );
+            Ok(match n.op.as_str() {
+                "<" => a < b,
+                "<=" => a <= b,
+                ">" => a > b,
+                ">=" => a >= b,
+                "==" => a == b,
+                _ => a != b,
+            })
+        }
         Expr::Operator(n) if n.op == "and" || n.op == "or" => {
             let absorb = n.op == "or"; // the value that decides it
             let mut rest = Vec::new();
@@ -255,6 +276,25 @@ pub(crate) fn bool_fold(g: &Expr) -> Result<bool, Expr> {
         Expr::Operator(n) if n.op == "true" => Ok(true),
         Expr::Operator(n) if n.op == "false" => Ok(false),
         _ => Err(g.clone()),
+    }
+}
+
+/// The value of a literal, or of `+` / `-` / `*` over literals.
+fn lit_value(e: &Expr) -> Option<f64> {
+    match e {
+        Expr::Integer(i) => Some(*i as f64),
+        Expr::Number(x) => Some(*x),
+        Expr::Operator(n) if matches!(n.op.as_str(), "+" | "-" | "*") && !n.args.is_empty() => {
+            let xs: Vec<f64> = n.args.iter().map(lit_value).collect::<Option<_>>()?;
+            match (n.op.as_str(), xs.as_slice()) {
+                ("+", _) => Some(xs.iter().sum()),
+                ("*", _) => Some(xs.iter().product()),
+                (_, [a]) => Some(-a),
+                (_, [a, b]) => Some(a - b),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -361,4 +401,30 @@ pub(crate) fn one_hot(
         contracted.push((f, 1, n));
     }
     Ok((cidx, coef, contracted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_guard;
+    use crate::helpers::op;
+    use earthsci_ast::Expr;
+
+    fn var(n: &str) -> Expr {
+        Expr::Variable(n.into())
+    }
+
+    #[test]
+    fn pinned_literal_comparisons_are_decided() {
+        let names = ["k".to_string(), "i".to_string()];
+        let ne = op("!=", vec![var("k"), var("i")]);
+        assert!(split_guard(&ne, &names, &[(3, 3), (3, 3)]).is_empty());
+        let eq = op(
+            "==",
+            vec![var("k"), op("+", vec![var("i"), Expr::Integer(1)])],
+        );
+        assert_eq!(
+            split_guard(&eq, &names, &[(4, 4), (3, 3)]),
+            vec![(vec![(4, 4), (3, 3)], None)]
+        );
+    }
 }

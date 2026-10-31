@@ -39,8 +39,12 @@ skey(e::ASTExpr) = stable_json(EarthSciAST.serialize_expression(e))
 # A site's identity key: the canonical JSON, or — for an `index` node whose
 # subscripts hold an array op the canonical form refuses (a level search
 # `u[κ]` with κ a min-faq, §3.5) — `~` followed by its stable JSON, which
-# sorts after every canonical key.
+# sorts after every canonical key. The refusal is decided by a field walk
+# first (`_canon_refuses`), so `is_site` — which keys every candidate node of
+# such a site — raises no exception per node; the `catch` is the backstop
+# for a refusal of another kind.
 function _site_key(e::ASTExpr)::String
+    _canon_refuses(e) && return "~" * skey(e)
     try
         return ckey(e)
     catch err
@@ -48,6 +52,13 @@ function _site_key(e::ASTExpr)::String
         return "~" * skey(e)
     end
 end
+
+# Does `e` carry, at any node `canonical_json` emits, a field outside the
+# canonical node encoding (an array op's `expr_body`, `ranges`, …)?
+_canon_refuses(e::ASTExpr) = e isa OpExpr && (
+    any(f -> getfield(e, f) !== nothing, EarthSciAST._NON_EMISSIBLE_FIELDS) ||
+        any(_canon_refuses, e.args)
+)
 
 """
     Site(expr)

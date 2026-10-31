@@ -134,17 +134,34 @@ pub fn is_array_expr(e: &Expr, ctx: &Ctx) -> bool {
 /// bound twice on the way down, or over different ranges at different
 /// occurrences. Position-aware: a sum elsewhere in the body does not affect
 /// a site outside it.
-/// Each site also keeps the filters of the sums around it (`filters`): the
-/// same list at every occurrence, or `None` (mixed).
+/// Each site under a sum also keeps the filters of the sums around it
+/// (`filters`): the same list at every such occurrence, or `None` (mixed) —
+/// compared by keys taken once per filter (`fkeys`), so an occurrence costs
+/// no re-serialization of its filters.
 #[derive(Default)]
 pub(crate) struct Nested {
     ranges: HashMap<String, HashMap<String, Option<RangeSpec>>>,
     filters: HashMap<String, Option<Vec<Expr>>>,
+    fkeys: HashMap<String, Vec<String>>,
+}
+
+/// The filters of the sums enclosing a walk position, with their keys.
+#[derive(Default)]
+struct FilterStack {
+    exprs: Vec<Expr>,
+    keys: Vec<String>,
 }
 
 pub(crate) fn nested_sums(e: &Expr, v: &str, outer: &[String]) -> Nested {
     let mut acc = Nested::default();
-    nested_walk(e, v, outer, &mut Vec::new(), &mut Vec::new(), &mut acc);
+    nested_walk(
+        e,
+        v,
+        outer,
+        &mut Vec::new(),
+        &mut FilterStack::default(),
+        &mut acc,
+    );
     acc
 }
 
@@ -153,7 +170,7 @@ fn nested_walk(
     v: &str,
     outer: &[String],
     stack: &mut Vec<(String, RangeSpec)>,
-    fstack: &mut Vec<Expr>,
+    fstack: &mut FilterStack,
     acc: &mut Nested,
 ) {
     let is_site = match e {
@@ -164,23 +181,20 @@ fn nested_walk(
         _ => false,
     };
     if is_site {
+        if stack.is_empty() {
+            return;
+        }
         let key = Site::of(e).key;
         match acc.filters.get_mut(&key) {
             None => {
-                acc.filters.insert(key.clone(), Some(fstack.clone()));
+                acc.filters.insert(key.clone(), Some(fstack.exprs.clone()));
+                acc.fkeys.insert(key.clone(), fstack.keys.clone());
             }
             Some(f) => {
-                let same = f.as_ref().is_some_and(|f| {
-                    f.len() == fstack.len()
-                        && f.iter().zip(fstack.iter()).all(|(a, b)| skey(a) == skey(b))
-                });
-                if !same {
+                if f.is_some() && acc.fkeys[&key] != fstack.keys {
                     *f = None;
                 }
             }
-        }
-        if stack.is_empty() {
-            return;
         }
         let d = acc.ranges.entry(key).or_default();
         let mut seen: HashSet<&String> = HashSet::new();
@@ -195,7 +209,7 @@ fn nested_walk(
     }
     let Expr::Operator(n) = e else { return };
     let depth = stack.len();
-    let fdepth = fstack.len();
+    let fdepth = fstack.exprs.len();
     if n.op == "faq" && n.output_idx.as_ref().is_none_or(|o| o.is_empty()) {
         if let Some(rs) = &n.ranges {
             let mut ks: Vec<&String> = rs.keys().collect();
@@ -204,13 +218,15 @@ fn nested_walk(
                 stack.push((k.clone(), rs[k].clone()));
             }
             if let Some(f) = &n.filter {
-                fstack.push((**f).clone());
+                fstack.keys.push(skey(f));
+                fstack.exprs.push((**f).clone());
             }
         }
     }
     n.for_each_child(&mut |c: &Expr| nested_walk(c, v, outer, stack, fstack, acc));
     stack.truncate(depth);
-    fstack.truncate(fdepth);
+    fstack.exprs.truncate(fdepth);
+    fstack.keys.truncate(fdepth);
 }
 
 /// Substitution that does not descend into a faq for the names it binds.
@@ -717,9 +733,12 @@ fn bands_faq(
                     // The column is independent of every contracted index: a
                     // plain band whose coefficient is the (scalar)
                     // `reduce: "+"` of the site derivative over the
-                    // contraction.
+                    // contraction. A guard conjunct reading a contracted
+                    // name — the piece's own, or a nested sum's filter tied
+                    // to it (`Σ_k Σ_{j≤k}`) — is no condition on the band's
+                    // point: it filters that sum.
                     let (mut gc, mut gr) = (Vec::new(), Vec::new());
-                    if let Some(gd) = &guard {
+                    if let Some(gd) = &conj(guard.clone(), g) {
                         for c in conjuncts(gd) {
                             let fv = free_vars(&c);
                             if cnames.iter().any(|nm| fv.contains(nm)) {
@@ -748,7 +767,7 @@ fn bands_faq(
                     if is_zero(&coef) {
                         continue;
                     }
-                    let guard = conj(conj_list(gr), g);
+                    let guard = conj_list(gr);
                     push_band(
                         out,
                         rows2.clone(),

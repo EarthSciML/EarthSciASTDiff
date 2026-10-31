@@ -298,6 +298,36 @@ fn nested_filtered_sum_guards_its_lifted_index() {
     assert!(es.iter().any(|en| en.band.guard.is_some()));
 }
 
+#[test]
+fn nested_filter_over_a_contracted_index_filters_its_sum() {
+    // Σ_k Σ_{j≤k}: the nested filter tied to the node's own contraction
+    // filters the band's sum over k, never guards the band's point
+    let seq = json!({"lhs": "s", "rhs": oi(op("^", &[idx("u", &[json!("j")]), json!(2)]),
+                                           json!({"filter": cmp("<=", "j", "i")}))});
+    let rhs = faq(
+        &["i"],
+        &[("i", 1, 5), ("k", 1, 5)],
+        neg(op("*", &[idx("s", &[json!("k")]), idx("u", &[json!("i")])])),
+        json!({}),
+    );
+    let d = Doc {
+        vars: json!({"s": {"type": "unknown", "shape": ["x"]}}),
+        eqs: vec![seq],
+        ..Default::default()
+    };
+    let es = check(
+        &doc(rhs, d),
+        &U5,
+        "nested filter over a contracted index",
+        Some(25),
+    );
+    assert!(es.iter().all(|en| en
+        .band
+        .guard
+        .as_ref()
+        .is_none_or(|g| !earthsci_astdiff::helpers::free_vars(g).contains("k"))));
+}
+
 fn mx(f: Value, red: &str) -> Value {
     oi(
         op("*", &[idx("u", &[json!("j")]), idx("u", &[json!("j")])]),

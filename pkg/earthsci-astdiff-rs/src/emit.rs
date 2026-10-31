@@ -383,25 +383,21 @@ pub fn column_lines(
         .index_sets
         .get(axis)
         .ok_or_else(|| crate::bands::BandError(format!("unknown index set `{axis}`")))?;
-    let (mut kl, mut ku, mut ok) = (0i64, 0i64, true);
+    let (mut kl, mut ku) = (0i64, 0i64);
     for en in entries {
-        crate::numeric::foreach_point(&en.band, &mut |cell, _, _, cidx| {
-            if !ok {
-                return Ok(());
-            }
+        let ok = crate::numeric::all_points(&en.band, &mut |cell, _, _, cidx| {
             for d in 0..cidx.len() {
                 if d != dim && cidx[d] != cell[d] {
-                    ok = false;
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             if cidx[dim] < 1 || cidx[dim] > nn {
-                return Ok(()); // ghost read
+                return Ok(true); // ghost read
             }
             let off = cidx[dim] - cell[dim];
             kl = kl.max(-off);
             ku = ku.max(off);
-            Ok(())
+            Ok(true)
         })?;
         if !ok {
             return Ok(None);
@@ -760,9 +756,17 @@ fn axis_block(
     } else {
         None
     };
-    let structure = match structure {
-        Some(st) => Some(refine_structure(st, &entries, sv, ctx, cax)?),
-        None => None,
+    // The one point walk both the class and its plan read.
+    let lines = match (structure, cax) {
+        (Some(st), Some(axis)) if st != "empty" && st != "block_diagonal" => {
+            column_lines(&entries, sv, ctx, axis)?
+        }
+        _ => None,
+    };
+    let structure = if lines.is_some() {
+        Some("column_block")
+    } else {
+        structure
     };
     let mut block = block_fields(
         json!(wrt.as_str()),
@@ -775,10 +779,8 @@ fn axis_block(
     );
     if structure == Some("block_diagonal") {
         block.insert("factorization".into(), block_diagonal_plan(&entries));
-    } else if structure == Some("column_block") {
-        let axis = cax.expect("column_block needs its axis");
-        let cl = column_lines(&entries, sv, ctx, axis)?.expect("detected along the axis");
-        block.insert("factorization".into(), column_block_plan(&cl));
+    } else if let Some(cl) = &lines {
+        block.insert("factorization".into(), column_block_plan(cl));
     }
     Ok(Value::Object(block))
 }

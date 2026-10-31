@@ -21,6 +21,9 @@ coefficient as ``ifelse(φ, d, 0)`` and its pattern is the whole window.
 
 from __future__ import annotations
 
+import math
+import operator
+
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expression import free_variables
 from earthsci_ast.substitute import substitute
@@ -147,6 +150,38 @@ def window_weight(red: str, e: ExprNode, cn: list, d: Expr, E) -> Expr:
     return op("ifelse", first_ext, d, 0)
 
 
+_LIT_CMP = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+
+
+def _lit_value(e: Expr):
+    """The value of a literal, or of ``+`` / ``-`` / ``*`` over literals;
+    else ``None``."""
+    if isinstance(e, bool):
+        return None
+    if isinstance(e, (int, float)):
+        return e
+    if not (isinstance(e, ExprNode) and e.op in ("+", "-", "*") and e.args):
+        return None
+    xs = []
+    for x in e.args:
+        t = _lit_value(x)
+        if t is None:
+            return None
+        xs.append(t)
+    if e.op == "+":
+        return sum(xs)
+    if e.op == "*":
+        return math.prod(xs)
+    return -xs[0] if len(xs) == 1 else xs[0] - xs[1] if len(xs) == 2 else None
+
+
 def bool_fold(g: Expr):
     """Truth of a decided predicate: ``True`` / ``False``, or the residual
     expression."""
@@ -156,6 +191,12 @@ def bool_fold(g: Expr):
         return g != 0
     if not isinstance(g, ExprNode):
         return g
+    if g.op in _LIT_CMP and len(g.args) == 2:
+        # A comparison of literals — what pinning one-value names leaves of
+        # `k != i` (`_decide` folds only the affine `<`/`<=`/`>`/`>=`).
+        a, b = _lit_value(g.args[0]), _lit_value(g.args[1])
+        if a is not None and b is not None:
+            return _LIT_CMP[g.op](a, b)
     if g.op in ("and", "or"):
         absorb = g.op == "or"  # the value that decides it
         rest = []
@@ -217,6 +258,13 @@ def one_hot(cidx: list, coef: Expr, contracted: list, ridx, v: str, ctx):
     cidx = list(cidx)
     contracted = list(contracted)
     for k in hot:
+        if k >= len(shape):
+            from .bands import BandError
+
+            raise BandError(
+                f"column dimension {k + 1} of `{v}` reads a value, but `{v}` has no "
+                "static extent along it"
+            )
         f = fresh(taken, f"_oh{k + 1}", "_j")
         coef = op("ifelse", op("==", f, cidx[k]), coef, 0)
         cidx[k] = f

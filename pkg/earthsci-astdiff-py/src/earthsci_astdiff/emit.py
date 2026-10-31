@@ -268,12 +268,14 @@ def _jacobian_block(
     rect = wrt in ("parameters", "forcing")
     structure = None if rect else memo.structure(entries, sv)
     # Line-by-line structure is a property of the square state matrix.
+    # The one point walk both the class and its plan read.
     cax = column_axis if wrt == "states" else None
-    if (
-        cax is not None
-        and structure not in ("empty", "block_diagonal")
-        and column_lines(entries, sv, str(cax)) is not None
-    ):
+    cl = (
+        None
+        if cax is None or structure in ("empty", "block_diagonal")
+        else column_lines(entries, sv, str(cax))
+    )
+    if cl is not None:
         structure = "column_block"
     block = _block(
         wrt,
@@ -285,9 +287,13 @@ def _jacobian_block(
         cse_min_nodes,
     )
     if not rect:
-        from .factorization import plan_factorization, serialize_plan
+        from .factorization import _column_block_plan, plan_factorization, serialize_plan
 
-        plan = plan_factorization(entries, sv, structure=structure, column_axis=cax)
+        plan = (
+            plan_factorization(entries, sv, structure=structure)
+            if cl is None
+            else _column_block_plan(cl)
+        )
         if plan is not None:
             block["factorization"] = serialize_plan(plan)
     return block

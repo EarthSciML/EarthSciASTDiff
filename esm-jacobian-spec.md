@@ -197,10 +197,15 @@ clear), since the coefficient may still contain the sum (the chain rule
 through f(Σ_k …)). The index-only conjuncts of the filters around the site
 that read such a lifted index — and no index a sum around it still binds —
 are also the entry's `where` guard, renamed alike, unless the site occurs
-under different filters at different occurrences. Producers MUST fail when
-a column reads a name the sums around its site bind ambiguously (twice on
-the way down, over two different ranges at different occurrences of the
-site, or shadowing the band's own row or contraction index). Fixtures:
+under different filters at different occurrences. A guard conjunct that
+also reads an index the enclosing node contracts but the entry does not
+carry as a `contracted` dimension (`Σ_k Σ_{j≤k}` with a column `u[j]`)
+filters the entry's sum over that index instead, never the `where` guard,
+which may read only the entry's own row and contracted names. Producers
+MUST fail when a column reads a name the sums around its site bind
+ambiguously (twice on the way down, over two different ranges at different
+occurrences of the site, or shadowing the band's own row or contraction
+index). Fixtures:
 `contracting_observed.esm`, `filtered_scan.esm`, `semiring_reduce.esm`.
 
 **Value-indexed reads.** A column index that reads anything but the entry's
