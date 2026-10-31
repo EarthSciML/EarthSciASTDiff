@@ -11,7 +11,7 @@ use earthsci_astdiff::{
 use serde_json::Value;
 
 mod common;
-use common::oracle::assemble_jacobian;
+use common::docvals::doc_jacobian;
 use common::{load, root};
 
 const NAMES: [&str; 10] = [
@@ -120,7 +120,7 @@ fn value_goldens() {
 fn check_values(name: &str, golden: &str, wrt: Wrt) {
     let file = load(name);
     let (env, g) = common::jvals_env(golden);
-    let got = assemble_jacobian(&file, None, wrt, &env).unwrap();
+    let got = doc_jacobian(&file, None, wrt, None, &env).unwrap();
     let want: Vec<(String, String, f64)> = g["entries"]
         .as_array()
         .unwrap()

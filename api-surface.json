@@ -27,7 +27,8 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "bind_plan"
+        "julia": "bind_plan",
+        "python": "bind_plan"
       }
     },
     {
@@ -270,7 +271,8 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
-        "julia": "scatter_plan"
+        "julia": "scatter_plan",
+        "python": "scatter_plan"
       }
     },
     {
@@ -279,6 +281,7 @@
       "tier": "stable",
       "bindings": {
         "julia": "ScatterPlan",
+        "python": "ScatterPlan",
         "rust": "ScatterPlan"
       }
     },

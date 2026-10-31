@@ -67,8 +67,8 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
 - `goldens/` — `<fixture>.<layout>.plan.json`: scatter plans (spec §8) —
   band field → storage position for `lane_blocks`, `lane_sparse_blocks`,
   `column_banded` and `csr`, one per layout the fixture's structure admits
-  (the list lives in `scripts/regenerate-goldens.jl`). Julia and Rust
-  compare byte-exactly; Python does not port scatter plans yet.
+  (the list lives in `scripts/regenerate-goldens.jl`). Julia, Rust and
+  Python compare byte-exactly.
 - `goldens/` — `<fixture>.jvals.json`: assembled Jacobian VALUES at a pinned
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
@@ -86,5 +86,6 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   integral float keeps its `.0`; scientific notation for magnitudes outside `[1e-4, 1e6)`).
 
 Value-level conformance (Jacobian entries at sample points) is asserted in
-each binding's own test suite against a machine-precision oracle — for Julia,
-ForwardDiff through the eltype-generic tree-walk RHS.
+each binding's own test suite, every value obtained by running the emitted
+documents through that binding's EarthSciAST — never by evaluating band
+coefficients in the test itself.

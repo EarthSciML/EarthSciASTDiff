@@ -1,7 +1,8 @@
 """Inline pruning (``inlinable_observed``): an observed that cannot move with
 the differentiation target is not inlined (port of the reference's
 test/prune_test.jl). The hazard is a SILENT ZERO, so values are checked
-against the analytic Jacobian on both axes: ``src = 2k`` is state-independent
+against the analytic Jacobian on both axes (EarthSciAST evaluating the
+``JvpEval`` document, tests/docvals.py): ``src = 2k`` is state-independent
 (pruned for ``wrt="states"``) but parameter-dependent (MUST be kept for
 ``wrt="parameters"``).
 
@@ -10,7 +11,7 @@ against the analytic Jacobian on both axes: ``src = 2k`` is state-independent
 
 import earthsci_ast as ea
 import pytest
-from bandvals import assemble_jacobian
+from docvals import doc_jacobian
 from earthsci_astdiff import sysview
 from earthsci_astdiff.system import inlinable_observed, observed_defs
 
@@ -67,13 +68,14 @@ def test_pruning_decision_is_per_axis():
 def test_pruned_observed_values_on_both_axes():
     file = _probe()
     u = [0.3, 0.7, 1.1, 1.9]
-    ju = assemble_jacobian(file, states={"u": u}, params={"k": K})
+    states = {f"u[{i}]": x for i, x in enumerate(u, start=1)}
+    ju = doc_jacobian(file, states=states, params={"k": K}).J
     assert len(ju) == 4
     for i in range(1, 5):
         # A coefficient that dropped the pruned observed would read -1; one
         # that zeroed it, 0.
         assert ju[(f"u[{i}]", f"u[{i}]")] == pytest.approx(-2 * K, abs=1e-14)
-    jp = assemble_jacobian(file, wrt="parameters", states={"u": u}, params={"k": K})
+    jp = doc_jacobian(file, wrt="parameters", states=states, params={"k": K}).J
     assert len(jp) == 4, "the k column must not be pruned to zero"
     for i, ui in enumerate(u, start=1):
         assert jp[(f"u[{i}]", "k")] == pytest.approx(2 - 2 * ui, abs=1e-14)

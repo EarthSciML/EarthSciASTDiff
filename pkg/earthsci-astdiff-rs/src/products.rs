@@ -182,6 +182,17 @@ fn column_vars(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<Vec<Stri
     })
 }
 
+/// The document variable carrying `v` in `names`: an entry whose row or
+/// column variable the axis does not hold (an observed the band calculus
+/// took for a state, say) is refused.
+fn io_name<'m>(names: &'m IoMap, v: &str) -> R<&'m str> {
+    names.get(v).map(String::as_str).ok_or_else(|| {
+        BandError(format!(
+            "`{v}` names no state or column variable of the product document's axis"
+        ))
+    })
+}
+
 fn shape_of(ctx: &Ctx, v: &str) -> Vec<i64> {
     ctx.shapes.get(v).cloned().unwrap_or_default()
 }
@@ -628,12 +639,15 @@ fn hvp_term(
             .iter()
             .zip(st.w)
             .map(|(mu, w)| {
-                sop(
+                Ok(sop(
                     "*",
-                    vec![sread(&mu[&en.u], rho(b)), sread(&w[&en.v], ser_all(ci))],
-                )
+                    vec![
+                        sread(io_name(mu, &en.u)?, rho(b)),
+                        sread(io_name(w, &en.v)?, ser_all(ci)),
+                    ],
+                ))
             })
-            .collect(),
+            .collect::<R<_>>()?,
     );
     let shape1 = shape_of(ctx, &en.v);
     if !has_names(b) && !point_in_extent(b, &en.v, ci, &shape1, a1)? {
@@ -672,16 +686,16 @@ fn hvp_sym_term(
             .iter()
             .zip(st.w)
             .map(|(mu, w)| {
-                sop(
+                Ok(sop(
                     "*",
                     vec![
-                        sread(&mu[&en.u], rho(b)),
+                        sread(io_name(mu, &en.u)?, rho(b)),
                         ser_expr(coef),
-                        sread(&w[&en.w], ser_all(c2)),
+                        sread(io_name(w, &en.w)?, ser_all(c2)),
                     ],
-                )
+                ))
             })
-            .collect(),
+            .collect::<R<_>>()?,
     );
     let shape2 = shape_of(ctx, &en.w);
     if !has_names(b) && !point_in_extent(b, &en.w, c2, &shape2, Wrt::States)? {
@@ -741,7 +755,13 @@ pub fn jvp_document(
     }
     let owner: Vec<&str> = entries.iter().map(|en| en.u.as_str()).collect();
     d.outputs(&out, &owner, |k, ctx| {
-        jvp_term(&entries[k], &coefs[k], &vin[&entries[k].v], ctx, wrt)
+        jvp_term(
+            &entries[k],
+            &coefs[k],
+            io_name(&vin, &entries[k].v)?,
+            ctx,
+            wrt,
+        )
     })?;
     let io = JvpIo {
         model: model.into(),
@@ -787,7 +807,7 @@ pub fn vjp_document(
         vjp_term(
             &entries[k],
             &coefs[k],
-            &lam[&entries[k].u],
+            io_name(&lam, &entries[k].u)?,
             ctx,
             wrt,
             &taken,

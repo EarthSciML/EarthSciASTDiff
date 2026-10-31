@@ -6,7 +6,7 @@ an EXACT pattern — the window's points, no padding."""
 
 import earthsci_ast as ea
 import pytest
-from bandvals import assemble_jacobian
+from docvals import doc_jacobian
 from earthsci_astdiff import (
     BandError,
     column_lines,
@@ -216,7 +216,7 @@ def test_pinned_literal_comparisons_are_decided():
 def test_exact_ties_take_the_first_extremum():
     rhs, _ = FILTERED["running max"]
     utie = [0.3, 0.9, 0.2, 0.9, 0.45]
-    J = assemble_jacobian(doc(rhs), states={"u": utie})
+    J = doc_jacobian(doc(rhs), states={f"u[{i}]": x for i, x in enumerate(utie, start=1)}).J
     assert J[("u[4]", "u[2]")] == pytest.approx(-2 * 0.9)
     assert J[("u[4]", "u[4]")] == 0
     assert J[("u[5]", "u[2]")] == pytest.approx(-2 * 0.9)
