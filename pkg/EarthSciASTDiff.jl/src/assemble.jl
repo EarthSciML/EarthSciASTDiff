@@ -54,17 +54,12 @@ function _all_points(f, b::Band)::Bool
     return true
 end
 
-# Enumerate every (band, row cell) → (row name, col name) pair.
+# Every band point's (row cell name, column cell name), band by band.
 function _scatter_pairs(sv::SysView, entries::Vector{JacEntry})
-    pairs = Vector{Tuple{Int, String, String, String}}()  # (band k, rowname, colname, jname-cell)
-    for (k, en) in enumerate(entries)
-        _foreach_point(en.band) do cell, cc, cidx
-            push!(
-                pairs, (
-                    k, _cellname(en.u, cell), _cellname(en.v, cidx),
-                    _cellname("J_$k", vcat(cell, cc)),
-                )
-            )
+    pairs = Vector{Tuple{String, String}}()
+    for en in entries
+        _foreach_point(en.band) do cell, _, cidx
+            push!(pairs, (_cellname(en.u, cell), _cellname(en.v, cidx)))
         end
     end
     return pairs
@@ -252,7 +247,7 @@ function jacobian_pattern(
     n = length(vm0)
     strict = source_layout !== nothing
     I = Int[]; J = Int[]
-    for (_, rowname, colname, _) in _scatter_pairs(sv, entries)
+    for (rowname, colname) in _scatter_pairs(sv, entries)
         r = _rowslot(vm0, rowname, colslot(colname), strict)  # a wrong layout first
         cs = _colslot(colslot, colname, rowname, wrt)
         cs == 0 && continue                          # ghost / out-of-layout column

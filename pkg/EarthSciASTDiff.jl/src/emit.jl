@@ -132,7 +132,9 @@ function jacobian_document(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
         cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
     )
-    return doc
+    # built from scratch, so the version is the content's, not the 1.1.0
+    # floor `_attach_jacobians!` raises a source's to
+    return _derived_version!(doc)
 end
 
 function _attach_jacobians!(
@@ -370,12 +372,14 @@ end
 # node carries `units` (a unit-bearing `const` copied from a 1.2.0 source,
 # `const_units_version_too_old` otherwise). Read off the content rather than
 # the source's declared version, which a `FlattenedSystem` does not carry.
+# The `jacobians` blocks count: their coefficients copy the source's nodes too.
 function _derived_version!(doc)
-    doc["esm"] = any(_has_units, values(doc["models"])) ? "1.2.0" : "1.1.0"
+    held = (doc["models"], get(doc, "jacobians", nothing))
+    doc["esm"] = any(_has_units, held) ? "1.2.0" : "1.1.0"
     return doc
 end
 _has_units(x::AbstractDict) = haskey(x, "units") && haskey(x, "op") || any(_has_units, values(x))
-_has_units(x::AbstractVector) = any(_has_units, x)
+_has_units(x::Union{AbstractVector, Tuple}) = any(_has_units, x)
 _has_units(x) = false
 
 # A variable's value in the document's inline form: an array value is

@@ -30,7 +30,7 @@
         "julia": "bind_plan",
         "python": "bind_plan"
       },
-      "notes": "The bound plan's `pairs` follow each language's own indexing: Julia's output positions are 1-based, Python's 0-based; Rust (`ScatterPlan::bind`) gives `(band, field cell, position)` triples, all 0-based. The plan file itself (`*.plan.json`) is 0-based in every binding (spec \u00a78). A loop ported between bindings must shift positions accordingly."
+      "notes": "The bound plan's `pairs` follow each language's own indexing: Julia gives `(band, field cell, position)` triples, all 1-based; Rust (`ScatterPlan::bind`) the same triples, all 0-based; Python `(band-field cell name, position)` pairs with a 0-based position. The plan file itself (`*.plan.json`) is 0-based in every binding (spec \u00a78). A loop ported between bindings must shift positions accordingly."
     },
     {
       "name": "block_diagonal_plan",
