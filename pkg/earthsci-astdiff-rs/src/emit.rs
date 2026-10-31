@@ -54,6 +54,9 @@ pub fn serialize_band(en: &JacEntry) -> Value {
             ),
         );
     }
+    if let Some(g) = &b.guard {
+        d.insert("where".into(), ser_expr(g));
+    }
     Value::Object(d)
 }
 
@@ -276,6 +279,173 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
     }
 }
 
+/// [`detect_structure`] given an optional column axis (an index-set name,
+/// e.g. from an integrator's locality pass: a name carries no vertical
+/// meaning by itself): `"column_block"` in place of `"banded"` or
+/// `"general"` when every coupling stays within one line along that axis
+/// ([`column_lines`]). The empty and block-diagonal classes are kept.
+pub fn detect_structure_along(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    column_axis: Option<&str>,
+) -> Result<&'static str, crate::bands::BandError> {
+    let st = detect_structure(entries, ctx);
+    refine_structure(st, entries, sv, ctx, column_axis)
+}
+
+fn refine_structure(
+    st: &'static str,
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    column_axis: Option<&str>,
+) -> Result<&'static str, crate::bands::BandError> {
+    let Some(axis) = column_axis else {
+        return Ok(st);
+    };
+    if st == "empty" || st == "block_diagonal" {
+        return Ok(st);
+    }
+    Ok(if column_lines(entries, sv, ctx, axis)?.is_some() {
+        "column_block"
+    } else {
+        st
+    })
+}
+
+/// The per-line structure of a state Jacobian whose couplings all stay
+/// within one line along an index set (structure.jl `column_lines`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnLines {
+    /// The column axis (an index-set name).
+    pub axis: String,
+    /// Its 1-based dimension in the common state shape.
+    pub dim: usize,
+    /// The axis extent.
+    pub line_length: i64,
+    /// Every row and column variable, sorted.
+    pub block_vars: Vec<String>,
+    /// The largest distance below the diagonal any point reaches.
+    pub kl: i64,
+    /// The largest distance above the diagonal any point reaches.
+    pub ku: i64,
+    /// `"dense"`, `"lower"`, `"upper"` or `"banded"`.
+    pub pattern: &'static str,
+}
+
+/// The per-line structure of a state Jacobian along index set `axis`, or
+/// `None` when a coupling leaves its line: every band couples two array
+/// states of one common shape that holds `axis` once, and at every band
+/// point the column equals the row in every other dimension. A point
+/// reading past the axis is a ghost read and does not count. `kl` / `ku`
+/// and their `pattern` name are read off the exact band points (guards
+/// applied), never probed.
+pub fn column_lines(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    axis: &str,
+) -> Result<Option<ColumnLines>, crate::bands::BandError> {
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let mut shape: Option<&Vec<String>> = None;
+    for en in entries {
+        for n in [&en.u, &en.v] {
+            let Some(sh) = sv
+                .variables
+                .get(n)
+                .and_then(|v| v.shape.as_ref())
+                .filter(|s| !s.is_empty())
+            else {
+                return Ok(None);
+            };
+            match shape {
+                None => shape = Some(sh),
+                Some(s0) if s0 != sh => return Ok(None),
+                _ => {}
+            }
+        }
+    }
+    let shape = shape.expect("entries are not empty");
+    let dims: Vec<usize> = shape
+        .iter()
+        .enumerate()
+        .filter(|(_, x)| *x == axis)
+        .map(|(k, _)| k)
+        .collect();
+    if dims.len() != 1 {
+        return Ok(None);
+    }
+    let dim = dims[0];
+    let nn = *ctx
+        .index_sets
+        .get(axis)
+        .ok_or_else(|| crate::bands::BandError(format!("unknown index set `{axis}`")))?;
+    let (mut kl, mut ku, mut ok) = (0i64, 0i64, true);
+    for en in entries {
+        crate::numeric::foreach_point(&en.band, &mut |cell, _, _, cidx| {
+            if !ok {
+                return Ok(());
+            }
+            for d in 0..cidx.len() {
+                if d != dim && cidx[d] != cell[d] {
+                    ok = false;
+                    return Ok(());
+                }
+            }
+            if cidx[dim] < 1 || cidx[dim] > nn {
+                return Ok(()); // ghost read
+            }
+            let off = cidx[dim] - cell[dim];
+            kl = kl.max(-off);
+            ku = ku.max(off);
+            Ok(())
+        })?;
+        if !ok {
+            return Ok(None);
+        }
+    }
+    let pattern = if kl == nn - 1 && ku == nn - 1 {
+        "dense"
+    } else if ku == 0 && kl == nn - 1 {
+        "lower"
+    } else if kl == 0 && ku == nn - 1 {
+        "upper"
+    } else {
+        "banded"
+    };
+    let mut vars: Vec<String> = entries
+        .iter()
+        .flat_map(|en| [en.u.clone(), en.v.clone()])
+        .collect();
+    vars.sort();
+    vars.dedup();
+    Ok(Some(ColumnLines {
+        axis: axis.to_string(),
+        dim: dim + 1,
+        line_length: nn,
+        block_vars: vars,
+        kl,
+        ku,
+        pattern,
+    }))
+}
+
+/// The §6 line-by-line factorization plan of a `"column_block"` Jacobian
+/// (factorization.jl `ColumnBlockPlan`, serialized).
+pub fn column_block_plan(cl: &ColumnLines) -> Value {
+    json!({
+        "type": "column_block",
+        "axis": cl.axis,
+        "line_length": cl.line_length,
+        "block_vars": cl.block_vars,
+        "pattern": cl.pattern,
+        "bandwidth": [cl.kl, cl.ku],
+    })
+}
+
 // ── factorization plan (factorization.jl) ───────────────────────────────────
 
 /// Symbolic (no-pivoting) LU: the pattern plus every fill-in entry.
@@ -411,6 +581,48 @@ pub fn jacobian_block(
     jacobian_block_with_forcing(file, model_name, wrt, None, cse, cse_min_nodes)
 }
 
+/// The options of a block emission ([`jacobian_block_with`],
+/// [`jacobian_blocks_with`]).
+#[derive(Clone, Debug)]
+pub struct BlockOptions<'a> {
+    /// The forcing set (`None` infers it).
+    pub forcing: Option<&'a [String]>,
+    /// Template-CSE the coefficients.
+    pub cse: bool,
+    /// The smallest subtree (in nodes) hoisted into a template.
+    pub cse_min_nodes: usize,
+    /// An index-set name along which the state block may report the
+    /// `"column_block"` structure class with its line-by-line factorization
+    /// plan, when every coupling stays within one line along it
+    /// ([`column_lines`]). Ignored on every other axis.
+    pub column_axis: Option<&'a str>,
+}
+
+impl Default for BlockOptions<'_> {
+    fn default() -> Self {
+        BlockOptions {
+            forcing: None,
+            cse: true,
+            cse_min_nodes: 12,
+            column_axis: None,
+        }
+    }
+}
+
+/// [`jacobian_block`] with every emission option ([`BlockOptions`]).
+pub fn jacobian_block_with(
+    file: &earthsci_ast::EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+    opts: &BlockOptions,
+) -> Result<Value, crate::bands::BandError> {
+    let sv: SysView = crate::system::sysview(file, model_name)?;
+    let ctx = crate::system::ctx_of(&sv)?;
+    let obs = crate::system::observed_defs(&sv)?;
+    let mut memo = FirstOrder::default();
+    axis_block(&sv, &ctx, &obs, wrt, opts, &mut memo)
+}
+
 /// One block's `wrt` in a model's `jacobians` entry: a single axis
 /// (first-order entries) or an axis PAIR (second-order entries, spec §4.4).
 /// A [`Wrt`] converts into the single-axis form.
@@ -453,6 +665,25 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<Value, crate::bands::BandError> {
+    let opts = BlockOptions {
+        forcing,
+        cse,
+        cse_min_nodes,
+        column_axis: None,
+    };
+    jacobian_blocks_with(file, model_name, wrt, &opts)
+}
+
+/// [`jacobian_blocks`] with every emission option ([`BlockOptions`]); a
+/// `column_axis` refines the state block only (a pair block has no
+/// structure class to refine).
+pub fn jacobian_blocks_with<W: Into<BlockWrt> + Copy>(
+    file: &earthsci_ast::EsmFile,
+    model_name: Option<&str>,
+    wrt: &[W],
+    opts: &BlockOptions,
+) -> Result<Value, crate::bands::BandError> {
+    let (forcing, cse, cse_min_nodes) = (opts.forcing, opts.cse, opts.cse_min_nodes);
     let wrt: Vec<BlockWrt> = wrt.iter().map(|w| (*w).into()).collect();
     let distinct: HashSet<BlockWrt> = wrt.iter().copied().collect();
     if wrt.is_empty() || distinct.len() != wrt.len() {
@@ -468,9 +699,7 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
     Ok(Value::Array(
         wrt.iter()
             .map(|w| match *w {
-                BlockWrt::Axis(w) => {
-                    axis_block(&sv, &ctx, &obs, w, forcing, cse, cse_min_nodes, &mut memo)
-                }
+                BlockWrt::Axis(w) => axis_block(&sv, &ctx, &obs, w, opts, &mut memo),
                 BlockWrt::Pair(a1, a2) => crate::second_order::pair_block(
                     &sv,
                     &ctx,
@@ -495,26 +724,26 @@ pub fn jacobian_block_with_forcing(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<Value, crate::bands::BandError> {
-    let sv: SysView = crate::system::sysview(file, model_name)?;
-    let ctx = crate::system::ctx_of(&sv)?;
-    let obs = crate::system::observed_defs(&sv)?;
-    let mut memo = FirstOrder::default();
-    axis_block(&sv, &ctx, &obs, wrt, forcing, cse, cse_min_nodes, &mut memo)
+    let opts = BlockOptions {
+        forcing,
+        cse,
+        cse_min_nodes,
+        column_axis: None,
+    };
+    jacobian_block_with(file, model_name, wrt, &opts)
 }
 
 /// [`jacobian_block_with_forcing`] over a view, sharing its first-order
 /// pass through `memo` with the other blocks of one emission.
-#[allow(clippy::too_many_arguments)]
 fn axis_block(
     sv: &SysView,
     ctx: &Ctx,
     obs: &HashMap<String, Expr>,
     wrt: Wrt,
-    forcing: Option<&[String]>,
-    cse: bool,
-    cse_min_nodes: usize,
+    opts: &BlockOptions,
     memo: &mut FirstOrder,
 ) -> Result<Value, crate::bands::BandError> {
+    let (forcing, cse, cse_min_nodes) = (opts.forcing, opts.cse, opts.cse_min_nodes);
     let entries = memo.bands(sv, ctx, obs, wrt, None, forcing, &[])?;
     // A parameter or forcing block describes a rectangular matrix, which the
     // structure classes and the factorization plan do not: it carries its
@@ -524,6 +753,16 @@ fn axis_block(
         (Some(columns_field(sv, wrt, forcing)?), None)
     } else {
         (None, Some(memo.structure(wrt, None, &entries, ctx)))
+    };
+    // Line-by-line structure is a property of the square state matrix.
+    let cax = if wrt == Wrt::States {
+        opts.column_axis
+    } else {
+        None
+    };
+    let structure = match structure {
+        Some(st) => Some(refine_structure(st, &entries, sv, ctx, cax)?),
+        None => None,
     };
     let mut block = block_fields(
         json!(wrt.as_str()),
@@ -536,6 +775,10 @@ fn axis_block(
     );
     if structure == Some("block_diagonal") {
         block.insert("factorization".into(), block_diagonal_plan(&entries));
+    } else if structure == Some("column_block") {
+        let axis = cax.expect("column_block needs its axis");
+        let cl = column_lines(&entries, sv, ctx, axis)?.expect("detected along the axis");
+        block.insert("factorization".into(), column_block_plan(&cl));
     }
     Ok(Value::Object(block))
 }
@@ -732,6 +975,7 @@ pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
             cidx,
             coef: parse_expr(d.get("coef").ok_or_else(|| perr("band without `coef`"))?)?,
             contracted,
+            guard: d.get("where").map(parse_expr).transpose()?,
         },
     })
 }

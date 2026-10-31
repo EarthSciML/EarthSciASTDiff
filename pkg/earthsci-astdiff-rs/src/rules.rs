@@ -3,11 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use earthsci_ast::free_variables;
+use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
-use crate::helpers::{add, is_site, is_zero, mul, neg, occurs, op, Site};
+use crate::helpers::{add, free_vars, is_site, is_zero, mul, neg, occurs, op, Site};
 
 /// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
@@ -250,21 +250,8 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
     }
 }
 
-/// A scalar faq sum Σ_k body (scalar_rules.jl `_dsum`): the sum of the
-/// body's derivatives. Bound indices the site's column does not read are
-/// summed; those it does read (`u[i,k]` under Σ_k) are left FREE, for the
-/// band emitter to turn into contracted column dimensions (bands.rs
-/// `lift_nested`). Filter, join and non-`"+"` reductions have no rule.
-/// Whether faq node `n` reduces by ordinary `+` (scalar_rules.jl
-/// `_plain_sum`): a `semiring` supersedes `reduce`, so a `max_product` node
-/// with no `reduce` is a max, not a sum.
-pub(crate) fn plain_sum(n: &ExpressionNode) -> bool {
-    match &n.semiring {
-        None => n.reduce.as_deref().is_none_or(|r| r == "+"),
-        Some(sr) => sr == "sum_product",
-    }
-}
-
+/// A faq node's reduction, for messages ([`crate::reductions::reduce_op`]
+/// decides it).
 pub(crate) fn reduction(n: &ExpressionNode) -> String {
     match &n.semiring {
         None => format!("reduce=`{}`", n.reduce.as_deref().unwrap_or("+")),
@@ -272,25 +259,16 @@ pub(crate) fn reduction(n: &ExpressionNode) -> String {
     }
 }
 
+/// A scalar faq node ⊕_k body (scalar_rules.jl `_dsum`): the `+` of its
+/// body's derivatives, each weighted by what ⊕ does with that term
+/// ([`crate::reductions::window_weight`]). Bound indices the site's column
+/// does not read are summed (a rebuilt `+` node, its filter kept); those it
+/// does read (`u[i,k]` under Σ_k) are left FREE, for the band emitter to
+/// turn into contracted column dimensions (bands.rs `lift_nested`), and once
+/// every index is free the filter becomes `ifelse(φ, ·, 0)`. A join or a
+/// value-invention node has no rule (spec §3.5).
 fn dsum(n: &ExpressionNode, s: &Site) -> R {
-    if n.filter.is_some() {
-        return Err(DerivativeRuleError(
-            "filtered faq nodes are not differentiated (the filter gate would \
-             be dropped from the derivative)"
-                .into(),
-        ));
-    }
-    if n.join.is_some() {
-        return Err(DerivativeRuleError(
-            "joined faq nodes are not differentiated".into(),
-        ));
-    }
-    if !plain_sum(n) {
-        return Err(DerivativeRuleError(format!(
-            "{} (non-smooth semiring reductions have no rule)",
-            reduction(n)
-        )));
-    }
+    let red = crate::reductions::reduce_op(n).map_err(DerivativeRuleError)?;
     let body = n
         .expr
         .as_deref()
@@ -301,10 +279,26 @@ fn dsum(n: &ExpressionNode, s: &Site) -> R {
     }
     let empty = HashMap::new();
     let ranges = n.ranges.as_ref().unwrap_or(&empty);
+    let mut names: Vec<String> = ranges.keys().cloned().collect();
+    names.sort();
+    let db = crate::reductions::window_weight(red, n, &names, db).map_err(DerivativeRuleError)?;
+    // A rebuilt `+` node: the reduction is now a plain sum of weighted terms.
+    let plus = |db: Expr, ranges: Option<HashMap<String, RangeSpec>>| {
+        let mut m = n.clone();
+        m.expr = Some(Box::new(db));
+        if let Some(r) = ranges {
+            m.ranges = Some(r);
+        }
+        if red != "+" {
+            m.reduce = Some("+".into());
+            m.semiring = None;
+        }
+        Expr::operator(m)
+    };
     let mut read: HashSet<String> = HashSet::new();
     if let Expr::Operator(sn) = &s.expr {
         for x in &sn.args[1..] {
-            read.extend(free_variables(x));
+            read.extend(free_vars(x));
         }
     }
     let summed: HashMap<_, _> = ranges
@@ -312,18 +306,16 @@ fn dsum(n: &ExpressionNode, s: &Site) -> R {
         .filter(|(k, _)| !read.contains(*k))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    if summed.is_empty() && !ranges.is_empty() {
-        return Ok(db);
+    if summed.len() == ranges.len() {
+        return Ok(plus(db, None));
     }
-    Ok(Expr::operator(ExpressionNode {
-        expr: Some(Box::new(db)),
-        ranges: if summed.len() == ranges.len() {
-            n.ranges.clone()
-        } else {
-            Some(summed)
-        },
-        ..n.clone()
-    }))
+    if summed.is_empty() {
+        return Ok(match &n.filter {
+            None => db,
+            Some(f) => op("ifelse", vec![(**f).clone(), db, Expr::Integer(0)]),
+        });
+    }
+    Ok(plus(db, Some(summed)))
 }
 
 fn const_vector(e: &Expr) -> Option<Vec<f64>> {

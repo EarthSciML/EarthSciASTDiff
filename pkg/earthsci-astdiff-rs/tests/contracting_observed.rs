@@ -141,21 +141,67 @@ fn contracting_observed_keeps_its_sum() {
     }
 }
 
-#[test]
-fn filtered_contracting_observed_is_refused() {
-    // Refused, as the same filter written inline is — never dropped.
-    let filt = json!({"op": "<", "args": ["k", 3]});
-    let file = doc(neg(idx("s", &["i"])), ["i", "k"], sdef(Some(filt)));
-    assert!(jacobian_bands(&file, None, Wrt::States).is_err());
+/// `D(u)[i,k] = -s[i]²` against the closed form `want(i, kp)` of
+/// ∂/∂u[i,kp] (0-based), over the structural pattern `cols(i)` per row.
+fn check_sq(s: Value, label: &str, npat: usize, want: impl Fn(usize, usize) -> Option<f64>) {
+    let file = doc(neg(sq(idx("s", &["i"]))), ["i", "k"], s);
+    let j = assemble_jacobian(&file, None, Wrt::States, &env())
+        .unwrap_or_else(|e| panic!("{label}: {}", e.0));
+    assert_eq!(j.len(), NX * NZ * npat, "{label}: pattern");
+    for i in 0..NX {
+        for k in 0..NZ {
+            for kp in 0..NZ {
+                let key = (
+                    format!("u[{},{}]", i + 1, k + 1),
+                    format!("u[{},{}]", i + 1, kp + 1),
+                );
+                match (want(i, kp), j.get(&key)) {
+                    (None, None) => {}
+                    (Some(w), Some(g)) => {
+                        assert!((g - w).abs() <= 1e-13, "{label} {key:?}: {g} vs {w}")
+                    }
+                    (w, g) => panic!("{label} {key:?}: {g:?} vs {w:?}"),
+                }
+            }
+        }
+    }
 }
 
 #[test]
-fn semiring_max_is_refused() {
+fn filtered_contracting_observed_keeps_its_window() {
+    // s[i] = Σ_{k<3} u[i,k]²: the filter keeps its window (spec §3.5), and
+    // the index-only conjunct over the lifted index makes the pattern exact.
+    let filt = json!({"op": "<", "args": ["k", 3]});
+    let sf = |i: usize| (0..2).map(|k| uval(i, k).powi(2)).sum::<f64>();
+    check_sq(sdef(Some(filt)), "filtered", 2, |i, kp| {
+        (kp < 2).then(|| -2.0 * sf(i) * 2.0 * uval(i, kp))
+    });
+}
+
+#[test]
+fn semiring_max_differentiates_as_a_max() {
     // `semiring` supersedes `reduce`: a max_product node with no `reduce` is
-    // a max, not a sum.
+    // a max, not a sum; the first argmax takes the derivative.
     let mut s = sdef(None);
     s.as_object_mut().unwrap().remove("reduce");
     s["semiring"] = json!("max_product");
+    // u grows with k, so the max of row i is at k = NZ
+    let m = |i: usize| uval(i, NZ - 1).powi(2);
+    check_sq(s, "max_product", NZ, |i, kp| {
+        Some(if kp == NZ - 1 {
+            -2.0 * m(i) * 2.0 * uval(i, kp)
+        } else {
+            0.0
+        })
+    });
+}
+
+#[test]
+fn boolean_semiring_is_refused() {
+    // a boolean semiring has no derivative rule (spec §3.5)
+    let mut s = sdef(None);
+    s.as_object_mut().unwrap().remove("reduce");
+    s["semiring"] = json!("bool_and_or");
     let file = doc(neg(idx("s", &["i"])), ["i", "k"], s);
     assert!(jacobian_bands(&file, None, Wrt::States).is_err());
 }

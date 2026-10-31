@@ -200,7 +200,7 @@ fn uniform(cond: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Option<bool> {
     }
 }
 
-fn decide(e: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Expr {
+pub(crate) fn decide(e: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Expr {
     let Expr::Operator(n) = e else {
         return e.clone();
     };

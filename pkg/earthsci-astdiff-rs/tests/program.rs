@@ -58,6 +58,8 @@ fn plan_layouts() -> Vec<(&'static str, Layout)> {
         ("minmod_adv", Layout::Csr),
         ("contracted_ops", Layout::Csr),
         ("contracting_observed", Layout::Csr),
+        ("filtered_scan", Layout::Csr),
+        ("semiring_reduce", Layout::Csr),
     ]
 }
 
@@ -193,6 +195,8 @@ fn evaluation_document_is_the_golden() {
         "minmod_adv",
         "contracting_observed",
         "forcing_bracket",
+        "filtered_scan",
+        "semiring_reduce",
     ] {
         let prog = JacobianProgram::build(&load(name), None, &BuildOptions::default()).unwrap();
         let golden = std::fs::read_to_string(
