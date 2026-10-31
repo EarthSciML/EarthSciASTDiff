@@ -14,9 +14,12 @@ top-level block that carries, per model, the analytical derivative of the
 model's ODE right-hand side with respect to its state variables
 (`wrt: "states"`), its parameters (`wrt: "parameters"`, array-valued ones
 cell by cell), the cells of its live forcing buffers (`wrt: "forcing"`,
-§4.3) or time itself (`wrt: "time"`, §4.2), as a list of **bands** (§4). Coefficients are ordinary ESM expressions over the model's
-own variables, so any binding that evaluates ESM expressions evaluates the
-Jacobian — no binding needs a differentiator to *consume* the block.
+§4.3) or time itself (`wrt: "time"`, §4.2), as a list of **bands** (§4),
+and optionally the second derivatives a Rosenbrock adjoint contracts
+(`wrt: [a1, a2]`, §4.4). Coefficients are ordinary ESM expressions over the
+model's own variables, so any binding that evaluates ESM expressions
+evaluates the Jacobian — no binding needs a differentiator to *consume* the
+block.
 
 Producing the block requires the derivative semantics of §3, defined on the
 **expanded, lowered** expression tree: expression templates expanded
@@ -240,7 +243,9 @@ the source document. Each binding maps the ordinal onto its own memory.
 **Several axes per model.** `jacobians.<ModelName>` MAY be an ARRAY of
 blocks with pairwise-distinct `wrt` instead of one block, so a producer
 writing several axes of one operator need not write several documents. A
-single object stays legal, and a consumer MUST accept both forms.
+single object stays legal, and a consumer MUST accept both forms. A block
+whose `wrt` is an axis pair holds second-order entries (§4.4); it is distinct
+from every single-axis block and from the pair's reverse.
 
 **Round-trip.** The block is derived data: producers MUST be able to
 regenerate it from the document, and `Expand(document)` conformance (§9.6.4)
@@ -396,6 +401,97 @@ tape) owns. They are not part of the block. A degenerate final bracket that
 repeats one record in both slots maps both slots' gradients to that record,
 where they sum.
 
+### 4.4 Second-order entries (`wrt: [a1, a2]`)
+
+A Rosenbrock step contains `J = ∂f/∂u` at the step's start state, so its
+discrete adjoint differentiates `J` itself, once per step:
+
+```
+H = ∇_{a2} Σᵢ μᵢᵀ J(u) wᵢ                (a1 = "states")
+H = ∇_{a2} νᵀ f_t,   ν = Σᵢ wᵢ μᵢ         (a1 = "time"; each wᵢ a scalar)
+```
+
+with stage cotangents `μᵢ` and stage vectors `wᵢ`. A block whose `wrt` is a
+pair `[a1, a2]`, `a1 ∈ {"states", "time"}` the first derivative's axis and
+`a2 ∈ {"states", "parameters", "forcing"}` the second's, carries the
+entries of that contraction. `["states", "states"]` serves the state
+cotangent, `["states", "parameters"]` and `["states", "forcing"]` the mixed
+terms of the parameter and forcing cotangents (§4.3), and `["time", ·]` the
+derivative of `f_t` when the method passes it.
+
+```json
+"jacobians": { "Chem": [
+  { "wrt": "states", "entries": [ … ] },
+  { "wrt": ["states", "states"],
+    "entries": [
+      { "row": "O3", "col": "NO", "col2": "O3",
+        "rows": [[1, 3]], "row_idx": ["i"],
+        "col_idx": ["i"], "col2_idx": ["i"],
+        "coef": {"op": "*", "args": [{"op": "index", "args": ["k1", "i"]}, -1]} } ],
+    "structure": "block_diagonal" } ] }
+```
+
+**Production.** No new derivative rules. For each first-order entry `e` of
+the `a1` axis, the producer differentiates `e.coef` with respect to every
+site of every `a2` target, treating it as a scalar body broadcast over
+`e.rows`: region clipping, re-merging of equal-coefficient entries and
+singleton pinning as for any scalar body. The first-order pass inlines the
+observed that move with either axis (§4.3's seeding, over the union of the
+two target sets): an observed rate that reads only parameters is an opaque
+read on the state axis and would hide its parameter sites from the second
+derivative. The non-smooth policy (§3.2) applies again — `ifelse`
+differentiates branch-wise with the condition's Dirac term dropped, ties of
+`max`/`min` keep the earlier argument — and the pattern is the structural,
+global union over branches (§2). A piecewise-linear limiter therefore has an
+empty second-order block.
+
+**Entries** carry §4's fields with the same meaning, plus:
+
+- `col2` — the second axis's variable: a state, a parameter outside the
+  forcing set, or a forcing buffer.
+- `col2_idx` — its index expressions over the `row_idx` and `contracted`
+  names, one per dimension of `col2`; `[]` for a scalar.
+
+`col` and `col_idx` are inherited from `e` (`"t"` and `[]` on a time pair),
+and so is `contracted`. A second site inside a scalar `reduce: "+"`
+coefficient whose index the column reads adds contracted dimensions by the
+rule of §3.5.
+
+**Meaning.** For every row point `r` and contracted point `c`,
+
+```
+T[ row[r], col[col_idx(r, c)], col2[col2_idx(r, c)] ] += coef(r, c)     ( = ∂²f_row / ∂col ∂col2 )
+```
+
+Entries are additive. `(r, c, s)` and `(r, s, c)` come out independently,
+from distinct first-order entries; consumers MUST NOT assume either is
+deduplicated, and either orientation alone is not the tensor.
+An out-of-extent `col_idx` or `col2_idx` follows its axis's rule (§4): a
+ghost read on `states` and `parameters`, an error on `forcing`. On the
+`parameters` and `forcing` second axes `col2_idx` MUST be closed at build
+time (§4.3).
+
+**Block fields.** `columns` is the second axis's column space when `a2` is
+`"parameters"` or `"forcing"` (§4's form and canonical ordinal), absent
+otherwise. `structure` is `"block_diagonal"` when `a1` is `"states"`, the
+first-order state block is block-diagonal and every `col2_idx` equals the
+row index (`col2` an array of the row's rank, or both scalar): the
+contraction is then lane-local. Otherwise it is omitted. There is no
+`factorization`. `expression_templates` (§4.1) apply unchanged.
+
+**Contraction.** The tensor is never formed. A consumer evaluates the
+coefficients at `(u, p, t)` and contracts:
+
+```
+M(r, c)          = Σᵢ μᵢ[row(r)] · wᵢ[col(r, c)]
+g[col2(r, c)]   += coef(r, c) · M(r, c)
+```
+
+On a `["states", "states"]` pair the symmetry of `∇²(μᵀf)` gives an
+equivalent form with no `M`, one pass per stage:
+`g[col(r, c)] += μᵢ[row(r)] · coef(r, c) · wᵢ[col2(r, c)]`. Implementations
+choose by cost; conformance checks both against the oracle.
+
 ## 5. Conformance
 
 Fixture corpus in `tests/` of this repository:
@@ -428,14 +524,28 @@ Fixture corpus in `tests/` of this repository:
    constant offset; a regrid-like `reduce: "+"` contraction with `const`
    weights over one record of a second buffer; and a const array parameter
    standing in for an emission field. Its value goldens are at `w = 0.37` and
-   at `w = 0` exactly, with the buffers at the document defaults).
+   at `w = 0` exactly, with the buffers at the document defaults). A
+   second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
+   (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
+   `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried
+   in the golden by name, with `g` keyed by every second column a band point
+   reaches. The pairs: `["states", "states"]` on `bd_chem.esm`
+   (block-diagonal bimolecular chemistry), `arrhenius_chem.esm` (per-cell
+   NOx–O₃ chemistry whose rates are Arrhenius observed of a temperature
+   parameter `T[z]`, opaque on the state pair) and `minmod_adv.esm` (a
+   limiter kink: empty); `["states", "parameters"]` on `arrhenius_chem.esm`;
+   `["states", "forcing"]` and `["time", "states"]` on
+   `forcing_bracket.esm`.
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
    and the structural pattern must be a superset of the local pattern.
    Shipped value goldens (`*.jvals.json`) are compared with exactly the same
    (row, column) key set and `rtol 1e-10` (evaluation order differs between
-   runtimes). A column key is the variable name, with `[i,j,…]` (1-based) for
+   runtimes); `*.hvals.json` with the same tolerance and exactly the same
+   second-column key set, in both contraction forms where both apply. The
+   Julia reference checks the contraction against ForwardDiff over ForwardDiff
+   through its evaluator. A column key is the variable name, with `[i,j,…]` (1-based) for
    a cell of an array variable.
 
 ## 6. Factorization information (optional)
@@ -472,11 +582,12 @@ a fill-correct superset of `pattern`.
 
 ## 7. Out of scope (this draft)
 
-Second derivatives are a planned extension, to be specified with fixtures
-before implementation is required. (Time-derivative bands, contracted-index
-bands, `expression_templates` coefficient sharing, and forcing-buffer and
-array-parameter columns, once listed here, are specified in §4.2, §3.5/§4,
-§4.1 and §4.3.)
+Third and higher derivatives, a Hessian assembly API, and the second-order
+terms of a lagged-`J` W-method (which move to the step where `J` was
+formed). (Time-derivative bands, contracted-index bands,
+`expression_templates` coefficient sharing, forcing-buffer and
+array-parameter columns, and second-order entries, once listed here, are
+specified in §4.2, §3.5/§4, §4.1, §4.3 and §4.4.)
 
 ## 8. Scatter plans (conformance artifact)
 

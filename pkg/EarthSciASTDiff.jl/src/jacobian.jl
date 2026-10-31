@@ -122,9 +122,39 @@ jacobian_bands(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands(sysview(flat); kw...)
 
 function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
-    wrt in (:states, :parameters, :forcing, :time) || throw(
-        ArgumentError("wrt must be :states, :parameters, :forcing or :time, got $wrt")
-    )
+    _check_axis(wrt)
+    return _jacobian_bands(sv, wrt, forcing, String[])
+end
+
+_check_axis(wrt::Symbol) = wrt in (:states, :parameters, :forcing, :time) || throw(
+    ArgumentError("wrt must be :states, :parameters, :forcing or :time, got $wrt")
+)
+
+# The first-order passes of one emission (`jacobian_document`), and the
+# structure class of each. A pass depends only on its axis and the inlining
+# seed a second axis adds (`_bands2`); that seed changes nothing on the time
+# axis (never seeded) or when the second axis is the first, so those share
+# the plain pass's key: a document asking for `:states` and
+# `(:states, :states)` differentiates the system once.
+struct _FirstOrder
+    bands::Dict{Tuple{Symbol, Union{Nothing, Symbol}}, Vector{JacEntry}}
+    structure::IdDict{Vector{JacEntry}, Symbol}
+end
+_FirstOrder() = _FirstOrder(Dict{Tuple{Symbol, Union{Nothing, Symbol}}, Vector{JacEntry}}(), IdDict{Vector{JacEntry}, Symbol}())
+
+function _first_order!(memo::_FirstOrder, sv::SysView, a1::Symbol, a2, forcing, seed = String[])
+    key = (a1, a1 == :time || a2 === a1 ? nothing : a2)
+    return get!(() -> _jacobian_bands(sv, a1, forcing, seed), memo.bands, key)
+end
+
+_structure!(memo::_FirstOrder, e1::Vector{JacEntry}, sv::SysView) =
+    get!(() -> detect_structure(e1, sv), memo.structure, e1)
+
+# `seed` adds names to the inlining seed without making them targets: the
+# second-order driver (second_order.jl) differentiates these coefficients
+# again with respect to its second axis, so an observed that moves only with
+# that axis must be inlined too, or its sites stay hidden behind its name.
+function _jacobian_bands(sv::SysView, wrt::Symbol, forcing, seed::Vector{String})
     ctx = _ctx(sv)
     obs = _observed_defs(sv)
     targets = _targets(sv, wrt, forcing, obs)
@@ -136,7 +166,8 @@ function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
     # `wrt = :time` is excluded: time also enters implicitly, through
     # externally-provided time-varying data, so `{"t"}` is not a sound
     # over-approximation of the set of time-dependent names.
-    wrt == :time || (obs = inlinable_observed(obs, sv.equations, Set{String}(targets)))
+    wrt == :time ||
+        (obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed))))
     entries = JacEntry[]
     # The structural occurrence gate, driven from the EQUATION rather than
     # from the target list: scanning `targets` per equation is O(|equations| ×
@@ -181,23 +212,27 @@ end
 # only the entry's own row and contracted index names (literals, folded
 # metaparameters and `const` gathers carry no free name). A column reading
 # anything else (a parameter offset, a state) cannot be placed, so the entry
-# is refused rather than emitted.
-function _check_closed_columns(en::JacEntry)
-    b = en.band
+# is refused rather than emitted. The second column of a pair
+# (second_order.jl) is held to the same rule.
+_check_closed_columns(en::JacEntry) = _check_closed(
+    en.band, en.band.cidx, c -> "column index $(_json(c)) of `$(en.v)` in the equation for `$(en.u)`"
+)
+
+function _check_closed(b::Band, cols, what)
     bound = Set{String}(r for r in b.ridx if r isa String)
     for (n, _, _) in b.contracted
         push!(bound, n)
     end
-    for c in b.cidx, n in free_variables(c)
+    for c in cols, n in free_variables(c)
         n in bound || throw(
             BandError(
-                "column index $(JSON3.write(EarthSciAST.serialize_expression(c))) of " *
-                    "`$(en.v)` in the equation for `$(en.u)` reads `$n`, which is not " *
-                    "closed at build time (a parameter or forcing column may read only " *
-                    "literals, folded metaparameters, const gathers and its row or " *
-                    "contracted index names)"
+                "$(what(c)) reads `$n`, which is not closed at build time (a parameter " *
+                    "or forcing column may read only literals, folded metaparameters, " *
+                    "const gathers and its row or contracted index names)"
             )
         )
     end
     return
 end
+
+_json(c::ASTExpr) = JSON3.write(EarthSciAST.serialize_expression(c))

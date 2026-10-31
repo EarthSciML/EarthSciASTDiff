@@ -6,7 +6,7 @@
 id = "differentiate"
 title = "Differentiate a model"
 description = "Take a model or flattened system, differentiate its right-hand side, and get back structured Jacobian bands."
-ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "band", "jac_entry", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
+ops = ["sysview", "jacobian_bands", "forcing_names", "jacobian_columns", "jacobian_bands2", "band", "jac_entry", "jac_entry2", "sys_view", "site", "dscalar", "simplify_branches", "band_error", "derivative_rule_error"]
 
 [[group]]
 id = "structure"
@@ -18,7 +18,7 @@ ops = ["jacobian_pattern", "detect_structure", "plan_factorization", "block_diag
 id = "evaluate"
 title = "Evaluate the Jacobian"
 description = "Numeric values at a point, and prepared evaluators and ODE pieces that fill a fixed sparse prototype."
-ops = ["assemble_jacobian", "prepare_jacobian", "jacobian_evaluator", "vjp", "vjp_forcing", "jac_prototype", "ode_components", "scatter_plan"]
+ops = ["assemble_jacobian", "prepare_jacobian", "jacobian_evaluator", "vjp", "vjp_forcing", "prepare_hvp", "hvp_evaluator", "hvp", "jac_prototype", "ode_components", "scatter_plan"]
 
 [[group]]
 id = "serialize"

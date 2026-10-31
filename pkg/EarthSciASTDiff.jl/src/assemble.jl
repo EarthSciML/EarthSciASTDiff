@@ -397,7 +397,8 @@ function prepare_jacobian(
 end
 
 # Evaluate every band field at (u, p, t); returns the derived-model `du`.
-function _eval_fields!(jac::JacobianEvaluator, u::AbstractVector, p, t::Real)
+# (`jac` is a `JacobianEvaluator` or an `HVPEvaluator`: the same derived model.)
+function _eval_fields!(jac, u::AbstractVector, p, t::Real)
     for (i, s) in enumerate(jac.umap)
         jac.uj[s] = u[i]
     end

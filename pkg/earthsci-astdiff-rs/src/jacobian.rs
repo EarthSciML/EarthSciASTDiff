@@ -1,6 +1,7 @@
 //! Model-level driver (the reference's jacobian.jl).
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
@@ -108,7 +109,7 @@ pub fn forcing_names(sv: &SysView, forcing: Option<&[String]>) -> Result<Vec<Str
 /// The column variables of one axis, in canonical (name-sorted) order: every
 /// parameter outside the forcing set (parameters), the forcing set
 /// (forcing), the solver-slot states (states) or the single site `t`.
-fn targets(
+pub(crate) fn targets(
     sv: &SysView,
     wrt: Wrt,
     forcing: Option<&[String]>,
@@ -223,16 +224,39 @@ pub(crate) fn jacobian_bands_view(
     wrt: Wrt,
     forcing: Option<&[String]>,
 ) -> Result<Vec<JacEntry>, BandError> {
+    jacobian_bands_seeded(sv, ctx, obs, wrt, forcing, &[])
+}
+
+/// [`jacobian_bands_view`] with `seed` added to the inlining seed without
+/// making those names targets: the second-order driver
+/// ([`crate::second_order`]) differentiates these coefficients again with
+/// respect to its second axis, so an observed that moves only with that axis
+/// must be inlined too, or its sites stay hidden behind its name.
+pub(crate) fn jacobian_bands_seeded(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+) -> Result<Vec<JacEntry>, BandError> {
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
-    // Inline only the observed that can move with THIS `wrt`'s targets; the
-    // rest have an identically-zero derivative and stay opaque reads. Time is
-    // not pruned: it also enters implicitly through time-varying data.
+    // Inline only the observed that can move with THIS `wrt`'s targets (and
+    // the seed's); the rest have an identically-zero derivative and stay
+    // opaque reads. Time is not pruned: it also enters implicitly through
+    // time-varying data.
     let pruned;
     let obs = if wrt == Wrt::Time {
         obs
     } else {
-        pruned = inlinable_observed(obs, sv.equations, &tset);
+        pruned = if seed.is_empty() {
+            inlinable_observed(obs, sv.equations, &tset)
+        } else {
+            let mut seeded = tset.clone();
+            seeded.extend(seed.iter().cloned());
+            inlinable_observed(obs, sv.equations, &seeded)
+        };
         &pruned
     };
     let mut entries = Vec::new();
@@ -280,8 +304,26 @@ pub(crate) fn jacobian_bands_view(
 /// metaparameters and `const` gathers carry no free name). A column reading
 /// anything else (a parameter offset, a state) cannot be placed, so the entry
 /// is refused rather than emitted.
+/// The second column of a pair ([`crate::second_order`]) is held to the
+/// same rule.
 fn check_closed_columns(en: &JacEntry) -> Result<(), BandError> {
-    let b = &en.band;
+    check_closed(&en.band, &en.band.cidx, |c| {
+        format!(
+            "column index {} of `{}` in the equation for `{}`",
+            expr_json(c),
+            en.v,
+            en.u
+        )
+    })
+}
+
+/// [`check_closed_columns`] over the columns `cols` of band `b`; `what`
+/// names a column for the refusal.
+pub(crate) fn check_closed(
+    b: &Band,
+    cols: &[Expr],
+    what: impl Fn(&Expr) -> String,
+) -> Result<(), BandError> {
     let mut bound: HashSet<&str> = b
         .ridx
         .iter()
@@ -291,22 +333,84 @@ fn check_closed_columns(en: &JacEntry) -> Result<(), BandError> {
         })
         .collect();
     bound.extend(b.contracted.iter().map(|(n, _, _)| n.as_str()));
-    for c in &b.cidx {
+    for c in cols {
         let mut fv: Vec<String> = free_variables(c).into_iter().collect();
         fv.sort();
         if let Some(n) = fv.iter().find(|n| !bound.contains(n.as_str())) {
             return Err(BandError(format!(
-                "column index {} of `{}` in the equation for `{}` reads `{n}`, which \
-                 is not closed at build time (a parameter or forcing column may read \
-                 only literals, folded metaparameters, const gathers and its row or \
-                 contracted index names)",
-                serde_json::to_string(&crate::helpers::ser_expr(c)).expect("expression serializes"),
-                en.v,
-                en.u
+                "{} reads `{n}`, which is not closed at build time (a parameter or forcing \
+                 column may read only literals, folded metaparameters, const gathers and \
+                 its row or contracted index names)",
+                what(c)
             )));
         }
     }
     Ok(())
+}
+
+pub(crate) fn expr_json(c: &Expr) -> String {
+    serde_json::to_string(&crate::helpers::ser_expr(c)).expect("expression serializes")
+}
+
+/// The first-order passes of one emission ([`crate::jacobian_blocks`]), and
+/// the structure class of each. A pass depends only on its axis and the
+/// inlining seed a second axis adds ([`crate::second_order`]); that seed
+/// changes nothing on the time axis (never seeded) or when the second axis
+/// is the first, so those share the plain pass's key: a block list asking
+/// for `States` and `(States, States)` differentiates the system once.
+#[derive(Default)]
+pub(crate) struct FirstOrder {
+    bands: HashMap<(Wrt, Option<Wrt>), Rc<Vec<JacEntry>>>,
+    structure: HashMap<(Wrt, Option<Wrt>), &'static str>,
+}
+
+impl FirstOrder {
+    fn key(a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
+        (
+            a1,
+            if a1 == Wrt::Time || a2 == Some(a1) {
+                None
+            } else {
+                a2
+            },
+        )
+    }
+
+    /// The `a1` pass seeded with `seed`, the targets of `a2` (`None` for a
+    /// plain first-order block).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn bands(
+        &mut self,
+        sv: &SysView,
+        ctx: &Ctx,
+        obs: &HashMap<String, Expr>,
+        a1: Wrt,
+        a2: Option<Wrt>,
+        forcing: Option<&[String]>,
+        seed: &[String],
+    ) -> Result<Rc<Vec<JacEntry>>, BandError> {
+        let key = Self::key(a1, a2);
+        if let Some(e) = self.bands.get(&key) {
+            return Ok(e.clone());
+        }
+        let e = Rc::new(jacobian_bands_seeded(sv, ctx, obs, a1, forcing, seed)?);
+        self.bands.insert(key, e.clone());
+        Ok(e)
+    }
+
+    /// The structure class of the pass [`Self::bands`] returned for the
+    /// same `(a1, a2)`.
+    pub(crate) fn structure(
+        &mut self,
+        a1: Wrt,
+        a2: Option<Wrt>,
+        e1: &[JacEntry],
+        ctx: &Ctx,
+    ) -> &'static str {
+        self.structure
+            .entry(Self::key(a1, a2))
+            .or_insert_with(|| crate::emit::detect_structure(e1, ctx))
+    }
 }
 
 /// The refusal for a derivative LHS that is not `D(u)` or the lifted

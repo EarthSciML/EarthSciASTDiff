@@ -30,6 +30,9 @@ Layered API, lowest to highest:
   - [`prepare_jacobian`](@ref)     — reusable evaluator: `jac!(J, u, p, t)`;
                                      [`vjp!`](@ref) / [`vjp_forcing!`](@ref) apply
                                      the transposed bands without forming `J`
+  - [`jacobian_bands2`](@ref)      — second-order bands for an axis pair;
+                                     [`prepare_hvp`](@ref) + [`hvp!`](@ref) contract
+                                     them (Rosenbrock adjoints) without a tensor
   - [`scatter_plan`](@ref)         — checked band-field → storage map (lane blocks,
                                      sparse lane blocks, column bands, CSR);
                                      [`bind_plan`](@ref) + [`jac_into!`](@ref) fill it
@@ -61,6 +64,7 @@ export Site, dscalar, simplify_branches,
     cse_templates, expand_templates, hoist_observed,
     jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
     vjp!, vjp_forcing!,
+    JacEntry2, jacobian_bands2, col_idx, col2_idx, prepare_hvp, HVPEvaluator, hvp!,
     ode_components, odefunction, odeproblem,
     detect_structure, jac_prototype,
     FactorizationPlan, BlockDiagonalPlan, plan_factorization, lu_fill,
@@ -83,6 +87,7 @@ include("emit.jl")           # "jacobians" document block: emit / parse / golden
 include("assemble.jl")       # numeric assembly + prepared evaluator
 include("structure.jl")      # structure detection + jac_prototype
 include("factorization.jl")  # factorization-info interface + block-diagonal plan
+include("second_order.jl")   # second-order bands + the hvp! contraction (§4.4)
 include("scatter.jl")        # scatter plans: band fields → consumer storage layouts
 include("ode.jl")            # solver-free ODE pieces + SciMLBase ext dispatchers
 

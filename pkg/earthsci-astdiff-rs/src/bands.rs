@@ -125,9 +125,9 @@ pub fn is_array_expr(e: &Expr, ctx: &Ctx) -> bool {
 /// bound twice on the way down, or over different ranges at different
 /// occurrences. Position-aware: a sum elsewhere in the body does not affect
 /// a site outside it.
-type Nested = HashMap<String, HashMap<String, Option<RangeSpec>>>;
+pub(crate) type Nested = HashMap<String, HashMap<String, Option<RangeSpec>>>;
 
-fn nested_sums(e: &Expr, v: &str, outer: &[String]) -> Nested {
+pub(crate) fn nested_sums(e: &Expr, v: &str, outer: &[String]) -> Nested {
     let mut acc = HashMap::new();
     nested_walk(e, v, outer, &mut Vec::new(), &mut acc);
     acc
@@ -211,7 +211,7 @@ fn subst_free(e: &Expr, m: &HashMap<String, Expr>) -> Expr {
 /// `_lift_nested`). `nested` and the lazily filled `taken` (the body's
 /// names) are per body, not per site.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn lift_nested(
+pub(crate) fn lift_nested(
     nested: &Nested,
     s: &Site,
     body: &Expr,
@@ -262,7 +262,7 @@ fn lift_nested(
     Ok((cidx, subst_free(&coef, &ren), extra))
 }
 
-fn site_cidx(s: &Site) -> Vec<Expr> {
+pub(crate) fn site_cidx(s: &Site) -> Vec<Expr> {
     match &s.expr {
         Expr::Operator(n) => n.args[1..].to_vec(),
         _ => Vec::new(),

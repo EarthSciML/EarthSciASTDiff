@@ -142,16 +142,20 @@ def jacobian_bands(
     return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing)
 
 
-def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None) -> list[JacEntry]:
+def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
     # The body of `jacobian_bands`, for callers (numeric assembly) that
-    # already hold the view's context and observed definitions.
+    # already hold the view's context and observed definitions. `seed` adds
+    # names to the inlining seed without making them targets: the
+    # second-order driver (second_order.py) differentiates these
+    # coefficients again w.r.t. its second axis, so an observed that moves
+    # only with that axis must be inlined too, or its sites stay hidden.
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
     if wrt != "time":
-        obs = inlinable_observed(obs, sv.equations, tset)
+        obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     entries: list[JacEntry] = []
     obs_names: list = [None]
     for eq in sv.equations:
@@ -180,17 +184,57 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None) -> list
 def _check_closed_columns(en: JacEntry) -> None:
     # A column of the parameters / forcing axes is a cell of a buffer, so it
     # must be placeable at build time: its index expressions may read only
-    # the entry's own row and contracted index names.
-    b = en.band
+    # the entry's own row and contracted index names. The second column of
+    # a pair (second_order.py) is held to the same rule.
+    _check_closed(
+        en.band,
+        en.band.cidx,
+        lambda c: f"column index {_json(c)} of `{en.v}` in the equation for `{en.u}`",
+    )
+
+
+def _check_closed(b: Band, cols, what) -> None:
     bound = {r for r in b.ridx if isinstance(r, str)}
     bound.update(n for n, _, _ in b.contracted)
-    for c in b.cidx:
+    for c in cols:
         for n in sorted(free_variables(c)):
             if n not in bound:
                 raise BandError(
-                    f"column index {json.dumps(ser_expr(c), separators=(',', ':'))} of "
-                    f"`{en.v}` in the equation for `{en.u}` reads `{n}`, which is not "
-                    "closed at build time (a parameter or forcing column may read only "
-                    "literals, folded metaparameters, const gathers and its row or "
-                    "contracted index names)"
+                    f"{what(c)} reads `{n}`, which is not closed at build time (a "
+                    "parameter or forcing column may read only literals, folded "
+                    "metaparameters, const gathers and its row or contracted index names)"
                 )
+
+
+def _json(c) -> str:
+    return json.dumps(ser_expr(c), separators=(",", ":"))
+
+
+class _FirstOrder:
+    # The first-order passes of one emission (`jacobian_block`), and the
+    # structure class of each. A pass depends only on its axis and the
+    # inlining seed a second axis adds (`_bands2`); that seed changes
+    # nothing on the time axis (never seeded) or when the second axis is the
+    # first, so those share the plain pass's key: a block list asking for
+    # "states" and ("states", "states") differentiates the system once.
+
+    def __init__(self):
+        self._bands: dict = {}
+        self._structure: dict = {}
+
+    def bands(self, sv: SysView, a1: str, a2, forcing, seed=()) -> list[JacEntry]:
+        key = (a1, None if a1 == "time" or a2 == a1 else a2)
+        if key not in self._bands:
+            self._bands[key] = _jacobian_bands(
+                sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed=seed
+            )
+        return self._bands[key]
+
+    def structure(self, e1: list[JacEntry], sv: SysView) -> str:
+        from .structure import detect_structure
+
+        # keyed by identity, the list kept alive beside its class
+        hit = self._structure.get(id(e1))
+        if hit is None or hit[0] is not e1:
+            hit = self._structure[id(e1)] = (e1, detect_structure(e1, sv))
+        return hit[1]

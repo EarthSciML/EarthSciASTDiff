@@ -15,6 +15,7 @@ pub mod numeric;
 pub mod program;
 pub mod rules;
 pub mod scatter;
+pub mod second_order;
 pub mod simplify_port;
 pub mod system;
 
@@ -24,7 +25,8 @@ pub use clip::{clip_regions, RIdx};
 pub use emit::{
     block_diagonal_lu, cse_templates, detect_structure, evaluation_document, jacobian_block,
     jacobian_block_with_forcing, jacobian_blocks, lu_fill, markowitz_ordering, parse_band,
-    parse_jacobian_block, parse_jacobian_blocks, serialize_band, BlockLu,
+    parse_jacobian_block, parse_jacobian_block2, parse_jacobian_blocks, serialize_band, BlockLu,
+    BlockWrt, ParsedBlock,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
@@ -34,12 +36,17 @@ pub use jacobian::{
     JacEntry, Wrt,
 };
 pub use numeric::{
-    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, prepare_jacobian, vjp,
-    vjp_forcing, JacobianEvaluator,
+    assemble_jacobian, assemble_jacobian_with_forcing, band_fields, hvp, prepare_hvp,
+    prepare_jacobian, vjp, vjp_forcing, HvpEvaluator, HvpForm, HvpPair, JacobianEvaluator,
 };
 pub use program::{
-    BuildOptions, Exec, JacError, JacPlan, JacWorkspace, JacobianProgram, StorageScalar,
+    BuildOptions, Exec, HvpPlan, HvpProgram, HvpWorkspace, JacError, JacPlan, JacWorkspace,
+    JacobianProgram, StorageScalar,
 };
 pub use rules::{dscalar, DerivativeRuleError};
 pub use scatter::{BoundScatter, Layout, PlanKind, ScatterPlan};
+pub use second_order::{
+    axis_pair, jacobian_bands2, jacobian_bands2_with_forcing, jacobian_block2, parse_band2,
+    serialize_band2, JacEntry2,
+};
 pub use system::{ctx_of, sysview, SysView};

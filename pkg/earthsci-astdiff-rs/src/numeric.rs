@@ -11,9 +11,11 @@ use serde_json::Value;
 
 use crate::bands::{Band, BandError, Ctx};
 use crate::clip::RIdx;
+use crate::emit::detect_structure;
 use crate::helpers::map_expr_children;
 use crate::inline::inline_observed_cached;
 use crate::jacobian::{column_names, jacobian_bands_view, jacobian_columns, JacEntry, Wrt};
+use crate::second_order::{axis_pair, bands2_view, structure2, JacEntry2};
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
 type R<T> = Result<T, BandError>;
@@ -297,14 +299,28 @@ pub(crate) fn foreach_point(b: &Band, f: &mut PointFn<'_>) -> R<()> {
 /// reference's derived evaluation model does). This splices in only the
 /// observed a coefficient actually reads — exactly what evaluating it at a
 /// point needs — so it rejects nothing an evaluation could do without.
-fn inlined_coefs(obs: &HashMap<String, Expr>, entries: &[JacEntry]) -> R<Vec<Expr>> {
+fn inlined_coefs<'a>(
+    obs: &HashMap<String, Expr>,
+    bands: impl IntoIterator<Item = &'a Band>,
+) -> R<Vec<Expr>> {
     let mut obs_names = None;
-    entries
-        .iter()
-        .map(|en| {
-            inline_observed_cached(&en.band.coef, obs, &mut obs_names).map_err(|e| BandError(e.0))
-        })
+    bands
+        .into_iter()
+        .map(|b| inline_observed_cached(&b.coef, obs, &mut obs_names).map_err(|e| BandError(e.0)))
         .collect()
+}
+
+/// One band coefficient (an [`inlined_coefs`] entry) at one point: the
+/// point's index binding substituted, every read resolved at `env`.
+fn point_value(coef0: &Expr, ibind: &HashMap<String, i64>, env: &Env, ctx: &Ctx) -> R<f64> {
+    if ibind.is_empty() {
+        return as_lit(&resolve(coef0, env, ctx)?);
+    }
+    let sub: HashMap<String, Expr> = ibind
+        .iter()
+        .map(|(k, v)| (k.clone(), Expr::Integer(*v)))
+        .collect();
+    as_lit(&resolve(&substitute(coef0, &sub), env, ctx)?)
 }
 
 /// Every non-ghost point of every band at a point: `f(k, entry, row cell,
@@ -341,17 +357,7 @@ fn for_each_value(
                     return Ok(()); // ghost read: no column
                 }
             }
-            let coef = if ibind.is_empty() {
-                coef0.clone()
-            } else {
-                let sub: HashMap<String, Expr> = ibind
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Expr::Integer(*v)))
-                    .collect();
-                substitute(coef0, &sub)
-            };
-            let val = as_lit(&resolve(&coef, env, ctx)?)?;
-            f(k, en, cell, cc, cidx, val);
+            f(k, en, cell, cc, cidx, point_value(coef0, ibind, env, ctx)?);
             Ok(())
         })?;
     }
@@ -443,7 +449,7 @@ pub fn prepare_jacobian(
     let ctx = ctx_of(&sv)?;
     let obs = observed_defs(&sv)?;
     let entries = jacobian_bands_view(&sv, &ctx, &obs, wrt, forcing)?;
-    let coefs = inlined_coefs(&obs, &entries)?;
+    let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let columns = if wrt.has_columns() {
         Some(jacobian_columns(&sv, wrt, forcing)?)
     } else {
@@ -644,7 +650,7 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
         .iter()
         .map(|sh| vec![0.0; sh.iter().product::<i64>() as usize])
         .collect();
-    let coefs = inlined_coefs(&obs, &entries)?;
+    let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
     let env = with_defaults(&parameter_defaults(&sv, &ctx), env);
     for_each_value(
         &ctx,
@@ -658,4 +664,206 @@ pub fn band_fields(file: &EsmFile, model_name: Option<&str>, env: &Env) -> R<Vec
         },
     )?;
     Ok(fields)
+}
+
+// ── the second-order contraction (second_order.jl `hvp!`, spec §4.4) ────────
+
+/// One stage pair `(μ, w)` of [`hvp`]: `μ` keyed by row cell name, `w` by
+/// first-column cell name (on a time pair, the single column `"t"`).
+pub type HvpPair = (HashMap<String, f64>, HashMap<String, f64>);
+
+/// Which side of `∇²(μᵀ f)` [`HvpEvaluator::hvp`] contracts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HvpForm {
+    /// Sum the stages into `M(row, col) = Σᵢ μᵢ[row] wᵢ[col]`, then
+    /// `g[col2] += coef2 · M(row, col)` over the points.
+    Contract,
+    /// On a (states, states) pair only, by the symmetry of `∇²(μᵀ f)`:
+    /// `g[col] += μ[row] · coef2 · w[col2]` per stage, with no `M`.
+    Symmetric,
+}
+
+/// A prepared second-order contraction for one axis pair, built once by
+/// [`prepare_hvp`]: the second-order bands, their observed-inlined
+/// coefficients, the second axis's column space and the parameter defaults.
+/// Each [`HvpEvaluator::hvp`] only walks the band points at the given
+/// [`Env`].
+#[derive(Clone, Debug)]
+pub struct HvpEvaluator {
+    pub wrt: (Wrt, Wrt),
+    pub entries: Vec<JacEntry2>,
+    /// The second axis's [`crate::jacobian_columns`] space on a parameters
+    /// or forcing pair, `None` otherwise.
+    pub columns: Option<Vec<(String, Vec<i64>)>>,
+    /// The canonical column names of `columns` (empty without one).
+    pub colnames: Vec<String>,
+    /// `Some("block_diagonal")` when the contraction is lane-local (the
+    /// pair block's `structure`).
+    pub structure: Option<&'static str>,
+    ctx: Ctx,
+    coefs: Vec<Expr>,
+    defaults: HashMap<String, Value>,
+}
+
+/// Build an [`HvpEvaluator`] once for the axis pair `wrt` (first axis states
+/// or time, second states, parameters or forcing).
+pub fn prepare_hvp(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: (Wrt, Wrt),
+    forcing: Option<&[String]>,
+) -> R<HvpEvaluator> {
+    let wrt = axis_pair(wrt)?;
+    let sv = sysview(file, model_name)?;
+    let ctx = ctx_of(&sv)?;
+    let obs = observed_defs(&sv)?;
+    let (e1, entries) = bands2_view(&sv, &ctx, &obs, wrt, forcing)?;
+    let coefs = inlined_coefs(&obs, entries.iter().map(|en| &en.band))?;
+    let columns = if wrt.1.has_columns() {
+        Some(jacobian_columns(&sv, wrt.1, forcing)?)
+    } else {
+        None
+    };
+    let colnames = columns.as_deref().map(column_names).unwrap_or_default();
+    let structure = structure2(|| detect_structure(&e1, &ctx), &entries, &ctx, wrt.0);
+    let defaults = parameter_defaults(&sv, &ctx);
+    Ok(HvpEvaluator {
+        wrt,
+        entries,
+        columns,
+        colnames,
+        structure,
+        ctx,
+        coefs,
+        defaults,
+    })
+}
+
+/// Whether a column cell lies outside its variable's declared extent.
+pub(crate) fn outside(shape: Option<&Vec<i64>>, cidx: &[i64]) -> bool {
+    shape.is_some_and(|sh| cidx.iter().zip(sh).any(|(c, s)| *c < 1 || c > s))
+}
+
+impl HvpEvaluator {
+    /// Every non-ghost point of every second-order band at a point:
+    /// `f(row, col, col2, value)` by cell name. A column (first or second)
+    /// outside its variable's extent is a ghost read and skipped, except a
+    /// second column on the forcing axis, which is an error (spec §4.3).
+    fn each_point(&self, env: &Env, f: &mut dyn FnMut(&str, &str, &str, f64) -> R<()>) -> R<()> {
+        let env = with_defaults(&self.defaults, env);
+        for (en, coef0) in self.entries.iter().zip(&self.coefs) {
+            let vshape = self.ctx.shapes.get(&en.v);
+            let wshape = self.ctx.shapes.get(&en.w);
+            foreach_point(&en.band, &mut |cell, _, ibind, cidx| {
+                let (c1, c2) = cidx.split_at(en.ncol);
+                if outside(wshape, c2) {
+                    if self.wrt.1 == Wrt::Forcing {
+                        return Err(BandError(format!(
+                            "second column `{}` (row `{}`) is outside the declared extent \
+                             of its variable; on the forcing axis every column must \
+                             resolve (no ghost skip)",
+                            cellname(&en.w, c2),
+                            cellname(&en.u, cell)
+                        )));
+                    }
+                    return Ok(());
+                }
+                if outside(vshape, c1) {
+                    return Ok(()); // ghost read: no column
+                }
+                let val = point_value(coef0, ibind, &env, &self.ctx)?;
+                f(
+                    &cellname(&en.u, cell),
+                    &cellname(&en.v, c1),
+                    &cellname(&en.w, c2),
+                    val,
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// The second-order contraction at a point, as [`hvp`] computes it.
+    pub fn hvp(
+        &self,
+        env: &Env,
+        pairs: &[HvpPair],
+        form: HvpForm,
+        g: &mut BTreeMap<String, f64>,
+    ) -> R<()> {
+        let get = |m: &HashMap<String, f64>, k: &str, what: &str| {
+            m.get(k)
+                .copied()
+                .ok_or_else(|| BandError(format!("{what} binds no `{k}`")))
+        };
+        match form {
+            HvpForm::Contract => {
+                let mut m: HashMap<(String, String), f64> = HashMap::new();
+                self.each_point(env, &mut |row, col, col2, val| {
+                    let key = (row.to_string(), col.to_string());
+                    let mrc = match m.get(&key) {
+                        Some(x) => *x,
+                        None => {
+                            let mut acc = 0.0;
+                            for (mu, w) in pairs {
+                                acc += get(mu, row, "μ")? * get(w, col, "w")?;
+                            }
+                            m.insert(key, acc);
+                            acc
+                        }
+                    };
+                    *g.entry(col2.to_string()).or_insert(0.0) += val * mrc;
+                    Ok(())
+                })
+            }
+            HvpForm::Symmetric => {
+                if self.wrt != (Wrt::States, Wrt::States) {
+                    return Err(BandError(format!(
+                        "the symmetric form needs a (states, states) pair, got ({}, {})",
+                        self.wrt.0.as_str(),
+                        self.wrt.1.as_str()
+                    )));
+                }
+                self.each_point(env, &mut |row, col, col2, val| {
+                    let mut acc = 0.0;
+                    for (mu, w) in pairs {
+                        acc += get(mu, row, "μ")? * val * get(w, col2, "w")?;
+                    }
+                    *g.entry(col.to_string()).or_insert(0.0) += acc;
+                    Ok(())
+                })
+            }
+        }
+    }
+}
+
+/// The second-order contraction at a point (spec §4.4), with no tensor
+/// formed:
+///
+/// ```text
+/// g += ∇_{a2} Σᵢ μᵢᵀ J(u) wᵢ          (pair (states, a2))
+/// g += ∇_{a2} (Σᵢ wᵢ μᵢ)ᵀ f_t         (pair (time, a2); wᵢ binds "t")
+/// ```
+///
+/// with `J = ∂f/∂(a1)`. `pairs` holds one `(μ, w)` per Rosenbrock stage,
+/// `μ` keyed by row cell name and `w` by first-column cell name; a name a
+/// point reads that they do not bind is an error. `g` is keyed by
+/// second-column cell name (`"T[2]"`, `"k3"`, `"F[1,4]"`; on
+/// [`HvpForm::Symmetric`] by first-column name), gains a key for every
+/// column a band point reaches, and ACCUMULATES — clear it first for a
+/// single product. Parameters `env` leaves unbound read the document
+/// defaults. This prepares the evaluator for one call; a loop calls
+/// [`HvpEvaluator::hvp`] on one [`prepare_hvp`] instead.
+#[allow(clippy::too_many_arguments)]
+pub fn hvp(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: (Wrt, Wrt),
+    forcing: Option<&[String]>,
+    env: &Env,
+    pairs: &[HvpPair],
+    form: HvpForm,
+    g: &mut BTreeMap<String, f64>,
+) -> R<()> {
+    prepare_hvp(file, model_name, wrt, forcing)?.hvp(env, pairs, form, g)
 }

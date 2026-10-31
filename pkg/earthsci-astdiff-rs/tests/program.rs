@@ -858,6 +858,60 @@ fn forcing_reaches_the_band_fields() {
     assert_eq!(out, vec![-2.0, -8.0, -18.0, -32.0]);
 }
 
+/// An array parameter without an `update` is a run-time slot of a source
+/// built with `runtime_array_parameters`: the band fields read that slot
+/// (domain and lane plans alike), not a build-time copy of the default.
+#[test]
+fn runtime_array_parameters_reach_the_band_fields() {
+    let d = json!({
+        "esm": "1.2.0",
+        "metadata": {"name": "arrays", "authors": ["test"]},
+        "index_sets": {"x": {"kind": "interval", "size": 4}},
+        "models": {"M": {
+            "variables": {
+                "u": {"type": "unknown", "units": "1", "shape": ["x"], "default": 1.0},
+                "K": {"type": "parameter", "units": "1", "shape": ["x"], "default": 0.25}
+            },
+            "equations": [{
+                "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
+                "rhs": {"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": {"from": "x"}},
+                        "expr": {"op": "*", "args": [-1, {"op": "index", "args": ["K", "i"]},
+                                 {"op": "index", "args": ["u", "i"]},
+                                 {"op": "index", "args": ["u", "i"]}]}}
+            }]
+        }}
+    });
+    let file = earthsci_ast::load_document(&d).unwrap();
+    let opts = ProblemOptions {
+        runtime_array_parameters: true,
+        ..Default::default()
+    };
+    let src = rhs_program(&esm_problem(&file, (0.0, 1.0), opts).unwrap()).unwrap();
+    assert_eq!(src.forcing_slots().len(), 1);
+    let prog = JacobianProgram::build(&file, None, &BuildOptions::default()).unwrap();
+    let u = vec![1.0, 2.0, 3.0, 4.0];
+    let p = src.parameter_vector(&HashMap::new()).unwrap();
+    let f0 = src.default_forcing();
+    let f1 = f0.replace(0, Arc::from(vec![1.0, 2.0, 3.0, 4.0])).unwrap();
+    // one lane per cell, in order: the lane inputs are the domain's
+    let cells = [1, 2, 3, 4];
+    for (exec, cells) in [
+        (Exec::Domain, &[][..]),
+        (Exec::Lanes { capacity: 4 }, &cells[..]),
+    ] {
+        let plan = prog.plan(&Layout::LaneBlocks, &src, exec).unwrap();
+        let mut ws = prog.new_workspace(&plan);
+        let mut out = vec![0.0; plan.out_len()];
+        let n = cells.len();
+        prog.eval_into(&plan, &u, &[], &p, 0.0, &f0, cells, n, &mut out, &mut ws)
+            .unwrap();
+        assert_eq!(out, vec![-0.5, -1.0, -1.5, -2.0], "{exec:?}");
+        prog.eval_into(&plan, &u, &[], &p, 0.0, &f1, cells, n, &mut out, &mut ws)
+            .unwrap();
+        assert_eq!(out, vec![-2.0, -8.0, -18.0, -32.0], "{exec:?}");
+    }
+}
+
 /// A band row fixed along an extent-1 dimension spans the field, but its
 /// `faq` leaves the fixed dimension out: it stays a `makearray` (§ fused
 /// band form) and evaluates like any other.

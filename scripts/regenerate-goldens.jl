@@ -68,6 +68,27 @@ for (name, wrt) in (
     end
     println("wrote ", name, ".$wrt.{bands,block,evaldoc}.json")
 end
+# second-order bands (spec §4.4): `<name>.<a1>-<a2>.{bands,block}.json` for
+# the axis pairs a Rosenbrock adjoint contracts. No evaluation document: the
+# derived model is the first-order one's, over these coefficients.
+for (name, wrt) in (
+        ("bd_chem", (:states, :states)),
+        ("arrhenius_chem", (:states, :states)),
+        ("arrhenius_chem", (:states, :parameters)),
+        ("forcing_bracket", (:states, :forcing)),
+        ("forcing_bracket", (:time, :states)),
+        ("minmod_adv", (:states, :states)),
+    )
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    mname = first(keys(file.models))
+    tag = "$(wrt[1])-$(wrt[2])"
+    gold(kind) = joinpath(root, "tests", "goldens", "$name.$tag.$kind.json")
+    entries = jacobian_bands2(file, mname; wrt = wrt)
+    write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    doc = jacobian_document(file, mname; wrt = Pair(wrt...))
+    write(gold("block"), stable_json(doc["jacobians"][mname]))
+    println("wrote ", name, ".$tag.{bands,block}.json")
+end
 # scatter plans (spec §8): one golden per (fixture, applicable layout); the
 # fixtures not listed for a layout refuse it (test/scatter_test.jl)
 for (name, tag, layout) in (
