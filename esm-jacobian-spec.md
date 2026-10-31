@@ -799,8 +799,8 @@ whose preconditions above do not hold.
 ## 9. Product documents (PROPOSED)
 
 **Status: PROPOSED. Produced by the Julia reference (`jvp_document`,
-`vjp_document`, `hvp_document`), with goldens (§9.6); not yet by the other
-bindings.** Any change to the text below lands with its goldens.
+`vjp_document`, `hvp_document`) and, byte-identically, by the Rust and
+Python bindings, with goldens (§9.6).** Any change to the text below lands with its goldens.
 
 A consumer needs more than the coefficients: an implicit integrator applies
 `J` and `Jᵀ` to vectors, and an adjoint contracts the second-order bands

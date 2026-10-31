@@ -4,7 +4,7 @@
 use earthsci_ast::load_path;
 use earthsci_astdiff::{
     ctx_of, detect_structure, evaluation_document, jacobian_block, jacobian_bands,
-    plan_factorization, sysview, FactorizationPlan, Wrt,
+    jvp_document, plan_factorization, sysview, FactorizationPlan, ProductOptions, Wrt,
 };
 use earthsci_astdiff_api_examples::fixture;
 
@@ -37,12 +37,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(vars, ["A", "B", "C"]);
     // endregion
 
-    // region: evaluate ops=evaluation_document
+    // region: evaluate ops=evaluation_document,jvp_document
     // EarthSciASTDiff evaluates nothing: it emits the band fields `J_k` as a
     // derived ESM model that EarthSciAST evaluates.
     let (doc, fields) = evaluation_document(&view, &entries, true, 12)?;
     assert!(doc["models"]["JacobianEval"].is_object());
     assert_eq!(fields.len(), entries.len());
+    // `J v` likewise: write `v` into the inputs `io.v`, read `J v` from the
+    // derivatives of the outputs `io.jvp`.
+    let (jdoc, io) = jvp_document(&view, &entries, Wrt::States, &ProductOptions::default())?;
+    assert!(jdoc["models"][io.model.as_str()].is_object());
+    assert_eq!(io.v["A"], "_v_A");
+    assert_eq!(io.jvp["A"], "_jvp_A");
     // endregion
 
     // region: block ops=jacobian_block

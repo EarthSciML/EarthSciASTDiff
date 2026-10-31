@@ -1,7 +1,9 @@
-"""§4 band-entry serialization + the structural pattern (emit.jl subset).
+"""§4 band-entry serialization, the structural pattern and the derived
+evaluation document (emit.jl).
 
-``stable_json(serialize_band(e) for e in entries)`` is the cross-language
-conformance surface: byte-identical to the Julia reference's goldens."""
+``stable_json(serialize_band(e) for e in entries)`` and ``stable_json`` of
+:func:`evaluation_document` are cross-language conformance surfaces:
+byte-identical to the Julia reference's goldens."""
 
 from __future__ import annotations
 
@@ -380,3 +382,274 @@ def parse_jacobian_blocks(x) -> list:
     if len(set(ws)) != len(ws):
         raise ValueError("a model's jacobian blocks must have distinct `wrt`")
     return out
+
+
+# ── the evaluation model ─────────────────────────────────────────────────────
+#
+# Evaluation is EarthSciAST's: emit a derived single-model document in which
+# each band's coefficient field is a STATE `J_k` whose RHS is the band field —
+#
+#   D(J_k) = makearray( zero default, band region ← faq(coef) )
+#
+# so one RHS call of an unmodified EarthSciAST evaluator leaves every band
+# value in `du`. The product documents (products.py) share its base.
+
+
+def _inline_value(x):
+    """A variable's value in the document's inline form: an array value is
+    row-major nested JSON (esm-spec §6.3), and a number is a float, as the
+    reference's loader holds every default."""
+    if hasattr(x, "tolist"):
+        x = x.tolist()
+    if isinstance(x, (list, tuple)):
+        return [_inline_value(v) for v in x]
+    if isinstance(x, int) and not isinstance(x, bool):
+        return float(x)
+    return x
+
+
+def _base_document(sv, name: str) -> dict:
+    """The source model as a derived document named ``name``: every variable
+    (``unknown`` or ``parameter``, shape and default kept) and every equation
+    verbatim. esm 1.0.0 has two declared types; whether an unknown is a state
+    or an observed is made by the equations, which are copied whole."""
+    from .system import _iset_size, _var_type
+
+    variables: dict = {}
+    for n in sorted(sv.variables):
+        var = sv.variables[n]
+        d: dict = {"type": "parameter" if _var_type(var) == "parameter" else "unknown"}
+        shape = getattr(var, "shape", None)
+        if shape:
+            d["shape"] = list(shape)
+        default = getattr(var, "default", None)
+        if default is not None:
+            d["default"] = _inline_value(default)
+        variables[str(n)] = d
+    equations = [{"lhs": ser_expr(eq.lhs), "rhs": ser_expr(eq.rhs)} for eq in sv.equations]
+    isets = {}
+    for n, s in sv.index_sets.items():
+        sz = _iset_size(s)
+        if sz is not None:
+            isets[str(n)] = {"kind": "interval", "size": int(sz)}
+    return {
+        # Provisional: `_derived_version` settles it once the document is
+        # complete.
+        "esm": "1.1.0",
+        "metadata": {"name": name},
+        "index_sets": isets,
+        "models": {name: {"variables": variables, "equations": equations}},
+    }
+
+
+def _derived_version(doc: dict) -> dict:
+    """Settle the ``esm`` version a finished derived document declares: the
+    lowest that admits what it holds. 1.1.0 for its ``faq`` nodes; 1.2.0
+    when any expression node carries ``units`` (a unit-bearing ``const``
+    copied from a 1.2.0 source). Read off the content, not the source."""
+    doc["esm"] = "1.2.0" if _has_units(doc["models"]) else "1.1.0"
+    return doc
+
+
+def _has_units(x) -> bool:
+    if isinstance(x, dict):
+        return ("units" in x and "op" in x) or any(_has_units(v) for v in x.values())
+    if isinstance(x, (list, tuple)):
+        return any(_has_units(v) for v in x)
+    return False
+
+
+def _axis_name(doc: dict, sz: int) -> str:
+    """A literal-size axis index set of the derived document (the
+    hoisted-observed axes' ``jcax<size>`` convention, reused when present)."""
+    from .eval_cse import jcax_name
+
+    isets = doc["index_sets"]
+    nm = jcax_name(lambda n: n in isets and isets[n].get("size") != sz, sz)
+    if nm not in isets:
+        isets[nm] = {"kind": "interval", "size": sz}
+    return nm
+
+
+def _defined_name(eq) -> str | None:
+    # The variable a non-derivative equation defines: a bare LHS (`y ~ …`) or
+    # an indexed one (`y[i…] ~ …`, lifted or pinned); None otherwise.
+    from .system import _indexed_definition, lhs_definition
+
+    n = lhs_definition(eq)
+    if n is not None:
+        return str(n)
+    d = _indexed_definition(eq)
+    return None if d is None else str(d[0])
+
+
+def _zero_source_derivatives(m: dict, sv, ctx, roots: list) -> dict:
+    """Trim the source's ODE right-hand side out of the derived model ``m``:
+    every ``D(u)`` equation of the source becomes ``D(u) = 0`` (a zero
+    ``makearray`` over an array state's shape), in place of the first one and
+    with any further ones dropped. The states keep their solver slots — the
+    consumer copies ``u`` into them — so the observed definitions and band
+    fields read them unchanged, but each call no longer recomputes ``f``.
+    Observed that ``roots`` (the expressions the derived model evaluates: the
+    coefficients, and for a product document also the column indices and
+    ``where`` guards, spec §9) do not read, directly or through other
+    observed, are dropped with their declarations: they fed only ``f``.
+
+    Zero derivatives rather than turning the states into parameters: an
+    evaluator may treat observed that read only parameters as constant and
+    cache them, so writing a new ``u`` in place would leave them stale."""
+    import json
+
+    from earthsci_ast.expression import free_variables
+
+    from .bands import BandError
+    from .system import is_derivative, lhs_state
+
+    states = {u for u in (lhs_state(eq) for eq in sv.equations) if u is not None}
+    defined = [_defined_name(eq) if lhs_state(eq) is None else None for eq in sv.equations]
+    reads: dict[str, list] = {}  # observed → its definitions' RHS
+    for eq, n in zip(sv.equations, defined):
+        if n is not None and n not in states:
+            reads.setdefault(n, []).append(eq.rhs)
+    live: set[str] = set()
+    stack = [v for r in roots for v in free_variables(r)]
+    while stack:
+        n = stack.pop()
+        if n not in reads or n in live:
+            continue
+        live.add(n)
+        for r in reads[n]:
+            stack.extend(free_variables(r))
+    done: set[str] = set()
+    eqs: list = []
+    for eq, ser, n in zip(sv.equations, m["equations"], defined):
+        u = lhs_state(eq)
+        if u is None:
+            if is_derivative(eq):
+                raise BandError(
+                    f"unsupported derivative LHS {json.dumps(ser_expr(eq.lhs))} (a state's "
+                    "derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                )
+            if n is not None and n in reads and n not in live:
+                m["variables"].pop(n, None)
+                continue
+            eqs.append(ser)
+        elif u not in done:
+            done.add(u)
+            eqs.append({"lhs": {"op": "D", "args": [u], "wrt": "t"}, "rhs": _zeros(ctx, u)})
+    m["equations"] = eqs
+    return m
+
+
+def _zeros(ctx, name: str):
+    """The zero value shaped like variable ``name``: ``0.0``, or a zero
+    ``makearray`` over its shape."""
+    shape = ctx.shapes.get(name) or []
+    if not shape:
+        return 0.0
+    return {"op": "makearray", "args": [], "regions": [[[1, n] for n in shape]], "values": [0.0]}
+
+
+def _hoist(doc: dict, m: dict, sv, entries: list, cse: bool, cse_min_nodes: int) -> list:
+    """With ``cse``, hoist repeated coefficient subtrees into observed of the
+    derived model ``m`` (:func:`~earthsci_astdiff.eval_cse.hoist_observed`),
+    so the evaluator computes each once per cell per call. Returns the
+    coefficients the model reads."""
+    from .eval_cse import hoist_observed
+
+    h = hoist_observed(entries, sv, min_nodes=cse_min_nodes) if cse else None
+    if h is None:
+        return [en.band.coef for en in entries]
+    for nm, sz in h.axes.items():
+        doc["index_sets"][nm] = {"kind": "interval", "size": sz}
+    m["variables"].update(h.obs)
+    # A hoisted observed is an unknown plus a bare-LHS equation, pushed
+    # BEFORE the derived model's own derivative equations.
+    for nm, rhs in h.obs_eqs:
+        m["equations"].append({"lhs": nm, "rhs": rhs})
+    return h.coefs
+
+
+def evaluation_document(
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    forcing=None,
+    cse: bool = True,
+    cse_min_nodes: int = 12,
+):
+    """The derived evaluation document of the first-order bands on axis
+    ``wrt`` (spec §8, model ``"JacobianEval"``): the source's observed the
+    coefficients read, every source derivative zeroed, and one band-field
+    state ``J_k`` per entry whose ``D`` equation is that band's coefficient
+    field. One right-hand-side call of an unmodified EarthSciAST evaluator at
+    ``(u, p, t)`` leaves every band value in ``du``.
+
+    Returns ``(doc, fields)``, ``fields[k]`` naming entry ``k``'s field. With
+    ``cse``, repeated coefficient subtrees are hoisted into observed arrays
+    (:func:`~earthsci_astdiff.eval_cse.hoist_observed`)."""
+    from .system import SysView
+
+    sv = obj if isinstance(obj, SysView) else sysview(obj, model_name)
+    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
+    return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes)
+
+
+def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int = 12):
+    # The source's observed definitions that the coefficients read, its state
+    # derivatives zeroed, then one state per band whose RHS is the band's
+    # coefficient field, after the optional hoisting. Returns (document,
+    # band-state names).
+    from .system import ctx_of
+
+    doc = _base_document(sv, "JacobianEval")
+    m = doc["models"]["JacobianEval"]
+    ctx = ctx_of(sv)
+    _zero_source_derivatives(m, sv, ctx, [en.band.coef for en in entries])
+    coefs = _hoist(doc, m, sv, entries, cse, cse_min_nodes)
+    names: list[str] = []
+    for k, en in enumerate(entries):
+        b = en.band
+        nm = f"J_{k + 1}"
+        names.append(nm)
+        shape_u = ctx.shapes.get(en.u) or []
+        cr = b.contracted
+        if not shape_u and not cr:
+            m["variables"][nm] = {"type": "unknown", "default": 0.0}
+            rhs = ser_expr(coefs[k])
+        else:
+            # The band field spans the row dims PLUS any free contracted
+            # column dims — the scatter reads one slot per (row, contracted)
+            # cell and ACCUMULATES into the column each cell gathers.
+            ushape = list(sv.variables[en.u].shape) if shape_u else []
+            m["variables"][nm] = {
+                "type": "unknown",
+                "default": 0.0,
+                "shape": ushape + [_axis_name(doc, hi) for _, _, hi in cr],
+            }
+            free = [(k2, r) for k2, r in enumerate(b.ridx) if isinstance(r, str)]
+            aggnames = [r for _, r in free] + [n for n, _, _ in cr]
+            if not aggnames:
+                val = ser_expr(coefs[k])
+            else:
+                rngs = {r: [b.rows[k2][0], b.rows[k2][1]] for k2, r in free}
+                for n, lo, hi in cr:
+                    rngs[n] = [lo, hi]
+                val = {
+                    "op": "faq",
+                    "args": [],
+                    "output_idx": aggnames,
+                    "ranges": rngs,
+                    "expr": ser_expr(coefs[k]),
+                }
+            rhs = {
+                "op": "makearray",
+                "args": [],
+                "regions": [
+                    [[1, n] for n in shape_u] + [[1, hi] for _, _, hi in cr],
+                    [[lo, hi] for lo, hi in b.rows] + [[lo, hi] for _, lo, hi in cr],
+                ],
+                "values": [0.0, val],
+            }
+        m["equations"].append({"lhs": {"op": "D", "args": [nm], "wrt": "t"}, "rhs": rhs})
+    return _derived_version(doc), names

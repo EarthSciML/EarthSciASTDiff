@@ -11,6 +11,7 @@ from .clip import clip_regions
 from .cse import cse_templates, expand_templates
 from .emit import (
     column_names,
+    evaluation_document,
     jacobian_block,
     jacobian_pattern,
     parse_band,
@@ -19,6 +20,7 @@ from .emit import (
     scatter_pairs,
     serialize_band,
 )
+from .eval_cse import Hoisted, hoist_observed
 from .expr_helpers import Site, ckey, skey, stable_json
 from .factorization import (
     BlockDiagonalPlan,
@@ -30,6 +32,7 @@ from .factorization import (
 )
 from .inline import InlineError, inline_observed
 from .jacobian import JacEntry, forcing_names, jacobian_bands, jacobian_columns
+from .products import hvp_document, jvp_document, vjp_document
 from .scalar_rules import DerivativeRuleError, dscalar
 from .second_order import JacEntry2, jacobian_bands2, parse_band2
 from .simplify_branches import canon_lits, simp, simplify_branches
@@ -43,6 +46,7 @@ __all__ = [
     "ColumnBlockPlan",
     "Ctx",
     "DerivativeRuleError",
+    "Hoisted",
     "InlineError",
     "JacEntry",
     "JacEntry2",
@@ -58,14 +62,18 @@ __all__ = [
     "ctx_of",
     "detect_structure",
     "dscalar",
+    "evaluation_document",
     "expand_templates",
     "forcing_names",
+    "hoist_observed",
+    "hvp_document",
     "inline_observed",
     "jacobian_bands",
     "jacobian_bands2",
     "jacobian_block",
     "jacobian_columns",
     "jacobian_pattern",
+    "jvp_document",
     "lu_fill",
     "markowitz_ordering",
     "merge_bands",
@@ -83,4 +91,5 @@ __all__ = [
     "skey",
     "stable_json",
     "sysview",
+    "vjp_document",
 ]
