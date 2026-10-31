@@ -34,6 +34,9 @@ Layered API, lowest to highest:
   - [`jacobian_bands2`](@ref)      — second-order bands for an axis pair;
                                      [`prepare_hvp`](@ref) + [`hvp!`](@ref) contract
                                      them (Rosenbrock adjoints) without a tensor
+  - [`jvp_document`](@ref)         — `J v`, and [`vjp_document`](@ref) / [`hvp_document`](@ref)
+                                     `Jᵀ λ` and the §4.4 contraction, as ESM documents
+                                     an unmodified EarthSciAST evaluator runs (spec §9)
   - [`scatter_plan`](@ref)         — checked band-field → storage map (lane blocks,
                                      sparse lane blocks, column bands, CSR);
                                      [`bind_plan`](@ref) + [`jac_into!`](@ref) fill it
@@ -66,6 +69,7 @@ export Site, dscalar, simplify_branches,
     jacobian_pattern, assemble_jacobian, prepare_jacobian, JacobianEvaluator,
     vjp!, vjp_forcing!,
     JacEntry2, jacobian_bands2, col_idx, col2_idx, prepare_hvp, HVPEvaluator, hvp!,
+    jvp_document, vjp_document, hvp_document,
     ode_components, odefunction, odeproblem,
     detect_structure, column_lines, jac_prototype,
     FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, plan_factorization,
@@ -91,6 +95,7 @@ include("assemble.jl")       # numeric assembly + prepared evaluator
 include("structure.jl")      # structure detection + jac_prototype
 include("factorization.jl")  # factorization-info interface + block-diagonal plan
 include("second_order.jl")   # second-order bands + the hvp! contraction (§4.4)
+include("products.jl")       # product documents: Jv, Jᵀλ, hvp as ESM documents (§9)
 include("scatter.jl")        # scatter plans: band fields → consumer storage layouts
 include("ode.jl")            # solver-free ODE pieces + SciMLBase ext dispatchers
 

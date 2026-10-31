@@ -123,6 +123,14 @@
       }
     },
     {
+      "name": "hvp_document",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "hvp_document"
+      }
+    },
+    {
       "name": "hvp_evaluator",
       "kind": "type",
       "tier": "stable",
@@ -225,6 +233,14 @@
       "bindings": {
         "julia": "jacobian_pattern",
         "python": "jacobian_pattern"
+      }
+    },
+    {
+      "name": "jvp_document",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jvp_document"
       }
     },
     {
@@ -390,6 +406,14 @@
         "julia": "vjp!",
         "python": "vjp",
         "rust": "vjp"
+      }
+    },
+    {
+      "name": "vjp_document",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "vjp_document"
       }
     },
     {

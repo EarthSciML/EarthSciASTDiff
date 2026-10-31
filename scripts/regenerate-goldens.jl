@@ -92,6 +92,52 @@ for (name, wrt) in (
     write(gold("block"), stable_json(doc["jacobians"][mname]))
     println("wrote ", name, ".$tag.{bands,block}.json")
 end
+# product documents (spec §9.6): `Jv` and `Jᵀλ` for every axis with a value
+# golden, and the §4.4 contraction (two stages, as in the `*.hvals.json`) for
+# every pair, plus its symmetric form on a (states, states) pair.
+for (name, wrt) in (
+        ("bd_chem", :states), ("adv_interior", :states), ("contracted_ops", :states),
+        ("flux_form_adv", :states), ("minmod_adv", :states),
+        ("contracting_observed", :states), ("tgrad_photolysis", :states),
+        ("forcing_bracket", :states), ("filtered_scan", :states),
+        ("semiring_reduce", :states), ("tgrad_photolysis", :time),
+        ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
+    )
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, first(keys(file.models)))
+    entries = jacobian_bands(sv; wrt = wrt)
+    tag = wrt == :states ? "" : ".$wrt"
+    for (kind, build) in (
+            ("jvp", EarthSciASTDiff._jvp_document), ("vjp", EarthSciASTDiff._vjp_document),
+        )
+        doc, _ = build(sv, entries, wrt, nothing)
+        path = joinpath(root, "tests", "goldens", "$name$tag.$kind.evaldoc.json")
+        write(path, stable_json(doc))
+        println("wrote ", path)
+    end
+end
+for (name, wrt) in (
+        ("bd_chem", (:states, :states)),
+        ("arrhenius_chem", (:states, :states)),
+        ("arrhenius_chem", (:states, :parameters)),
+        ("forcing_bracket", (:states, :forcing)),
+        ("forcing_bracket", (:time, :states)),
+        ("minmod_adv", (:states, :states)),
+        ("filtered_scan", (:states, :states)),
+        ("semiring_reduce", (:states, :states)),
+    )
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, first(keys(file.models)))
+    entries = jacobian_bands2(sv; wrt = wrt)
+    forms = wrt == (:states, :states) ? (:contract, :symmetric) : (:contract,)
+    for form in forms
+        doc, _ = EarthSciASTDiff._hvp_document(sv, entries, wrt, nothing, 2; form = form)
+        kind = form == :contract ? "hvp" : "hvp-sym"
+        path = joinpath(root, "tests", "goldens", "$name.$(wrt[1])-$(wrt[2]).$kind.evaldoc.json")
+        write(path, stable_json(doc))
+        println("wrote ", path)
+    end
+end
 # scatter plans (spec §8): one golden per (fixture, applicable layout); the
 # fixtures not listed for a layout refuse it (test/scatter_test.jl)
 for (name, tag, layout) in (

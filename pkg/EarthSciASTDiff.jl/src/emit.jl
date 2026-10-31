@@ -393,7 +393,9 @@ end
 # copies `u` into them exactly as before — so the observed definitions and
 # band fields read them unchanged, but each call no longer recomputes `f`.
 # Observed the coefficients do not read (directly or through other observed)
-# are dropped with their declarations: they fed only `f`.
+# are dropped with their declarations: they fed only `f`. `roots` are the
+# expressions the derived model evaluates (the coefficients, and for a
+# product document also the column indices and `where` guards, §9).
 #
 # Why zero derivatives rather than turning the states into parameters: an
 # array parameter is a build-time `param_arrays` buffer, and EarthSciAST
@@ -401,7 +403,10 @@ end
 # writing a new `u` into the buffer in place leaves those values stale
 # (minmod_adv's limiters, off by up to 16.0 at a second point) unless an
 # internal epoch hook is called on every write.
-function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry})
+_zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry}) =
+    _zero_source_derivatives!(m, sv, ctx, ASTExpr[en.band.coef for en in entries])
+
+function _zero_source_derivatives!(m, sv::SysView, ctx, roots::Vector{ASTExpr})
     states = Set{String}(
         u for u in (lhs_state(eq) for eq in sv.equations)
             if u !== nothing
@@ -415,7 +420,7 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
         (n === nothing || n in states) || push!(get!(reads, n, ASTExpr[]), eq.rhs)
     end
     live = Set{String}()
-    stack = String[v for en in entries for v in free_variables(en.band.coef)]
+    stack = String[v for r in roots for v in free_variables(r)]
     while !isempty(stack)
         n = pop!(stack)
         (haskey(reads, n) && !(n in live)) || continue
@@ -460,14 +465,39 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, entries::Vector{JacEntry
     return m
 end
 
+# With `cse`, repeated coefficient subtrees are hoisted into observed
+# variables of the derived model `m` ([`hoist_observed`](@ref)) so the
+# tree-walk's factored array-observed buffers evaluate them once per cell per
+# RHS call — the compile-time and duplicate-work control for limiter-heavy
+# (PPM-scale) coefficients. Returns the coefficients the model reads.
+function _hoist!(doc, m, sv::SysView, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int)
+    h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
+    h === nothing && return ASTExpr[en.band.coef for en in entries]
+    for (nm, sz) in h.axes
+        doc["index_sets"][nm] =
+            OrderedDict{String, Any}("kind" => "interval", "size" => sz)
+    end
+    for (nm, vd) in h.obs
+        m["variables"][nm] = vd
+    end
+    # 1.0.0: a hoisted observed is an unknown plus a bare-LHS equation. The
+    # equations go in BEFORE the derived model's own derivative equations,
+    # matching the declaration order the corpus migration produced --
+    # ordering is not semantically load-bearing, but a stable one keeps diffs
+    # readable.
+    for (nm, rhs) in h.obs_eqs
+        push!(
+            m["equations"],
+            OrderedDict{String, Any}("lhs" => nm, "rhs" => rhs)
+        )
+    end
+    return h.coefs
+end
+
 # Derived model: the source's observed definitions that the coefficients
 # read, with its state derivatives zeroed, plus one state per band whose RHS
-# is the band's coefficient field. With `cse = true`, repeated coefficient
-# subtrees are first hoisted into observed variables of the document
-# ([`hoist_observed`](@ref)) so the tree-walk's factored array-observed
-# buffers evaluate them once per cell per RHS call — the compile-time and
-# duplicate-work control for limiter-heavy (PPM-scale) coefficients.
-# Returns (document, band-state names).
+# is the band's coefficient field, after the optional hoisting of
+# [`_hoist!`](@ref). Returns (document, band-state names).
 function _evaluation_document(
         sv::SysView, entries::Vector{JacEntry};
         cse::Bool = true, cse_min_nodes::Int = 12
@@ -476,27 +506,7 @@ function _evaluation_document(
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
     _zero_source_derivatives!(m, sv, ctx, entries)
-    h = cse ? hoist_observed(entries, sv; min_nodes = cse_min_nodes) : nothing
-    coefs = h === nothing ? ASTExpr[en.band.coef for en in entries] : h.coefs
-    if h !== nothing
-        for (nm, sz) in h.axes
-            doc["index_sets"][nm] =
-                OrderedDict{String, Any}("kind" => "interval", "size" => sz)
-        end
-        for (nm, vd) in h.obs
-            m["variables"][nm] = vd
-        end
-        # 1.0.0: a hoisted observed is an unknown plus a bare-LHS equation. The
-        # equations go in BEFORE the J_k derivative equations below, matching the
-        # declaration order the corpus migration produced -- ordering is not
-        # semantically load-bearing, but a stable one keeps diffs readable.
-        for (nm, rhs) in h.obs_eqs
-            push!(
-                m["equations"],
-                OrderedDict{String, Any}("lhs" => nm, "rhs" => rhs)
-            )
-        end
-    end
+    coefs = _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)

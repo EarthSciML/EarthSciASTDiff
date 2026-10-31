@@ -795,10 +795,9 @@ whose preconditions above do not hold.
 
 ## 9. Product documents (PROPOSED)
 
-**Status: PROPOSED, not yet produced by any binding, no goldens.** This
-section fixes the target shape before the producers are written; its
-fixtures and goldens land with the first producer (Julia), in the same
-commit as any change to the text below.
+**Status: PROPOSED. Produced by the Julia reference (`jvp_document`,
+`vjp_document`, `hvp_document`), with goldens (§9.6); not yet by the other
+bindings.** Any change to the text below lands with its goldens.
 
 A consumer needs more than the coefficients: an implicit integrator applies
 `J` and `Jᵀ` to vectors, and an adjoint contracts the second-order bands
@@ -832,13 +831,25 @@ evaluation document does). On top of that base:
   read.
 - **Names.** Inputs and outputs take the names below, with `_` appended
   until clear of every name in the document and of every name generated
-  before it. Names are generated in one fixed order, so every binding reaches
-  the same names: the table's input column, then its output column; within a
-  column by stage number `i` ascending, then by variable in canonical order
+  before it. The names of a document are its variable and index-set names,
+  every `ranges` key, and every string its equations hold other than an
+  `op` value. Names are generated in one fixed order, so every binding
+  reaches the same names: the table's input column, then its output column;
+  within a column by stage number `i` ascending, then (within one stage)
+  every `_mu<i>` before every `_w<i>`, then by variable in canonical order
   (states in the canonical state order of §8, the columns of a `parameters`
   or `forcing` axis in `columns` order, then `t`). `R` is a row variable, `C`
   a column variable, `C2` a second-axis column variable, and `i` a 1-based
   stage number.
+- **Layout.** The `D` equations of the inputs, then of the outputs, follow
+  the base's equations (and any hoisted observed), in name-generation order.
+  A zero right-hand side is `0.0`, or for an array a `makearray` of `0.0`
+  over the whole shape, as for the zeroed source derivatives. A `faq` below
+  omits `reduce` (its default is `"+"`); its `ranges` list the output names,
+  then the row names, then the contracted names. A `filter` with one
+  conjunct is that conjunct, with several an `and` of them in the order
+  written; with none the field is omitted. A `+` over terms is a nest of
+  binary `+` folded from the left.
 
 | Product | Model | Inputs | Outputs |
 |---|---|---|---|
@@ -859,8 +870,8 @@ literal replaced by the reshape singleton `1`, esm-spec §4.3.1), and
 "`rows_k` over `ρ_k`" one `ranges` entry per NAME of `ρ_k` (a literal
 dimension has none); `γ_k` its `contracted` names with their ranges, `C_k`
 its `col` with index expressions `e_k(ρ, γ)`, `a_k(ρ, γ)` its `coef` and
-`ω_k(ρ, γ)` its `where` (`true` when absent). `n_{C,d}` is the extent of
-dimension `d` of `C`. Fresh output-index names `j = (j_1, …, j_n)` are
+`ω_k(ρ, γ)` its `where` (`true` when absent, and then no conjunct).
+`n_{C,d}` is the extent of dimension `d` of `C`. Fresh output-index names `j = (j_1, …, j_n)` are
 `_j1`, …, `_jn`, each with `_` appended until clear of every name in the
 entry and the document. Each product below is a `+` over entries in entry
 order (a left fold), so the association is fixed.
@@ -870,7 +881,7 @@ over the index names that occur in `expr` and not in `output_idx`; a name
 that occurs only in `ranges` or `filter` is not iterated. Where a body below
 does not read a non-output range name `ν` (a contracted name that appears
 only in an `e_k` the filter carries, as in §9.3), the producer MUST write
-`expr` as `ifelse(Φ, body, 0)`, `Φ` the conjunction of the filter's
+`expr` as `ifelse(Φ, body, 0.0)`, `Φ` the conjunction of the filter's
 conjuncts that read such names, in filter order. `Φ` holds at every point
 the filter admits, so the value is unchanged; the guard exists only to
 make `ν` occur. A producer that cannot make every name occur this way MUST
@@ -879,9 +890,12 @@ fail.
 **Ghost reads.** On the `states` and `parameters` axes a point whose column
 falls outside `C`'s extent contributes nothing (§4). Where a product reads
 `C` at `e_k`, the producer adds the in-extent conjunct
-`G_k = and(1 <= e_{k,d}, e_{k,d} <= n_{C,d} for every d)` to the filter;
-it SHOULD instead split the box at `G_k`'s affine breakpoints (the §2
-region clipping) so that no filter remains for an affine `e_k`. On the
+`G_k = and(1 <= e_{k,d}, e_{k,d} <= n_{C,d} for every d)` to the filter
+(its conjuncts in that order, after `ω_k`); it SHOULD instead split the box
+at `G_k`'s affine breakpoints (the §2 region clipping) so that no filter
+remains for an affine `e_k`. Where every point of the entry evaluates in
+extent at build time the split leaves the box whole, and no `G_k` is
+written; the goldens' producer does not split otherwise. On the
 `forcing` axis there is no ghost read: the producer MUST check at build time
 that every point of every entry resolves to a cell of its buffer, and MUST
 fail rather than emit a document that would drop one.
@@ -904,7 +918,10 @@ the output. A scalar `R` with no `contracted` drops the `makearray` and the
 Such an entry has no index names, so `e_k`, `G_k` and `ω_k` read only
 literals, folded metaparameters and `const` gathers, and the producer
 decides them at build time: it drops the term outright when `ω_k` is false
-or the column is a ghost (§9.1), and otherwise emits it unguarded. This is
+or the column is a ghost (§9.1), and otherwise emits it unguarded. An array
+`R` whose `row_idx` is all literals and that has no `contracted` likewise
+keeps the `makearray` but writes the bare term as its region's value, with
+no `faq`. This is
 a gather: every output cell reads its own row point, and no optimization
 beyond what a `faq` already gets is needed.
 
@@ -965,14 +982,16 @@ through a table that is not `const` is not closed, and the map is then
 recomputed at each call.
 
 This optimization is an EarthSciAST change in each language, tracked
-there; until it lands, `VjpEval` documents are correct but quadratic.
+there; until it lands, `VjpEval` documents are correct but quadratic. (At
+the time of writing EarthSciAST.jl's native compiler refuses such a node
+outright, `compiler_refused_rule`, and its interpreter evaluates it.)
 
 ### 9.4 Second-order contraction (`HvpEval`)
 
 For a block with `wrt: [a1, a2]` and `S` stages, write
 `M_k(ρ, γ) = Σ_{i=1..S} index(_mu<i>_R_k, ρ_k) · index(_w<i>_C_k, e_k)`
-(on a time pair, `a1 = "time"`, `C_k` is `t` and each `_w<i>` is a scalar
-read bare). For each column variable `C2` of `a2`, with fresh output names
+(each stage's product a binary `*`, the stages a `+` fold; on a time pair,
+`a1 = "time"`, `C_k` is `t` and each `_w<i>` is a scalar read bare). For each column variable `C2` of `a2`, with fresh output names
 `j` as in §9.3,
 
 ```
@@ -997,11 +1016,14 @@ D(_hvp_C) = Σ_{k : C_k = C} faq{ output_idx: j,
 ```
 
 with `G2_k` `col2`'s in-extent conjunct (§9.1's `G_k` for `col2_k` at
-`col2_idx_k`). Both forms give the same `g` (§4.4), but their outputs
+`col2_idx_k`), and each stage's product one three-argument `*` in that
+order. Both forms give the same `g` (§4.4), but their outputs
 gather different entries, so neither may be emitted with the other's
 summation. The document records which form it holds in its model name
 (`HvpEval` or `HvpEvalSymmetric`). Both forms take §9.1's `ifelse` guard
-where their body does not read a reduced name.
+where their body does not read a reduced name. An entry with no index
+names whose gathered column (`C_k` in the contract form, `col2_k` in the
+symmetric one) is a ghost is dropped at build time, as in §9.2.
 
 ### 9.5 Matrix storage and scatter plans
 
@@ -1010,15 +1032,15 @@ document gives the band fields, and the scatter plan, a conformance
 artifact, says where each field cell goes. Executing a plan is the
 consumer's (an integrator's) work, not this repository's.
 
-### 9.6 Conformance (when produced)
+### 9.6 Conformance
 
 File names follow §5's per-axis naming: the states axis has no infix, every
 other axis is named, `<name>.<axis>.*`. Each axis whose value golden exists
-(`<name>.jvals.json`, `<name>.<axis>.jvals.json`) will carry
+(`<name>.jvals.json`, `<name>.<axis>.jvals.json`) carries
 `<name>[.<axis>].jvp.evaldoc.json` and `<name>[.<axis>].vjp.evaldoc.json`
 (`tgrad_photolysis.time.jvp.evaldoc.json`, `forcing_bracket.forcing.vjp.evaldoc.json`).
 A `.w0` value golden is a second point of the same axis and adds no
-document. Each second-order pair will carry
+document. Each second-order pair carries
 `<name>.<a1>-<a2>.hvp.evaldoc.json` (`HvpEval`) and, on a
 `["states", "states"]` pair, also `<name>.states-states.hvp-sym.evaldoc.json`
 (`HvpEvalSymmetric`), so both contraction forms are checked (§5 item 3).

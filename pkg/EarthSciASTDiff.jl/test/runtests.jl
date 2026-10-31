@@ -33,6 +33,7 @@ end
     include("time_test.jl")
     include("forcing_test.jl")
     include("second_order_test.jl")
+    include("products_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")
     include("scatter_test.jl")

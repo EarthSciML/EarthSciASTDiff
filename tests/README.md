@@ -57,6 +57,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
   only where it differs (a fixture with something to hoist). Julia and Rust
   compare byte-exactly; it is the input the Rust production path (#4) compiles.
+- `goldens/` — `<fixture>[.<axis>].{jvp,vjp}.evaldoc.json` and
+  `<fixture>.<a1>-<a2>.{hvp,hvp-sym}.evaldoc.json`: the product documents
+  (spec §9), models `JvpEval`, `VjpEval`, `HvpEval` (two stages) and, on a
+  `states-states` pair, `HvpEvalSymmetric`. One per axis with a `*.jvals.json`
+  and per second-order pair. Julia-produced only so far; byte-compared, and
+  checked by value by evaluating each with EarthSciAST against the product
+  formed from the `*.jvals.json` / `*.hvals.json` golden.
 - `goldens/` — `<fixture>.<layout>.plan.json`: scatter plans (spec §8) —
   band field → storage position for `lane_blocks`, `lane_sparse_blocks`,
   `column_banded` and `csr`, one per layout the fixture's structure admits
