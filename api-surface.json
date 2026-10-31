@@ -148,7 +148,8 @@
         "julia": "jacobian_bands",
         "python": "jacobian_bands",
         "rust": "jacobian_bands"
-      }
+      },
+      "notes": "Julia and Python also take a view; Rust differentiates a view (a flattened system's, from `sysview_flat`) through `jacobian_bands_view`."
     },
     {
       "name": "jacobian_bands2",
@@ -250,9 +251,9 @@
       "bindings": {
         "julia": "plan_factorization",
         "python": "plan_factorization",
-        "rust": "block_diagonal_lu"
+        "rust": "plan_factorization"
       },
-      "notes": "Rust exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
+      "notes": "Every binding refuses an unknown structure class and a band list with a parameter column. Rust takes the view's context too (`plan_factorization(entries, sv, ctx, structure)`) and returns a `FactorizationPlan` enum; it also exposes the first plan implementation, the per-cell block LU, directly as `block_diagonal_lu`."
     },
     {
       "name": "prepare_hvp",
@@ -298,6 +299,16 @@
       "bindings": {
         "python": "serialize_band",
         "rust": "serialize_band"
+      }
+    },
+    {
+      "name": "serialize_plan",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "serialize_plan",
+        "python": "serialize_plan",
+        "rust": "serialize_plan"
       }
     },
     {
@@ -348,7 +359,8 @@
         "julia": "sysview",
         "python": "sysview",
         "rust": "sysview"
-      }
+      },
+      "notes": "Julia and Python take a document's model or a flattened system through one `sysview`; Rust views a flattened system through `sysview_flat`."
     },
     {
       "name": "vjp",

@@ -1,20 +1,29 @@
-//! Uniform system view over one model of a loaded `EsmFile` (the reference's
-//! system.jl; template expansion already happened inside `load`).
+//! Uniform system view over the two differentiable inputs, one model of a
+//! loaded `EsmFile` ([`sysview`]) and a coupled document's
+//! `FlattenedSystem` ([`sysview_flat`]) (the reference's system.jl; template
+//! expansion already happened inside `load`).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
 use earthsci_ast::{
-    free_variables, Equation, EsmFile, Expr, ExpressionNode, Model, ModelVariable, VariableType,
+    free_variables, Equation, EsmFile, Expr, ExpressionNode, FlattenedSystem, Model, ModelVariable,
+    VariableType,
 };
 use indexmap::IndexMap;
 
 use crate::bands::{BandError, Ctx};
 
 /// A model as the band calculus sees it: its variables, equations and index
-/// sets. Build one with [`sysview`].
+/// sets. Build one with [`sysview`] (one model of a document) or
+/// [`sysview_flat`] (a flattened system).
+///
+/// Each variable is borrowed from its model or flattened system, except a
+/// pointwise-lifted state of a flattened system, which the view owns with
+/// its grid shape (see [`sysview_flat`]).
 pub struct SysView<'a> {
-    pub variables: &'a IndexMap<String, ModelVariable>,
+    pub variables: IndexMap<String, Cow<'a, ModelVariable>>,
     pub equations: &'a Vec<Equation>,
     pub index_sets: IndexMap<String, IndexSet>,
 }
@@ -47,10 +56,93 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
     Ok(SysView {
-        variables: &model.variables,
+        variables: model
+            .variables
+            .iter()
+            .map(|(n, v)| (n.clone(), Cow::Borrowed(v)))
+            .collect(),
         equations: &model.equations,
         index_sets: file.index_sets.clone().unwrap_or_default(),
     })
+}
+
+/// View a flattened system (EarthSciAST's `flatten` of a coupled document)
+/// for differentiation: the reference's `sysview(flat::FlattenedSystem)`.
+///
+/// The variables are the union of the system's state variables, parameters
+/// and observed variables, merged in that order: a name in more than one map
+/// (an arrayed observed is both a state variable and an observed variable)
+/// keeps its first position and takes the last map's declaration, as the
+/// reference and the Python binding merge them. The equations and index sets
+/// are the system's own, in its order, so every band function gives the same
+/// entries, in the same order, as it gives for a one-model document holding
+/// these variables and equations.
+///
+/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid keeps
+/// its declared scalar shape in Rust's `flatten`, which records the grid
+/// extents in `lifted_shapes` instead; the reference's `flatten` promotes
+/// the declared shape itself. The view promotes it as the reference does:
+/// each grid dimension takes the one index set of its extent, or, when no
+/// index set or more than one has that extent, a synthetic dense axis
+/// `_liftdim<d>_<extent>` the view adds to its index sets (the reference
+/// names the same axis). The reference can also pick among several
+/// same-sized index sets by what the lifted equations gather; the view
+/// does not, so such a state differs from it in axis names only, never in
+/// extents or bands.
+///
+/// The reference expands surviving `apply_expression_template` references
+/// first (`expand_flattened_refs`); there is nothing to expand here, since
+/// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
+pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
+    let mut variables: IndexMap<String, Cow<'_, ModelVariable>> = IndexMap::new();
+    for (n, v) in flat
+        .state_variables
+        .iter()
+        .chain(&flat.parameters)
+        .chain(&flat.observed_variables)
+    {
+        variables.insert(n.clone(), Cow::Borrowed(v));
+    }
+    let mut index_sets = flat.index_sets.clone();
+    for (name, extents) in &flat.lifted_shapes {
+        let Some(var) = variables.get_mut(name) else {
+            continue;
+        };
+        if var.shape.as_ref().is_some_and(|s| !s.is_empty()) {
+            continue; // already spatial: the lift leaves it alone
+        }
+        let axes = extents
+            .iter()
+            .enumerate()
+            .map(|(d, &n)| lift_axis(&mut index_sets, d + 1, n))
+            .collect();
+        var.to_mut().shape = Some(axes);
+    }
+    SysView {
+        variables,
+        equations: &flat.equations,
+        index_sets,
+    }
+}
+
+/// The index set naming grid dimension `d` (1-based) of extent `n` of a
+/// lifted state: the one declared set of that size, else the synthetic
+/// dense `_liftdim<d>_<n>` (added to `index_sets` once).
+fn lift_axis(index_sets: &mut IndexMap<String, IndexSet>, d: usize, n: i64) -> String {
+    let mut sized = index_sets
+        .iter()
+        .filter(|(k, s)| s.size == Some(n) && !k.starts_with("_liftdim"))
+        .map(|(k, _)| k);
+    if let (Some(k), None) = (sized.next(), sized.next()) {
+        return k.clone();
+    }
+    let name = format!("_liftdim{d}_{n}");
+    if !index_sets.contains_key(&name) {
+        let set = serde_json::from_value(serde_json::json!({"kind": "interval", "size": n}))
+            .expect("an interval index set deserializes");
+        index_sets.insert(name.clone(), set);
+    }
+    name
 }
 
 pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
@@ -60,7 +152,7 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
             ctx.index_sets.insert(n.clone(), sz);
         }
     }
-    for (n, var) in sv.variables {
+    for (n, var) in sv.variables.iter() {
         if let Some(shape) = &var.shape {
             if !shape.is_empty() {
                 let dims: Result<Vec<i64>, BandError> = shape

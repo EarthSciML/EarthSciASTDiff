@@ -47,7 +47,7 @@ use serde_json::{json, Map, Value};
 use crate::bands::BandError;
 use crate::clip::RIdx;
 use crate::emit::{evaluation_document, evaluation_document_with};
-use crate::jacobian::{jacobian_bands_view, JacEntry, Wrt};
+use crate::jacobian::{bands_of_view, JacEntry, Wrt};
 use crate::numeric::{foreach_point, outside, HvpForm};
 use crate::scatter::{flat, ncells, Layout, PlanKind, ScatterPlan};
 use crate::second_order::{axis_pair, bands2_view, JacEntry2};
@@ -474,7 +474,7 @@ impl JacobianProgram {
         let sv = sysview(file, Some(&model))?;
         let ctx = ctx_of(&sv)?;
         let obs = observed_defs(&sv)?;
-        let entries = jacobian_bands_view(&sv, &ctx, &obs, Wrt::States, None)?;
+        let entries = bands_of_view(&sv, &ctx, &obs, Wrt::States, None)?;
         if entries.is_empty() {
             return Err(JacError::Build(
                 "empty band list (an all-zero Jacobian is never a valid program — check the \
