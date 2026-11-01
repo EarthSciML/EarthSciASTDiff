@@ -38,7 +38,7 @@ jobs:
   bindings:
     uses: ./.github/workflows/bindings.yml
     with:
-      earthsci-ast-ref: ${{ inputs.earthsci-ast-ref || 'main' }}
+      upstream: true
       julia: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}"}]'
       python: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}", "python": "3.14"}]'
       rust: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}"}]'

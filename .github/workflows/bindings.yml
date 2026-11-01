@@ -4,7 +4,7 @@
 # early warning can never drift apart in what they run.
 #
 # Each matrix is a JSON list of legs. A leg has a `label` (the job title);
-# with `earthsci-ast-ref` empty it also has the `version` to pin, and a
+# without `upstream` it also has the `version` to pin, and a
 # Python leg has the `python` to run on (and may name the runner `os`).
 name: Bindings
 
@@ -20,16 +20,19 @@ on:
       rust:
         type: string
         required: true
-      earthsci-ast-ref:
-        description: An EarthSciAST ref to test against instead of the pinned releases
-        type: string
-        default: ""
+      # Test against an EarthSciAST ref (checked out as a sibling) instead of
+      # the pinned releases. The ref is NOT an input: it is the caller's
+      # workflow_dispatch `earthsci-ast-ref`, else `main`, so only someone who
+      # can dispatch the caller picks the code a run executes.
+      upstream:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 env:
-  EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref }}
+  EARTHSCI_AST_REF: ${{ inputs.upstream && (github.event.inputs.earthsci-ast-ref || 'main') || '' }}
 
 jobs:
   julia:
@@ -44,10 +47,10 @@ jobs:
         with:
           path: EarthSciASTDiff
       - uses: actions/checkout@v7
-        if: inputs.earthsci-ast-ref != ''
+        if: inputs.upstream
         with:
           repository: EarthSciML/EarthSciAST
-          ref: ${{ inputs.earthsci-ast-ref }}
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
           path: EarthSciAST
       - uses: julia-actions/setup-julia@v3
         with:
@@ -56,7 +59,7 @@ jobs:
       # scheduled run saves caches to the default branch's scope, which
       # every later run (the release gate included) restores.
       - uses: julia-actions/cache@v3
-        if: inputs.earthsci-ast-ref == ''
+        if: ${{ !inputs.upstream }}
       # Manifest.toml is gitignored. A release: `add` pins EarthSciAST to it
       # (Pkg refuses one outside [compat]), and runtests.jl checks that the
       # test sandbox kept the pin, which `allow_reresolve=false` also
@@ -91,10 +94,10 @@ jobs:
         with:
           path: EarthSciASTDiff
       - uses: actions/checkout@v7
-        if: inputs.earthsci-ast-ref != ''
+        if: inputs.upstream
         with:
           repository: EarthSciML/EarthSciAST
-          ref: ${{ inputs.earthsci-ast-ref }}
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
           path: EarthSciAST
       - uses: actions/setup-python@v7
         with:
@@ -133,15 +136,15 @@ jobs:
         with:
           path: EarthSciASTDiff
       - uses: actions/checkout@v7
-        if: inputs.earthsci-ast-ref != ''
+        if: inputs.upstream
         with:
           repository: EarthSciML/EarthSciAST
-          ref: ${{ inputs.earthsci-ast-ref }}
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
           path: EarthSciAST
       - uses: dtolnay/rust-toolchain@stable
       # No cache when testing an EarthSciAST ref (see the Julia job).
       - uses: Swatinem/rust-cache@v2
-        if: inputs.earthsci-ast-ref == ''
+        if: ${{ !inputs.upstream }}
         with:
           workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
           key: earthsci-ast-${{ matrix.version }}
