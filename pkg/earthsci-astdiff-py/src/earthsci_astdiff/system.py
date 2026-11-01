@@ -24,6 +24,9 @@ class SysView:
     variables: dict[str, object]
     equations: list
     index_sets: dict[str, object]
+    # the document's (or flattened system's) domain, None when it has none:
+    # the evaluation document carries its time origin (spec §8.1)
+    domain: object = None
 
 
 def _only_model(file: EsmFile) -> str:
@@ -48,14 +51,19 @@ def sysview(obj, model_name: str | None = None) -> SysView:
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)
         model = expanded.models[name]
-        return SysView(dict(model.variables), list(model.equations), dict(expanded.index_sets))
+        return SysView(
+            dict(model.variables),
+            list(model.equations),
+            dict(expanded.index_sets),
+            getattr(expanded, "domain", None),
+        )
     # FlattenedSystem
     vars: dict[str, object] = {}
     for d in (obj.state_variables, obj.parameters, obj.observed_variables):
         vars.update(d)
     index_sets = dict(obj.index_sets)
     _promote_lifted(vars, index_sets, getattr(obj, "lifted_shapes", None) or {})
-    return SysView(vars, list(obj.equations), index_sets)
+    return SysView(vars, list(obj.equations), index_sets, getattr(obj, "domain", None))
 
 
 def _promote_lifted(vars: dict, index_sets: dict, lifted_shapes: dict) -> None:

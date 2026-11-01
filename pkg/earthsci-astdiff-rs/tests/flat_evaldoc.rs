@@ -282,3 +282,74 @@ fn refuses_a_component_named_like_the_derived_model() {
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     assert!(evaluation_document(&sv, &entries, true, 12).is_err());
 }
+
+/// J_1 of an evaluation document at its default state and time `t`.
+fn j1(doc: &Value, t: f64) -> f64 {
+    let file = earthsci_ast::load_document(doc).expect("the evaluation document loads");
+    let opts = ProblemOptions {
+        compiler: Some(Compiler::Interpreter),
+        ..Default::default()
+    };
+    let prog = rhs_program(&esm_problem(&file, (0.0, 1.0), opts).unwrap()).unwrap();
+    let (x, aux) = prog.default_state();
+    let p = prog.parameter_vector(&HashMap::new()).unwrap();
+    let mut du = vec![0.0; x.len()];
+    let mut ws = prog.new_workspace();
+    prog.eval_into(&x, &aux, &p, t, &prog.default_forcing(), &mut du, &mut ws)
+        .unwrap();
+    let b = prog
+        .state_layout()
+        .iter()
+        .find(|b| b.name == "JacobianEval.J_1")
+        .expect("a band field");
+    du[b.flat_offset]
+}
+
+/// The evaluation document carries the source's `domain` (spec §8.1), so it
+/// has the source's time origin; the right-hand side passes `t` to the
+/// calendar functions as UTC seconds whatever the origin, so a
+/// `datetime.hour` coefficient reads the same with or without it (the
+/// reference's flat_evaldoc_test.jl).
+#[test]
+fn carries_the_domain() {
+    let src = json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "Diurnal"},
+        "domain": {"independent_variable": "t",
+                   "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
+        "models": {"Chem": {
+            "variables": {
+                "c": {"type": "unknown", "default": 1.0},
+                "k": {"type": "parameter", "default": 0.5}},
+            "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+                           "rhs": {"op": "*", "args": [
+                               {"op": "-", "args": ["k"]},
+                               {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}
+    });
+    let file = earthsci_ast::load_document(&src).unwrap();
+    let flat = earthsci_ast::flatten(&file).unwrap();
+    let views = [
+        earthsci_astdiff::sysview(&file, None).unwrap(),
+        sysview_flat(&flat),
+    ];
+    for sv in &views {
+        let entries = jacobian_bands_view(sv, Wrt::States, None).unwrap();
+        let (doc, fields) = evaluation_document(sv, &entries, true, 12).unwrap();
+        assert_eq!(fields, ["J_1"]);
+        assert_eq!(
+            stable_json(&doc["domain"]),
+            r#"{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"#
+        );
+        assert_eq!(doc["esm"], json!("1.1.0"));
+        // 13:00 UTC on 2024-05-01, in UTC seconds: -k · 13
+        assert_eq!(j1(&doc, 1714568400.0), -6.5);
+        let mut bare = doc.clone();
+        bare.as_object_mut().unwrap().remove("domain");
+        assert_eq!(j1(&bare, 1714568400.0), -6.5);
+    }
+    let bd = load("bd_chem");
+    let sv = earthsci_astdiff::sysview(&bd, None).unwrap();
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let (doc, _) = evaluation_document(&sv, &entries, true, 12).unwrap();
+    assert!(doc.get("domain").is_none());
+}

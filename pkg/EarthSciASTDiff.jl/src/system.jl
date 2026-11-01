@@ -6,14 +6,18 @@
 """
     SysView
 
-Uniform system view: `variables` (name → `ModelVariable`), `equations`, and
-the document's `index_sets`. Construct with [`sysview`](@ref).
+Uniform system view: `variables` (name → `ModelVariable`), `equations`, the
+document's `index_sets`, and its `domain` (`nothing` when it has none; the
+evaluation document carries its time origin, esm-jacobian-spec.md §8.1).
+Construct with [`sysview`](@ref).
 """
 struct SysView
     variables::Dict{String, Any}
     equations::Vector
     index_sets::Dict{String, Any}
+    domain::Any
 end
+SysView(variables, equations, index_sets) = SysView(variables, equations, index_sets, nothing)
 
 # `expanded_model` is EarthSciAST's public template-expansion seam
 # (EarthSciAST ≥ 0.9.1): the typed model with Option-B
@@ -43,7 +47,8 @@ function sysview(file::EarthSciAST.EsmFile, model_name)
     return SysView(
         Dict{String, Any}(String(k) => v for (k, v) in model.variables),
         model.equations,
-        Dict{String, Any}(String(k) => v for (k, v) in file.index_sets)
+        Dict{String, Any}(String(k) => v for (k, v) in file.index_sets),
+        file.domain
     )
 end
 
@@ -67,7 +72,8 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
     end
     return SysView(
         vars, flat.equations,
-        Dict{String, Any}(String(k) => v for (k, v) in flat.index_sets)
+        Dict{String, Any}(String(k) => v for (k, v) in flat.index_sets),
+        flat.domain
     )
 end
 

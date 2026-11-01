@@ -182,3 +182,65 @@ def test_flat_evaldoc_refuses_a_component_named_like_the_derived_model():
     }
     with pytest.raises(BandError):
         evaluation_document(ea.flatten(ea.load_string(json.dumps(clash))))
+
+
+DIURNAL = {
+    "esm": "1.1.0",
+    "metadata": {"name": "Diurnal"},
+    "domain": {
+        "independent_variable": "t",
+        "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"},
+    },
+    "models": {
+        "Chem": {
+            "variables": {
+                "c": {"type": "unknown", "default": 1.0},
+                "k": {"type": "parameter", "default": 0.5},
+            },
+            "equations": [
+                {
+                    "lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+                    "rhs": {
+                        "op": "*",
+                        "args": [
+                            {"op": "-", "args": ["k"]},
+                            {"op": "fn", "name": "datetime.hour", "args": ["t"]},
+                            "c",
+                        ],
+                    },
+                }
+            ],
+        }
+    },
+}
+
+
+def _j1(doc: dict, t: float) -> float:
+    built = ea.flatten(ea.load_string(stable_json(doc)))
+    du = evaluate_rhs(built, {}, t, compiler="interpreter")
+    return du["JacobianEval.J_1"]
+
+
+def test_evaluation_document_carries_the_domain(valid_dir):
+    """The evaluation document carries the source's ``domain`` (spec §8.1),
+    so it has the source's time origin; the right-hand side passes ``t`` to
+    the calendar functions as UTC seconds whatever the origin, so a
+    ``datetime.hour`` coefficient reads the same with or without it (the
+    reference's flat_evaldoc_test.jl)."""
+    file = ea.load_string(json.dumps(DIURNAL))
+    for src in (file, ea.flatten(file)):
+        doc, fields = evaluation_document(src)
+        assert fields == ["J_1"]
+        assert stable_json(doc["domain"]) == (
+            '{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}'
+        )
+        assert doc["esm"] == "1.1.0"
+        if hasattr(ea, "time_origin"):  # earthsci-ast >= 0.7
+            built = ea.load_string(stable_json(doc))
+            assert ea.time_origin(built) == ea.time_origin(file) == 1714543200.0
+        # 13:00 UTC on 2024-05-01, in UTC seconds: -k · 13
+        assert _j1(doc, 1714568400.0) == -6.5
+        bare = {k: v for k, v in doc.items() if k != "domain"}
+        assert _j1(bare, 1714568400.0) == -6.5
+    doc, _ = evaluation_document(ea.load_path(str(valid_dir / "bd_chem.esm")))
+    assert "domain" not in doc

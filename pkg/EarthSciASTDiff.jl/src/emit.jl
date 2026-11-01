@@ -605,7 +605,34 @@ function _evaluation_document(
         )
     end
     _component_tree!(doc, "JacobianEval")
+    _domain!(doc, sv.domain)
     return _derived_version!(doc), names
+end
+
+# The source's `domain`, as far as it bears on evaluation (esm-jacobian-spec.md
+# §8.1): its `temporal` (`start`, `end`, `reference_time`), which sets the time
+# origin the calendar functions (`datetime.*`) read, and its `element_type`
+# and `array_type`. Not `independent_variable`: the derived equations are
+# written with respect to `t`. Built key by key from EarthSciAST's
+# serialization, so every binding writes the same object; absent when nothing
+# is left.
+function _domain!(doc, domain)
+    domain === nothing && return doc
+    src = EarthSciAST.serialize_domain(domain)
+    out = OrderedDict{String, Any}()
+    tmp = get(src, "temporal", nothing)
+    if tmp isa AbstractDict
+        t = OrderedDict{String, Any}(
+            k => tmp[k] for k in ("start", "end", "reference_time")
+                if get(tmp, k, nothing) !== nothing
+        )
+        isempty(t) || (out["temporal"] = t)
+    end
+    for k in ("element_type", "array_type")
+        get(src, k, nothing) === nothing || (out[k] = src[k])
+    end
+    isempty(out) || (doc["domain"] = out)
+    return doc
 end
 
 # ── the component tree (esm-jacobian-spec.md §8.1) ──────────────────────────

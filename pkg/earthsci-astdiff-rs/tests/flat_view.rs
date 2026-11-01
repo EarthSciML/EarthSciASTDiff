@@ -105,6 +105,7 @@ fn wrapped_with(flat: &FlattenedSystem, shapes: &[(String, Vec<String>)], extra:
         "esm": "1.1.0",
         "metadata": {"name": MODEL},
         "index_sets": isets,
+        "domain": serde_json::to_value(&flat.domain).unwrap(),
         "models": {MODEL: {
             "variables": serde_json::to_value(vars).unwrap(),
             "equations": serde_json::to_value(&flat.equations).unwrap(),

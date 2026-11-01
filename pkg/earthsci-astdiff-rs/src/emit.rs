@@ -1726,8 +1726,40 @@ pub fn evaluation_document(
     models.insert("JacobianEval".into(), Value::Object(model));
     component_tree(&mut models, "JacobianEval")?;
     doc.insert("models".into(), Value::Object(models));
+    if let Some(d) = sv.domain.and_then(domain_field) {
+        doc.insert("domain".into(), d);
+    }
     derived_version(&mut doc);
     Ok((Value::Object(doc), names))
+}
+
+/// The source's `domain`, as far as it bears on evaluation (spec §8.1): its
+/// `temporal` (`start`, `end`, `reference_time`), which sets the time origin
+/// the calendar functions (`datetime.*`) read, and its `element_type` and
+/// `array_type`. Not `independent_variable`: the derived equations are
+/// written with respect to `t`. `None` when nothing is left.
+fn domain_field(domain: &earthsci_ast::Domain) -> Option<Value> {
+    let src = serde_json::to_value(domain).ok()?;
+    let mut out = Map::new();
+    if let Some(Value::Object(tmp)) = src.get("temporal") {
+        let t: Map<String, Value> = ["start", "end", "reference_time"]
+            .iter()
+            .filter_map(|k| {
+                tmp.get(*k)
+                    .filter(|v| !v.is_null())
+                    .map(|v| (k.to_string(), v.clone()))
+            })
+            .collect();
+        if !t.is_empty() {
+            out.insert("temporal".into(), Value::Object(t));
+        }
+    }
+    for k in ["element_type", "array_type"] {
+        if let Some(v) = src.get(k).filter(|v| !v.is_null()) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
 }
 
 // ── the component tree (spec §8.1) ──────────────────────────────────────────

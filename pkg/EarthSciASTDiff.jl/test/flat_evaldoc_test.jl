@@ -129,3 +129,57 @@ end
     )
     @test_throws EarthSciASTDiff.BandError evaluation_document(EarthSciAST.flatten(doc))
 end
+
+# The evaluation document carries the source's `domain` (esm-jacobian-spec.md
+# §8.1), so it has the source's time origin: a runtime that turns timestamps
+# into model time with `time_origin` gets the same `t` for the document as
+# for its source. The right-hand side itself passes `t` to the calendar
+# functions as UTC seconds whatever the origin, so a `datetime.hour`
+# coefficient, `∂/∂c (-k hour(t) c) = -k hour(t)`, reads the same with or
+# without the domain. The same in Python and Rust, written the same.
+const _DIURNAL = """
+{"esm": "1.1.0", "metadata": {"name": "Diurnal"},
+ "domain": {"independent_variable": "t",
+            "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
+ "models": {"Chem": {
+   "variables": {"c": {"type": "unknown", "default": 1.0},
+                 "k": {"type": "parameter", "default": 0.5}},
+   "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+                  "rhs": {"op": "*", "args": [{"op": "-", "args": ["k"]},
+                          {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}}
+"""
+
+# J_1 of an evaluation document at state c = 0.3 and time t.
+function _j1(doc, t)
+    prob = EarthSciAST.esm_problem(
+        EarthSciAST.load_string(stable_json(doc)), (0.0, 1.0); compiler = :interpreter
+    )
+    vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
+    du = zeros(length(prob.u0))
+    prob.f!(du, fill(0.3, length(prob.u0)), prob.p, Float64(t))
+    return du[vm["JacobianEval.J_1"]]
+end
+
+@testset "evaluation document: the source's domain" begin
+    file = EarthSciAST.load_string(_DIURNAL)
+    for src in (file, EarthSciAST.flatten(file))
+        doc, fields = evaluation_document(src)
+        @test fields == ["J_1"]
+        @test stable_json(doc["domain"]) ==
+            """{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"""
+        @test doc["esm"] == "1.1.0"
+        built = EarthSciAST.load_string(stable_json(doc))
+        if isdefined(EarthSciAST, :time_origin)   # EarthSciAST ≥ 0.7
+            @test EarthSciAST.time_origin(built) == EarthSciAST.time_origin(file) ==
+                1714543200.0
+        end
+        # 13:00 UTC on 2024-05-01, in UTC seconds
+        @test _j1(doc, 1714568400.0) == -6.5
+        bare = copy(doc)
+        delete!(bare, "domain")
+        @test _j1(bare, 1714568400.0) == -6.5
+    end
+    # no domain, no `domain`
+    doc, _ = evaluation_document(fixture("bd_chem.esm"))
+    @test !haskey(doc, "domain")
+end

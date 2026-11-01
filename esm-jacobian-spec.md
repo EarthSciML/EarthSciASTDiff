@@ -1030,8 +1030,22 @@ scatter loop between bindings must shift indices to match.
 
 The **evaluation document** of a band list is a derived ESM document whose
 right-hand side, evaluated once by an unmodified EarthSciAST evaluator at
-`(u, p, t)`, leaves every band field `J_k` in its derivative slots. Its
-derived model is named `JacobianEval` and holds:
+`(u, p, t)`, leaves every band field `J_k` in its derivative slots.
+
+When the source (a document, or a flattened system) has a `domain`, the
+evaluation document carries it as a top-level `domain`, reduced to the
+fields that bear on evaluation: `temporal` with those of `start`, `end` and
+`reference_time` the source gives, then `element_type` and `array_type`
+when given, each value as EarthSciAST serializes it. `independent_variable`
+is not written, since the derived equations are written with respect to `t`;
+nor is a `domain` with none of these fields. The document so has its
+source's time origin (`reference_time`, else `start`), from which a runtime
+converts timestamps into the model time `t` it evaluates at. (The calendar
+functions `datetime.*` themselves read their argument as UTC seconds, so the
+right-hand side at a given `t` does not depend on the origin.) A `domain`
+needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
+
+The derived model is named `JacobianEval` and holds:
 
 - every variable of the source, `unknown` or `parameter`, with its `shape`
   and `default`. A pointwise-lifted state of a flattened system takes its

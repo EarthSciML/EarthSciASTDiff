@@ -678,7 +678,38 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
             }
         m["equations"].append({"lhs": {"op": "D", "args": [nm], "wrt": "t"}, "rhs": rhs})
     _component_tree(doc, "JacobianEval")
+    _domain(doc, getattr(sv, "domain", None))
     return _derived_version(doc), names
+
+
+def _domain(doc: dict, domain) -> dict:
+    """The source's ``domain``, as far as it bears on evaluation (spec §8.1):
+    its ``temporal`` (``start``, ``end``, ``reference_time``), which sets the
+    time origin the calendar functions (``datetime.*``) read, and its
+    ``element_type`` and ``array_type``. Not ``independent_variable``: the
+    derived equations are written with respect to ``t``. Absent when nothing
+    is left."""
+    if domain is None:
+        return doc
+    if isinstance(domain, dict):  # a raw domain
+        temporal = domain.get("temporal") or {}
+        get_t = temporal.get
+        get_d = domain.get
+    else:
+        temporal = getattr(domain, "temporal", None)
+        get_t = lambda k: getattr(temporal, k, None)  # noqa: E731
+        get_d = lambda k: getattr(domain, k, None)  # noqa: E731
+    out: dict = {}
+    if temporal:
+        t = {k: get_t(k) for k in ("start", "end", "reference_time") if get_t(k) is not None}
+        if t:
+            out["temporal"] = t
+    for k in ("element_type", "array_type"):
+        if get_d(k) is not None:
+            out[k] = get_d(k)
+    if out:
+        doc["domain"] = out
+    return doc
 
 
 # ── the component tree (spec §8.1) ───────────────────────────────────────────
