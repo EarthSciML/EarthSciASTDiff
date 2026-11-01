@@ -110,7 +110,8 @@
         "julia": "evaluation_document",
         "python": "evaluation_document",
         "rust": "evaluation_document"
-      }
+      },
+      "notes": "The band fields are `J_k` in the derived model `JacobianEval`, in band order. For a flattened system the source's scoped names are declared in its component tree (spec \u00a78.1), so the document loads in every EarthSciAST binding. Rust takes a `SysView` (`sysview_flat` for a flattened system) and the bands."
     },
     {
       "name": "extended_bands",

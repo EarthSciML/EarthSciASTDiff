@@ -4,6 +4,7 @@ evaluators run (system.jl)."""
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
 from earthsci_ast import expand_document
@@ -52,7 +53,38 @@ def sysview(obj, model_name: str | None = None) -> SysView:
     vars: dict[str, object] = {}
     for d in (obj.state_variables, obj.parameters, obj.observed_variables):
         vars.update(d)
-    return SysView(vars, list(obj.equations), dict(obj.index_sets))
+    index_sets = dict(obj.index_sets)
+    _promote_lifted(vars, index_sets, getattr(obj, "lifted_shapes", None) or {})
+    return SysView(vars, list(obj.equations), index_sets)
+
+
+def _promote_lifted(vars: dict, index_sets: dict, lifted_shapes: dict) -> None:
+    """Give each pointwise-lifted state (esm-spec §10.5) its grid shape.
+
+    Python's ``flatten``, like Rust's, keeps a lifted state's declared scalar
+    shape and records the grid's extents only in ``lifted_shapes``; the
+    reference's ``flatten`` promotes the declared shape itself. As the Rust
+    binding's ``sysview_flat`` does, each grid dimension ``d`` (1-based) of
+    extent ``n`` takes the one index set of that size, else the synthetic
+    dense axis ``_liftdim<d>_<n>``, added to ``index_sets``. A state that
+    already has a shape is left alone."""
+    for name, extents in lifted_shapes.items():
+        var = vars.get(name)
+        if var is None or getattr(var, "shape", None):
+            continue
+        axes = [_lift_axis(index_sets, d + 1, int(n)) for d, n in enumerate(extents)]
+        vars[name] = dataclasses.replace(var, shape=axes)
+
+
+def _lift_axis(index_sets: dict, d: int, n: int) -> str:
+    sized = [
+        k for k, s in index_sets.items() if _iset_size(s) == n and not str(k).startswith("_liftdim")
+    ]
+    if len(sized) == 1:
+        return str(sized[0])
+    name = f"_liftdim{d}_{n}"
+    index_sets.setdefault(name, {"kind": "interval", "size": n})
+    return name
 
 
 def _iset_size(s) -> int | None:

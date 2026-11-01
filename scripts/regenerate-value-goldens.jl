@@ -123,3 +123,24 @@ for (name, wrt, t) in (
     write(path, stable_json(doc))
     println("wrote ", path, " (", length(reached), " second columns)")
 end
+# Flattened (coupled) fixtures: `<name>.jvals.json` from the evaluation
+# document of the flattened system (spec §8.1), evaluated by EarthSciAST in
+# one right-hand-side call and placed by each band point
+# (test/docvals.jl `flat_band_jacobian`), since no product document is laid
+# out for a flattened system. The state cells take the canonical state order
+# of spec §8; the parameters keep the document defaults.
+for name in ("coupled_chem_advection",)
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    t = 0.7
+    cells = flat_state_cells(flat)
+    u = OrderedDict{String, Any}(c => 0.2 + 0.6 * abs(sin(2.3 * i)) for (i, c) in enumerate(cells))
+    J, _ = flat_band_jacobian(flat; u = u, t = t)
+    entries = Any[Any[r, c, v] for ((r, c), v) in J]
+    sort!(entries; by = e -> (e[1], e[2]))
+    doc = OrderedDict{String, Any}(
+        "t" => t, "u" => u, "params" => OrderedDict{String, Any}(), "entries" => entries,
+    )
+    path = joinpath(root, "tests", "goldens", "$name.jvals.json")
+    write(path, stable_json(doc))
+    println("wrote ", path, " (", length(entries), " stored entries)")
+end

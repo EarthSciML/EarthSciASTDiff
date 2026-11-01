@@ -677,4 +677,76 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
                 "values": [0.0, val],
             }
         m["equations"].append({"lhs": {"op": "D", "args": [nm], "wrt": "t"}, "rhs": rhs})
+    _component_tree(doc, "JacobianEval")
     return _derived_version(doc), names
+
+
+# ── the component tree (spec §8.1) ───────────────────────────────────────────
+#
+# A flattened system's variables carry scoped names (`SimpleOzone.O3`).
+# Declared in the one derived model, EarthSciAST reads such a name as a
+# reference into a component `SimpleOzone` that does not exist, and refuses
+# the document. So each scoped name `P.v` is declared as `v` in the model at
+# component path `P` (the first segment a top-level model, each further one a
+# `subsystems` entry), and each equation goes to the model of its subject.
+# Every reference stays as written, fully scoped, which EarthSciAST resolves
+# from any model, so loading and flattening the document gives back the
+# source's flattened names. The band fields, hoisted observed and recurrence
+# auxiliaries keep their unscoped names in the derived model, so a source with
+# no scoped name (one model of a document) gives the document it always did.
+
+
+def _is_scoped(n) -> bool:
+    return isinstance(n, str) and "." in n
+
+
+def _lhs_subject(lhs):
+    """The variable an equation is about, from its serialized left-hand side:
+    the ``D`` or ``ic`` argument, a bare name, or the variable an ``index``
+    (inside a lifted ``faq``) writes; None for anything else."""
+    if isinstance(lhs, str):
+        return lhs
+    if not isinstance(lhs, dict):
+        return None
+    op = lhs.get("op")
+    if op == "faq":
+        return _lhs_subject(lhs.get("expr"))
+    if op in ("D", "ic", "index"):
+        args = lhs.get("args") or []
+        return _lhs_subject(args[0]) if args else None
+    return None
+
+
+def _component_node(models: dict, path: str, derived: str) -> dict:
+    """The model at component ``path``, created (with its parents) when
+    missing."""
+    from .bands import BandError
+
+    segs = path.split(".")
+    if segs[0] == derived:
+        raise BandError(
+            f"the source has a component named `{derived}`, which is the derived model's name"
+        )
+    node = models.setdefault(segs[0], {"variables": {}, "equations": []})
+    for s in segs[1:]:
+        node = node.setdefault("subsystems", {}).setdefault(s, {"variables": {}, "equations": []})
+    return node
+
+
+def _component_tree(doc: dict, derived: str) -> dict:
+    """Move the scoped declarations and the equations whose subject is scoped
+    out of the derived model ``derived`` into the component tree, in order."""
+    models = doc["models"]
+    m = models[derived]
+    for n in sorted(k for k in m["variables"] if _is_scoped(k)):
+        path, _, v = n.rpartition(".")
+        _component_node(models, path, derived)["variables"][v] = m["variables"].pop(n)
+    kept = []
+    for eq in m["equations"]:
+        s = _lhs_subject(eq["lhs"])
+        if _is_scoped(s):
+            _component_node(models, s.rpartition(".")[0], derived)["equations"].append(eq)
+        else:
+            kept.append(eq)
+    m["equations"] = kept
+    return doc

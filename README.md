@@ -62,9 +62,13 @@ hv, io = hvp_document(file; stages = 2)      # ∇_u Σᵢ μᵢᵀ J(u) wᵢ (m
 # and read the outputs (io.jvp, io.vjp, io.hvp) from du.
 f!, x0, p, _, vm = build_evaluator(EarthSciAST.load_document(jv); model_name = io.model)
 
-# Coupled documents go through flatten first:
+# Coupled documents go through flatten first. The evaluation document of a
+# flattened system declares its scoped names (`Chem.O3`) in the component
+# tree (models `Chem`, …), so EarthSciAST loads it; its band fields are
+# `JacobianEval.J_k` (spec §8.1). Product documents are not laid out this
+# way for a flattened system yet.
 flat = flatten(file)
-jv, io = jvp_document(flat)
+ev, fields = evaluation_document(flat)
 ```
 
 `∂f/∂p`: pass `wrt = :parameters`. `∂f/∂B`, with respect to the cells of

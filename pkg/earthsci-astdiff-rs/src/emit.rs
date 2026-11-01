@@ -1722,12 +1722,135 @@ pub fn evaluation_document(
     }
     model.insert("equations".into(), Value::Array(eqs));
     doc.insert("index_sets".into(), Value::Object(isets));
-    doc.insert(
-        "models".into(),
-        json!({"JacobianEval": Value::Object(model)}),
-    );
+    let mut models = Map::new();
+    models.insert("JacobianEval".into(), Value::Object(model));
+    component_tree(&mut models, "JacobianEval")?;
+    doc.insert("models".into(), Value::Object(models));
     derived_version(&mut doc);
     Ok((Value::Object(doc), names))
+}
+
+// ── the component tree (spec §8.1) ──────────────────────────────────────────
+//
+// A flattened system's variables carry scoped names (`SimpleOzone.O3`).
+// Declared in the one derived model, EarthSciAST reads such a name as a
+// reference into a component `SimpleOzone` that does not exist, and refuses
+// the document. So each scoped name `P.v` is declared as `v` in the model at
+// component path `P` (the first segment a top-level model, each further one a
+// `subsystems` entry), and each equation goes to the model of its subject.
+// Every reference stays as written, fully scoped, which EarthSciAST resolves
+// from any model, so loading and flattening the document gives back the
+// source's flattened names. The band fields, hoisted observed and recurrence
+// auxiliaries keep their unscoped names in the derived model, so a source
+// with no scoped name (one model of a document) gives the document it always
+// did.
+
+/// The variable an equation is about, from its serialized left-hand side:
+/// the `D` or `ic` argument, a bare name, or the variable an `index` (inside
+/// a lifted `faq`) writes.
+fn lhs_subject(lhs: &Value) -> Option<&str> {
+    match lhs {
+        Value::String(s) => Some(s),
+        Value::Object(m) => match m.get("op").and_then(Value::as_str) {
+            Some("faq") => m.get("expr").and_then(lhs_subject),
+            Some("D" | "ic" | "index") => m
+                .get("args")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(lhs_subject),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The model at component `path` of `models`, created (with its parents)
+/// when missing.
+fn component_node<'m>(
+    models: &'m mut Map<String, Value>,
+    path: &str,
+    derived: &str,
+) -> Result<&'m mut Map<String, Value>, crate::bands::BandError> {
+    fn node() -> Value {
+        json!({"variables": {}, "equations": []})
+    }
+    let mut segs = path.split('.');
+    let top = segs.next().unwrap_or_default();
+    if top == derived {
+        return Err(crate::bands::BandError(format!(
+            "the source has a component named `{derived}`, which is the derived model's name"
+        )));
+    }
+    let mut cur = models
+        .entry(top)
+        .or_insert_with(node)
+        .as_object_mut()
+        .expect("a model is an object");
+    for s in segs {
+        cur = cur
+            .entry("subsystems")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("subsystems is an object")
+            .entry(s)
+            .or_insert_with(node)
+            .as_object_mut()
+            .expect("a subsystem is an object");
+    }
+    Ok(cur)
+}
+
+/// Move the scoped declarations and the equations whose subject is scoped
+/// out of the derived model `derived` into the component tree, in order.
+pub(crate) fn component_tree(
+    models: &mut Map<String, Value>,
+    derived: &str,
+) -> Result<(), crate::bands::BandError> {
+    let Some(Value::Object(mut m)) = models.remove(derived) else {
+        unreachable!()
+    };
+    let Some(Value::Object(vars)) = m.remove("variables") else {
+        unreachable!()
+    };
+    let Some(Value::Array(eqs)) = m.remove("equations") else {
+        unreachable!()
+    };
+    let mut keep_vars = Map::new();
+    let mut scoped: Vec<(String, Value)> = Vec::new();
+    for (n, v) in vars {
+        if n.contains('.') {
+            scoped.push((n, v));
+        } else {
+            keep_vars.insert(n, v);
+        }
+    }
+    scoped.sort_by(|a, b| a.0.cmp(&b.0));
+    for (n, v) in scoped {
+        let (path, local) = n.rsplit_once('.').expect("a scoped name has a dot");
+        let node = component_node(models, path, derived)?;
+        if let Some(Value::Object(vs)) = node.get_mut("variables") {
+            vs.insert(local.to_string(), v);
+        }
+    }
+    let mut keep_eqs = Vec::new();
+    for eq in eqs {
+        let path = lhs_subject(&eq["lhs"])
+            .and_then(|s| s.rsplit_once('.'))
+            .map(|(p, _)| p.to_string());
+        match path {
+            Some(p) => {
+                let node = component_node(models, &p, derived)?;
+                if let Some(Value::Array(es)) = node.get_mut("equations") {
+                    es.push(eq);
+                }
+            }
+            None => keep_eqs.push(eq),
+        }
+    }
+    m.insert("variables".into(), Value::Object(keep_vars));
+    m.insert("equations".into(), Value::Array(keep_eqs));
+    models.insert(derived.to_string(), Value::Object(m));
+    Ok(())
 }
 
 /// The `esm` version a finished derived document declares: the lowest that

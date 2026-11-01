@@ -604,5 +604,86 @@ function _evaluation_document(
             )
         )
     end
+    _component_tree!(doc, "JacobianEval")
     return _derived_version!(doc), names
+end
+
+# ── the component tree (esm-jacobian-spec.md §8.1) ──────────────────────────
+#
+# A flattened system's variables carry scoped names (`SimpleOzone.O3`).
+# Declared in the one derived model, EarthSciAST reads such a name as a
+# reference into a component `SimpleOzone` that does not exist, and refuses
+# the document. So each scoped name `P.v` is declared as `v` in the model at
+# component path `P` (the first segment a top-level model, each further one
+# a `subsystems` entry), and each equation goes to the model of its subject.
+# Every reference stays as written, fully scoped, which EarthSciAST resolves
+# from any model, so loading and flattening the document gives back the
+# source's flattened names. The band fields, hoisted observed and recurrence
+# auxiliaries keep their unscoped names in the derived model, so a source
+# with no scoped name (one model of a document) gives the document it always
+# did.
+
+_is_scoped(n) = n isa AbstractString && occursin('.', n)
+
+# The variable an equation is about, from its serialized left-hand side: the
+# `D` or `ic` argument, a bare name, or the variable an `index` (inside a
+# lifted `faq`) writes; `nothing` for anything else.
+function _lhs_subject(l)
+    l isa AbstractString && return String(l)
+    l isa AbstractDict || return nothing
+    op = get(l, "op", nothing)
+    op == "faq" && return _lhs_subject(get(l, "expr", nothing))
+    if op in ("D", "ic", "index")
+        a = get(l, "args", Any[])
+        return isempty(a) ? nothing : _lhs_subject(a[1])
+    end
+    return nothing
+end
+
+# A scoped name split at its last dot: (component path, local name).
+function _split_scoped(n::AbstractString)
+    i = findlast('.', n)
+    return String(n[1:prevind(n, i)]), String(n[nextind(n, i):end])
+end
+
+# The model at component `path`, created (with its parents) when missing.
+function _component_node!(models, path::AbstractString, derived::String)
+    segs = split(path, '.')
+    segs[1] == derived && throw(
+        BandError(
+            "the source has a component named `$derived`, which is the derived " *
+                "model's name"
+        )
+    )
+    new() = OrderedDict{String, Any}(
+        "variables" => OrderedDict{String, Any}(), "equations" => Any[]
+    )
+    node = get!(new, models, String(segs[1]))
+    for s in segs[2:end]
+        node = get!(new, get!(OrderedDict{String, Any}, node, "subsystems"), String(s))
+    end
+    return node
+end
+
+# Move the scoped declarations and the equations whose subject is scoped out
+# of the derived model `derived` into the component tree (in their order).
+function _component_tree!(doc, derived::String)
+    models = doc["models"]
+    m = models[derived]
+    for n in sort!([k for k in keys(m["variables"]) if _is_scoped(k)])
+        path, v = _split_scoped(n)
+        _component_node!(models, path, derived)["variables"][v] = pop!(m["variables"], n)
+    end
+    kept = Any[]
+    for eq in m["equations"]
+        s = _lhs_subject(eq["lhs"])
+        if _is_scoped(s)
+            path, _ = _split_scoped(s)
+            push!(_component_node!(models, path, derived)["equations"], eq)
+        else
+            push!(kept, eq)
+        end
+    end
+    m["equations"] = kept
+    return doc
 end
