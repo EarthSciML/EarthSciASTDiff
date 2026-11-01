@@ -77,6 +77,11 @@ jobs:
           path: .deps/EarthSciAST
       - name: Link sibling EarthSciAST
         run: ln -s "$GITHUB_WORKSPACE/.deps/EarthSciAST" "$GITHUB_WORKSPACE/../EarthSciAST"
+      # EarthSciAST `main` may carry a version the manifests do not admit yet;
+      # widen them for this build only, or Julia refuses the checkout and the
+      # Rust examples' [patch.crates-io] goes unused (two `EsmFile` types).
+      - name: Admit the EarthSciAST checkout
+        run: python3 scripts/earthsci-ast-versions.py --admit-checkout ../EarthSciAST
       - uses: EarthSciML/earthsci.dev/.github/actions/api-extract@main
         with:
           binding: ${{ matrix.binding }}

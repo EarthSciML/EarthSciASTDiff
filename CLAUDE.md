@@ -55,7 +55,8 @@ Dependency on EarthSciAST: each manifest (Julia `[compat]`, Cargo, PEP 508)
 declares a version RANGE of published releases. conformance.yml — the release
 gate — tests every binding at the lowest and the latest release in its range
 (`scripts/earthsci-ast-versions.py`); upstream-main.yml tests against
-EarthSciAST `main` as an early warning and gates nothing. So never raise a
+EarthSciAST `main` as an early warning and gates nothing. Both call
+bindings.yml, the one definition of the three suites: change it there. So never raise a
 floor to an unreleased EarthSciAST version: a change that needs an unreleased
 upstream feature waits for that EarthSciAST release (or skips the dependent
 tests with a version check until it lands).

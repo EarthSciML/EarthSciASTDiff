@@ -1,0 +1,43 @@
+# Opens (or comments on) an issue when a SCHEDULED run of Conformance or
+# Upstream fails. Nobody watches a weekly run, and each catches breakage that
+# arrives without any change here: Conformance a new EarthSciAST release
+# inside a declared range (what fresh installs now get), Upstream a change on
+# EarthSciAST `main`.
+#
+# A separate workflow rather than a job in each: conformance.yml is also
+# called by release-register.yml, and a called workflow's job may not ask for
+# a permission (here `issues: write`) its caller does not grant.
+name: Report a failed scheduled run
+
+on:
+  workflow_run:
+    workflows: [Conformance, "Upstream (EarthSciAST main)"]
+    types: [completed]
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      WORKFLOW: ${{ github.event.workflow_run.name }}
+      RUN: ${{ github.event.workflow_run.html_url }}
+    steps:
+      - run: |
+          set -euo pipefail
+          if [ "$WORKFLOW" = Conformance ]; then
+            title="Conformance: a published EarthSciAST release breaks a binding"
+            body="The weekly run against the published EarthSciAST releases the manifests admit failed, so a fresh install may be broken: $RUN"
+          else
+            title="Upstream: EarthSciAST main breaks conformance"
+            body="The weekly run against EarthSciAST \`main\` failed: $RUN"
+          fi
+          n=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

@@ -123,11 +123,18 @@ CI tests what those ranges promise:
   the latest is what a fresh install gets.
   [`scripts/earthsci-ast-versions.py`](scripts/earthsci-ast-versions.py)
   reads the manifests and the registries (General, crates.io, PyPI) to pick
-  them, and a binding whose two ends coincide runs once.
+  them, and a binding whose two ends coincide runs once. The Python binding
+  runs each end on both its `requires-python` floor and the newest Python. A
+  failed weekly run opens an issue: it is the run that sees a new
+  EarthSciAST release inside a range, which fresh installs already get.
 - **[Upstream (EarthSciAST main)](.github/workflows/upstream-main.yml)** — an
   early warning. The same suites run against EarthSciAST `main`, checked out
   as a sibling, on every PR and weekly; a failed weekly run opens an issue.
-  It does not gate a release.
+  It does not gate a release. When `main` has bumped its version ahead of a
+  release, the run widens the Julia and Cargo ranges for itself only
+  (`earthsci-ast-versions.py --admit-checkout`); never commit such a widening.
+  Both workflows run the same suites, defined once in
+  [`bindings.yml`](.github/workflows/bindings.yml).
 
 A change that needs an EarthSciAST feature not yet released therefore passes
 the upstream check and fails conformance. The order is: release EarthSciAST,

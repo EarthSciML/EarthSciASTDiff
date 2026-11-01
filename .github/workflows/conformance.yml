@@ -7,11 +7,17 @@
 #
 # Each binding is tested at both ends of its declared range: the LOWEST
 # release inside it, so the floor in the manifest is a tested fact, and the
-# LATEST, what a fresh install resolves to. scripts/earthsci-ast-versions.py
+# LATEST, what a fresh install resolves to; the Python binding also at both
+# ends of its `requires-python` range. scripts/earthsci-ast-versions.py
 # reads the three manifests and the three registries and hands each job its
 # matrix; when the two ends are the same release the binding runs once. A
 # manifest whose range no published release satisfies fails the `resolve`
 # job: release EarthSciAST first, then raise the floor here.
+#
+# A failed scheduled run, the only run that sees a NEW EarthSciAST release
+# inside a range (what fresh installs now get), opens an issue
+# (report-scheduled-failure.yml). The suites themselves live in bindings.yml,
+# shared with upstream-main.yml.
 #
 # Each binding's faq-tag test asserts a NON-EMPTY band list on every array
 # fixture, so an upstream change that empties the bands fails loudly instead
@@ -40,85 +46,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - run: python scripts/earthsci-ast-versions.py --self-test
       - id: versions
         run: python scripts/earthsci-ast-versions.py --github-output
 
-  julia:
-    name: Julia (reference), EarthSciAST ${{ matrix.label }}
+  bindings:
     needs: resolve
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.resolve.outputs.julia) }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: "1"
-      - uses: julia-actions/cache@v3
-      # Manifest.toml is gitignored, so the `add` resolves EarthSciAST to
-      # exactly this release (from General) for the test environment; Pkg
-      # refuses one outside [compat].
-      - name: Test
-        env:
-          EARTHSCI_AST_VERSION: ${{ matrix.version }}
-        run: |
-          julia --project=pkg/EarthSciASTDiff.jl -e '
-            using Pkg
-            Pkg.add(name="EarthSciAST", version=ENV["EARTHSCI_AST_VERSION"])
-            Pkg.status("EarthSciAST")
-            Pkg.test()'
-
-  python:
-    name: Python, EarthSciAST ${{ matrix.label }}
-    needs: resolve
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.resolve.outputs.python) }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-      # Installing the package itself alongside the pinned release makes pip
-      # check the pin against pyproject.toml's requirement.
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e pkg/earthsci-astdiff-py "earthsci-ast==${{ matrix.version }}" pytest
-          python -m pip show earthsci-ast
-      - name: Test
-        working-directory: pkg/earthsci-astdiff-py
-        run: python -m pytest tests -q
-
-  rust:
-    name: Rust, EarthSciAST ${{ matrix.label }}
-    needs: resolve
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.resolve.outputs.rust) }}
-    defaults:
-      run:
-        working-directory: pkg/earthsci-astdiff-rs
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pkg/earthsci-astdiff-rs
-          key: earthsci-ast-${{ matrix.version }}
-      # No Cargo.lock is committed (this is a library); lock the crates.io
-      # earthsci-ast to exactly this release. Cargo refuses one outside
-      # Cargo.toml's requirement.
-      - name: Test
-        run: |
-          set -euo pipefail
-          cargo generate-lockfile
-          cargo update -p earthsci-ast --precise "${{ matrix.version }}"
-          cargo tree -i earthsci-ast -e normal --depth 0
-          cargo test --locked
+    uses: ./.github/workflows/bindings.yml
+    with:
+      julia: ${{ needs.resolve.outputs.julia }}
+      python: ${{ needs.resolve.outputs.python }}
+      rust: ${{ needs.resolve.outputs.rust }}
