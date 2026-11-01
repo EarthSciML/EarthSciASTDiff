@@ -1,6 +1,6 @@
 [package]
 name = "earthsci-astdiff"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST"
