@@ -1660,6 +1660,14 @@ pub fn evaluation_document(
     for (k, en) in entries.iter().enumerate() {
         let b = &en.band;
         let nm = format!("J_{}", k + 1);
+        // a source variable the derived model already holds under this name
+        // would be overwritten by the band field (§8.1)
+        if vars.contains_key(&nm) {
+            return Err(crate::bands::BandError(format!(
+                "the source declares `{nm}`, the name of band field {} of the evaluation document",
+                k + 1
+            )));
+        }
         names.push(nm.clone());
         let shape_u = ctx.shapes.get(&en.u).cloned().unwrap_or_default();
         let cr = &b.contracted;
@@ -1722,12 +1730,220 @@ pub fn evaluation_document(
     }
     model.insert("equations".into(), Value::Array(eqs));
     doc.insert("index_sets".into(), Value::Object(isets));
-    doc.insert(
-        "models".into(),
-        json!({"JacobianEval": Value::Object(model)}),
-    );
-    derived_version(&mut doc);
+    finish_derived(&mut doc, model, sv, "JacobianEval")?;
     Ok((Value::Object(doc), names))
+}
+
+/// Finish a derived document whose model `model` is named `derived` (the
+/// evaluation document, spec §8.1, and every product document, §9.1): lay a
+/// flattened source out as its component tree, carry the source's `domain`,
+/// and settle the `esm` version. Every derived document ends here, so the
+/// documents of one source agree on its layout and its time origin.
+pub(crate) fn finish_derived(
+    doc: &mut Map<String, Value>,
+    model: Map<String, Value>,
+    sv: &SysView,
+    derived: &str,
+) -> Result<(), crate::bands::BandError> {
+    let mut models = Map::new();
+    models.insert(derived.into(), Value::Object(model));
+    component_tree(&mut models, sv, derived)?;
+    doc.insert("models".into(), Value::Object(models));
+    if let Some(d) = sv.domain.and_then(domain_field) {
+        doc.insert("domain".into(), d);
+    }
+    derived_version(doc);
+    Ok(())
+}
+
+/// The source's `domain`, as far as it bears on evaluation (spec §8.1): its
+/// `temporal` (`start`, `end`, `reference_time`), which sets the time origin
+/// the calendar functions (`datetime.*`) read, and its `element_type` and
+/// `array_type`. Not `independent_variable`: the derived equations are
+/// written with respect to `t`. `None` when nothing is left.
+fn domain_field(domain: &earthsci_ast::Domain) -> Option<Value> {
+    let src = serde_json::to_value(domain).ok()?;
+    let mut out = Map::new();
+    if let Some(Value::Object(tmp)) = src.get("temporal") {
+        let t: Map<String, Value> = ["start", "end", "reference_time"]
+            .iter()
+            .filter_map(|k| {
+                tmp.get(*k)
+                    .filter(|v| !v.is_null())
+                    .map(|v| (k.to_string(), v.clone()))
+            })
+            .collect();
+        if !t.is_empty() {
+            out.insert("temporal".into(), Value::Object(t));
+        }
+    }
+    for k in ["element_type", "array_type"] {
+        if let Some(v) = src.get(k).filter(|v| !v.is_null()) {
+            out.insert(k.into(), v.clone());
+        }
+    }
+    (!out.is_empty()).then_some(Value::Object(out))
+}
+
+// ── the component tree (spec §8.1) ──────────────────────────────────────────
+//
+// A flattened system's variables carry scoped names (`SimpleOzone.O3`).
+// Declared in the one derived model, EarthSciAST reads such a name as a
+// reference into a component `SimpleOzone` that does not exist, and refuses
+// the document. So each scoped name `P.v` is declared as `v` in the model at
+// component path `P` (the first segment a top-level model, each further one a
+// `subsystems` entry), and each equation goes to the model of its subject.
+// Every reference stays as written, fully scoped, which EarthSciAST resolves
+// from any model, so loading and flattening the document gives back the
+// source's flattened names. The band fields, hoisted observed and recurrence
+// auxiliaries keep their unscoped names in the derived model, so a source
+// with no scoped name (one model of a document) gives the document it always
+// did.
+
+/// The variable an equation is about, from its serialized left-hand side:
+/// the `D` or `ic` argument, a bare name, or the variable an `index` (inside
+/// a lifted `faq`) writes.
+fn lhs_subject(lhs: &Value) -> Option<&str> {
+    match lhs {
+        Value::String(s) => Some(s),
+        Value::Object(m) => match m.get("op").and_then(Value::as_str) {
+            Some("faq") => m.get("expr").and_then(lhs_subject),
+            Some("D" | "ic" | "index") => m
+                .get("args")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(lhs_subject),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The model at component `path` of `models`, created (with its parents)
+/// when missing.
+fn component_node<'m>(
+    models: &'m mut Map<String, Value>,
+    path: &str,
+    derived: &str,
+) -> Result<&'m mut Map<String, Value>, crate::bands::BandError> {
+    fn node() -> Value {
+        json!({"variables": {}, "equations": []})
+    }
+    let mut segs = path.split('.');
+    let top = segs.next().unwrap_or_default();
+    if top == derived {
+        return Err(crate::bands::BandError(format!(
+            "the source has a component named `{derived}`, which is the derived model's name"
+        )));
+    }
+    let mut cur = models
+        .entry(top)
+        .or_insert_with(node)
+        .as_object_mut()
+        .expect("a model is an object");
+    for s in segs {
+        cur = cur
+            .entry("subsystems")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .expect("subsystems is an object")
+            .entry(s)
+            .or_insert_with(node)
+            .as_object_mut()
+            .expect("a subsystem is an object");
+    }
+    Ok(cur)
+}
+
+/// Move the scoped declarations and the equations whose subject is scoped
+/// out of the derived model `derived` into the component tree, in order.
+///
+/// Refused (§8.1): a source mixing scoped and unscoped names, whose moved
+/// equations would read an unscoped name against the wrong model; a
+/// component named `derived`; and a scoped name that is both a variable and
+/// a component (`A.B` and `A.B.c`), which would give model `A` a variable
+/// and a subsystem of one name.
+pub(crate) fn component_tree(
+    models: &mut Map<String, Value>,
+    sv: &SysView,
+    derived: &str,
+) -> Result<(), crate::bands::BandError> {
+    if !sv.variables.keys().any(|n| n.contains('.')) {
+        return Ok(());
+    }
+    let mut bare: Vec<&String> = sv.variables.keys().filter(|n| !n.contains('.')).collect();
+    bare.sort();
+    if let Some(n) = bare.first() {
+        return Err(crate::bands::BandError(format!(
+            "the source mixes scoped and unscoped variable names (`{n}`); \
+             a flattened system's names are all scoped"
+        )));
+    }
+    let Some(Value::Object(mut m)) = models.remove(derived) else {
+        unreachable!()
+    };
+    let Some(Value::Object(vars)) = m.remove("variables") else {
+        unreachable!()
+    };
+    let Some(Value::Array(eqs)) = m.remove("equations") else {
+        unreachable!()
+    };
+    let mut keep_vars = Map::new();
+    let mut scoped: Vec<(String, Value)> = Vec::new();
+    for (n, v) in vars {
+        if n.contains('.') {
+            scoped.push((n, v));
+        } else {
+            keep_vars.insert(n, v);
+        }
+    }
+    scoped.sort_by(|a, b| a.0.cmp(&b.0));
+    for (n, v) in scoped {
+        let (path, local) = n.rsplit_once('.').expect("a scoped name has a dot");
+        let node = component_node(models, path, derived)?;
+        if let Some(Value::Object(vs)) = node.get_mut("variables") {
+            vs.insert(local.to_string(), v);
+        }
+    }
+    let mut keep_eqs = Vec::new();
+    for eq in eqs {
+        let path = lhs_subject(&eq["lhs"])
+            .and_then(|s| s.rsplit_once('.'))
+            .map(|(p, _)| p.to_string());
+        match path {
+            Some(p) => {
+                let node = component_node(models, &p, derived)?;
+                if let Some(Value::Array(es)) = node.get_mut("equations") {
+                    es.push(eq);
+                }
+            }
+            None => keep_eqs.push(eq),
+        }
+    }
+    m.insert("variables".into(), Value::Object(keep_vars));
+    m.insert("equations".into(), Value::Array(keep_eqs));
+    for (name, node) in models.iter() {
+        check_component(node, name)?;
+    }
+    models.insert(derived.to_string(), Value::Object(m));
+    Ok(())
+}
+
+/// Refuse a component whose variable and subsystem share a name, at any
+/// depth.
+fn check_component(node: &Value, path: &str) -> Result<(), crate::bands::BandError> {
+    let Some(Value::Object(subs)) = node.get("subsystems") else {
+        return Ok(());
+    };
+    for (s, child) in subs {
+        if node["variables"].get(s).is_some() {
+            return Err(crate::bands::BandError(format!(
+                "`{path}.{s}` is both a variable and a component of the source"
+            )));
+        }
+        check_component(child, &format!("{path}.{s}"))?;
+    }
+    Ok(())
 }
 
 /// The `esm` version a finished derived document declares: the lowest that

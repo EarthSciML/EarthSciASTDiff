@@ -38,6 +38,7 @@ end
     include("inline_test.jl")
     include("eval_cse_test.jl")
     include("evaldoc_test.jl")
+    include("flat_evaldoc_test.jl")
     include("contracted_test.jl")
     include("oracle_test.jl")
     include("prune_test.jl")

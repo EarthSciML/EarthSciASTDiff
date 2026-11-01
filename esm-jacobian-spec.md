@@ -769,11 +769,22 @@ Fixture corpus in `tests/` of this repository:
    float stays a float: `1.0` is never written `1`), byte-compared across
    bindings. Each fixture
    `<name>` carries `<name>.bands.json`, `<name>.block.json` (§4 block),
-   `<name>.evaldoc.json` (§8 evaluation document; `-nocse` when it differs
+   `<name>.evaldoc.json` (§8.1 evaluation document; `-nocse` when it differs
    without hoisting; like every derived document of §8 and §9 it declares
    the lowest `esm` version that admits what it holds: `"1.2.0"` when any
    expression node carries `units`, a unit-bearing `const` copied from the
-   source, and `"1.1.0"` otherwise, for its `faq` nodes) and `<name>.jvals.json` (values, item 3). A fixture
+   source, and `"1.1.0"` otherwise, for its `faq` nodes) and `<name>.jvals.json` (values, item 3). The
+   flattened fixture `coupled_chem_advection.esm` (a reaction system and an
+   advection model joined by `operator_compose` with a pointwise lift)
+   carries `<name>.evaldoc.json` and `<name>.evaldoc-nocse.json`, its
+   evaluation document laid out as the component tree (§8.1), and
+   `<name>.jvals.json`, the values that document's right-hand side gives at
+   a pinned state, each band point adding its field cell into its (row,
+   column) cell. Every binding byte-compares the documents, and loads,
+   flattens and builds each with its EarthSciAST (with the native compiler
+   and the interpreter) to check the placed values against the golden; the
+   Julia reference also checks the golden against ForwardDiff through
+   EarthSciAST's evaluator of the flattened source. A fixture
    whose right-hand side reads `t` also carries the same four for
    `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
@@ -1015,6 +1026,115 @@ cell name (`"J_k[…]"`) and a 0-based position. Only the serialized plan is a
 conformance artifact, and it is 0-based everywhere. A consumer porting a
 scatter loop between bindings must shift indices to match.
 
+### 8.1 The evaluation document
+
+The **evaluation document** of a band list is a derived ESM document whose
+right-hand side, evaluated once by an unmodified EarthSciAST evaluator at
+`(u, p, t)`, leaves every band field `J_k` in its derivative slots.
+
+When the source (a document, or a flattened system) has a `domain`, the
+evaluation document carries it as a top-level `domain`, reduced to the
+fields that bear on evaluation: `temporal` with those of `start`, `end` and
+`reference_time` the source gives, then `element_type` and `array_type`
+when given, each value as EarthSciAST serializes it. `independent_variable`
+is not written, since the derived equations are written with respect to `t`;
+nor is a `domain` with none of these fields. The document so has its
+source's time origin (`reference_time`, else `start`), from which a runtime
+converts timestamps into the model time `t` it evaluates at. (The calendar
+functions `datetime.*` themselves read their argument as UTC seconds, so the
+right-hand side at a given `t` does not depend on the origin.) A `domain`
+needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
+
+The derived model is named `JacobianEval` and holds:
+
+- every variable of the source, `unknown` or `parameter`, with its `shape`
+  and `default`. A pointwise-lifted state of a flattened system takes its
+  grid shape: each grid dimension `d` (1-based) of extent `n` takes the one
+  index set of that size, else a synthetic dense index set `_liftdim<d>_<n>`,
+  which is added to `index_sets`. (The Julia reference reads the shape its
+  `flatten` records, which follows the same rule wherever each extent names
+  one index set; where several do, it may pick one by what the lifted
+  equations read, so documents of such a system may differ across bindings
+  in index-set names, never in extents or values.);
+- the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
+  (for an array state, a `makearray` of `0.0` over its whole shape), and the
+  observed definitions the coefficients do not read, directly or through
+  other observed, dropped with their declarations. The source's other
+  equations, such as a model's `ic` equations, are kept;
+- with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
+  index sets) and their definitions, and the recurrence auxiliaries (§4.5);
+- one band field per entry, in entry order: `J_k`, an `unknown` with default
+  `0.0` (and, for an array row or an entry with `contracted` dimensions, the
+  field `shape` above: the row variable's index sets, then one `jcax<n>`
+  index set per contracted dimension), whose `D` equation is the entry's
+  coefficient over its region and `0.0` elsewhere.
+
+**Flattened systems: the component tree.** A flattened system (a coupled
+document after `flatten`) names its variables by their scoped names, such as
+`SimpleOzone.O3`. EarthSciAST reads a dotted name as a reference into a
+component, so declaring `SimpleOzone.O3` inside `JacobianEval` gives a
+document no binding loads. When the source has any scoped variable name, the
+producer lays the source's part of the document out as its **component
+tree**:
+
+- each variable with scoped name `P.v` is declared as `v` in the model at
+  component path `P`: the first segment of `P` is a key of `models`, and each
+  further segment a key of its parent's `subsystems`. Every model and
+  subsystem so created has `"variables"` and `"equations"` (possibly empty),
+  and `"subsystems"` only when it has children;
+- each equation whose subject has a scoped name moves, keeping its order, to
+  the model of the subject's component. An equation's subject is the
+  variable its left-hand side names: the argument of `D` or `ic`, a bare
+  name, or the variable an `index` writes (also inside a `faq`, as in a
+  lifted or an arrayed definition);
+- every reference keeps its scoped name, on both sides of every equation and
+  in every model. EarthSciAST resolves a fully scoped name from any model,
+  so loading and flattening the document gives back the source's names, and
+  the band fields' flattened names are `JacobianEval.J_k`;
+- the band fields, the hoisted observed and the recurrence auxiliaries stay
+  in `JacobianEval`, with their equations.
+
+Example (`coupled_chem_advection`, abridged):
+
+```json
+"models": {
+  "Advection":   {"variables": {"dx": {"type": "parameter", "default": 27750.0}, …},
+                  "equations": []},
+  "SimpleOzone": {"variables": {"O3": {"type": "unknown", "shape": ["lon", "lat"],
+                                       "default": 4.0e-8}, …},
+                  "equations": [{"lhs": {"op": "D", "args": ["SimpleOzone.O3"], "wrt": "t"},
+                                 "rhs": {"op": "makearray", "args": [],
+                                         "regions": [[[1, 6], [1, 4]]], "values": [0.0]}}, …]},
+  "JacobianEval": {"variables": {"J_1": {"type": "unknown", "shape": ["lon", "lat"],
+                                         "default": 0.0}, …},
+                   "equations": [{"lhs": {"op": "D", "args": ["J_2"], "wrt": "t"},
+                                  "rhs": {"op": "makearray", "args": [], "regions": […],
+                                          "values": [0.0, {"op": "faq", …,
+                                                           "expr": "SimpleOzone.jNO2"}]}}, …]}
+}
+```
+
+A source with no scoped variable name (one model of a document) has no
+component tree, so its document is the same as without this rule. A producer
+MUST refuse:
+
+- a source that mixes scoped and unscoped variable names: an equation moved
+  to a component would read an unscoped name against that component, and a
+  flattened system's names are all scoped;
+- a source with a component named `JacobianEval`, which would merge with the
+  derived model;
+- a source with a scoped name that is both a variable and a component (`A.B`
+  beside `A.B.c`), which would give model `A` a variable and a subsystem of
+  one name;
+- a source whose derived model would declare a band field's name (`J_k`)
+  twice. A one-model source's model name is not written (its variables go
+  into `JacobianEval` as they are), so only such a variable collides.
+
+A flattened system's initial conditions (`field_ics`) are not written: the
+consumer writes `u` into the state slots at every call, so no band value
+depends on them, and the bindings' `flatten` do not yet record them alike
+for a lifted system.
+
 ## 9. Product documents (PROPOSED)
 
 **Status: PROPOSED. Produced by the Julia reference (`jvp_document`,
@@ -1033,11 +1153,14 @@ esm-spec's `faq` already expresses.
 
 ### 9.1 Common form
 
-A product document is built like the §8 evaluation document: the source
+A product document is built like the §8.1 evaluation document: the source
 model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
-evaluation document does). On top of that base:
+evaluation document does). Like the evaluation document it carries the
+source's `domain`, and a flattened source is laid out as its component tree
+(§8.1), refused on the same grounds, with the product's model (`JvpEval`,
+…) in place of `JacobianEval`. On top of that base:
 
 - **Inputs.** Every vector the product contracts with is declared as an
   `unknown` with `D(x) = 0` and default `0.0`, of the shape of the space it
@@ -1052,8 +1175,10 @@ evaluation document does). On top of that base:
   outputs; the consumer reads them through the evaluator's variable map.
   No equation may read an output, and an output's own state value is never
   read.
-- **Names.** Inputs and outputs take the names below, with `_` appended
-  until clear of every name in the document and of every name generated
+- **Names.** Inputs and outputs take the names below, with every `.` of
+  the variable's name made `_` (a flattened system's column `SimpleOzone.O3`
+  gives `_v_SimpleOzone_O3`, an unscoped name of the product's model, §8.1),
+  then `_` appended until clear of every name in the document and of every name generated
   before it. The names of a document are its variable and index-set names,
   every `ranges` key, and every string its equations hold other than an
   `op` value. Names are generated in one fixed order, so every binding

@@ -56,7 +56,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   `hoist_observed` buffers, and one band-field state `J_k` per entry.
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
   only where it differs (a fixture with something to hoist). Julia, Rust and
-  Python compare byte-exactly.
+  Python compare byte-exactly. `coupled_chem_advection.evaldoc[-nocse].json`
+  is the evaluation document of a FLATTENED system: its scoped names
+  (`SimpleOzone.O3`) declared in the component tree (models `SimpleOzone`
+  and `Advection`, band fields in `JacobianEval`; spec §8.1), with
+  `coupled_chem_advection.jvals.json` the values its right-hand side gives,
+  checked in every binding by loading and building the document with
+  EarthSciAST, and the flattened system's `JvpEval` / `VjpEval` documents
+  (component tree too, spec §9.1) checked against it by value.
 - `goldens/` — `<fixture>[.<axis>].{jvp,vjp}.evaldoc.json` and
   `<fixture>.<a1>-<a2>.{hvp,hvp-sym}.evaldoc.json`: the product documents
   (spec §9), models `JvpEval`, `VjpEval`, `HvpEval` (two stages) and, on a

@@ -41,6 +41,20 @@ for name in (
         println("wrote ", epath0)
     end
 end
+# the evaluation document of a flattened system (spec §8.1): a coupled
+# document's scoped names laid out as its component tree. The bands are the
+# flattened system's, through `sysview(flat)`.
+for name in ("coupled_chem_advection",)
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    sv = sysview(flat)
+    entries = jacobian_bands(sv)
+    for (cse, tag) in ((true, "evaldoc"), (false, "evaldoc-nocse"))
+        doc, _ = EarthSciASTDiff._evaluation_document(sv, entries; cse = cse)
+        path = joinpath(root, "tests", "goldens", "$name.$tag.json")
+        write(path, stable_json(doc))
+        println("wrote ", path)
+    end
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

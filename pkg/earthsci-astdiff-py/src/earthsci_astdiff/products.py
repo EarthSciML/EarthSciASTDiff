@@ -19,8 +19,8 @@ from .bands import Band, BandError
 from .clip import _index_bounds, _index_box
 from .emit import (
     _base_document,
-    _derived_version,
     _eval_guard,
+    _finish_derived,
     _hoist,
     _zero_source_derivatives,
     _zeros,
@@ -52,8 +52,11 @@ def _sand(cs: list):
 
 def _fresh(taken: set[str], base: str) -> str:
     """The first of ``base``, ``base_``, ``base__``, … not in ``taken``, then
-    taken."""
-    nm = base
+    taken, with every ``.`` of ``base`` made ``_``: a flattened system's
+    column ``SimpleOzone.O3`` gives the input ``_v_SimpleOzone_O3``, an
+    unscoped name of the derived model, which a dotted name would not be
+    (§8.1, §9.1)."""
+    nm = base.replace(".", "_")
     while nm in taken:
         nm += "_"
     taken.add(nm)
@@ -523,7 +526,7 @@ def _jvp_document(
         lambda k: _jvp_term(entries[k], coefs[k], vin[entries[k].v], ctx, wrt),
         [(k, en.u) for k, en in enumerate(entries)],
     )
-    return _derived_version(doc), {"model": "JvpEval", "v": vin, "jvp": out}
+    return _finish_derived(doc, sv, "JvpEval"), {"model": "JvpEval", "v": vin, "jvp": out}
 
 
 def _vjp_document(
@@ -548,7 +551,7 @@ def _vjp_document(
         lambda k: _vjp_term(entries[k], coefs[k], lam[entries[k].u], ctx, wrt, taken),
         [(k, en.v) for k, en in enumerate(entries)],
     )
-    return _derived_version(doc), {"model": "VjpEval", "lam": lam, "vjp": out}
+    return _finish_derived(doc, sv, "VjpEval"), {"model": "VjpEval", "lam": lam, "vjp": out}
 
 
 def _hvp_document(
@@ -613,7 +616,7 @@ def _hvp_document(
             lambda k: _hvp_sym_term(entries[k], coefs[k], mu, w, ctx, taken),
             [(k, en.v) for k, en in enumerate(entries)],
         )
-    return _derived_version(doc), {"model": model, "mu": mu, "w": w, "hvp": out}
+    return _finish_derived(doc, sv, model), {"model": model, "mu": mu, "w": w, "hvp": out}
 
 
 # ── recurrences: tangent and adjoint sweeps (§9.7) ───────────────────────────
@@ -767,7 +770,7 @@ def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: i
         return _jvp_term(en, coefs[k], vin[en.v], ctx, wrt)
 
     _outputs(m, sv, ctx, out, term, [(k, en.u) for k, en in enumerate(ext.rows)])
-    return _derived_version(doc), {"model": "JvpEval", "v": vin, "jvp": out}
+    return _finish_derived(doc, sv, "JvpEval"), {"model": "JvpEval", "v": vin, "jvp": out}
 
 
 def _vjp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
@@ -792,7 +795,7 @@ def _vjp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: i
         return _vjp_term_read(en, coefs[k], lr, ctx, wrt, taken)
 
     _outputs(m, sv, ctx, out, term, [(k, en.v) for k, en in enumerate(every)])
-    return _derived_version(doc), {"model": "VjpEval", "lam": lam, "vjp": out}
+    return _finish_derived(doc, sv, "VjpEval"), {"model": "VjpEval", "lam": lam, "vjp": out}
 
 
 def _hvp_sweeps(
@@ -936,7 +939,7 @@ def _hvp_sweeps(
         _observe(m, sv, hrev[v], v, _adjoint(rec, back, cbs, hrev[v], hbar[v]))
     owner = [(k, o) for k, o in enumerate(owner2)] + [(n2 + k, en.v) for k, en in enumerate(back)]
     _outputs(m, sv, ctx, out, lambda k: term2(k) if k < n2 else back_term(k - n2), owner)
-    return _derived_version(doc), {"model": model, "mu": mu, "w": w, "hvp": out}
+    return _finish_derived(doc, sv, model), {"model": model, "mu": mu, "w": w, "hvp": out}
 
 
 def jvp_document(

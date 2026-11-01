@@ -548,6 +548,14 @@ function _evaluation_document(
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
+        # a source variable the derived model already holds under this name
+        # would be overwritten by the band field (§8.1)
+        haskey(m["variables"], nm) && throw(
+            BandError(
+                "the source declares `$nm`, the name of band field $k of the " *
+                    "evaluation document"
+            )
+        )
         shape_u = get(ctx.shapes, en.u, Int[])
         cr = b.contracted
         if isempty(shape_u) && isempty(cr)
@@ -604,5 +612,154 @@ function _evaluation_document(
             )
         )
     end
-    return _derived_version!(doc), names
+    return _finish_derived!(doc, sv, "JacobianEval"), names
+end
+
+# Finish a derived document whose model is `derived` (the evaluation
+# document, esm-jacobian-spec.md §8.1, and every product document, §9.1):
+# lay a flattened source out as its component tree, carry the source's
+# `domain`, and settle the `esm` version. Every derived document ends here,
+# so the documents of one source agree on its layout and its time origin.
+function _finish_derived!(doc, sv::SysView, derived::String)
+    _component_tree!(doc, sv, derived)
+    _domain!(doc, sv.domain)
+    return _derived_version!(doc)
+end
+
+# The source's `domain`, as far as it bears on evaluation (esm-jacobian-spec.md
+# §8.1): its `temporal` (`start`, `end`, `reference_time`), which sets the time
+# origin the calendar functions (`datetime.*`) read, and its `element_type`
+# and `array_type`. Not `independent_variable`: the derived equations are
+# written with respect to `t`. Built key by key from EarthSciAST's
+# serialization, so every binding writes the same object; absent when nothing
+# is left.
+function _domain!(doc, domain)
+    domain === nothing && return doc
+    src = EarthSciAST.serialize_domain(domain)
+    out = OrderedDict{String, Any}()
+    tmp = get(src, "temporal", nothing)
+    if tmp isa AbstractDict
+        t = OrderedDict{String, Any}(
+            k => tmp[k] for k in ("start", "end", "reference_time")
+                if get(tmp, k, nothing) !== nothing
+        )
+        isempty(t) || (out["temporal"] = t)
+    end
+    for k in ("element_type", "array_type")
+        get(src, k, nothing) === nothing || (out[k] = src[k])
+    end
+    isempty(out) || (doc["domain"] = out)
+    return doc
+end
+
+# ── the component tree (esm-jacobian-spec.md §8.1) ──────────────────────────
+#
+# A flattened system's variables carry scoped names (`SimpleOzone.O3`).
+# Declared in the one derived model, EarthSciAST reads such a name as a
+# reference into a component `SimpleOzone` that does not exist, and refuses
+# the document. So each scoped name `P.v` is declared as `v` in the model at
+# component path `P` (the first segment a top-level model, each further one
+# a `subsystems` entry), and each equation goes to the model of its subject.
+# Every reference stays as written, fully scoped, which EarthSciAST resolves
+# from any model, so loading and flattening the document gives back the
+# source's flattened names. The band fields, hoisted observed and recurrence
+# auxiliaries keep their unscoped names in the derived model, so a source
+# with no scoped name (one model of a document) gives the document it always
+# did.
+
+_is_scoped(n) = n isa AbstractString && occursin('.', n)
+
+# The variable an equation is about, from its serialized left-hand side: the
+# `D` or `ic` argument, a bare name, or the variable an `index` (inside a
+# lifted `faq`) writes; `nothing` for anything else.
+function _lhs_subject(l)
+    l isa AbstractString && return String(l)
+    l isa AbstractDict || return nothing
+    op = get(l, "op", nothing)
+    op == "faq" && return _lhs_subject(get(l, "expr", nothing))
+    if op in ("D", "ic", "index")
+        a = get(l, "args", Any[])
+        return isempty(a) ? nothing : _lhs_subject(a[1])
+    end
+    return nothing
+end
+
+# A scoped name split at its last dot: (component path, local name).
+function _split_scoped(n::AbstractString)
+    i = findlast('.', n)
+    return String(n[1:prevind(n, i)]), String(n[nextind(n, i):end])
+end
+
+# The model at component `path`, created (with its parents) when missing.
+function _component_node!(models, path::AbstractString, derived::String)
+    segs = split(path, '.')
+    segs[1] == derived && throw(
+        BandError(
+            "the source has a component named `$derived`, which is the derived " *
+                "model's name"
+        )
+    )
+    new() = OrderedDict{String, Any}(
+        "variables" => OrderedDict{String, Any}(), "equations" => Any[]
+    )
+    node = get!(new, models, String(segs[1]))
+    for s in segs[2:end]
+        node = get!(new, get!(OrderedDict{String, Any}, node, "subsystems"), String(s))
+    end
+    return node
+end
+
+# Move the scoped declarations and the equations whose subject is scoped
+# out of the derived model `derived` into the component tree (in their order).
+# Refused (§8.1): a source mixing scoped and unscoped names, whose moved
+# equations would read an unscoped name against the wrong model; a component
+# named `derived`; and a scoped name that is both a variable and a component
+# (`A.B` and `A.B.c`), which would give model `A` a variable and a subsystem
+# of one name.
+function _component_tree!(doc, sv::SysView, derived::String)
+    src = collect(keys(sv.variables))
+    any(_is_scoped, src) || return doc
+    bare = sort!(filter(!_is_scoped, src))
+    isempty(bare) || throw(
+        BandError(
+            "the source mixes scoped and unscoped variable names (`$(first(bare))`); " *
+                "a flattened system's names are all scoped"
+        )
+    )
+    models = doc["models"]
+    m = models[derived]
+    for n in sort!([k for k in keys(m["variables"]) if _is_scoped(k)])
+        path, v = _split_scoped(n)
+        _component_node!(models, path, derived)["variables"][v] = pop!(m["variables"], n)
+    end
+    kept = Any[]
+    for eq in m["equations"]
+        s = _lhs_subject(eq["lhs"])
+        if _is_scoped(s)
+            path, _ = _split_scoped(s)
+            push!(_component_node!(models, path, derived)["equations"], eq)
+        else
+            push!(kept, eq)
+        end
+    end
+    m["equations"] = kept
+    for (name, node) in models
+        name == derived || _check_component(node, name)
+    end
+    return doc
+end
+
+# A component whose variable and subsystem share a name, at any depth.
+function _check_component(node, path::String)
+    subs = get(node, "subsystems", nothing)
+    subs === nothing && return
+    for (s, child) in subs
+        haskey(node["variables"], s) && throw(
+            BandError(
+                "`$path.$s` is both a variable and a component of the source"
+            )
+        )
+        _check_component(child, "$path.$s")
+    end
+    return
 end
