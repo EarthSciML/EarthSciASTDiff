@@ -189,7 +189,7 @@ def test_vjp_is_the_transposed_product(bracket):
     sv = sysview(bracket, "Bracket")
     rows = ["S", "c[1]", "c[2]", "c[3]", "c[4]"]
     rng = np.random.default_rng(7)
-    lam = dict(zip(rows, rng.standard_normal(len(rows))))
+    lam = dict(zip(rows, rng.standard_normal(len(rows)), strict=True))
     for wrt in ("forcing", "parameters"):
         cnames = column_names(jacobian_columns(sv, wrt=wrt))
         for t in (0.0, 0.37):

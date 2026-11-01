@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import prod
-from typing import Union
 
 from .emit import _cellname, _eval_cidx, _product, foreach_point
 from .factorization import _block_diagonal_plan
@@ -74,7 +73,7 @@ class Csr:
     entry."""
 
 
-StorageLayout = Union[LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr]
+StorageLayout = LaneBlocks | LaneSparseBlocks | ColumnBanded | Csr
 
 # ── plans ───────────────────────────────────────────────────────────────────
 #
@@ -124,7 +123,7 @@ class CsrPlan:
     items: list[tuple[int, int, int]]  # (band k, field cell, nz position)
 
 
-ScatterPlan = Union[LaneBlocksPlan, LaneSparseBlocksPlan, ColumnBandedPlan, CsrPlan]
+ScatterPlan = LaneBlocksPlan | LaneSparseBlocksPlan | ColumnBandedPlan | CsrPlan
 
 
 def _field_shape(en: JacEntry, ctx) -> list[int]:
@@ -134,7 +133,7 @@ def _field_shape(en: JacEntry, ctx) -> list[int]:
 def _flat(cell, shape) -> int:
     """Column-major 0-based flat index of a 1-based cell."""
     f, stride = 0, 1
-    for c, n in zip(cell, shape):
+    for c, n in zip(cell, shape, strict=False):
         f += (c - 1) * stride
         stride *= n
     return f
@@ -298,7 +297,7 @@ def _column_banded(layout: ColumnBanded, entries, sv, states, bands) -> ColumnBa
     for k, en in enumerate(entries):
         b = en.band
         _no_contracted_or_guard(layout, k, en)
-        for m, (c, r) in enumerate(zip(b.cidx, b.ridx)):
+        for m, (c, r) in enumerate(zip(b.cidx, b.ridx, strict=True)):
             cls = _offset_class(c, r)
             ok = cls in ("diag", "affine") if m == ax else cls == "diag"
             if not ok:
@@ -336,7 +335,7 @@ def _csr(entries, states, bands) -> CsrPlan:
     for k, en in enumerate(entries):
         vshape = shape[en.v]
         for cell, cc, _, cidx in foreach_point(en.band):
-            if not all(1 <= c <= s for c, s in zip(cidx, vshape)):
+            if not all(1 <= c <= s for c, s in zip(cidx, vshape, strict=False)):
                 continue  # ghost read
             pts.append(
                 (
@@ -506,7 +505,7 @@ def bind_plan(
         len(plan.bands) == len(entries)
         and all(
             en.u == u and en.v == v and field_shapes[k] == list(s)
-            for k, (en, (u, v, s)) in enumerate(zip(entries, plan.bands))
+            for k, (en, (u, v, s)) in enumerate(zip(entries, plan.bands, strict=True))
         )
     ):
         _bind_error(
@@ -534,7 +533,7 @@ def bind_plan(
         sh = field_shapes[k]
         vs = vshape[en.v]
         for cell, cc, _, cidx in foreach_point(en.band):
-            inside = all(1 <= c <= n for c, n in zip(cidx, vs))
+            inside = all(1 <= c <= n for c, n in zip(cidx, vs, strict=False))
             want[(k, _flat(list(cell) + list(cc), sh))] = (
                 (_cellname(en.u, cell), _cellname(en.v, cidx)) if inside else None
             )

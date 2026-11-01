@@ -663,7 +663,7 @@ def _ghost_exprs(b: Band, v: str, ci: list, ci_sub: list, shape: list[int], wrt:
     if not _needs_ghost(b, v, ci, shape, wrt):
         return []
     out = []
-    for e, n in zip(ci_sub, shape):
+    for e, n in zip(ci_sub, shape, strict=False):
         out.append(op(">=", e, 1))
         out.append(op("<=", e, n))
     return out
@@ -687,7 +687,7 @@ def _tangent(rec, rows: list, coefs: list, target: str, dir: dict, sweeps: dict,
 
     own = []
     cols = []
-    for en, c in zip(rows, coefs):
+    for en, c in zip(rows, coefs, strict=True):
         if en.u == rec.name:
             own.append(replace(en.band, coef=c))
             cols.append(en.v)
@@ -710,7 +710,7 @@ def _adjoint(rec, rows: list, coefs: list, target: str, src: str):
 
     own = [
         replace(en.band, coef=c)
-        for en, c in zip(rows, coefs)
+        for en, c in zip(rows, coefs, strict=True)
         if en.u == rec.name and en.v == rec.name
     ]
     src_read = reversed_read(rec, src, list(rec.frame))
@@ -733,7 +733,7 @@ def _cot_source(v: str, entries: list, coefs: list, lam: dict, rev: dict, ext, c
     # (other than `v`'s own) of `coef · λ[row]`, scattered onto `v`'s cells
     # (an equality-filter scatter, §9.3); zero when none reads it.
     terms = []
-    for en, c in zip(entries, coefs):
+    for en, c in zip(entries, coefs, strict=True):
         if en.v != v or en.u == v:
             continue
         t = _vjp_term_read(en, c, _cot_read(en.band, en.u, lam, rev, ext), ctx, "states", taken)

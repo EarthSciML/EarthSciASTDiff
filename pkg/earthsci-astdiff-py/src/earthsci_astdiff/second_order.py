@@ -176,7 +176,7 @@ def structure2(
             continue
         if len(c2) != len(en.band.ridx):
             return None
-        if not all(_offset_class(c, r) == "diag" for c, r in zip(c2, en.band.ridx)):
+        if not all(_offset_class(c, r) == "diag" for c, r in zip(c2, en.band.ridx, strict=True)):
             return None
     return "block_diagonal"
 

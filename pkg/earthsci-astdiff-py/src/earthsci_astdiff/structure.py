@@ -205,7 +205,7 @@ def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
         b = en.band
         if not b.cidx:
             continue
-        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx)]
+        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx, strict=False)]
         if any(p in ("other", "fixed") for p in per):
             return "general"
         if any(p == "affine" for p in per):

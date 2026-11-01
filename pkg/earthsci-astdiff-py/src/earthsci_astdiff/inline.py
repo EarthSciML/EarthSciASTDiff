@@ -211,7 +211,7 @@ def _index_makearray(
     """index(makearray(regions, values), e…) → nested region ifelse.
     Fold from the FIRST region outward so later regions override (§4.3.2)."""
     result: Expr = 0
-    for region, val in zip(ma.regions, ma.values):
+    for region, val in zip(ma.regions, ma.values, strict=True):
         conds: list[Expr] = []
         sub_idx: list[Expr] = []
         for k, r in enumerate(region):

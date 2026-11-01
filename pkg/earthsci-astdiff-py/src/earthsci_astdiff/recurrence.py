@@ -243,7 +243,7 @@ def _lag_expr(rec: Recurrence, b: Band) -> Expr:
             "lag along its axis (esm-spec §4.3.1.1)"
         )
 
-    for m, (r, c) in enumerate(zip(b.ridx, b.cidx)):
+    for m, (r, c) in enumerate(zip(b.ridx, b.cidx, strict=True)):
         if m == rec.dim:
             continue
         same = (isinstance(r, str) and isinstance(c, str) and c == r) or (
@@ -351,7 +351,7 @@ def forward_sweep(rec: Recurrence, own: list, own_cols: list, target: str, col, 
     at = list(rec.frame)
     plain = [True] * len(at)
     terms = []
-    for b, c in zip(own, own_cols):
+    for b, c in zip(own, own_cols, strict=True):
         sigma, conds = _place(rec, b, at, plain)
         if c == rec.name:
             r, cs = _self_read(rec, b, sigma, target, [])
@@ -361,7 +361,7 @@ def forward_sweep(rec: Recurrence, own: list, own_cols: list, target: str, col, 
                 continue
             r, cs = got
         terms.append(_term(b, sigma, conds + cs, r, zero))
-    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows)]
+    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows, strict=True)]
     return _faq(rec.frame, ranges, plus_fold(terms, zero))
 
 
@@ -390,7 +390,7 @@ def adjoint_sweep(rec: Recurrence, own_self: list, target: str, src: Expr, zero)
         idx = list(rec.frame)
         idx[d] = pos
         terms.append(_term(b, sigma, conds, _index(target, idx), zero))
-    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows)]
+    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows, strict=True)]
     return _faq(rec.frame, ranges, plus_fold(terms, zero))
 
 
@@ -464,7 +464,7 @@ def transfer_definition(rec: Recurrence, obs: dict, recs: list[Recurrence], ctx,
         sigma, conds = _place(rec, b, at, plain)
         r, cs = _self_read(rec, b, sigma, tname, [j])
         terms.append(_term(b, sigma, conds + cs, r, 0))
-    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows)]
+    ranges = [(f, lo, hi) for f, (lo, hi) in zip(rec.frame, rec.rows, strict=True)]
     ranges.append((j, rec.rows[d][0], rec.rows[d][1]))
     return canon_lits(_faq([*rec.frame, j], ranges, plus_fold(terms, 0)))
 

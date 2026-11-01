@@ -194,7 +194,7 @@ def check_state_column(
             "column must resolve to a state slot or read past a state's extent"
         )
     shape = shapes.get(v) or []
-    return len(cidx) == len(shape) and all(1 <= c <= n for c, n in zip(cidx, shape))
+    return len(cidx) == len(shape) and all(1 <= c <= n for c, n in zip(cidx, shape, strict=True))
 
 
 def jacobian_block(
@@ -515,7 +515,7 @@ def _zero_source_derivatives(m: dict, sv, ctx, roots: list) -> dict:
     states = {u for u in (lhs_state(eq) for eq in sv.equations) if u is not None}
     defined = [_defined_name(eq) if lhs_state(eq) is None else None for eq in sv.equations]
     reads: dict[str, list] = {}  # observed → its definitions' RHS
-    for eq, n in zip(sv.equations, defined):
+    for eq, n in zip(sv.equations, defined, strict=True):
         if n is not None and n not in states:
             reads.setdefault(n, []).append(eq.rhs)
     live: set[str] = set()
@@ -529,7 +529,7 @@ def _zero_source_derivatives(m: dict, sv, ctx, roots: list) -> dict:
             stack.extend(free_variables(r))
     done: set[str] = set()
     eqs: list = []
-    for eq, ser, n in zip(sv.equations, m["equations"], defined):
+    for eq, ser, n in zip(sv.equations, m["equations"], defined, strict=False):
         u = lhs_state(eq)
         if u is None:
             if is_derivative(eq):
