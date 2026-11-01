@@ -14,7 +14,8 @@ use earthsci_ast::{esm_problem, rhs_program, Compiler, FlattenedSystem, ProblemO
 use earthsci_astdiff::points::{cellname, foreach_point, outside};
 use earthsci_astdiff::system::{observed_defs, view_states};
 use earthsci_astdiff::{
-    ctx_of, evaluation_document, jacobian_bands_view, stable_json, sysview_flat, Wrt,
+    ctx_of, evaluation_document, jacobian_bands_view, jvp_document, stable_json, sysview_flat,
+    vjp_document, IoMap, ProductOptions, SysView, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -352,4 +353,262 @@ fn carries_the_domain() {
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     let (doc, _) = evaluation_document(&sv, &entries, true, 12).unwrap();
     assert!(doc.get("domain").is_none());
+}
+
+/// One right-hand-side call of a derived document of a flattened system,
+/// built as a runtime builds it: `u` sets the state cells by their flattened
+/// names (the source's, and the derived model's inputs as
+/// `<model>.<input>[…]`). Returns a lookup of `du` by flattened cell name.
+fn doc_rhs(
+    doc: &Value,
+    u: &HashMap<String, f64>,
+    t: f64,
+    compiler: Compiler,
+) -> impl Fn(&str) -> f64 {
+    let file = earthsci_ast::load_document(doc).expect("the document loads");
+    let opts = ProblemOptions {
+        compiler: Some(compiler),
+        ..Default::default()
+    };
+    let prog = rhs_program(&esm_problem(&file, (0.0, 1.0), opts).unwrap()).unwrap();
+    let blocks: HashMap<String, (usize, Vec<usize>)> = prog
+        .state_layout()
+        .iter()
+        .map(|b| (b.name.clone(), (b.flat_offset, b.shape.clone())))
+        .collect();
+    let slot = move |c: &str| -> usize {
+        let (name, idx): (&str, Vec<usize>) = match c.find('[') {
+            None => (c, Vec::new()),
+            Some(k) => (
+                &c[..k],
+                c[k + 1..c.len() - 1]
+                    .split(',')
+                    .map(|s| s.parse().unwrap())
+                    .collect(),
+            ),
+        };
+        let (off, shape) = blocks
+            .get(name)
+            .unwrap_or_else(|| panic!("no state `{name}` in the document"));
+        let (mut k, mut stride) = (0, 1);
+        for (i, n) in idx.iter().zip(shape) {
+            k += (i - 1) * stride;
+            stride *= n;
+        }
+        off + k
+    };
+    let (mut x, aux) = prog.default_state();
+    for (c, v) in u {
+        x[slot(c)] = *v;
+    }
+    let p = prog.parameter_vector(&HashMap::new()).unwrap();
+    let mut du = vec![0.0; x.len()];
+    let mut ws = prog.new_workspace();
+    prog.eval_into(&x, &aux, &p, t, &prog.default_forcing(), &mut du, &mut ws)
+        .unwrap();
+    move |c: &str| du[slot(c)]
+}
+
+/// The derived model's name for a cell of a source variable, flattened.
+fn io_cell(model: &str, io: &IoMap, cell: &str) -> String {
+    match cell.find('[') {
+        None => format!("{model}.{}", io[cell]),
+        Some(k) => format!("{model}.{}{}", io[&cell[..k]], &cell[k..]),
+    }
+}
+
+fn layout_ok(doc: &Value, model: &str) -> bool {
+    let ms = doc["models"].as_object().unwrap();
+    let mut keys: Vec<&str> = ms.keys().map(String::as_str).collect();
+    keys.sort();
+    let mut want = vec!["Advection", "SimpleOzone", model];
+    want.sort();
+    keys == want
+        && ms.values().all(|m| {
+            m["variables"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|n| !n.contains('.'))
+        })
+}
+
+/// The product documents (spec §9) of a flattened system are laid out as its
+/// component tree too, their inputs and outputs unscoped in the derived model
+/// (`_v_SimpleOzone_O3`); each loads and gives `J v` and `Jᵀ λ` of the
+/// golden Jacobian (the reference's flat_evaldoc_test.jl).
+#[test]
+fn product_documents() {
+    let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+    let sv = sysview_flat(&flat);
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let g: Value = serde_json::from_str(&golden(&format!("{NAME}.jvals.json"))).unwrap();
+    let u: HashMap<String, f64> = g["u"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+        .collect();
+    let t = g["t"].as_f64().unwrap();
+    let want: Vec<(String, String, f64)> = g["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e[0].as_str().unwrap().to_string(),
+                e[1].as_str().unwrap().to_string(),
+                e[2].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let mut cells: Vec<&String> = u.keys().collect();
+    cells.sort();
+    let v: HashMap<&str, f64> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_str(), (1.7 * (i + 1) as f64).sin()))
+        .collect();
+    let lam: HashMap<&str, f64> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.as_str(), (0.9 * (i + 1) as f64).cos()))
+        .collect();
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-10 * b.abs() + 1e-13;
+    for cse in [true, false] {
+        let opts = ProductOptions {
+            cse,
+            ..Default::default()
+        };
+        let (jv, io) = jvp_document(&sv, &entries, Wrt::States, &opts).unwrap();
+        assert!(layout_ok(&jv, "JvpEval"));
+        assert_eq!(io.v["SimpleOzone.O3"], "_v_SimpleOzone_O3");
+        assert_eq!(io.jvp["SimpleOzone.O3"], "_jvp_SimpleOzone_O3");
+        let mut x = u.clone();
+        for c in &cells {
+            x.insert(io_cell(&io.model, &io.v, c), v[c.as_str()]);
+        }
+        let out = doc_rhs(&jv, &x, t, Compiler::Native);
+        for r in &cells {
+            let exp: f64 = want
+                .iter()
+                .filter(|(rr, _, _)| rr == *r)
+                .map(|(_, c, w)| w * v[c.as_str()])
+                .sum();
+            let got = out(&io_cell(&io.model, &io.jvp, r));
+            assert!(close(got, exp), "cse={cse} Jv[{r}]: {got} vs {exp}");
+        }
+        let (vj, io) = vjp_document(&sv, &entries, Wrt::States, &opts).unwrap();
+        assert!(layout_ok(&vj, "VjpEval"));
+        let mut x = u.clone();
+        for r in &cells {
+            x.insert(io_cell(&io.model, &io.lam, r), lam[r.as_str()]);
+        }
+        let out = doc_rhs(&vj, &x, t, Compiler::Interpreter);
+        for c in &cells {
+            let exp: f64 = want
+                .iter()
+                .filter(|(_, cc, _)| cc == *c)
+                .map(|(r, _, w)| lam[r.as_str()] * w)
+                .sum();
+            let got = out(&io_cell(&io.model, &io.vjp, c));
+            assert!(close(got, exp), "cse={cse} Jᵀλ[{c}]: {got} vs {exp}");
+        }
+    }
+}
+
+/// Refused (spec §8.1): a flattened system mixing scoped and unscoped
+/// names, a scoped name that is both a variable and a component, and a
+/// source variable named like a band field.
+#[test]
+fn refuses_bad_sources() {
+    let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+    let sv = sysview_flat(&flat);
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let par = sv
+        .variables
+        .keys()
+        .filter(|n| n.starts_with("Advection."))
+        .min()
+        .unwrap()
+        .clone();
+    let with = |extra: &[&str]| -> SysView {
+        let mut variables = sv.variables.clone();
+        for n in extra {
+            variables.insert(n.to_string(), sv.variables[&par].clone());
+        }
+        SysView {
+            variables,
+            equations: sv.equations,
+            index_sets: sv.index_sets.clone(),
+            domain: sv.domain,
+        }
+    };
+    let err = evaluation_document(&with(&["x"]), &entries, true, 12).unwrap_err();
+    assert!(err.0.contains("`x`"), "{}", err.0);
+    let err = evaluation_document(
+        &with(&["Advection.Inner", "Advection.Inner.q"]),
+        &entries,
+        true,
+        12,
+    )
+    .unwrap_err();
+    assert!(
+        err.0
+            .contains("`Advection.Inner` is both a variable and a component"),
+        "{}",
+        err.0
+    );
+    let clash = earthsci_ast::load_document(&json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "Clash"},
+        "models": {"JacobianEval": {
+            "variables": {"J_1": {"type": "unknown", "default": 1.0}},
+            "equations": [{"lhs": {"op": "D", "args": ["J_1"], "wrt": "t"},
+                           "rhs": {"op": "*", "args": [-1.0, "J_1", "J_1"]}}]}}
+    }))
+    .unwrap();
+    let sv = earthsci_astdiff::sysview(&clash, None).unwrap();
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let err = evaluation_document(&sv, &entries, true, 12).unwrap_err();
+    assert!(err.0.contains("band field 1"), "{}", err.0);
+}
+
+/// Every product document carries the source's `domain`, as the evaluation
+/// document does (spec §8.1, §9.1).
+#[test]
+fn product_documents_carry_the_domain() {
+    let src = json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "Diurnal"},
+        "domain": {"independent_variable": "t",
+                   "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
+        "models": {"Chem": {
+            "variables": {
+                "c": {"type": "unknown", "default": 1.0},
+                "k": {"type": "parameter", "default": 0.5}},
+            "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+                           "rhs": {"op": "*", "args": [
+                               {"op": "-", "args": ["k"]},
+                               {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}
+    });
+    let file = earthsci_ast::load_document(&src).unwrap();
+    let flat = earthsci_ast::flatten(&file).unwrap();
+    let want = r#"{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"#;
+    let opts = ProductOptions::default();
+    for sv in [
+        earthsci_astdiff::sysview(&file, None).unwrap(),
+        sysview_flat(&flat),
+    ] {
+        let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+        let (jv, _) = jvp_document(&sv, &entries, Wrt::States, &opts).unwrap();
+        let (vj, _) = vjp_document(&sv, &entries, Wrt::States, &opts).unwrap();
+        assert_eq!(stable_json(&jv["domain"]), want);
+        assert_eq!(stable_json(&vj["domain"]), want);
+    }
+    let bd = load("bd_chem");
+    let sv = earthsci_astdiff::sysview(&bd, None).unwrap();
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let (jv, _) = jvp_document(&sv, &entries, Wrt::States, &opts).unwrap();
+    assert!(jv.get("domain").is_none());
 }

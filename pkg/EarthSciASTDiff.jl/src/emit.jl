@@ -548,6 +548,14 @@ function _evaluation_document(
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
+        # a source variable the derived model already holds under this name
+        # would be overwritten by the band field (§8.1)
+        haskey(m["variables"], nm) && throw(
+            BandError(
+                "the source declares `$nm`, the name of band field $k of the " *
+                    "evaluation document"
+            )
+        )
         shape_u = get(ctx.shapes, en.u, Int[])
         cr = b.contracted
         if isempty(shape_u) && isempty(cr)
@@ -604,9 +612,18 @@ function _evaluation_document(
             )
         )
     end
-    _component_tree!(doc, "JacobianEval")
+    return _finish_derived!(doc, sv, "JacobianEval"), names
+end
+
+# Finish a derived document whose model is `derived` (the evaluation
+# document, esm-jacobian-spec.md §8.1, and every product document, §9.1):
+# lay a flattened source out as its component tree, carry the source's
+# `domain`, and settle the `esm` version. Every derived document ends here,
+# so the documents of one source agree on its layout and its time origin.
+function _finish_derived!(doc, sv::SysView, derived::String)
+    _component_tree!(doc, sv, derived)
     _domain!(doc, sv.domain)
-    return _derived_version!(doc), names
+    return _derived_version!(doc)
 end
 
 # The source's `domain`, as far as it bears on evaluation (esm-jacobian-spec.md
@@ -692,9 +709,23 @@ function _component_node!(models, path::AbstractString, derived::String)
     return node
 end
 
-# Move the scoped declarations and the equations whose subject is scoped out
-# of the derived model `derived` into the component tree (in their order).
-function _component_tree!(doc, derived::String)
+# Move the scoped declarations and the equations whose subject is scoped
+# out of the derived model `derived` into the component tree (in their order).
+# Refused (§8.1): a source mixing scoped and unscoped names, whose moved
+# equations would read an unscoped name against the wrong model; a component
+# named `derived`; and a scoped name that is both a variable and a component
+# (`A.B` and `A.B.c`), which would give model `A` a variable and a subsystem
+# of one name.
+function _component_tree!(doc, sv::SysView, derived::String)
+    src = collect(keys(sv.variables))
+    any(_is_scoped, src) || return doc
+    bare = sort!(filter(!_is_scoped, src))
+    isempty(bare) || throw(
+        BandError(
+            "the source mixes scoped and unscoped variable names (`$(first(bare))`); " *
+                "a flattened system's names are all scoped"
+        )
+    )
     models = doc["models"]
     m = models[derived]
     for n in sort!([k for k in keys(m["variables"]) if _is_scoped(k)])
@@ -712,5 +743,23 @@ function _component_tree!(doc, derived::String)
         end
     end
     m["equations"] = kept
+    for (name, node) in models
+        name == derived || _check_component(node, name)
+    end
     return doc
+end
+
+# A component whose variable and subsystem share a name, at any depth.
+function _check_component(node, path::String)
+    subs = get(node, "subsystems", nothing)
+    subs === nothing && return
+    for (s, child) in subs
+        haskey(node["variables"], s) && throw(
+            BandError(
+                "`$path.$s` is both a variable and a component of the source"
+            )
+        )
+        _check_component(child, "$path.$s")
+    end
+    return
 end

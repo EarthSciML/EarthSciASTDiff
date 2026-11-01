@@ -1091,8 +1091,8 @@ tree**:
   in every model. EarthSciAST resolves a fully scoped name from any model,
   so loading and flattening the document gives back the source's names, and
   the band fields' flattened names are `JacobianEval.J_k`;
-- the band fields, the hoisted observed, the recurrence auxiliaries and any
-  unscoped variable stay in `JacobianEval`, with their equations.
+- the band fields, the hoisted observed and the recurrence auxiliaries stay
+  in `JacobianEval`, with their equations.
 
 Example (`coupled_chem_advection`, abridged):
 
@@ -1116,12 +1116,24 @@ Example (`coupled_chem_advection`, abridged):
 
 A source with no scoped variable name (one model of a document) has no
 component tree, so its document is the same as without this rule. A producer
-MUST refuse a source with a component named `JacobianEval`, which would merge
-with the derived model. A flattened system's initial conditions
-(`field_ics`) are not written: the consumer writes `u` into the state slots
-at every call, so no band value depends on them, and the bindings' `flatten`
-do not yet record them alike for a lifted system. Product documents (§9) of a
-flattened system are not laid out this way yet.
+MUST refuse:
+
+- a source that mixes scoped and unscoped variable names: an equation moved
+  to a component would read an unscoped name against that component, and a
+  flattened system's names are all scoped;
+- a source with a component named `JacobianEval`, which would merge with the
+  derived model;
+- a source with a scoped name that is both a variable and a component (`A.B`
+  beside `A.B.c`), which would give model `A` a variable and a subsystem of
+  one name;
+- a source whose derived model would declare a band field's name (`J_k`)
+  twice. A one-model source's model name is not written (its variables go
+  into `JacobianEval` as they are), so only such a variable collides.
+
+A flattened system's initial conditions (`field_ics`) are not written: the
+consumer writes `u` into the state slots at every call, so no band value
+depends on them, and the bindings' `flatten` do not yet record them alike
+for a lifted system.
 
 ## 9. Product documents (PROPOSED)
 
@@ -1145,7 +1157,10 @@ A product document is built like the §8.1 evaluation document: the source
 model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
-evaluation document does). On top of that base:
+evaluation document does). Like the evaluation document it carries the
+source's `domain`, and a flattened source is laid out as its component tree
+(§8.1), refused on the same grounds, with the product's model (`JvpEval`,
+…) in place of `JacobianEval`. On top of that base:
 
 - **Inputs.** Every vector the product contracts with is declared as an
   `unknown` with `D(x) = 0` and default `0.0`, of the shape of the space it
@@ -1160,8 +1175,10 @@ evaluation document does). On top of that base:
   outputs; the consumer reads them through the evaluator's variable map.
   No equation may read an output, and an output's own state value is never
   read.
-- **Names.** Inputs and outputs take the names below, with `_` appended
-  until clear of every name in the document and of every name generated
+- **Names.** Inputs and outputs take the names below, with every `.` of
+  the variable's name made `_` (a flattened system's column `SimpleOzone.O3`
+  gives `_v_SimpleOzone_O3`, an unscoped name of the product's model, §8.1),
+  then `_` appended until clear of every name in the document and of every name generated
   before it. The names of a document are its variable and index-set names,
   every `ranges` key, and every string its equations hold other than an
   `op` value. Names are generated in one fixed order, so every binding

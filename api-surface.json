@@ -111,7 +111,7 @@
         "python": "evaluation_document",
         "rust": "evaluation_document"
       },
-      "notes": "The band fields are `J_k` in the derived model `JacobianEval`, in band order. For a flattened system the source's scoped names are declared in its component tree (spec \u00a78.1), so the document loads in every EarthSciAST binding. The source's `domain` (its `temporal`, `element_type` and `array_type`) is carried through, so the document has the source's time origin. Rust takes a `SysView` (`sysview_flat` for a flattened system) and the bands."
+      "notes": "The band fields are `J_k` in the derived model `JacobianEval`, in band order. For a flattened system the source's scoped names are declared in its component tree (spec \u00a78.1), so the document loads in every EarthSciAST binding; a source that mixes scoped and unscoped names, has a component named `JacobianEval`, a name that is both a variable and a component, or a variable named like a band field is refused. The source's `domain` (its `temporal`, `element_type` and `array_type`) is carried through, so the document has the source's time origin. The product documents (`jvp_document`, `vjp_document`, `hvp_document`) are laid out and carry the domain the same way, their inputs and outputs named with each `.` of the column's name made `_`. Rust takes a `SysView` (`sysview_flat` for a flattened system) and the bands."
     },
     {
       "name": "extended_bands",

@@ -15,7 +15,7 @@ use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, BandError, Ctx};
 use crate::clip::{index_bounds, index_box, RIdx};
-use crate::emit::{base_document, derived_version, hoist, zero_source_derivatives, zeros};
+use crate::emit::{base_document, finish_derived, hoist, zero_source_derivatives, zeros};
 use crate::helpers::ser_expr;
 use crate::jacobian::{extended_pass, jacobian_columns, targets, JacEntry, Wrt};
 use crate::points::{all_points, eval_guard};
@@ -124,9 +124,12 @@ fn ser_all(es: &[Expr]) -> Vec<Value> {
     es.iter().map(ser_expr).collect()
 }
 
-/// The first of `base`, `base_`, `base__`, … not in `taken`, then taken.
+/// The first of `base`, `base_`, `base__`, … not in `taken`, then taken,
+/// with every `.` of `base` made `_`: a flattened system's column
+/// `SimpleOzone.O3` gives the input `_v_SimpleOzone_O3`, an unscoped name of
+/// the derived model, which a dotted name would not be (§8.1, §9.1).
 fn fresh(taken: &mut HashSet<String>, base: &str) -> String {
-    let mut nm = base.to_string();
+    let mut nm = base.replace('.', "_");
     while taken.contains(&nm) {
         nm.push('_');
     }
@@ -301,11 +304,9 @@ impl Doc<'_, '_> {
         Ok(())
     }
 
-    fn finish(mut self, name: &str) -> Value {
-        self.doc
-            .insert("models".into(), json!({name: Value::Object(self.model)}));
-        derived_version(&mut self.doc);
-        Value::Object(self.doc)
+    fn finish(mut self, name: &str) -> R<Value> {
+        finish_derived(&mut self.doc, self.model, self.sv, name)?;
+        Ok(Value::Object(self.doc))
     }
 }
 
@@ -939,7 +940,7 @@ pub fn jvp_document(
         v: vin,
         jvp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 /// The `Jᵀ λ` product document of spec §9.3 (model `"VjpEval"`): as
@@ -997,7 +998,7 @@ pub fn vjp_document(
         lam,
         vjp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 /// The second-order product document of spec §9.4 for the axis pair `wrt`,
@@ -1101,7 +1102,7 @@ pub fn hvp_document(
         w,
         hvp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 // ── recurrences: tangent and adjoint sweeps (§9.7) ──────────────────────────
@@ -1394,7 +1395,7 @@ fn jvp_sweeps(
         v: vin,
         jvp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 fn vjp_sweeps(
@@ -1446,7 +1447,7 @@ fn vjp_sweeps(
         lam,
         vjp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 /// The §4.4 contraction through recurrences (§9.7): per stage `i`, the
@@ -1706,7 +1707,7 @@ fn hvp_sweeps(
         w,
         hvp: out,
     };
-    Ok((d.finish(model), io))
+    Ok((d.finish(model)?, io))
 }
 
 #[cfg(test)]

@@ -101,16 +101,19 @@ fn wrapped_with(flat: &FlattenedSystem, shapes: &[(String, Vec<String>)], extra:
     for (k, v) in extra.as_object().unwrap() {
         isets[k] = v.clone();
     }
-    let doc = json!({
+    let mut doc = json!({
         "esm": "1.1.0",
         "metadata": {"name": MODEL},
         "index_sets": isets,
-        "domain": serde_json::to_value(&flat.domain).unwrap(),
         "models": {MODEL: {
             "variables": serde_json::to_value(vars).unwrap(),
             "equations": serde_json::to_value(&flat.equations).unwrap(),
         }},
     });
+    // a document with no domain has no `domain` key (the schema has no null)
+    if let Some(d) = &flat.domain {
+        doc["domain"] = serde_json::to_value(d).unwrap();
+    }
     serde_json::from_value(doc).expect("wrapped document deserializes")
 }
 

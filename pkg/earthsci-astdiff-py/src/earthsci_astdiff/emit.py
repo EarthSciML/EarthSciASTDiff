@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
+from earthsci_ast.serialize import _serialize_domain
 
-from .bands import Band
+from .bands import Band, BandError
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
@@ -637,6 +638,13 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
         b = en.band
         nm = f"J_{k + 1}"
         names.append(nm)
+        # a source variable the derived model already holds under this name
+        # would be overwritten by the band field (§8.1)
+        if nm in m["variables"]:
+            raise BandError(
+                f"the source declares `{nm}`, the name of band field {k + 1} of the "
+                "evaluation document"
+            )
         shape_u = ctx.shapes.get(en.u) or []
         cr = b.contracted
         if not shape_u and not cr:
@@ -677,9 +685,18 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
                 "values": [0.0, val],
             }
         m["equations"].append({"lhs": {"op": "D", "args": [nm], "wrt": "t"}, "rhs": rhs})
-    _component_tree(doc, "JacobianEval")
-    _domain(doc, getattr(sv, "domain", None))
-    return _derived_version(doc), names
+    return _finish_derived(doc, sv, "JacobianEval"), names
+
+
+def _finish_derived(doc: dict, sv, derived: str) -> dict:
+    """Finish a derived document whose model is ``derived`` (the evaluation
+    document, spec §8.1, and every product document, §9.1): lay a flattened
+    source out as its component tree, carry the source's ``domain``, and
+    settle the ``esm`` version. Every derived document ends here, so the
+    documents of one source agree on its layout and its time origin."""
+    _component_tree(doc, sv, derived)
+    _domain(doc, sv.domain)
+    return _derived_version(doc)
 
 
 def _domain(doc: dict, domain) -> dict:
@@ -687,26 +704,25 @@ def _domain(doc: dict, domain) -> dict:
     its ``temporal`` (``start``, ``end``, ``reference_time``), which sets the
     time origin the calendar functions (``datetime.*``) read, and its
     ``element_type`` and ``array_type``. Not ``independent_variable``: the
-    derived equations are written with respect to ``t``. Absent when nothing
-    is left."""
+    derived equations are written with respect to ``t``. Built key by key from
+    EarthSciAST's serialization (a raw domain dict is taken as serialized), so
+    every binding writes the same object; absent when nothing is left."""
     if domain is None:
         return doc
-    if isinstance(domain, dict):  # a raw domain
-        temporal = domain.get("temporal") or {}
-        get_t = temporal.get
-        get_d = domain.get
-    else:
-        temporal = getattr(domain, "temporal", None)
-        get_t = lambda k: getattr(temporal, k, None)  # noqa: E731
-        get_d = lambda k: getattr(domain, k, None)  # noqa: E731
+    src = domain if isinstance(domain, dict) else _serialize_domain(domain)
     out: dict = {}
-    if temporal:
-        t = {k: get_t(k) for k in ("start", "end", "reference_time") if get_t(k) is not None}
+    temporal = src.get("temporal")
+    if isinstance(temporal, dict):
+        t = {
+            k: temporal[k]
+            for k in ("start", "end", "reference_time")
+            if temporal.get(k) is not None
+        }
         if t:
             out["temporal"] = t
     for k in ("element_type", "array_type"):
-        if get_d(k) is not None:
-            out[k] = get_d(k)
+        if src.get(k) is not None:
+            out[k] = src[k]
     if out:
         doc["domain"] = out
     return doc
@@ -764,9 +780,26 @@ def _component_node(models: dict, path: str, derived: str) -> dict:
     return node
 
 
-def _component_tree(doc: dict, derived: str) -> dict:
+def _component_tree(doc: dict, sv, derived: str) -> dict:
     """Move the scoped declarations and the equations whose subject is scoped
-    out of the derived model ``derived`` into the component tree, in order."""
+    out of the derived model ``derived`` into the component tree, in order.
+
+    Refused (§8.1): a source mixing scoped and unscoped names, whose moved
+    equations would read an unscoped name against the wrong model; a
+    component named ``derived``; and a scoped name that is both a variable
+    and a component (``A.B`` and ``A.B.c``), which would give model ``A`` a
+    variable and a subsystem of one name."""
+    from .bands import BandError
+
+    src = list(sv.variables)
+    if not any(_is_scoped(n) for n in src):
+        return doc
+    bare = sorted(n for n in src if not _is_scoped(n))
+    if bare:
+        raise BandError(
+            f"the source mixes scoped and unscoped variable names (`{bare[0]}`); "
+            "a flattened system's names are all scoped"
+        )
     models = doc["models"]
     m = models[derived]
     for n in sorted(k for k in m["variables"] if _is_scoped(k)):
@@ -780,4 +813,18 @@ def _component_tree(doc: dict, derived: str) -> dict:
         else:
             kept.append(eq)
     m["equations"] = kept
+    for name, node in models.items():
+        if name != derived:
+            _check_component(node, name)
     return doc
+
+
+def _check_component(node: dict, path: str) -> None:
+    """Refuse a component whose variable and subsystem share a name, at any
+    depth."""
+    from .bands import BandError
+
+    for s, child in (node.get("subsystems") or {}).items():
+        if s in node["variables"]:
+            raise BandError(f"`{path}.{s}` is both a variable and a component of the source")
+        _check_component(child, f"{path}.{s}")

@@ -183,3 +183,136 @@ end
     doc, _ = evaluation_document(fixture("bd_chem.esm"))
     @test !haskey(doc, "domain")
 end
+
+# The product documents (esm-jacobian-spec.md §9) of a flattened system are
+# laid out as its component tree too: the source's scoped names in their
+# components, the inputs and outputs (`_v_SimpleOzone_O3`, the column's dots
+# made `_`) unscoped in the derived model. Each loads and builds in
+# EarthSciAST and gives `J v`, `Jᵀ λ` and the second-order contraction of the
+# golden Jacobian `coupled_chem_advection.jvals.json`.
+@testset "flattened product documents" begin
+    flat = EarthSciAST.flatten(fixture("coupled_chem_advection.esm"))
+    g = EarthSciASTDiff.JSON3.read(
+        read(joinpath(_FLAT_GOLDENS, "coupled_chem_advection.jvals.json"), String)
+    )
+    u = Dict{String, Float64}(String(k) => Float64(v) for (k, v) in pairs(g["u"]))
+    t = Float64(g["t"])
+    want = Dict{Tuple{String, String}, Float64}(
+        (String(e[1]), String(e[2])) => Float64(e[3]) for e in g["entries"]
+    )
+    cells = flat_state_cells(flat)
+    v = Dict(c => sin(1.7 * i) for (i, c) in enumerate(cells))
+    λ = Dict(c => cos(0.9 * i) for (i, c) in enumerate(cells))
+    close(a, b) = isapprox(a, b; rtol = 1.0e-10, atol = 1.0e-13)
+    layout_ok(doc, model) = begin
+        ms = doc["models"]
+        sort!(collect(keys(ms))) == sort!(["Advection", "SimpleOzone", model]) &&
+            !any(occursin('.', n) for m in values(ms) for n in keys(m["variables"]))
+    end
+    for cse in (true, false)
+        jv, io = jvp_document(flat; cse = cse)
+        @test layout_ok(jv, "JvpEval")
+        @test io.v["SimpleOzone.O3"] == "_v_SimpleOzone_O3"
+        @test io.jvp["SimpleOzone.O3"] == "_jvp_SimpleOzone_O3"
+        out = flat_doc_call(jv, io, u, Dict(_doc_cell(io.v, c) => v[c] for c in cells); t = t)
+        for r in cells
+            @test close(
+                out(_doc_cell(io.jvp, r)),
+                sum((x * v[c] for ((rr, c), x) in want if rr == r); init = 0.0)
+            )
+        end
+        vj, io = vjp_document(flat; cse = cse)
+        @test layout_ok(vj, "VjpEval")
+        out = flat_doc_call(
+            vj, io, u, Dict(_doc_cell(io.lam, r) => λ[r] for r in cells);
+            t = t, compiler = :interpreter
+        )
+        for c in cells
+            @test close(
+                out(_doc_cell(io.vjp, c)),
+                sum((λ[r] * x for ((r, cc), x) in want if cc == c); init = 0.0)
+            )
+        end
+    end
+    # ∇_u (λᵀ J(u) v), against a central difference of λᵀ J v through the
+    # JvpEval document
+    hv, io = hvp_document(flat; stages = 1)
+    @test layout_ok(hv, "HvpEval")
+    inputs = Dict{String, Float64}()
+    for c in cells
+        inputs[_doc_cell(io.mu[1], c)] = λ[c]
+        inputs[_doc_cell(io.w[1], c)] = v[c]
+    end
+    out = flat_doc_call(hv, io, u, inputs; t = t, compiler = :interpreter)
+    jv, jio = jvp_document(flat; cse = false)
+    vin = Dict(_doc_cell(jio.v, c) => v[c] for c in cells)
+    lJv(uu) = (o = flat_doc_call(jv, jio, uu, vin; t = t); sum(λ[r] * o(_doc_cell(jio.jvp, r)) for r in cells))
+    h = 1.0e-5
+    for k in cells
+        up = copy(u); up[k] += h
+        um = copy(u); um[k] -= h
+        @test isapprox(out(_doc_cell(io.hvp, k)), (lJv(up) - lJv(um)) / (2h); rtol = 1.0e-6, atol = 1.0e-9)
+    end
+end
+
+@testset "flattened documents: refused sources" begin
+    # a flattened system mixing scoped and unscoped names: an equation moved
+    # to `Chem` would read the unscoped `x` as `Chem.x`
+    file = fixture("coupled_chem_advection.esm")
+    sv = sysview(EarthSciAST.flatten(file))
+    entries = jacobian_bands(sv)
+    any_param = first(n for (n, x) in sv.variables if x.type == EarthSciAST.ParameterVariable)
+    bad = EarthSciASTDiff.SysView(
+        merge(sv.variables, Dict("x" => sv.variables[any_param])), sv.equations,
+        sv.index_sets, sv.domain
+    )
+    err = try
+        _evaluation_document(bad, entries)
+        nothing
+    catch e
+        e
+    end
+    @test err isa EarthSciASTDiff.BandError && occursin("`x`", sprint(showerror, err))
+    # a scoped name that is both a variable and a component
+    st = first(n for n in keys(sv.variables) if startswith(n, "SimpleOzone."))
+    bad = EarthSciASTDiff.SysView(
+        merge(
+            sv.variables, Dict(
+                "Advection.Inner" => sv.variables[any_param],
+                "Advection.Inner.q" => sv.variables[any_param]
+            )
+        ),
+        sv.equations, sv.index_sets, sv.domain
+    )
+    err = try
+        _evaluation_document(bad, entries)
+        nothing
+    catch e
+        e
+    end
+    @test err isa EarthSciASTDiff.BandError &&
+        occursin("`Advection.Inner` is both a variable and a component", sprint(showerror, err))
+    # a source variable named like a band field
+    clash = EarthSciAST.load_string(
+        """
+        {"esm": "1.1.0", "metadata": {"name": "Clash"},
+         "models": {"JacobianEval": {
+           "variables": {"J_1": {"type": "unknown", "default": 1.0}},
+           "equations": [{"lhs": {"op": "D", "args": ["J_1"], "wrt": "t"},
+                          "rhs": {"op": "*", "args": [-1.0, "J_1", "J_1"]}}]}}}
+        """
+    )
+    @test_throws EarthSciASTDiff.BandError evaluation_document(clash)
+end
+
+@testset "product documents: the source's domain" begin
+    file = EarthSciAST.load_string(_DIURNAL)
+    for src in (file, EarthSciAST.flatten(file))
+        want = """{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"""
+        for (doc, _) in (jvp_document(src), vjp_document(src), hvp_document(src; stages = 1))
+            @test stable_json(doc["domain"]) == want
+        end
+    end
+    doc, _ = jvp_document(fixture("bd_chem.esm"))
+    @test !haskey(doc, "domain")
+end

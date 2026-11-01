@@ -1660,6 +1660,14 @@ pub fn evaluation_document(
     for (k, en) in entries.iter().enumerate() {
         let b = &en.band;
         let nm = format!("J_{}", k + 1);
+        // a source variable the derived model already holds under this name
+        // would be overwritten by the band field (§8.1)
+        if vars.contains_key(&nm) {
+            return Err(crate::bands::BandError(format!(
+                "the source declares `{nm}`, the name of band field {} of the evaluation document",
+                k + 1
+            )));
+        }
         names.push(nm.clone());
         let shape_u = ctx.shapes.get(&en.u).cloned().unwrap_or_default();
         let cr = &b.contracted;
@@ -1722,15 +1730,30 @@ pub fn evaluation_document(
     }
     model.insert("equations".into(), Value::Array(eqs));
     doc.insert("index_sets".into(), Value::Object(isets));
+    finish_derived(&mut doc, model, sv, "JacobianEval")?;
+    Ok((Value::Object(doc), names))
+}
+
+/// Finish a derived document whose model `model` is named `derived` (the
+/// evaluation document, spec §8.1, and every product document, §9.1): lay a
+/// flattened source out as its component tree, carry the source's `domain`,
+/// and settle the `esm` version. Every derived document ends here, so the
+/// documents of one source agree on its layout and its time origin.
+pub(crate) fn finish_derived(
+    doc: &mut Map<String, Value>,
+    model: Map<String, Value>,
+    sv: &SysView,
+    derived: &str,
+) -> Result<(), crate::bands::BandError> {
     let mut models = Map::new();
-    models.insert("JacobianEval".into(), Value::Object(model));
-    component_tree(&mut models, "JacobianEval")?;
+    models.insert(derived.into(), Value::Object(model));
+    component_tree(&mut models, sv, derived)?;
     doc.insert("models".into(), Value::Object(models));
     if let Some(d) = sv.domain.and_then(domain_field) {
         doc.insert("domain".into(), d);
     }
-    derived_version(&mut doc);
-    Ok((Value::Object(doc), names))
+    derived_version(doc);
+    Ok(())
 }
 
 /// The source's `domain`, as far as it bears on evaluation (spec §8.1): its
@@ -1834,10 +1857,28 @@ fn component_node<'m>(
 
 /// Move the scoped declarations and the equations whose subject is scoped
 /// out of the derived model `derived` into the component tree, in order.
+///
+/// Refused (§8.1): a source mixing scoped and unscoped names, whose moved
+/// equations would read an unscoped name against the wrong model; a
+/// component named `derived`; and a scoped name that is both a variable and
+/// a component (`A.B` and `A.B.c`), which would give model `A` a variable
+/// and a subsystem of one name.
 pub(crate) fn component_tree(
     models: &mut Map<String, Value>,
+    sv: &SysView,
     derived: &str,
 ) -> Result<(), crate::bands::BandError> {
+    if !sv.variables.keys().any(|n| n.contains('.')) {
+        return Ok(());
+    }
+    let mut bare: Vec<&String> = sv.variables.keys().filter(|n| !n.contains('.')).collect();
+    bare.sort();
+    if let Some(n) = bare.first() {
+        return Err(crate::bands::BandError(format!(
+            "the source mixes scoped and unscoped variable names (`{n}`); \
+             a flattened system's names are all scoped"
+        )));
+    }
     let Some(Value::Object(mut m)) = models.remove(derived) else {
         unreachable!()
     };
@@ -1881,7 +1922,27 @@ pub(crate) fn component_tree(
     }
     m.insert("variables".into(), Value::Object(keep_vars));
     m.insert("equations".into(), Value::Array(keep_eqs));
+    for (name, node) in models.iter() {
+        check_component(node, name)?;
+    }
     models.insert(derived.to_string(), Value::Object(m));
+    Ok(())
+}
+
+/// Refuse a component whose variable and subsystem share a name, at any
+/// depth.
+fn check_component(node: &Value, path: &str) -> Result<(), crate::bands::BandError> {
+    let Some(Value::Object(subs)) = node.get("subsystems") else {
+        return Ok(());
+    };
+    for (s, child) in subs {
+        if node["variables"].get(s).is_some() {
+            return Err(crate::bands::BandError(format!(
+                "`{path}.{s}` is both a variable and a component of the source"
+            )));
+        }
+        check_component(child, &format!("{path}.{s}"))?;
+    }
     Ok(())
 }
 

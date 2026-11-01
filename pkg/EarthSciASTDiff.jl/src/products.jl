@@ -37,6 +37,12 @@ function _collect_names!(s, x::AbstractDict)
     return
 end
 
+# An input or output name of a product document: `base` with every `.` of the
+# source name it holds made `_`, then fresh (§9.1). A flattened system's
+# column `SimpleOzone.O3` gives `_v_SimpleOzone_O3`, an unscoped name of the
+# derived model, which a dotted name would not be (§8.1).
+_iofresh!(taken::Set{String}, base::String) = _fresh!(taken, replace(base, '.' => '_'), "_")
+
 # The column variables of one first-order axis, in canonical order (§9.1).
 function _column_vars(sv::SysView, wrt::Symbol, forcing)::Vector{String}
     wrt == :time && return ["t"]
@@ -431,8 +437,8 @@ function _jvp_document(
     )
     doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
     taken = _doc_names(doc)
-    vin = OrderedDict{String, String}(c => _fresh!(taken, "_v_$c", "_") for c in _column_vars(sv, wrt, forcing))
-    out = OrderedDict{String, String}(r => _fresh!(taken, "_jvp_$r", "_") for r in view_states(sv))
+    vin = OrderedDict{String, String}(c => _iofresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
+    out = OrderedDict{String, String}(r => _iofresh!(taken, "_jvp_$r") for r in view_states(sv))
     for (c, nm) in vin
         _declare!(m, sv, ctx, nm, c, nothing)
     end
@@ -440,7 +446,7 @@ function _jvp_document(
         m, sv, ctx, out, k -> _jvp_term(entries[k], coefs[k], vin[entries[k].v], ctx, wrt),
         ((k, en.u) for (k, en) in enumerate(entries))
     )
-    return _derived_version!(doc), (model = "JvpEval", v = vin, jvp = out)
+    return _finish_derived!(doc, sv, "JvpEval"), (model = "JvpEval", v = vin, jvp = out)
 end
 
 function _vjp_document(
@@ -449,8 +455,8 @@ function _vjp_document(
     )
     doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
     taken = _doc_names(doc)
-    lam = OrderedDict{String, String}(r => _fresh!(taken, "_lam_$r", "_") for r in view_states(sv))
-    out = OrderedDict{String, String}(c => _fresh!(taken, "_vjp_$c", "_") for c in _column_vars(sv, wrt, forcing))
+    lam = OrderedDict{String, String}(r => _iofresh!(taken, "_lam_$r") for r in view_states(sv))
+    out = OrderedDict{String, String}(c => _iofresh!(taken, "_vjp_$c") for c in _column_vars(sv, wrt, forcing))
     for (r, nm) in lam
         _declare!(m, sv, ctx, nm, r, nothing)
     end
@@ -458,7 +464,7 @@ function _vjp_document(
         m, sv, ctx, out, k -> _vjp_term(entries[k], coefs[k], lam[entries[k].u], ctx, wrt, taken),
         ((k, en.v) for (k, en) in enumerate(entries))
     )
-    return _derived_version!(doc), (model = "VjpEval", lam = lam, vjp = out)
+    return _finish_derived!(doc, sv, "VjpEval"), (model = "VjpEval", lam = lam, vjp = out)
 end
 
 function _hvp_document(
@@ -483,11 +489,11 @@ function _hvp_document(
     mu = OrderedDict{String, String}[]
     w = OrderedDict{String, String}[]
     for i in 1:stages
-        push!(mu, OrderedDict{String, String}(r => _fresh!(taken, "_mu$(i)_$r", "_") for r in states))
-        push!(w, OrderedDict{String, String}(c => _fresh!(taken, "_w$(i)_$c", "_") for c in cols1))
+        push!(mu, OrderedDict{String, String}(r => _iofresh!(taken, "_mu$(i)_$r") for r in states))
+        push!(w, OrderedDict{String, String}(c => _iofresh!(taken, "_w$(i)_$c") for c in cols1))
     end
     cols2 = form == :contract ? _column_vars(sv, a2, forcing) : states
-    out = OrderedDict{String, String}(c => _fresh!(taken, "_hvp_$c", "_") for c in cols2)
+    out = OrderedDict{String, String}(c => _iofresh!(taken, "_hvp_$c") for c in cols2)
     for i in 1:stages
         for (r, nm) in mu[i]
             _declare!(m, sv, ctx, nm, r, nothing)
@@ -507,7 +513,7 @@ function _hvp_document(
             ((k, en.v) for (k, en) in enumerate(entries))
         )
     end
-    return _derived_version!(doc), (model = model, mu = mu, w = w, hvp = out)
+    return _finish_derived!(doc, sv, model), (model = model, mu = mu, w = w, hvp = out)
 end
 
 """
