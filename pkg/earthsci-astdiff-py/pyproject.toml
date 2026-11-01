@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "earthsci-astdiff"
-version = "0.1.0"
+version = "0.2.0"
 description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST"
 readme = "README.md"
 license = "AGPL-3.0"
