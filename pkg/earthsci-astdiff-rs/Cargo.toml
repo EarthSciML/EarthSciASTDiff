@@ -12,7 +12,7 @@ description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symb
 # release. upstream-main.yml tests against EarthSciAST `main` by patching in
 # a sibling checkout, which works locally too:
 #   cargo test --config 'patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"'
-earthsci-ast = ">=0.5, <0.7"
+earthsci-ast = ">=0.5, <0.8"
 indexmap = "2"
 serde_json = "1"
 
