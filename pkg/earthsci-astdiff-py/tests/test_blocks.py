@@ -43,7 +43,7 @@ def test_block_roundtrip(name, valid_dir):
     wrt, back = parse_jacobian_block(block)
     ref = jacobian_bands(file, mname)
     assert wrt == "states" and len(back) == len(ref)
-    for a, b in zip(ref, back):
+    for a, b in zip(ref, back, strict=True):
         assert skey(a.band.coef) == skey(b.band.coef)
         assert [skey(c) for c in a.band.cidx] == [skey(c) for c in b.band.cidx]
 

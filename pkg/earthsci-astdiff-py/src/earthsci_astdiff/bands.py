@@ -444,7 +444,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
 
 
 def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
-    for region, val in zip(e.regions, e.values):
+    for region, val in zip(e.regions, e.values, strict=True):
         rows = [(region_bound(r[0]), region_bound(r[1])) for r in region]
         if any(hi < lo for lo, hi in rows):
             continue  # folded-empty region

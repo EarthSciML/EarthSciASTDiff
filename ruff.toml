@@ -5,7 +5,7 @@ line-length = 100
 # Set this to match the package's `requires-python`: a root ruff.toml does
 # not read pyproject.toml, so without it ruff assumes its own default
 # (py311 as of 0.17) and may suggest syntax older Pythons lack.
-target-version = "py39"
+target-version = "py311"
 
 [lint]
 # An explicit `select`, not ruff's default set: the default grew from 59 to

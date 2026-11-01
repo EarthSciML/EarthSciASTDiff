@@ -86,10 +86,10 @@ def _materialized(valid_dir, wrt, g):
     d = _Doc(doc, "JacobianEval", state_cells(sv))
     out = d.call(g["u"], g["params"], g["t"], {})
     J: dict = {}
-    for en, nm in zip(entries, names):
+    for en, nm in zip(entries, names, strict=True):
         shape = ctx.shapes.get(en.v) or []
         for cell, cc, _, cidx in foreach_point(en.band):
-            if any(not (1 <= c <= n) for c, n in zip(cidx, shape)):
+            if any(not (1 <= c <= n) for c, n in zip(cidx, shape, strict=False)):
                 continue
             key = (_cellname(en.u, cell), _cellname(en.v, cidx))
             J[key] = J.get(key, 0.0) + out(_cellname(nm, [*cell, *cc]))
@@ -367,10 +367,10 @@ def test_transfer_names_do_not_depend_on_activity():
     cells = state_cells(sv)
     out = _Doc(edoc, "JacobianEval", cells).call({c: 0.5 for c in cells}, {}, 0.0, {})
     J: dict = {}
-    for en, nm in zip(entries, names):
+    for en, nm in zip(entries, names, strict=True):
         shape = ctx.shapes.get(en.v) or []
         for cell, cc, _, cidx in foreach_point(en.band):
-            if any(not (1 <= c <= n) for c, n in zip(cidx, shape)):
+            if any(not (1 <= c <= n) for c, n in zip(cidx, shape, strict=False)):
                 continue
             key = (_cellname(en.u, cell), _cellname(en.v, cidx))
             J[key] = J.get(key, 0.0) + out(_cellname(nm, [*cell, *cc]))

@@ -89,7 +89,7 @@ def check_against_fd(file, x, model=None, npat=None, tol=1e-7):
     value within ``tol``, and the structural pattern a superset of every
     nonzero (``npat``: its exact size). Returns ``J`` on the pattern."""
     _, names, _ = rhs_function(file, model)
-    got = doc_jacobian(file, model, states=dict(zip(names, map(float, x)))).J
+    got = doc_jacobian(file, model, states=dict(zip(names, map(float, x), strict=True))).J
     want = fd_jacobian(file, x, model)
     for key, v in want.items():
         if abs(v) > 1e-8:

@@ -227,7 +227,7 @@ def split_guard(g: Expr, names: list, box: list) -> list:
     each cell — dropped where ``g`` is false throughout, unguarded
     (``None``) where it is true throughout, and guarded by the undecided
     residual otherwise. Cells are in the clipper's ascending order."""
-    pins = {n: lo for n, (lo, hi) in zip(names, box) if lo == hi}
+    pins = {n: lo for n, (lo, hi) in zip(names, box, strict=True) if lo == hi}
     if pins:
         g = substitute(g, pins)
     out = []
