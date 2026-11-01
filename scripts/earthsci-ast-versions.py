@@ -49,6 +49,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # The newest CPython the Python binding is tested on (the top of its
 # `requires-python` range; the bottom is read from pyproject.toml).
 PYTHON_NEWEST = "3.14"
+# The runner for the requires-python floor: the newest Ubuntu image that
+# actions/setup-python still has that Python for (3.9 left ubuntu-latest with
+# 26.04). When this image retires, raise requires-python.
+PYTHON_FLOOR_RUNNER = "ubuntu-24.04"
 
 Version = tuple[int, int, int]
 # A range is a union of intervals [lo, hi), hi = None for unbounded.
@@ -518,7 +522,12 @@ def main() -> None:
         lo, hi = ok[0], ok[-1]
         if binding == "python":
             legs = [
-                {"label": f"{label}; Python {py}", "version": show(v), "python": py}
+                {
+                    "label": f"{label}; Python {py}",
+                    "version": show(v),
+                    "python": py,
+                    "os": PYTHON_FLOOR_RUNNER if py == pyfloor else "ubuntu-latest",
+                }
                 for label, v in ends(lo, hi)
                 for py in dict.fromkeys([pyfloor, PYTHON_NEWEST])
             ]

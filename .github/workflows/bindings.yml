@@ -5,7 +5,7 @@
 #
 # Each matrix is a JSON list of legs. A leg has a `label` (the job title);
 # with `earthsci-ast-ref` empty it also has the `version` to pin, and a
-# Python leg has the `python` to run on.
+# Python leg has the `python` to run on (and may name the runner `os`).
 name: Bindings
 
 on:
@@ -24,6 +24,9 @@ on:
         description: An EarthSciAST ref to test against instead of the pinned releases
         type: string
         default: ""
+
+permissions:
+  contents: read
 
 env:
   EARTHSCI_AST_REF: ${{ inputs.earthsci-ast-ref }}
@@ -49,7 +52,11 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: "1"
+      # No cache when the run executes code from an EarthSciAST ref: a
+      # scheduled run saves caches to the default branch's scope, which
+      # every later run (the release gate included) restores.
       - uses: julia-actions/cache@v3
+        if: inputs.earthsci-ast-ref == ''
       # Manifest.toml is gitignored. A release: `add` pins EarthSciAST to it
       # (Pkg refuses one outside [compat]), and runtests.jl checks that the
       # test sandbox kept the pin, which `allow_reresolve=false` also
@@ -74,7 +81,7 @@ jobs:
 
   python:
     name: Python, EarthSciAST ${{ matrix.label }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -132,10 +139,12 @@ jobs:
           ref: ${{ inputs.earthsci-ast-ref }}
           path: EarthSciAST
       - uses: dtolnay/rust-toolchain@stable
+      # No cache when testing an EarthSciAST ref (see the Julia job).
       - uses: Swatinem/rust-cache@v2
+        if: inputs.earthsci-ast-ref == ''
         with:
           workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
-          key: earthsci-ast-${{ matrix.version || inputs.earthsci-ast-ref }}
+          key: earthsci-ast-${{ matrix.version }}
       # No Cargo.lock is committed (this is a library). A release: lock the
       # crates.io earthsci-ast to exactly it (Cargo refuses one outside the
       # requirement). A ref: patch in the sibling checkout, after widening the
