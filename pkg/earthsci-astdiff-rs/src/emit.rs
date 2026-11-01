@@ -8,6 +8,7 @@ use earthsci_ast::{free_variables, Expr, ExpressionNode, VariableType};
 use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
+use crate::branches::canon_lits;
 use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed_bands;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
@@ -330,8 +331,102 @@ pub struct ColumnLines {
     pub kl: i64,
     /// The largest distance above the diagonal any point reaches.
     pub ku: i64,
-    /// `"dense"`, `"lower"`, `"upper"` or `"banded"`.
+    /// `"dense"`, `"lower"`, `"upper"`, `"banded"` or `"diag_plus_rank1"`.
     pub pattern: &'static str,
+    /// The rank-one terms of a `"diag_plus_rank1"` line block (empty for
+    /// every other pattern).
+    pub rank1: Vec<Rank1>,
+}
+
+/// One rank-one term of a `"diag_plus_rank1"` line block (spec §6): entry
+/// `entry` (1-based, in block order) contributes `u(row) · v(κ)` at every
+/// point, `u` over the entry's row index names and `v` over its one
+/// contracted name `κ` — the column's position on the line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rank1 {
+    pub entry: usize,
+    pub u: Value,
+    pub v: Value,
+}
+
+/// The factors of a product: numerator and denominator factors, `*` and
+/// `/` flattened and a unary minus taken out as `-1`.
+fn factors(e: &Expr, num: &mut Vec<Expr>, den: &mut Vec<Expr>) {
+    if let Expr::Operator(n) = e {
+        match (&n.op[..], n.args.len()) {
+            ("*", _) => {
+                for a in &n.args {
+                    factors(a, num, den);
+                }
+                return;
+            }
+            ("/", 2) => {
+                factors(&n.args[0], num, den);
+                factors(&n.args[1], den, num);
+                return;
+            }
+            ("-", 1) => {
+                num.push(Expr::Integer(-1));
+                factors(&n.args[0], num, den);
+                return;
+            }
+            _ => {}
+        }
+    }
+    num.push(e.clone());
+}
+
+/// `coef = u · v` with `u` free of the contracted name `kap` and `v` free of
+/// every row name, or `None` when a factor reads both.
+fn split_rank1(coef: &Expr, kap: &str, rows: &HashSet<String>) -> Option<(Expr, Expr)> {
+    let (mut num, mut den) = (Vec::new(), Vec::new());
+    factors(coef, &mut num, &mut den);
+    let (mut un, mut ud, mut vn, mut vd) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (fs, is_num) in [(num, true), (den, false)] {
+        for f in fs {
+            let fv = crate::helpers::free_vars(&f);
+            let (k, r) = (fv.contains(kap), fv.iter().any(|x| rows.contains(x)));
+            match (k, r, is_num) {
+                (true, true, _) => return None,
+                (true, false, true) => vn.push(f),
+                (true, false, false) => vd.push(f),
+                (false, _, true) => un.push(f),
+                (false, _, false) => ud.push(f),
+            }
+        }
+    }
+    let build = |n: Vec<Expr>, d: Vec<Expr>| -> Expr {
+        let n = crate::helpers::mul(n);
+        if d.is_empty() {
+            n
+        } else {
+            crate::helpers::op("/", vec![n, crate::helpers::mul(d)])
+        }
+    };
+    Some((build(un, ud), build(vn, vd)))
+}
+
+/// A band whose every point reads one other cell of its row's line — the
+/// line position being its one contracted name, under no `where` — with a
+/// coefficient that splits as `u(row) · v(κ)`: a rank-one term of the line
+/// block.
+fn rank1_term(b: &Band, dim: usize) -> Option<(Expr, Expr)> {
+    if b.guard.is_some() || b.contracted.len() != 1 {
+        return None;
+    }
+    let kap = &b.contracted[0].0;
+    if !matches!(b.cidx.get(dim), Some(Expr::Variable(x)) if x == kap) {
+        return None;
+    }
+    let rows: HashSet<String> = b
+        .ridx
+        .iter()
+        .filter_map(|r| match r {
+            RIdx::Name(n) => Some(n.clone()),
+            RIdx::Fixed(_) => None,
+        })
+        .collect();
+    split_rank1(&b.coef, kap, &rows)
 }
 
 /// The per-line structure of a state Jacobian along index set `axis`, or
@@ -384,7 +479,9 @@ pub fn column_lines(
         .get(axis)
         .ok_or_else(|| crate::bands::BandError(format!("unknown index set `{axis}`")))?;
     let (mut kl, mut ku) = (0i64, 0i64);
-    for en in entries {
+    // per entry: whether every point sits at distance 0 on the axis
+    let mut diag = vec![true; entries.len()];
+    for (k, en) in entries.iter().enumerate() {
         let ok = crate::points::all_points(&en.band, &mut |cell, _, _, cidx| {
             for d in 0..cidx.len() {
                 if d != dim && cidx[d] != cell[d] {
@@ -397,13 +494,36 @@ pub fn column_lines(
             let off = cidx[dim] - cell[dim];
             kl = kl.max(-off);
             ku = ku.max(off);
+            diag[k] = diag[k] && off == 0;
             Ok(true)
         })?;
         if !ok {
             return Ok(None);
         }
     }
-    let pattern = if kl == nn - 1 && ku == nn - 1 {
+    // every entry at distance 0 or a rank-one term, and at least one of
+    // those: D + Σ u vᵀ per line, for a Sherman–Morrison solve
+    let mut rank1 = Vec::new();
+    let mut lowrank = (kl, ku) != (0, 0);
+    for (k, en) in entries.iter().enumerate() {
+        if diag[k] {
+            continue;
+        }
+        match rank1_term(&en.band, dim) {
+            Some((u, v)) => rank1.push(Rank1 {
+                entry: k + 1,
+                u: ser_expr(&canon_lits(&u)),
+                v: ser_expr(&canon_lits(&v)),
+            }),
+            None => lowrank = false,
+        }
+    }
+    if !lowrank {
+        rank1.clear();
+    }
+    let pattern = if !rank1.is_empty() {
+        "diag_plus_rank1"
+    } else if kl == nn - 1 && ku == nn - 1 {
         "dense"
     } else if ku == 0 && kl == nn - 1 {
         "lower"
@@ -426,6 +546,7 @@ pub fn column_lines(
         kl,
         ku,
         pattern,
+        rank1,
     }))
 }
 
@@ -666,14 +787,25 @@ pub fn serialize_plan(plan: &FactorizationPlan) -> Value {
             "pattern": nzpairs(&b.pattern),
             "lu_pattern": nzpairs(&b.lu),
         }),
-        FactorizationPlan::ColumnBlock(cl) => json!({
-            "type": "column_block",
-            "axis": cl.axis,
-            "line_length": cl.line_length,
-            "block_vars": cl.block_vars,
-            "pattern": cl.pattern,
-            "bandwidth": [cl.kl, cl.ku],
-        }),
+        FactorizationPlan::ColumnBlock(cl) => {
+            let mut p = json!({
+                "type": "column_block",
+                "axis": cl.axis,
+                "line_length": cl.line_length,
+                "block_vars": cl.block_vars,
+                "pattern": cl.pattern,
+                "bandwidth": [cl.kl, cl.ku],
+            });
+            if !cl.rank1.is_empty() {
+                p["rank1"] = Value::Array(
+                    cl.rank1
+                        .iter()
+                        .map(|r| json!({"entry": r.entry, "u": r.u, "v": r.v}))
+                        .collect(),
+                );
+            }
+            p
+        }
     }
 }
 
@@ -895,6 +1027,10 @@ fn axis_block(
         cse,
         cse_min_nodes,
     );
+    let aux = crate::recurrence::auxiliary(sv, obs, ctx, &entries)?;
+    if !aux.is_empty() {
+        block.insert("auxiliary".into(), auxiliary_field(&aux));
+    }
     if let Some(cl) = lines {
         // The plan from the point walk above, not a second one.
         let plan = FactorizationPlan::ColumnBlock(cl);
@@ -1378,13 +1514,7 @@ pub(crate) fn zero_source_derivatives(
             }
             Some(u) if done.insert(u.clone()) => {
                 let shape = ctx.shapes.get(&u).cloned().unwrap_or_default();
-                let rhs = if shape.is_empty() {
-                    json!(0.0)
-                } else {
-                    json!({"op": "makearray", "args": [],
-                           "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
-                           "values": [0.0]})
-                };
+                let rhs = zeros(&shape);
                 eqs.push(json!({"lhs": {"op": "D", "args": [u], "wrt": "t"}, "rhs": rhs}));
             }
             Some(_) => {}
@@ -1459,6 +1589,44 @@ pub(crate) fn hoist(
     h.coefs
 }
 
+/// The zero value of a variable of `shape` (§9.1): `0.0`, or a zero
+/// `makearray` over the shape.
+pub(crate) fn zeros(shape: &[i64]) -> Value {
+    if shape.is_empty() {
+        json!(0.0)
+    } else {
+        json!({"op": "makearray", "args": [],
+               "regions": [shape.iter().map(|n| json!([1, n])).collect::<Vec<_>>()],
+               "values": [0.0]})
+    }
+}
+
+/// The `auxiliary` definitions (spec §4.5) as observed of a derived model:
+/// each a declared unknown of its shape defined by a bare-LHS equation,
+/// after the source's own equations.
+pub(crate) fn add_auxiliary(model: &mut Map<String, Value>, aux: &[(String, Vec<String>, Expr)]) {
+    if let Some(Value::Object(vars)) = model.get_mut("variables") {
+        for (n, shape, _) in aux {
+            vars.insert(n.clone(), json!({"type": "unknown", "shape": shape}));
+        }
+    }
+    if let Some(Value::Array(eqs)) = model.get_mut("equations") {
+        for (n, _, d) in aux {
+            eqs.push(json!({"lhs": n, "rhs": ser_expr(d)}));
+        }
+    }
+}
+
+/// The block's `auxiliary` field (spec §4.5): `[{name, shape, rhs}]` in
+/// recurrence order.
+pub(crate) fn auxiliary_field(aux: &[(String, Vec<String>, Expr)]) -> Value {
+    Value::Array(
+        aux.iter()
+            .map(|(n, shape, d)| json!({"name": n, "shape": shape, "rhs": ser_expr(d)}))
+            .collect(),
+    )
+}
+
 /// The derived evaluation document and its band-state names (`J_1`, …).
 /// With `cse`, repeated coefficient subtrees are first hoisted into observed
 /// ([`crate::eval_cse::hoist_observed`]).
@@ -1470,8 +1638,12 @@ pub fn evaluation_document(
 ) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
-    let roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
+    let obs = crate::system::observed_defs(sv)?;
+    let aux = crate::recurrence::auxiliary(sv, &obs, &ctx, entries)?;
+    let mut roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
+    roots.extend(aux.iter().map(|(_, _, d)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
+    add_auxiliary(&mut model, &aux);
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     let coefs = hoist(&mut doc, &mut model, sv, &bands, cse, cse_min_nodes);
     let Some(Value::Array(mut eqs)) = model.remove("equations") else {

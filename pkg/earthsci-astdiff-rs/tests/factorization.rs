@@ -15,7 +15,7 @@ use serde_json::Value;
 mod common;
 use common::{load, root};
 
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 10] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -24,6 +24,8 @@ const NAMES: [&str; 8] = [
     "contracting_observed",
     "tgrad_photolysis",
     "forcing_bracket",
+    "recurrence_sweep",
+    "pbl_rank1",
 ];
 
 fn golden_block(name: &str) -> Value {

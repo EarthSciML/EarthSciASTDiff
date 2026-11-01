@@ -20,6 +20,7 @@ import earthsci_ast as ea
 from earthsci_ast.simulation_array import evaluate_rhs
 from earthsci_astdiff import (
     column_names,
+    extended_bands,
     hvp_document,
     jacobian_columns,
     jacobian_pattern,
@@ -217,10 +218,23 @@ def reached2(obj, model_name: str | None = None, wrt=("states", "states"), forci
         shape = shapes.get(v) or []
         return all(1 <= c[d] <= shape[d] for d in range(len(c)))
 
+    a1, a2 = axis_pair(wrt)
+    # through a recurrence (spec §4.5) a second column may be a recurrence,
+    # which is no column of the axis, and the second axis's recurrence rows
+    # carry the contraction on to their columns
+    e2 = extended_bands(sv, wrt=a2, forcing=forcing, second=a1)
     out = set()
     for en in jacobian_bands2(sv, wrt=wrt, forcing=forcing):
+        if e2.is_recurrence(en.w):
+            continue
         for _, _, _, c in foreach_point(en.band):
             c1, c2 = c[: en.ncol], c[en.ncol :]
             if inext(en.v, c1) and inext(en.w, c2):
                 out.add(_cellname(en.w, c2))
+    for en in e2.rec_rows:
+        if e2.is_recurrence(en.v):
+            continue
+        for _, _, _, c in foreach_point(en.band):
+            if inext(en.v, c):
+                out.add(_cellname(en.v, c))
     return out

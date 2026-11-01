@@ -2,10 +2,11 @@
 //! guards decided exactly by splitting band row ranges at their affine
 //! breakpoints; conservative everywhere else.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use earthsci_ast::Expr;
 
+use crate::bands::Band;
 use crate::helpers::{map_expr_children, op};
 
 const CMP_OPS: &[&str] = &["<", "<=", ">", ">="];
@@ -302,5 +303,66 @@ pub fn clip_regions(
             idx[k] = 0;
             k += 1;
         }
+    }
+}
+
+// ── interval bounds over a band's box (§9.1, §4.5) ─────────────────────────
+
+/// A band's index names (row names, then contracted names) and their ranges.
+pub(crate) fn index_box(b: &Band) -> HashMap<String, (i64, i64)> {
+    let mut bx = HashMap::new();
+    for (k, r) in b.ridx.iter().enumerate() {
+        if let RIdx::Name(n) = r {
+            bx.insert(n.clone(), b.rows[k]);
+        }
+    }
+    for (n, lo, hi) in &b.contracted {
+        bx.insert(n.clone(), (*lo, *hi));
+    }
+    bx
+}
+
+/// Bounds `(lo, hi, exact, names read)` of an index expression over `bx`, by
+/// interval arithmetic over the integer `+`, `-`, `*` core; `None` outside
+/// it (a `const` gather, a division, …). The bounds always enclose every
+/// value; `exact` when they are also attained at corners of the box: an
+/// affine expression reading each name at most once.
+pub(crate) fn index_bounds(
+    e: &Expr,
+    bx: &HashMap<String, (i64, i64)>,
+) -> Option<(i64, i64, bool, Vec<String>)> {
+    match e {
+        Expr::Integer(n) => Some((*n, *n, true, Vec::new())),
+        Expr::Number(x) if x.fract() == 0.0 => Some((*x as i64, *x as i64, true, Vec::new())),
+        Expr::Variable(n) => bx.get(n).map(|&(lo, hi)| (lo, hi, true, vec![n.clone()])),
+        Expr::Operator(nd) if matches!(nd.op.as_str(), "+" | "-" | "*") && !nd.args.is_empty() => {
+            let parts: Vec<_> = nd
+                .args
+                .iter()
+                .map(|a| index_bounds(a, bx))
+                .collect::<Option<_>>()?;
+            let mut it = parts.into_iter();
+            let (mut lo, mut hi, mut ex, mut ns) = it.next()?;
+            if nd.op == "-" && nd.args.len() == 1 {
+                return Some((-hi, -lo, ex, ns));
+            }
+            for (plo, phi, pex, pns) in it {
+                match nd.op.as_str() {
+                    "+" => (lo, hi) = (lo + plo, hi + phi),
+                    "-" => (lo, hi) = (lo - phi, hi - plo),
+                    _ => {
+                        // affine only while one factor is a constant
+                        ex &= ns.is_empty() || pns.is_empty();
+                        let c = [lo * plo, lo * phi, hi * plo, hi * phi];
+                        (lo, hi) = (*c.iter().min()?, *c.iter().max()?);
+                    }
+                }
+                ex &= pex;
+                ns.extend(pns);
+            }
+            let unique = ns.iter().collect::<HashSet<_>>().len() == ns.len();
+            Some((lo, hi, ex && unique, ns))
+        }
+        _ => None,
     }
 }

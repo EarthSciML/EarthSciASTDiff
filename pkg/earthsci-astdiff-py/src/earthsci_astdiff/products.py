@@ -13,21 +13,22 @@ from __future__ import annotations
 from dataclasses import replace
 from functools import reduce
 
-from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expression import free_variables
 
 from .bands import Band, BandError
+from .clip import _index_bounds, _index_box
 from .emit import (
     _base_document,
     _derived_version,
     _eval_guard,
     _hoist,
     _zero_source_derivatives,
+    _zeros,
     foreach_point,
 )
 from .expr_helpers import ser_expr
-from .jacobian import JacEntry, jacobian_bands, jacobian_columns
-from .second_order import JacEntry2, axis_pair, jacobian_bands2
+from .jacobian import JacEntry, _FirstOrder, jacobian_columns
+from .second_order import JacEntry2, _bands2, axis_pair
 from .system import SysView, ctx_of, sysview, view_states
 
 
@@ -104,16 +105,7 @@ def _declare(m: dict, sv: SysView, ctx, name: str, like: str, rhs) -> None:
         d["shape"] = list(sv.variables[like].shape)
     m["variables"][name] = d
     if rhs is None:
-        rhs = (
-            0.0
-            if not shape
-            else {
-                "op": "makearray",
-                "args": [],
-                "regions": [[[1, n] for n in shape]],
-                "values": [0.0],
-            }
-        )
+        rhs = _zeros(ctx, like)
     m["equations"].append({"lhs": {"op": "D", "args": [name], "wrt": "t"}, "rhs": rhs})
 
 
@@ -140,60 +132,9 @@ def _walk_band(b: Band, ci: list, guard) -> Band:
     return replace(b, cidx=list(ci), guard=guard)
 
 
-def _index_box(b: Band) -> dict[str, tuple[int, int]]:
-    """A band's index names (row names, then contracted names) and their
-    ranges."""
-    box = {r: tuple(b.rows[k]) for k, r in enumerate(b.ridx) if isinstance(r, str)}
-    for n, lo, hi in b.contracted:
-        box[n] = (lo, hi)
-    return box
-
-
 def _index_only(e, box) -> bool:
     """Whether ``e`` reads only the band's index names."""
     return set(free_variables(e)) <= box.keys()
-
-
-def _index_bounds(e, box):
-    """Bounds ``(lo, hi, exact, names read)`` of an index expression over
-    ``box``, by interval arithmetic over the integer ``+``, ``-``, ``*``
-    core; ``None`` outside it (a ``const`` gather, a division, …). The bounds
-    always enclose every value; ``exact`` when they are also attained at
-    corners of the box: an affine expression reading each name at most
-    once."""
-    if isinstance(e, bool):
-        return None
-    if isinstance(e, int):
-        return (e, e, True, [])
-    if isinstance(e, float):
-        return (int(e), int(e), True, []) if e.is_integer() else None
-    if isinstance(e, str):
-        if e not in box:
-            return None
-        lo, hi = box[e]
-        return (lo, hi, True, [e])
-    if isinstance(e, ExprNode) and e.op in ("+", "-", "*") and e.args:
-        parts = [_index_bounds(a, box) for a in e.args]
-        if any(p is None for p in parts):
-            return None
-        lo, hi, ex, ns = parts[0]
-        ns = list(ns)
-        if e.op == "-" and len(parts) == 1:
-            return (-hi, -lo, ex, ns)
-        for plo, phi, pex, pns in parts[1:]:
-            if e.op == "+":
-                lo, hi = lo + plo, hi + phi
-            elif e.op == "-":
-                lo, hi = lo - phi, hi - plo
-            else:
-                # affine only while one factor is a constant
-                ex = ex and (not ns or not pns)
-                c = (lo * plo, lo * phi, hi * plo, hi * phi)
-                lo, hi = min(c), max(c)
-            ex = ex and pex
-            ns.extend(pns)
-        return (lo, hi, ex and len(set(ns)) == len(ns), ns)
-    return None
 
 
 def _in_extent(b: Band, ci: list, shape: list[int]):
@@ -256,17 +197,26 @@ def _forcing_ghost(v: str, ok) -> BandError:
     )
 
 
-def _ghost_conjuncts(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> list:
+def _needs_ghost(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> bool:
     """§9.1's ghost rule for a read of column variable ``v`` at ``ci`` on axis
-    ``wrt``: the in-extent conjuncts ``G`` to filter by, as ``(conjunct,
-    names)`` pairs; none when every point is in extent (the region split
-    then leaves the box whole)."""
+    ``wrt``: whether a point may read outside ``v``'s extent, so the read
+    must be filtered by the in-extent conjuncts ``1 <= ci_d <= shape_d``. A
+    ghost read on the forcing axis is refused."""
     _check_rank(v, ci, shape)
     ok = _in_extent(b, ci, shape)
     if ok is True:
-        return []
+        return False
     if wrt == "forcing":
         raise _forcing_ghost(v, ok)
+    return True
+
+
+def _ghost_conjuncts(b: Band, v: str, ci: list, shape: list[int], wrt: str) -> list:
+    """The in-extent conjuncts ``G`` of :func:`_needs_ghost`, as
+    ``(conjunct, names)`` pairs; none when every point is in extent (the
+    region split then leaves the box whole)."""
+    if not _needs_ghost(b, v, ci, shape, wrt):
+        return []
     out = []
     for d, e in enumerate(ci):
         ns = set(free_variables(e))
@@ -439,8 +389,14 @@ def _scatter_term(
 
 
 def _vjp_term(en: JacEntry, coef, lam: str, ctx, wrt: str, taken: set[str]):
+    return _vjp_term_read(en, coef, _sread(lam, _rho(en.band)), ctx, wrt, taken)
+
+
+def _vjp_term_read(en: JacEntry, coef, lam, ctx, wrt: str, taken: set[str]):
+    # `_vjp_term` with the cotangent read at the row point given: a plain
+    # input, or a reversed adjoint sweep (§9.7).
     b = en.band
-    body = _sop("*", ser_expr(coef), _sread(lam, _rho(b)))
+    body = _sop("*", ser_expr(coef), lam)
     return _scatter_term(
         b,
         coef,
@@ -604,6 +560,7 @@ def _hvp_document(
     form: str = "contract",
     cse: bool = True,
     cse_min_nodes: int = 12,
+    memo=None,
 ):
     a1, a2 = wrt
     if form not in ("contract", "symmetric"):
@@ -613,6 +570,11 @@ def _hvp_document(
     if stages < 1:
         raise ValueError(f"a contraction needs at least one stage, got {stages}")
     model = "HvpEval" if form == "contract" else "HvpEvalSymmetric"
+    pe = _pair_extended(sv, a1, a2, forcing, memo)
+    if pe is not None:
+        return _hvp_sweeps(
+            sv, entries, pe, (a1, a2), forcing, stages, form, model, cse, cse_min_nodes
+        )
     # the coefficients only: a second-order entry rides through the base and
     # the hoisting as a first-order one (its `cidx` holds both columns)
     doc, m, ctx, coefs = _product_base(
@@ -654,6 +616,329 @@ def _hvp_document(
     return _derived_version(doc), {"model": model, "mu": mu, "w": w, "hvp": out}
 
 
+# ── recurrences: tangent and adjoint sweeps (§9.7) ───────────────────────────
+
+
+def _first_pass(sv: SysView, wrt: str, forcing):
+    # The extended system of axis `wrt` (spec §4.5): with an active
+    # recurrence the document is the §9.7 sweeps over it, never the
+    # materialized bands (the sweeps need no transfer recurrence); without
+    # one its `rows` are `jacobian_bands`'s list.
+    from .jacobian import _extended_pass
+    from .system import observed_defs
+
+    return _extended_pass(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, [])
+
+
+def _pair_extended(sv: SysView, a1: str, a2: str, forcing, memo=None):
+    # The two extended systems of a pair with an active recurrence: the first
+    # axis's (seeded with the second axis's targets, as `jacobian_bands2`
+    # differentiates it — `memo` shares that pass) and the second axis's
+    # (its recurrence rows carry the adjoint back to the second axis's
+    # columns), both over the recurrences that move with either axis. None
+    # without one.
+    from .jacobian import _targets
+    from .recurrence import recurrences
+    from .system import observed_defs
+
+    ctx = ctx_of(sv)
+    obs = observed_defs(sv)
+    if not recurrences(sv, obs, ctx):
+        return None
+    memo = memo or _FirstOrder()
+    t1 = _targets(sv, a1, forcing, obs)
+    t2 = _targets(sv, a2, forcing, obs)
+    e1 = memo.ext(sv, a1, a2, forcing, seed=t2)
+    if not e1.recurrences:
+        return None
+    e2 = e1 if a1 == a2 else memo.ext(sv, a2, a1, forcing, seed=t1)
+    return e1, e2
+
+
+def _ghost_exprs(b: Band, v: str, ci: list, ci_sub: list, shape: list[int], wrt: str) -> list:
+    # §9.1's ghost rule for a read of `v` at `ci` from band `b`, as expression
+    # conjuncts over the substituted indices (the forcing axis refuses).
+    from .expr_helpers import op
+
+    if not _needs_ghost(b, v, ci, shape, wrt):
+        return []
+    out = []
+    for e, n in zip(ci_sub, shape):
+        out.append(op(">=", e, 1))
+        out.append(op("<=", e, n))
+    return out
+
+
+def _observe(m: dict, sv: SysView, name: str, like: str, rhs) -> None:
+    # Declare an intermediate of the product document (§9.7): an observed
+    # unknown shaped like recurrence `like`, defined by `name ~ rhs`.
+    m["variables"][name] = {
+        "type": "unknown",
+        "shape": [str(x) for x in (sv.variables[like].shape or [])],
+    }
+    m["equations"].append({"lhs": name, "rhs": rhs})
+
+
+def _tangent(rec, rows: list, coefs: list, target: str, dir: dict, sweeps: dict, ctx, wrt: str):
+    # The forward sweep variable of `rec` (`target`): its own bands among
+    # `rows` (with their hoisted coefficients), reading a target column
+    # through `dir` and another recurrence's sweep through `sweeps`.
+    from .recurrence import _index, forward_sweep
+
+    own = []
+    cols = []
+    for en, c in zip(rows, coefs):
+        if en.u == rec.name:
+            own.append(replace(en.band, coef=c))
+            cols.append(en.v)
+
+    def col(b: Band, c: str, ci: list):
+        shape = ctx.shapes.get(c) or []
+        if c in sweeps:
+            nm, w = sweeps[c], "states"
+        else:
+            nm, w = dir[c], wrt
+        return _index(nm, ci), _ghost_exprs(b, c, b.cidx, ci, shape, w)
+
+    return ser_expr(forward_sweep(rec, own, cols, target, col, 0.0))
+
+
+def _adjoint(rec, rows: list, coefs: list, target: str, src: str):
+    # The adjoint sweep variable of `rec` (`target`, reversed axis) fed by
+    # the cotangent source `src`: `rec`'s self bands among `rows`.
+    from .recurrence import adjoint_sweep, reversed_read
+
+    own = [
+        replace(en.band, coef=c)
+        for en, c in zip(rows, coefs)
+        if en.u == rec.name and en.v == rec.name
+    ]
+    src_read = reversed_read(rec, src, list(rec.frame))
+    return ser_expr(adjoint_sweep(rec, own, target, src_read, 0.0))
+
+
+def _cot_read(b: Band, u: str, plain: dict, rev: dict, ext):
+    # A cotangent read at the row point of `b`: a plain input (a state row)
+    # or a reversed adjoint sweep (a recurrence row).
+    from .recurrence import reversed_read
+
+    rec = ext.recurrence(u)
+    if rec is not None and u in rev:
+        return ser_expr(reversed_read(rec, rev[u], list(b.ridx)))
+    return _sread(plain[u], _rho(b))
+
+
+def _cot_source(v: str, entries: list, coefs: list, lam: dict, rev: dict, ext, ctx, taken):
+    # The cotangent source of recurrence `v`: Σ over the bands reading `v`
+    # (other than `v`'s own) of `coef · λ[row]`, scattered onto `v`'s cells
+    # (an equality-filter scatter, §9.3); zero when none reads it.
+    terms = []
+    for en, c in zip(entries, coefs):
+        if en.v != v or en.u == v:
+            continue
+        t = _vjp_term_read(en, c, _cot_read(en.band, en.u, lam, rev, ext), ctx, "states", taken)
+        if t is not None:
+            terms.append(t)
+    return _sfold("+", terms) if terms else _zeros(ctx, v)
+
+
+def _rec_names(taken: set[str], ext, tag: str) -> dict:
+    return {r.name: _fresh(taken, f"_{tag}_{r.name}") for r in ext.recurrences}
+
+
+def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
+    every = ext.rows + ext.rec_rows
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes)
+    taken = _doc_names(doc)
+    vin = {c: _fresh(taken, f"_v_{c}") for c in _column_vars(sv, wrt, forcing)}
+    vdot = _rec_names(taken, ext, "vdot")
+    out = {r: _fresh(taken, f"_jvp_{r}") for r in view_states(sv)}
+    for c, nm in vin.items():
+        _declare(m, sv, ctx, nm, c, None)
+    nrow = len(ext.rows)
+    for rec in ext.recurrences:
+        t = _tangent(rec, every[nrow:], coefs[nrow:], vdot[rec.name], vin, vdot, ctx, wrt)
+        _observe(m, sv, vdot[rec.name], rec.name, t)
+
+    def term(k):
+        en = ext.rows[k]
+        if en.v in vdot:
+            return _jvp_term(en, coefs[k], vdot[en.v], ctx, "states")
+        return _jvp_term(en, coefs[k], vin[en.v], ctx, wrt)
+
+    _outputs(m, sv, ctx, out, term, [(k, en.u) for k, en in enumerate(ext.rows)])
+    return _derived_version(doc), {"model": "JvpEval", "v": vin, "jvp": out}
+
+
+def _vjp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
+    every = ext.rows + ext.rec_rows
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes)
+    taken = _doc_names(doc)
+    lam = {r: _fresh(taken, f"_lam_{r}") for r in view_states(sv)}
+    vbar = _rec_names(taken, ext, "vbar")
+    vrev = _rec_names(taken, ext, "vrev")
+    out = {c: _fresh(taken, f"_vjp_{c}") for c in _column_vars(sv, wrt, forcing)}
+    for r, nm in lam.items():
+        _declare(m, sv, ctx, nm, r, None)
+    nrow = len(ext.rows)
+    for rec in ext.recurrences:
+        v = rec.name
+        _observe(m, sv, vbar[v], v, _cot_source(v, every, coefs, lam, vrev, ext, ctx, taken))
+        _observe(m, sv, vrev[v], v, _adjoint(rec, every[nrow:], coefs[nrow:], vrev[v], vbar[v]))
+
+    def term(k):
+        en = every[k]
+        lr = _cot_read(en.band, en.u, lam, vrev, ext)
+        return _vjp_term_read(en, coefs[k], lr, ctx, wrt, taken)
+
+    _outputs(m, sv, ctx, out, term, [(k, en.v) for k, en in enumerate(every)])
+    return _derived_version(doc), {"model": "VjpEval", "lam": lam, "vjp": out}
+
+
+def _hvp_sweeps(
+    sv: SysView, entries, pe, wrt, forcing, stages: int, form: str, model: str, cse, cse_min
+):
+    # The §4.4 contraction through recurrences (§9.7): per stage i, the
+    # tangent sweep of w_i and the adjoint sweep of μ_i over the first axis's
+    # extended system make the contraction's M read a recurrence row's
+    # cotangent and a recurrence column's direction; the second-order bands
+    # scattered onto a recurrence column feed one more adjoint sweep Ĥ, which
+    # the second axis's recurrence rows carry back to its columns.
+    e1, e2 = pe
+    a1, a2 = wrt
+    first = e1.rows + e1.rec_rows
+    nrow = len(e1.rows)
+    # on a pair of one axis the second pass IS the first: its recurrence
+    # rows (and their hoisted coefficients) are shared, not emitted twice
+    shared = e2 is e1
+    back = first[nrow:] if shared else list(e2.rec_rows)
+    n2 = len(entries)
+    doc, m, ctx, coefs = _product_base(
+        sv,
+        model,
+        [JacEntry(en.u, en.v, en.band) for en in entries] + first + ([] if shared else back),
+        cse,
+        cse_min,
+    )
+    c2s, c1s = coefs[:n2], coefs[n2 : n2 + len(first)]
+    cbs = c1s[nrow:] if shared else coefs[n2 + len(first) :]
+    taken = _doc_names(doc)
+    states = view_states(sv)
+    cols1 = ["t"] if a1 == "time" else states
+    mu: list[dict[str, str]] = []
+    w: list[dict[str, str]] = []
+    for i in range(1, stages + 1):
+        mu.append({r: _fresh(taken, f"_mu{i}_{r}") for r in states})
+        w.append({c: _fresh(taken, f"_w{i}_{c}") for c in cols1})
+    vdot, vbar, vrev = [], [], []
+    for i in range(1, stages + 1):
+        vdot.append(_rec_names(taken, e1, f"vdot{i}"))
+        vbar.append(_rec_names(taken, e1, f"vbar{i}"))
+        vrev.append(_rec_names(taken, e1, f"vrev{i}"))
+    hbar = _rec_names(taken, e1, "hbar")
+    hrev = _rec_names(taken, e1, "hrev")
+    cols2 = _column_vars(sv, a2, forcing) if form == "contract" else states
+    out = {c: _fresh(taken, f"_hvp_{c}") for c in cols2}
+    for i in range(stages):
+        for r, nm in mu[i].items():
+            _declare(m, sv, ctx, nm, r, None)
+        for c, nm in w[i].items():
+            _declare(m, sv, ctx, nm, c, None)
+    for i in range(stages):
+        for rec in e1.recurrences:
+            v = rec.name
+            t = _tangent(rec, first[nrow:], c1s[nrow:], vdot[i][v], w[i], vdot[i], ctx, a1)
+            _observe(m, sv, vdot[i][v], v, t)
+            src = _cot_source(v, first, c1s, mu[i], vrev[i], e1, ctx, taken)
+            _observe(m, sv, vbar[i][v], v, src)
+            _observe(
+                m,
+                sv,
+                vrev[i][v],
+                v,
+                _adjoint(rec, first[nrow:], c1s[nrow:], vrev[i][v], vbar[i][v]),
+            )
+
+    def cot(i, b, u):
+        return _cot_read(b, u, mu[i], vrev[i], e1)
+
+    def dirr(i, v, ci):
+        nm = vdot[i][v] if v in vdot[i] else w[i][v]
+        return _sread(nm, [ser_expr(e) for e in ci])
+
+    def axis(v, a):
+        return "states" if e1.is_recurrence(v) else a
+
+    def term2(k):
+        en = entries[k]
+        b = en.band
+        coef = c2s[k]
+        ci, c2 = en.col_idx, en.col2_idx
+        bodynames = _names_of((coef, *ci, *c2)) | _row_names(b)
+        if form == "contract":
+            mm = _sfold("+", [_sop("*", cot(i, b, en.u), dirr(i, en.v, ci)) for i in range(stages)])
+            shape1 = ctx.shapes.get(en.v) or []
+            a = axis(en.v, a1)
+            if _has_names(b):
+                g = _ghost_conjuncts(b, en.v, ci, shape1, a)
+            elif _point_in_extent(b, en.v, ci, shape1, a):
+                g = []
+            else:
+                return None
+            return _scatter_term(
+                b,
+                coef,
+                en.w,
+                c2,
+                ctx.shapes.get(en.w) or [],
+                axis(en.w, a2),
+                g,
+                _sop("*", ser_expr(coef), mm),
+                bodynames,
+                taken,
+            )
+        body = _sfold(
+            "+",
+            [_sop("*", cot(i, b, en.u), ser_expr(coef), dirr(i, en.w, c2)) for i in range(stages)],
+        )
+        shape2 = ctx.shapes.get(en.w) or []
+        if _has_names(b):
+            g = _ghost_conjuncts(b, en.w, c2, shape2, "states")
+        elif _point_in_extent(b, en.w, c2, shape2, "states"):
+            g = []
+        else:
+            return None
+        return _scatter_term(
+            b, coef, en.v, ci, ctx.shapes.get(en.v) or [], "states", g, body, bodynames, taken
+        )
+
+    owner2 = [en.w if form == "contract" else en.v for en in entries]
+
+    def back_term(k):
+        en = back[k]
+        lr = _cot_read(en.band, en.u, {}, hrev, e2)
+        return _vjp_term_read(en, cbs[k], lr, ctx, axis(en.v, a2), taken)
+
+    for rec in e1.recurrences:
+        v = rec.name
+        terms = []
+        for k in range(n2):
+            if owner2[k] == v:
+                t = term2(k)
+                if t is not None:
+                    terms.append(t)
+        for k, en in enumerate(back):
+            if en.v == v and en.u != v:
+                t = back_term(k)
+                if t is not None:
+                    terms.append(t)
+        _observe(m, sv, hbar[v], v, _sfold("+", terms) if terms else _zeros(ctx, v))
+        _observe(m, sv, hrev[v], v, _adjoint(rec, back, cbs, hrev[v], hbar[v]))
+    owner = [(k, o) for k, o in enumerate(owner2)] + [(n2 + k, en.v) for k, en in enumerate(back)]
+    _outputs(m, sv, ctx, out, lambda k: term2(k) if k < n2 else back_term(k - n2), owner)
+    return _derived_version(doc), {"model": model, "mu": mu, "w": w, "hvp": out}
+
+
 def jvp_document(
     obj,
     model_name: str | None = None,
@@ -676,8 +961,10 @@ def jvp_document(
     into the evaluator's state slots beside the source states and reads the
     outputs from ``du`` through the evaluator's variable map."""
     sv = sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
-    return _jvp_document(sv, entries, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
+    ext = _first_pass(sv, wrt, forcing)
+    if ext.recurrences:
+        return _jvp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
+    return _jvp_document(sv, ext.rows, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
 
 
 def vjp_document(
@@ -697,8 +984,10 @@ def vjp_document(
     under any evaluator, linear-time only under one that implements §9.3's
     equality-filter scatter."""
     sv = sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
-    return _vjp_document(sv, entries, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
+    ext = _first_pass(sv, wrt, forcing)
+    if ext.recurrences:
+        return _vjp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
+    return _vjp_document(sv, ext.rows, wrt, forcing, cse=cse, cse_min_nodes=cse_min_nodes)
 
 
 def hvp_document(
@@ -724,7 +1013,16 @@ def hvp_document(
     both forms give the same ``g``."""
     a1, a2 = axis_pair(wrt)
     sv = sysview(obj, model_name)
-    entries = jacobian_bands2(sv, wrt=(a1, a2), forcing=forcing)
+    memo = _FirstOrder()  # the first pass, shared with the sweeps' (§9.7)
+    _, entries = _bands2(sv, a1, a2, forcing, memo)
     return _hvp_document(
-        sv, entries, (a1, a2), forcing, stages, form=form, cse=cse, cse_min_nodes=cse_min_nodes
+        sv,
+        entries,
+        (a1, a2),
+        forcing,
+        stages,
+        form=form,
+        cse=cse,
+        cse_min_nodes=cse_min_nodes,
+        memo=memo,
     )

@@ -289,6 +289,12 @@ def _jacobian_block(
         cse,
         cse_min_nodes,
     )
+    from .recurrence import auxiliary
+    from .system import ctx_of, observed_defs
+
+    aux = auxiliary(sv, observed_defs(sv), ctx_of(sv), entries)
+    if aux:
+        block["auxiliary"] = _auxiliary_field(aux)
     if not rect:
         from .factorization import _column_block_plan, plan_factorization, serialize_plan
 
@@ -571,6 +577,22 @@ def _hoist(doc: dict, m: dict, sv, entries: list, cse: bool, cse_min_nodes: int)
     return h.coefs
 
 
+def _add_auxiliary(m: dict, aux: list) -> None:
+    """The ``auxiliary`` definitions (spec §4.5) as observed of a derived
+    model: each a declared unknown of its shape defined by a bare-LHS
+    equation, after the source's own equations."""
+    for n, shape, _ in aux:
+        m["variables"][n] = {"type": "unknown", "shape": list(shape)}
+    for n, _, d in aux:
+        m["equations"].append({"lhs": n, "rhs": ser_expr(d)})
+
+
+def _auxiliary_field(aux: list) -> list:
+    """The block's ``auxiliary`` field (spec §4.5): ``[{name, shape, rhs}]``
+    in recurrence order."""
+    return [{"name": n, "shape": list(shape), "rhs": ser_expr(d)} for n, shape, d in aux]
+
+
 def evaluation_document(
     obj,
     model_name: str | None = None,
@@ -599,12 +621,16 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     # derivatives zeroed, then one state per band whose RHS is the band's
     # coefficient field, after the optional hoisting. Returns (document,
     # band-state names).
-    from .system import ctx_of
+    from .recurrence import auxiliary
+    from .system import ctx_of, observed_defs
 
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = ctx_of(sv)
-    _zero_source_derivatives(m, sv, ctx, [en.band.coef for en in entries])
+    aux = auxiliary(sv, observed_defs(sv), ctx, entries)
+    roots = [en.band.coef for en in entries] + [d for _, _, d in aux]
+    _zero_source_derivatives(m, sv, ctx, roots)
+    _add_auxiliary(m, aux)
     coefs = _hoist(doc, m, sv, entries, cse, cse_min_nodes)
     names: list[str] = []
     for k, en in enumerate(entries):

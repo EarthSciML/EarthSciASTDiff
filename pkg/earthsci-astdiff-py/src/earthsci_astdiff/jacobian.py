@@ -149,16 +149,63 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()
     # second-order driver (second_order.py) differentiates these
     # coefficients again w.r.t. its second axis, so an observed that moves
     # only with that axis must be inlined too, or its sites stay hidden.
+    # Through a recurrence the extended system is materialized (spec §4.5).
+    from .recurrence import materialize
+
+    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed)
+    if not ext.recurrences:
+        return ext.rows
+    return materialize(sv, ctx, ext)
+
+
+def extended_bands(
+    obj, model_name: str | None = None, wrt: str = "states", forcing=None, second=None
+):
+    """The extended first-order system of axis ``wrt`` (spec §4.5,
+    :class:`~earthsci_astdiff.recurrence.ExtendedBands`): every state
+    equation's bands with respect to the axis's targets and the active
+    recurrences, and each active recurrence definition's own bands. With
+    ``second`` (an axis) the pass is a pair's first pass: seeded with the
+    second axis's targets, so the recurrences that move with either axis are
+    active and the observed that move with either are inlined (spec §4.4).
+    Without a recurrence ``rows`` is :func:`jacobian_bands`'s list and the
+    rest is empty."""
+    if wrt not in _AXES:
+        raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
+    sv = sysview(obj, model_name)
+    obs = observed_defs(sv)
+    seed = _targets(sv, second, forcing, obs) if second is not None and second != wrt else []
+    return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed)
+
+
+def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()):
+    # The extended first-order system of one pass (spec §4.5): the bands of
+    # every state equation with respect to the axis's targets AND the active
+    # recurrences, and the bands of each active recurrence's own definition
+    # (rows V). A recurrence is active when it moves with the targets or
+    # `seed` (a pair's second axis); recurrences are never inlined (no
+    # fixpoint exists), so an inactive one stays an opaque read, constant
+    # with respect to every target.
+    from .recurrence import ExtendedBands, _lag, active, recurrences, transfer_names
+
+    src_obs = obs
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
+    recs = recurrences(sv, obs, ctx)
+    act = active(recs, obs, tset | set(seed)) if recs else []
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
     if wrt != "time":
         obs = inlinable_observed(obs, sv.equations, tset | set(seed))
+    if recs:
+        names = {r.name for r in recs}
+        obs = {k: v for k, v in obs.items() if k not in names}
+    cols = tset | {r.name for r in act}
     entries: list[JacEntry] = []
+    row_eq: list[int] = []
     obs_names: list = [None]
-    for eq in sv.equations:
+    for q, eq in enumerate(sv.equations):
         u = lhs_state(eq)
         if u is None:
             if is_derivative(eq):
@@ -167,18 +214,36 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()
                     "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                 )
             continue
-        shape_u = ctx.shapes.get(u, [])
-        rhs = inline_observed(eq.rhs, obs, obs_names)
-        # Structural occurrence gate, driven from the equation: intersect the
-        # RHS's free variables with the target set (sorted = target order).
-        hits = sorted(free_variables(rhs) & tset)
-        for v in hits:
-            for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
-                entries.append(JacEntry(u, v, normalize_band(b)))
+        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx)
+        row_eq.extend([q] * (len(entries) - len(row_eq)))
+    rec_rows: list[JacEntry] = []
+    for r in act:
+        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx)
+    for en in rec_rows:
+        if en.u == en.v:
+            # every self band is a lag back along the axis, or refused
+            _lag(next(r for r in act if r.name == en.u), en.band)
     if wrt in ("parameters", "forcing"):
-        for en in entries:
-            _check_closed_columns(en)
-    return entries
+        for en in entries + rec_rows:
+            if en.v in tset:
+                _check_closed_columns(en)
+    if not act:
+        return ExtendedBands([], entries, [], row_eq)
+    return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
+
+
+def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx) -> None:
+    # The bands of one row variable `u` (a state, or a recurrence over its
+    # own definition) with respect to every column in `cols` its inlined
+    # right-hand side reads, in sorted column order.
+    shape_u = ctx.shapes.get(u, [])
+    rhs = inline_observed(rhs, obs, obs_names)
+    # Structural occurrence gate, driven from the equation: intersect the
+    # RHS's free variables with the column set (sorted = target order).
+    hits = sorted(free_variables(rhs) & cols)
+    for v in hits:
+        for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
+            out.append(JacEntry(u, v, normalize_band(b)))
 
 
 def _check_closed_columns(en: JacEntry) -> None:
@@ -214,20 +279,47 @@ class _FirstOrder:
     # The first-order passes of one emission (`jacobian_block`), and the
     # structure class of each. A pass depends only on its axis and the
     # inlining seed a second axis adds (`_bands2`); that seed changes
-    # nothing on the time axis (never seeded) or when the second axis is the
-    # first, so those share the plain pass's key: a block list asking for
-    # "states" and ("states", "states") differentiates the system once.
+    # nothing when the second axis is the first, so such a pair shares the
+    # plain pass's key: a block list asking for "states" and ("states",
+    # "states") differentiates the system once. On the time axis the seed
+    # changes no inlining, so every time pair shares the plain time pass
+    # too — unless the view has a recurrence, which the seed can make
+    # active (spec §4.5).
 
     def __init__(self):
+        self._ext: dict = {}
         self._bands: dict = {}
         self._structure: dict = {}
+        self._has_recs: bool | None = None
+
+    def _key(self, sv: SysView, a1, a2):
+        if a2 == a1:
+            return (a1, None)
+        if a1 == "time":
+            if self._has_recs is None:
+                from .recurrence import recurrences
+
+                self._has_recs = bool(recurrences(sv, observed_defs(sv), ctx_of(sv)))
+            if not self._has_recs:
+                return (a1, None)
+        return (a1, a2)
+
+    def ext(self, sv: SysView, a1: str, a2, forcing, seed=()):
+        """The extended ``a1`` pass seeded with ``seed``."""
+        key = self._key(sv, a1, a2)
+        if key not in self._ext:
+            self._ext[key] = _extended_pass(sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed)
+        return self._ext[key]
 
     def bands(self, sv: SysView, a1: str, a2, forcing, seed=()) -> list[JacEntry]:
-        key = (a1, None if a1 == "time" or a2 == a1 else a2)
+        """The materialized ``a1`` pass (:meth:`ext` composed through its
+        recurrences, spec §4.5)."""
+        from .recurrence import materialize
+
+        key = self._key(sv, a1, a2)
         if key not in self._bands:
-            self._bands[key] = _jacobian_bands(
-                sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed=seed
-            )
+            ext = self.ext(sv, a1, a2, forcing, seed)
+            self._bands[key] = ext.rows if not ext.recurrences else materialize(sv, ctx_of(sv), ext)
         return self._bands[key]
 
     def structure(self, e1: list[JacEntry], sv: SysView) -> str:

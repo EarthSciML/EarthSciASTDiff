@@ -23,7 +23,7 @@ use common::{load, root};
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
 
 /// Every axis with a value golden (spec §9.6).
-const PRODUCT_AXES: [(&str, Wrt); 13] = [
+const PRODUCT_AXES: [(&str, Wrt); 16] = [
     ("bd_chem", Wrt::States),
     ("adv_interior", Wrt::States),
     ("contracted_ops", Wrt::States),
@@ -37,9 +37,12 @@ const PRODUCT_AXES: [(&str, Wrt); 13] = [
     ("tgrad_photolysis", Wrt::Time),
     ("forcing_bracket", Wrt::Forcing),
     ("forcing_bracket", Wrt::Parameters),
+    ("recurrence_sweep", Wrt::States),
+    ("recurrence_sweep", Wrt::Parameters),
+    ("pbl_rank1", Wrt::States),
 ];
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 8] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 10] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
@@ -48,6 +51,8 @@ const SECOND_ORDER: [(&str, (Wrt, Wrt)); 8] = [
     ("minmod_adv", SS),
     ("filtered_scan", SS),
     ("semiring_reduce", SS),
+    ("recurrence_sweep", SS),
+    ("recurrence_sweep", (Wrt::States, Wrt::Parameters)),
 ];
 
 fn axistag(wrt: Wrt) -> String {

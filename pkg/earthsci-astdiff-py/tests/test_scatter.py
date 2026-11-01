@@ -50,6 +50,8 @@ PLAN_LAYOUTS = [
     ("contracting_observed", "csr", Csr()),
     ("filtered_scan", "csr", Csr()),
     ("semiring_reduce", "csr", Csr()),
+    ("recurrence_sweep", "csr", Csr()),
+    ("pbl_rank1", "csr", Csr()),
 ]
 _IDS = [f"{n}.{t}" for n, t, _ in PLAN_LAYOUTS]
 

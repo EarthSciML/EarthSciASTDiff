@@ -1,0 +1,509 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "PblRank1",
+  "description": "Boundary-layer mixing toward the column mean (the reseact pbl_mean shape) plus per-cell O3-NO titration: on each (col) line along lev the state Jacobian is a per-level block (distance 0) plus one rank-one term per species, pblf[k]/tau times the mean's weights dp[j]*pblf[j]/W - the column_block plan's diag_plus_rank1 pattern (spec \u00a76)."
+ },
+ "index_sets": {
+  "col": {
+   "kind": "interval",
+   "size": 2
+  },
+  "lev": {
+   "kind": "interval",
+   "size": 6
+  }
+ },
+ "models": {
+  "PblRank1": {
+   "variables": {
+    "O3": {
+     "type": "unknown",
+     "shape": [
+      "col",
+      "lev"
+     ],
+     "default": 0.4
+    },
+    "NO": {
+     "type": "unknown",
+     "shape": [
+      "col",
+      "lev"
+     ],
+     "default": 0.1
+    },
+    "tau": {
+     "type": "parameter",
+     "default": 1800.0
+    },
+    "k1": {
+     "type": "parameter",
+     "default": 0.02
+    },
+    "mean_O3": {
+     "type": "unknown",
+     "shape": [
+      "col"
+     ]
+    },
+    "mean_NO": {
+     "type": "unknown",
+     "shape": [
+      "col"
+     ]
+    }
+   },
+   "equations": [
+    {
+     "lhs": "mean_O3",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "/",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            {
+             "op": "const",
+             "args": [],
+             "value": [
+              0.12,
+              0.15,
+              0.18,
+              0.2,
+              0.17,
+              0.18
+             ]
+            },
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            {
+             "op": "const",
+             "args": [],
+             "value": [
+              1.0,
+              1.0,
+              0.9,
+              0.6,
+              0.2,
+              0.0
+             ]
+            },
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "O3",
+            "i",
+            "k"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "faq",
+         "args": [],
+         "output_idx": [],
+         "ranges": {
+          "k": {
+           "from": "lev"
+          }
+         },
+         "expr": {
+          "op": "*",
+          "args": [
+           {
+            "op": "index",
+            "args": [
+             {
+              "op": "const",
+              "args": [],
+              "value": [
+               0.12,
+               0.15,
+               0.18,
+               0.2,
+               0.17,
+               0.18
+              ]
+             },
+             "k"
+            ]
+           },
+           {
+            "op": "index",
+            "args": [
+             {
+              "op": "const",
+              "args": [],
+              "value": [
+               1.0,
+               1.0,
+               0.9,
+               0.6,
+               0.2,
+               0.0
+              ]
+             },
+             "k"
+            ]
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "mean_NO",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "/",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          {
+           "op": "index",
+           "args": [
+            {
+             "op": "const",
+             "args": [],
+             "value": [
+              0.12,
+              0.15,
+              0.18,
+              0.2,
+              0.17,
+              0.18
+             ]
+            },
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            {
+             "op": "const",
+             "args": [],
+             "value": [
+              1.0,
+              1.0,
+              0.9,
+              0.6,
+              0.2,
+              0.0
+             ]
+            },
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "NO",
+            "i",
+            "k"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "faq",
+         "args": [],
+         "output_idx": [],
+         "ranges": {
+          "k": {
+           "from": "lev"
+          }
+         },
+         "expr": {
+          "op": "*",
+          "args": [
+           {
+            "op": "index",
+            "args": [
+             {
+              "op": "const",
+              "args": [],
+              "value": [
+               0.12,
+               0.15,
+               0.18,
+               0.2,
+               0.17,
+               0.18
+              ]
+             },
+             "k"
+            ]
+           },
+           {
+            "op": "index",
+            "args": [
+             {
+              "op": "const",
+              "args": [],
+              "value": [
+               1.0,
+               1.0,
+               0.9,
+               0.6,
+               0.2,
+               0.0
+              ]
+             },
+             "k"
+            ]
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "O3"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i",
+       "k"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "/",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              {
+               "op": "const",
+               "args": [],
+               "value": [
+                1.0,
+                1.0,
+                0.9,
+                0.6,
+                0.2,
+                0.0
+               ]
+              },
+              "k"
+             ]
+            },
+            {
+             "op": "-",
+             "args": [
+              {
+               "op": "index",
+               "args": [
+                "mean_O3",
+                "i"
+               ]
+              },
+              {
+               "op": "index",
+               "args": [
+                "O3",
+                "i",
+                "k"
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          "tau"
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          "k1",
+          {
+           "op": "index",
+           "args": [
+            "O3",
+            "i",
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "NO",
+            "i",
+            "k"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "NO"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i",
+       "k"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "/",
+         "args": [
+          {
+           "op": "*",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              {
+               "op": "const",
+               "args": [],
+               "value": [
+                1.0,
+                1.0,
+                0.9,
+                0.6,
+                0.2,
+                0.0
+               ]
+              },
+              "k"
+             ]
+            },
+            {
+             "op": "-",
+             "args": [
+              {
+               "op": "index",
+               "args": [
+                "mean_NO",
+                "i"
+               ]
+              },
+              {
+               "op": "index",
+               "args": [
+                "NO",
+                "i",
+                "k"
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          "tau"
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          "k1",
+          {
+           "op": "index",
+           "args": [
+            "O3",
+            "i",
+            "k"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "NO",
+            "i",
+            "k"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}

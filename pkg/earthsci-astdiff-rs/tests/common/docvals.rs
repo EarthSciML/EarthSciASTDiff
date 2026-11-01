@@ -14,7 +14,7 @@ use earthsci_astdiff::bands::BandError;
 use earthsci_astdiff::points::{cellname, check_state_column, foreach_point, outside};
 use earthsci_astdiff::system::{ctx_of, observed_defs, sysview, view_states, SysView};
 use earthsci_astdiff::{
-    column_names, evaluation_document, hvp_document, jacobian_bands2_with_forcing,
+    column_names, evaluation_document, extended_bands, hvp_document, jacobian_bands2_with_forcing,
     jacobian_bands_view, jacobian_columns, jvp_document, vjp_document, BoundScatter, HvpForm,
     IoMap, JacEntry, ProductOptions, Wrt,
 };
@@ -332,7 +332,9 @@ pub fn doc_vjp(
     lambda: &HashMap<String, f64>,
 ) -> R<BTreeMap<String, f64>> {
     let sv = sysview(file, model_name)?;
-    let entries = jacobian_bands_view(&sv, wrt, forcing)?;
+    // the extended system's rows: through a recurrence the document is the
+    // §9.7 sweeps, which need no materialized bands
+    let entries = extended_bands(&sv, wrt, forcing, None)?.rows;
     let opts = ProductOptions {
         forcing,
         ..Default::default()
@@ -379,6 +381,18 @@ pub fn doc_hvp(
             let (c1, c2) = cidx.split_at(en.ncol);
             if !outside(s1, c1) && !outside(s2, c2) {
                 reach.insert(cellname(&en.w, c2));
+            }
+            Ok(())
+        })?;
+    }
+    // through a recurrence (spec §4.5) the second axis's recurrence rows
+    // carry the contraction on to their columns
+    let e2 = extended_bands(&sv, wrt.1, forcing, Some(wrt.0))?;
+    for en in e2.rec_rows.iter().filter(|en| !e2.is_recurrence(&en.v)) {
+        let s = ctx.shapes.get(&en.v);
+        foreach_point(&en.band, &mut |_, _, _, cidx| {
+            if !outside(s, cidx) {
+                reach.insert(cellname(&en.v, cidx));
             }
             Ok(())
         })?;

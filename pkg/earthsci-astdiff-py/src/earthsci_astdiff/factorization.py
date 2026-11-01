@@ -5,7 +5,7 @@ generation time (the KPP precedent)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .jacobian import JacEntry
 from .structure import column_lines, detect_structure
@@ -30,8 +30,8 @@ class ColumnBlockPlan:
     every coupling stays within one line along ``axis``, so the matrix is one
     ``(len(block_vars)·line_length)``-square block per line. ``pattern``
     names the coupling along the line (``"dense"``, ``"lower"``,
-    ``"upper"``, ``"banded"``) and ``kl`` / ``ku`` bound it below and above
-    the diagonal."""
+    ``"upper"``, ``"banded"``, ``"diag_plus_rank1"``) and ``kl`` / ``ku``
+    bound it below and above the diagonal."""
 
     axis: str
     line_length: int
@@ -39,6 +39,9 @@ class ColumnBlockPlan:
     pattern: str
     kl: int
     ku: int
+    # the rank-one terms of a "diag_plus_rank1" line block (spec §6): each
+    # {"entry": 1-based entry index, "u": row factor, "v": line factor}
+    rank1: list = field(default_factory=list)
 
 
 def lu_fill(pattern: list[list[bool]]) -> list[list[bool]]:
@@ -126,7 +129,13 @@ def plan_factorization(
 
 def _column_block_plan(cl: dict) -> ColumnBlockPlan:
     return ColumnBlockPlan(
-        cl["axis"], cl["line_length"], cl["block_vars"], cl["pattern"], cl["kl"], cl["ku"]
+        cl["axis"],
+        cl["line_length"],
+        cl["block_vars"],
+        cl["pattern"],
+        cl["kl"],
+        cl["ku"],
+        list(cl.get("rank1", [])),
     )
 
 
@@ -145,7 +154,7 @@ def _block_diagonal_plan(entries: list[JacEntry]) -> BlockDiagonalPlan:
 
 def serialize_plan(p) -> dict:
     if isinstance(p, ColumnBlockPlan):
-        return {
+        d = {
             "type": "column_block",
             "axis": p.axis,
             "line_length": p.line_length,
@@ -153,6 +162,9 @@ def serialize_plan(p) -> dict:
             "pattern": p.pattern,
             "bandwidth": [p.kl, p.ku],
         }
+        if p.rank1:
+            d["rank1"] = [dict(t) for t in p.rank1]
+        return d
 
     def nzpairs(M):
         return [

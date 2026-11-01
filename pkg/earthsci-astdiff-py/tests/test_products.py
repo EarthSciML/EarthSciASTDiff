@@ -29,7 +29,7 @@ from earthsci_astdiff import (
     vjp_document,
 )
 from earthsci_astdiff.emit import _evaluation_document
-from earthsci_astdiff.products import _hvp_document, _jvp_document, _vjp_document
+from earthsci_astdiff.products import _hvp_document
 from earthsci_astdiff.system import lhs_state
 from test_goldens import AXIS_GOLDENS, GOLDEN_NAMES
 from test_second_order import SECOND_ORDER
@@ -49,6 +49,9 @@ PRODUCT_AXES = (
     ("tgrad_photolysis", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
+    ("recurrence_sweep", "states"),
+    ("recurrence_sweep", "parameters"),
+    ("pbl_rank1", "states"),
 )
 
 
@@ -168,9 +171,8 @@ def test_evaldoc_element_derivative_lhs_refused():
 @pytest.mark.parametrize("kind", ["jvp", "vjp"])
 def test_product_goldens(name, wrt, kind, valid_dir, golden_dir):
     _, sv = _sv(valid_dir, name)
-    entries = jacobian_bands(sv, wrt=wrt)
-    build = _jvp_document if kind == "jvp" else _vjp_document
-    doc, _ = build(sv, entries, wrt, None)
+    build = jvp_document if kind == "jvp" else vjp_document
+    doc, _ = build(sv, wrt=wrt)
     want = golden_dir / f"{name}{_axistag(wrt)}.{kind}.evaldoc.json"
     assert stable_json(doc) == want.read_text()
 

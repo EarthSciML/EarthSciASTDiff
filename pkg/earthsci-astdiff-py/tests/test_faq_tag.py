@@ -43,6 +43,8 @@ def test_lifted_lhs_is_an_array_state_equation():
         "forcing_bracket",
         "filtered_scan",
         "semiring_reduce",
+        "recurrence_sweep",
+        "pbl_rank1",
     ],
 )
 def test_array_models_differentiate_to_a_non_empty_band_set(valid_dir, name):

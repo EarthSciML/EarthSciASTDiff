@@ -31,8 +31,9 @@ from .factorization import (
     serialize_plan,
 )
 from .inline import InlineError, inline_observed
-from .jacobian import JacEntry, forcing_names, jacobian_bands, jacobian_columns
+from .jacobian import JacEntry, extended_bands, forcing_names, jacobian_bands, jacobian_columns
 from .products import hvp_document, jvp_document, vjp_document
+from .recurrence import ExtendedBands, Recurrence, auxiliary, recurrences, transfer_definition
 from .scalar_rules import DerivativeRuleError, dscalar
 from .scatter import (
     BoundScatter,
@@ -69,6 +70,7 @@ __all__ = [
     "CsrPlan",
     "Ctx",
     "DerivativeRuleError",
+    "ExtendedBands",
     "Hoisted",
     "InlineError",
     "JacEntry",
@@ -77,10 +79,12 @@ __all__ = [
     "LaneBlocksPlan",
     "LaneSparseBlocks",
     "LaneSparseBlocksPlan",
+    "Recurrence",
     "ScatterPlan",
     "Site",
     "StorageLayout",
     "SysView",
+    "auxiliary",
     "bands",
     "bind_plan",
     "canon_lits",
@@ -94,6 +98,7 @@ __all__ = [
     "dscalar",
     "evaluation_document",
     "expand_templates",
+    "extended_bands",
     "forcing_names",
     "hoist_observed",
     "hvp_document",
@@ -114,6 +119,7 @@ __all__ = [
     "parse_jacobian_blocks",
     "plan_factorization",
     "plan_lanes",
+    "recurrences",
     "scatter_pairs",
     "scatter_plan",
     "scatter_targets",
@@ -125,5 +131,6 @@ __all__ = [
     "skey",
     "stable_json",
     "sysview",
+    "transfer_definition",
     "vjp_document",
 ]

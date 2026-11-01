@@ -56,6 +56,13 @@ EarthSciAST's interpreter (`pkg/earthsci-astdiff-rs/tests/common/docvals.rs`,
 `test/docvals.jl`); never add a value evaluator back to a package, nor a
 test oracle that evaluates band coefficients itself.
 
+Causal recurrences (spec §4.5, §9.7) are in Rust and Python only
+(`recurrence.rs` / `recurrence.py`) until EarthSciAST.jl executes them
+(EarthSciAST#546): the goldens of `recurrence_sweep` and `pbl_rank1` are
+written by `cargo test --test write_goldens -- --ignored`, not by
+scripts/regenerate-goldens.jl, and checked against central differences of
+the source right-hand side in each binding's recurrence tests.
+
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree
   equality at O(1) per compare. Use it, NOT `skey`, wherever a pass compares

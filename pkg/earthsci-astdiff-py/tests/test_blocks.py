@@ -23,6 +23,8 @@ NAMES = (
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    "recurrence_sweep",
+    "pbl_rank1",
 )
 
 
@@ -50,6 +52,7 @@ AXIS_GOLDENS = (
     ("tgrad_photolysis", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
+    ("recurrence_sweep", "parameters"),
 )
 
 
