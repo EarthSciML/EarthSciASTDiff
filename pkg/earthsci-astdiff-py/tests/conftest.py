@@ -23,6 +23,16 @@ except ImportError:  # sibling checkout fallback
     sys.path.insert(0, cand)
     import earthsci_ast  # noqa: F401
 
+# conformance.yml pins one earthsci-ast release per job and sets this; check
+# the tests import that release (not, say, a sibling checkout).
+_want = os.environ.get("EARTHSCI_AST_VERSION")
+if _want:
+    from importlib.metadata import version
+
+    _got = version("earthsci-ast")
+    if _got != _want:
+        raise RuntimeError(f"the tests import earthsci-ast {_got}, but CI pinned {_want}")
+
 import pytest  # noqa: E402  (after the sys.path setup above)
 
 

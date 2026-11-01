@@ -1,0 +1,44 @@
+# Early warning: every binding against EarthSciAST `main`, checked out as a
+# SIBLING (the same layout as a local checkout, which the Rust `patch` in
+# bindings.yml and the Python tests/conftest.py fallback both assume). The
+# failures this catches (the `faq` tag rename, the esm 1.0.0 variable model)
+# arrive from EarthSciAST without any change here, so the weekly run matters
+# as much as the PR trigger; a failed weekly run opens (or comments on) an
+# issue (report-scheduled-failure.yml). The suites live in bindings.yml,
+# shared with conformance.yml.
+#
+# EarthSciAST `main` may carry a version no manifest admits yet (it bumps
+# before it releases). That is not a regression here, so for this run only the
+# Julia and Cargo manifests are widened to admit the checkout
+# (`earthsci-ast-versions.py --admit-checkout`); the committed ranges move only
+# after a release.
+#
+# This does NOT gate a release: conformance.yml, which tests the published
+# EarthSciAST releases the manifests admit, does. Code that needs an
+# EarthSciAST feature not yet released passes here and fails there, which is
+# the point: release EarthSciAST first, then raise the floor.
+name: Upstream (EarthSciAST main)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      earthsci-ast-ref:
+        description: EarthSciAST ref to test against
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  bindings:
+    uses: ./.github/workflows/bindings.yml
+    with:
+      upstream: true
+      julia: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}"}]'
+      python: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}", "python": "3.14"}]'
+      rust: '[{"label": "${{ inputs.earthsci-ast-ref || ''main'' }}"}]'

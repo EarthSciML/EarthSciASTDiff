@@ -6,6 +6,14 @@ using ForwardDiff
 using SparseArrays
 using LinearAlgebra
 
+# conformance.yml pins one EarthSciAST release per job and sets this; the
+# test sandbox Pkg.test builds is a separate resolve, so check it kept the pin.
+if !isempty(get(ENV, "EARTHSCI_AST_VERSION", ""))
+    want = VersionNumber(ENV["EARTHSCI_AST_VERSION"])
+    got = pkgversion(EarthSciAST)
+    got == want || error("the tests loaded EarthSciAST $got, but CI pinned $want")
+end
+
 const FIXTURES = joinpath(@__DIR__, "fixtures")
 fixture(name) = EarthSciAST.load_path(joinpath(FIXTURES, name))
 

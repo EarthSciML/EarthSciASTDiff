@@ -1,0 +1,176 @@
+# The three binding test suites, called by conformance.yml (against PUBLISHED
+# EarthSciAST releases) and upstream-main.yml (against an EarthSciAST ref,
+# checked out as a sibling). One definition, so the release gate and the
+# early warning can never drift apart in what they run.
+#
+# Each matrix is a JSON list of legs. A leg has a `label` (the job title);
+# without `upstream` it also has the `version` to pin, and a
+# Python leg has the `python` to run on (and may name the runner `os`).
+name: Bindings
+
+on:
+  workflow_call:
+    inputs:
+      julia:
+        type: string
+        required: true
+      python:
+        type: string
+        required: true
+      rust:
+        type: string
+        required: true
+      # Test against an EarthSciAST ref (checked out as a sibling) instead of
+      # the pinned releases. The ref is NOT an input: it is the caller's
+      # workflow_dispatch `earthsci-ast-ref`, else `main`, so only someone who
+      # can dispatch the caller picks the code a run executes.
+      upstream:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  EARTHSCI_AST_REF: ${{ inputs.upstream && (github.event.inputs.earthsci-ast-ref || 'main') || '' }}
+
+jobs:
+  julia:
+    name: Julia (reference), EarthSciAST ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.julia) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        if: inputs.upstream
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
+          path: EarthSciAST
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+      # No cache when the run executes code from an EarthSciAST ref: a
+      # scheduled run saves caches to the default branch's scope, which
+      # every later run (the release gate included) restores.
+      - uses: julia-actions/cache@v3
+        if: ${{ !inputs.upstream }}
+      # Manifest.toml is gitignored. A release: `add` pins EarthSciAST to it
+      # (Pkg refuses one outside [compat]), and runtests.jl checks that the
+      # test sandbox kept the pin, which `allow_reresolve=false` also
+      # enforces. A ref: `develop` points the environment at the sibling.
+      - name: Test
+        env:
+          EARTHSCI_AST_VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EARTHSCI_AST_REF" ]; then
+            python3 EarthSciASTDiff/scripts/earthsci-ast-versions.py --admit-checkout EarthSciAST
+          fi
+          julia --project=EarthSciASTDiff/pkg/EarthSciASTDiff.jl -e '
+            using Pkg
+            if isempty(get(ENV, "EARTHSCI_AST_REF", ""))
+              Pkg.add(name="EarthSciAST", version=ENV["EARTHSCI_AST_VERSION"])
+            else
+              Pkg.develop(path="EarthSciAST/pkg/EarthSciAST.jl")
+            end
+            Pkg.status("EarthSciAST")
+            Pkg.test(; allow_reresolve=false)'
+
+  python:
+    name: Python, EarthSciAST ${{ matrix.label }}
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.python) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        if: inputs.upstream
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
+          path: EarthSciAST
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      # A release: installing the package itself alongside the pinned release
+      # makes pip check the pin against pyproject.toml's requirement, and
+      # tests/conftest.py checks the tests import it. A ref: install the
+      # sibling; the tests import this package from source.
+      - name: Install
+        env:
+          EARTHSCI_AST_VERSION: ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ -n "$EARTHSCI_AST_REF" ]; then
+            python -m pip install -e EarthSciAST/pkg/earthsci-ast-py pytest
+          else
+            python -m pip install -e EarthSciASTDiff/pkg/earthsci-astdiff-py "earthsci-ast==$EARTHSCI_AST_VERSION" pytest
+          fi
+          python -m pip show earthsci-ast
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-py
+        env:
+          EARTHSCI_AST_VERSION: ${{ matrix.version }}
+        run: python -m pytest tests -q
+
+  rust:
+    name: Rust, EarthSciAST ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.rust) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: EarthSciASTDiff
+      - uses: actions/checkout@v7
+        if: inputs.upstream
+        with:
+          repository: EarthSciML/EarthSciAST
+          ref: ${{ github.event.inputs.earthsci-ast-ref || 'main' }}
+          path: EarthSciAST
+      - uses: dtolnay/rust-toolchain@stable
+      # No cache when testing an EarthSciAST ref (see the Julia job).
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ !inputs.upstream }}
+        with:
+          workspaces: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+          key: earthsci-ast-${{ matrix.version }}
+      # No Cargo.lock is committed (this is a library). A release: lock the
+      # crates.io earthsci-ast to exactly it (Cargo refuses one outside the
+      # requirement). A ref: patch in the sibling checkout, after widening the
+      # requirement for this run when the ref's version is unreleased.
+      - name: Test
+        working-directory: EarthSciASTDiff/pkg/earthsci-astdiff-rs
+        env:
+          EARTHSCI_AST_VERSION: ${{ matrix.version }}
+          PATCH: patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"
+        run: |
+          set -euo pipefail
+          if [ -z "$EARTHSCI_AST_REF" ]; then
+            cargo generate-lockfile
+            cargo update -p earthsci-ast --precise "$EARTHSCI_AST_VERSION"
+            cargo tree -i earthsci-ast -e normal --depth 0
+            cargo test --locked
+            exit 0
+          fi
+          python3 ../../scripts/earthsci-ast-versions.py --admit-checkout ../../../EarthSciAST
+          # A patch Cargo cannot use is ignored with only a warning, and the
+          # tests would run against crates.io instead.
+          if ! cargo tree --config "$PATCH" -i earthsci-ast -e normal --depth 0 | grep -q 'EarthSciAST/pkg/earthsci-ast-rs'; then
+            echo "::error::The EarthSciAST $EARTHSCI_AST_REF checkout was not patched in (see the cargo output above)."
+            exit 1
+          fi
+          cargo test --config "$PATCH"
