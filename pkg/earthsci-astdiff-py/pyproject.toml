@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST"
 readme = "README.md"
 license = "AGPL-3.0"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 # Tested at both ends of the range by conformance.yml, each on the
 # requires-python floor and on the newest Python
 # (scripts/earthsci-ast-versions.py PYTHON_NEWEST); raise the floor only to a
