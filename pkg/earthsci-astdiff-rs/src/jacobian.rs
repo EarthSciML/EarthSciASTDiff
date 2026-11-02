@@ -221,7 +221,7 @@ pub fn jacobian_bands_with_forcing(
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let file = earthsci_ast::load_path("coupled.esm")?;
 /// let flat = earthsci_ast::flatten(&file)?;
-/// let sv = earthsci_astdiff::sysview_flat(&flat);
+/// let sv = earthsci_astdiff::sysview_flat(&flat)?;
 /// let entries = earthsci_astdiff::jacobian_bands_view(&sv, earthsci_astdiff::Wrt::States, None)?;
 /// # Ok(()) }
 /// ```

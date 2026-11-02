@@ -12,7 +12,7 @@ from earthsci_ast.esm_types import EsmFile, Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.expression import free_variables
 
-from .bands import Ctx
+from .bands import BandError, Ctx
 
 
 @dataclass
@@ -69,29 +69,78 @@ def sysview(obj, model_name: str | None = None) -> SysView:
 def _promote_lifted(vars: dict, index_sets: dict, lifted_shapes: dict) -> None:
     """Give each pointwise-lifted state (esm-spec §10.5) its grid shape.
 
-    Python's ``flatten``, like Rust's, keeps a lifted state's declared scalar
-    shape and records the grid's extents only in ``lifted_shapes``; the
-    reference's ``flatten`` promotes the declared shape itself. As the Rust
-    binding's ``sysview_flat`` does, each grid dimension ``d`` (1-based) of
-    extent ``n`` takes the one index set of that size, else the synthetic
-    dense axis ``_liftdim<d>_<n>``, added to ``index_sets``. A state that
-    already has a shape is left alone."""
+    From EarthSciAST 0.8, every binding's ``flatten`` records the lift's
+    index sets as the lifted state's ``shape`` (esm-libraries-spec §4.7.5,
+    "Pointwise lift: index sets": an operand's declared shape at the lift's
+    loops, else the one index set of that size, else a synthetic
+    ``_liftdim<d>_<n>`` it adds to ``index_sets``), and that shape is used
+    as it stands, once it is checked against ``lifted_shapes`` (see
+    :func:`_check_lifted_shape`). Python's ``flatten`` before 0.8 keeps the
+    declared scalar shape and records only the extents, in
+    ``lifted_shapes``; for such a state alone this falls back to rules 2 and
+    3 of that section, as the Rust binding's ``sysview_flat`` does: each grid
+    dimension ``d`` (1-based) of extent ``n`` takes the one index set of
+    that size the document declares, else the synthetic dense axis
+    ``_liftdim<d>_<n>``, added to ``index_sets``. "Declared" is the
+    document's own index sets, so a synthetic set one lifted state adds is
+    never matched by size for the next."""
+    declared = {str(k): _iset_size(s) for k, s in index_sets.items()}
     for name, extents in lifted_shapes.items():
         var = vars.get(name)
-        if var is None or getattr(var, "shape", None):
+        if var is None:
             continue
-        axes = [_lift_axis(index_sets, d + 1, int(n)) for d, n in enumerate(extents)]
+        extents = [int(n) for n in extents]
+        shape = getattr(var, "shape", None)
+        if shape:  # the shape `flatten` recorded (EarthSciAST >= 0.8)
+            _check_lifted_shape(name, list(shape), extents, index_sets)
+            continue
+        axes = [_lift_axis(index_sets, declared, d + 1, n) for d, n in enumerate(extents)]
         vars[name] = dataclasses.replace(var, shape=axes)
 
 
-def _lift_axis(index_sets: dict, d: int, n: int) -> str:
-    sized = [
-        k for k, s in index_sets.items() if _iset_size(s) == n and not str(k).startswith("_liftdim")
-    ]
+def _check_lifted_shape(name: str, shape: list, extents: list[int], index_sets: dict) -> None:
+    """Check the shape ``flatten`` recorded on lifted state ``name`` against
+    its ``lifted_shapes`` extents (esm-libraries-spec §4.7.5): the same rank,
+    every entry an index set of the flattened system, of that dimension's
+    extent. The one entry that may be missing is the synthetic
+    ``_liftdim<d>_<n>`` of its own dimension, which an older ``flatten``
+    names without adding (Julia's, before 0.8); it is added here."""
+    if len(shape) != len(extents):
+        raise BandError(
+            f"lifted state `{name}` has shape {shape} of rank {len(shape)}, "
+            f"but its lifted_shapes entry {extents} has rank {len(extents)}"
+        )
+    for d, (axis, n) in enumerate(zip(shape, extents, strict=True), start=1):
+        axis = str(axis)
+        if axis not in index_sets:
+            if axis != f"_liftdim{d}_{n}":
+                raise BandError(
+                    f"lifted state `{name}`: dimension {d} names index set "
+                    f"`{axis}`, which the flattened system does not declare"
+                )
+            index_sets[axis] = {"kind": "interval", "size": n}
+        size = _iset_size(index_sets[axis])
+        if size != n:
+            raise BandError(
+                f"lifted state `{name}`: dimension {d} names index set `{axis}` "
+                f"of size {size}, but its lifted_shapes extent is {n}"
+            )
+
+
+def _lift_axis(index_sets: dict, declared: dict, d: int, n: int) -> str:
+    sized = [k for k, size in declared.items() if size == n]
     if len(sized) == 1:
-        return str(sized[0])
+        return sized[0]
     name = f"_liftdim{d}_{n}"
-    index_sets.setdefault(name, {"kind": "interval", "size": n})
+    if name in index_sets:
+        size = _iset_size(index_sets[name])
+        if size != n:  # esm-libraries-spec §4.7.5 rule 3: refuse
+            raise BandError(
+                f"dimension promotion: the document declares index set `{name}` "
+                f"with size {size}, but the lift's dimension {d} has extent {n}"
+            )
+    else:
+        index_sets[name] = {"kind": "interval", "size": n}
     return name
 
 

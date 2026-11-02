@@ -6,6 +6,7 @@ evaluated by EarthSciAST, whose right-hand side gives the band values of
 `coupled_chem_advection.jvals.json` once each band point places its field
 cell (the consumer's work, done here to check the document by value)."""
 
+import dataclasses
 import json
 import math
 
@@ -405,3 +406,139 @@ def test_domain_follows_earthsci_ast_serialization():
     src["domain"]["temporal"]["reference_time"] = ""
     doc = _domain({}, ea.load_string(json.dumps(src)).domain)
     assert "reference_time" not in doc["domain"]["temporal"]
+
+
+# ── a lifted state on one of two same-size index sets ──────────────────────
+#
+# `lift_same_size_index_sets` (EarthSciAST's pointwise-lift conformance case of
+# that name): `y` and `x` both have size 3, `y` declared first, and the operand
+# `Wind.u`, declared on `[x, y]` and gathered at the lift's loops, names the
+# grid. EarthSciAST's `flatten` records `Chem.c` on `[x, y]` from 0.8
+# (esm-libraries-spec §4.7.5); the view, its context, the bands and the
+# evaluation document take that shape as recorded, byte-identical to the
+# reference's goldens. A `flatten` that records no lifted shape (before 0.8)
+# leaves the view to its fallback, which cannot tell `x` from `y`, so the
+# goldens do not apply there.
+LIFT = "lift_same_size_index_sets"
+
+
+def _lift_flat(valid_dir):
+    flat = ea.flatten(ea.load_path(str(valid_dir / f"{LIFT}.esm")))
+    if not getattr(flat.state_variables["Chem.c"], "shape", None):
+        pytest.skip("this earthsci-ast's flatten records no lifted shape (before 0.8)")
+    return flat
+
+
+@pytest.mark.parametrize("cse", [True, False])
+def test_lifted_shape_is_flattens(cse, valid_dir, golden_dir):
+    flat = _lift_flat(valid_dir)
+    assert list(flat.state_variables["Chem.c"].shape) == ["x", "y"]
+    sv = sysview(flat)
+    assert list(sv.variables["Chem.c"].shape) == ["x", "y"]
+    assert ctx_of(sv).shapes["Chem.c"] == [3, 3]
+    assert not any(str(k).startswith("_liftdim") for k in sv.index_sets)
+    entries = jacobian_bands(sv)
+    doc, fields = _evaluation_document(sv, entries, cse=cse)
+    # nothing to hoist: the unhoisted document is the same (no nocse golden)
+    assert not (golden_dir / f"{LIFT}.evaldoc-nocse.json").exists()
+    assert stable_json(doc) == (golden_dir / f"{LIFT}.evaldoc.json").read_text()
+    assert doc["models"]["Chem"]["variables"]["c"]["shape"] == ["x", "y"]
+    assert all(doc["models"]["JacobianEval"]["variables"][f]["shape"] == ["x", "y"] for f in fields)
+
+
+@pytest.mark.parametrize("compiler", ["native", "interpreter"])
+def test_lifted_shape_values(compiler, valid_dir, golden_dir):
+    flat = _lift_flat(valid_dir)
+    g = json.loads((golden_dir / f"{LIFT}.jvals.json").read_text())
+    assert sorted(g["u"]) == sorted(_state_cells(sysview(flat)))
+    want = {(r, c): v for r, c, v in g["entries"]}
+    got = _band_jacobian(flat, g["u"], g["t"], True, compiler)
+    assert set(got) == set(want)
+    for k, v in want.items():
+        assert math.isclose(got[k], v, rel_tol=1e-10, abs_tol=1e-13), k
+
+
+def test_lifted_shape_fallback(valid_dir):
+    """A ``flatten`` that records no lifted shape (before 0.8) leaves the view
+    to its fallback, as the Rust tests/flat_view.rs checks: with the recorded
+    shape and synthetic index sets removed, ``x`` and ``y`` share the size 3,
+    so each dimension takes a synthetic ``_liftdim<d>_3``."""
+    sv = sysview(_fallback_flat(valid_dir))
+    assert list(sv.variables["Chem.c"].shape) == ["_liftdim1_3", "_liftdim2_3"]
+    assert ctx_of(sv).shapes["Chem.c"] == [3, 3]
+
+
+def _fallback_flat(valid_dir):
+    """The lift fixture as a ``flatten`` before 0.8 leaves it: no recorded
+    shape, no synthetic index set."""
+    flat = ea.flatten(ea.load_path(str(valid_dir / f"{LIFT}.esm")))
+    flat.state_variables["Chem.c"] = dataclasses.replace(flat.state_variables["Chem.c"], shape=None)
+    flat.index_sets = {
+        k: v for k, v in flat.index_sets.items() if not str(k).startswith("_liftdim")
+    }
+    return flat
+
+
+def _with_shape(flat, shape):
+    flat.state_variables["Chem.c"] = dataclasses.replace(
+        flat.state_variables["Chem.c"], shape=shape
+    )
+    return flat
+
+
+def test_recorded_lift_shape_stands(valid_dir):
+    """A recorded shape is used as it stands, never re-derived: ``[y, x]``
+    (which no rule would pick) survives, and the index sets are untouched."""
+    flat = _with_shape(_fallback_flat(valid_dir), ["y", "x"])
+    sv = sysview(flat)
+    assert list(sv.variables["Chem.c"].shape) == ["y", "x"]
+    assert set(sv.index_sets) == set(flat.index_sets)
+
+
+def test_recorded_synthetic_lift_axis_is_declared(valid_dir):
+    """A recorded ``_liftdim<d>_<n>`` the flattened ``index_sets`` lacks (as
+    Julia's ``flatten`` before 0.8 leaves it) is added, of extent ``n``."""
+    flat = _with_shape(_fallback_flat(valid_dir), ["_liftdim1_3", "_liftdim2_3"])
+    sv = sysview(flat)
+    assert ctx_of(sv).shapes["Chem.c"] == [3, 3]
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [["x"], ["x", "y", "x"], ["x", "z"], ["_liftdim2_3", "y"], ["_liftdim1_4", "y"]],
+)
+def test_recorded_lift_shape_is_checked(shape, valid_dir):
+    """A recorded shape of the wrong rank, naming an undeclared index set, or
+    of another extent than ``lifted_shapes`` is refused."""
+    flat = _with_shape(_fallback_flat(valid_dir), shape)
+    with pytest.raises(BandError):
+        sysview(flat)
+
+
+def test_recorded_lift_shape_extent_mismatch(valid_dir):
+    flat = _with_shape(_fallback_flat(valid_dir), ["x", "y"])
+    flat.index_sets = {**flat.index_sets, "x": {"kind": "interval", "size": 4}}
+    with pytest.raises(BandError):
+        sysview(flat)
+
+
+def test_declared_liftdim_of_another_size_is_refused(valid_dir):
+    """esm-libraries-spec §4.7.5 rule 3: a document declaring the synthetic
+    name with a different size is refused, not reused at that size."""
+    flat = _fallback_flat(valid_dir)
+    flat.index_sets = {**flat.index_sets, "_liftdim1_3": {"kind": "interval", "size": 5}}
+    with pytest.raises(BandError, match="dimension promotion"):
+        sysview(flat)
+
+
+def test_synthetic_lift_axis_is_not_matched_by_size(valid_dir):
+    """A synthetic set one lifted state adds is not "declared": a second
+    lifted state of an extent no declared set has takes its own
+    ``_liftdim<d>_<n>``, not the first state's by size."""
+    flat = _fallback_flat(valid_dir)
+    flat.lifted_shapes = {**flat.lifted_shapes, "Chem.k": [4, 4]}
+    flat.lifted_shapes["Chem.c"] = [4]
+    flat.index_sets = {}
+    sv = sysview(flat)
+    assert list(sv.variables["Chem.c"].shape) == ["_liftdim1_4"]
+    assert list(sv.variables["Chem.k"].shape) == ["_liftdim1_4", "_liftdim2_4"]

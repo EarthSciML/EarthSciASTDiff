@@ -126,10 +126,9 @@ end
 # Flattened (coupled) fixtures: `<name>.jvals.json` from the evaluation
 # document of the flattened system (spec §8.1), evaluated by EarthSciAST in
 # one right-hand-side call and placed by each band point
-# (test/docvals.jl `flat_band_jacobian`), since no product document is laid
-# out for a flattened system. The state cells take the canonical state order
+# (test/docvals.jl `flat_band_jacobian`). The state cells take the canonical state order
 # of spec §8; the parameters keep the document defaults.
-for name in ("coupled_chem_advection",)
+for name in ("coupled_chem_advection", "lift_same_size_index_sets")
     flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
     t = 0.7
     cells = flat_state_cells(flat)

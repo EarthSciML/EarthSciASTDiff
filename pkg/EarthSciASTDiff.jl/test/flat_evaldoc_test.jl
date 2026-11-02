@@ -316,3 +316,108 @@ end
     doc, _ = jvp_document(fixture("bd_chem.esm"))
     @test !haskey(doc, "domain")
 end
+
+# A lifted state on one of two same-size index sets
+# (`lift_same_size_index_sets`, EarthSciAST's pointwise-lift conformance case
+# of that name): `y` and `x` both have size 3, `y` declared first, and the
+# operand `Wind.u`, declared on `[x, y]` and gathered at the lift's loops,
+# names the grid. `flatten` records `Chem.c` on `[x, y]` (esm-libraries-spec
+# §4.7.5), and the view, its context, the bands and the evaluation document
+# take that shape as recorded. Pinned by tests/goldens/lift_same_size_index_sets.*,
+# which Python and Rust reproduce from their own `flatten` (EarthSciAST ≥ 0.8).
+@testset "flattened evaluation document: a lifted state's recorded shape" begin
+    flat = EarthSciAST.flatten(fixture("lift_same_size_index_sets.esm"))
+    @test flat.state_variables["Chem.c"].shape == ["x", "y"]
+    sv = sysview(flat)
+    @test sv.variables["Chem.c"].shape == ["x", "y"]
+    @test EarthSciASTDiff._ctx(sv).shapes["Chem.c"] == [3, 3]
+    @test !any(startswith(k, "_liftdim") for k in keys(sv.index_sets))
+    entries = jacobian_bands(sv)
+    # nothing to hoist: the unhoisted document is the same, so it has no
+    # golden of its own
+    @test !isfile(joinpath(_FLAT_GOLDENS, "lift_same_size_index_sets.evaldoc-nocse.json"))
+    for cse in (true, false)
+        doc, fields = _evaluation_document(sv, entries; cse = cse)
+        @test stable_json(doc) ==
+            read(joinpath(_FLAT_GOLDENS, "lift_same_size_index_sets.evaldoc.json"), String)
+        @test doc["models"]["Chem"]["variables"]["c"]["shape"] == ["x", "y"]
+        @test all(doc["models"]["JacobianEval"]["variables"][f]["shape"] == ["x", "y"] for f in fields)
+    end
+    g = EarthSciASTDiff.JSON3.read(
+        read(joinpath(_FLAT_GOLDENS, "lift_same_size_index_sets.jvals.json"), String)
+    )
+    u = Dict{String, Float64}(String(k) => Float64(v) for (k, v) in pairs(g["u"]))
+    @test sort!(collect(keys(u))) == sort!(flat_state_cells(flat))
+    want = Dict{Tuple{String, String}, Float64}(
+        (String(e[1]), String(e[2])) => Float64(e[3]) for e in g["entries"]
+    )
+    for compiler in (:native, :interpreter)
+        J, _ = flat_band_jacobian(flat; u = u, t = g["t"], compiler = compiler)
+        @test Set(keys(J)) == Set(keys(want))
+        @test all(isapprox(J[k], want[k]; rtol = 1.0e-10, atol = 1.0e-13) for k in keys(want))
+    end
+    # the golden is the source's Jacobian: ForwardDiff of the flattened source
+    prob = EarthSciAST.esm_problem(fixture("lift_same_size_index_sets.esm"), (0.0, 1.0))
+    vm = Dict{String, Int}(String(k) => Int(v) for (k, v) in prob.var_map)
+    x = zeros(length(prob.u0))
+    for (c, v) in u
+        x[vm[c]] = v
+    end
+    A = ad_jacobian(prob.f!, x, prob.p, Float64(g["t"]))
+    @test count(!iszero, A) == length(want)
+    @test all(isapprox(A[vm[r], vm[c]], v; rtol = 1.0e-12) for ((r, c), v) in want)
+end
+
+# A lift no operand names, onto two same-size index sets: `flatten` records
+# the synthetic `_liftdim1_3` (esm-libraries-spec §4.7.5 rule 3). Before
+# EarthSciAST 0.8, Julia's `flatten` names it in the shape without adding it
+# to `index_sets`; the view adds it, so the context resolves either way.
+const _AMBIGUOUS_LIFT = """
+{"esm": "1.1.0", "metadata": {"name": "Lifted"},
+ "index_sets": {"x": {"kind": "interval", "size": 3},
+                "y": {"kind": "interval", "size": 3}},
+ "models": {
+  "Chem": {"variables": {"O3": {"type": "unknown", "default": 1.0},
+                         "k1": {"type": "parameter", "default": 0.1}},
+           "equations": [{"lhs": {"op": "D", "args": ["O3"], "wrt": "t"},
+                          "rhs": {"op": "*", "args": [{"op": "-", "args": ["k1"]}, "O3", "O3"]}}]},
+  "Adv": {"variables": {"u": {"type": "parameter", "default": 2.0},
+                        "dx": {"type": "parameter", "default": 100.0}},
+          "equations": [{"lhs": {"op": "D", "args": ["_var"], "wrt": "t"},
+                         "rhs": {"op": "*", "args": [{"op": "-", "args": ["u"]},
+                          {"op": "makearray", "args": [], "regions": [[[2, 3]], [[1, 1]]],
+                           "values": [
+                            {"op": "/", "args": [{"op": "-", "args": [
+                              {"op": "index", "args": ["_var", "i"]},
+                              {"op": "index", "args": ["_var", {"op": "-", "args": ["i", 1]}]}]}, "dx"]},
+                            {"op": "/", "args": [{"op": "index", "args": ["_var", "i"]}, "dx"]}]}]}}]}},
+ "coupling": [{"type": "operator_compose", "systems": ["Chem", "Adv"], "lifting": "pointwise"}]}
+"""
+
+@testset "sysview(flat): a recorded synthetic lift axis" begin
+    flat = EarthSciAST.flatten(EarthSciAST.load_string(_AMBIGUOUS_LIFT))
+    @test flat.lifted_shapes["Chem.O3"] == [3]
+    @test collect(flat.state_variables["Chem.O3"].shape) == ["_liftdim1_3"]
+    # as `flatten` before 0.8 leaves it: named, not declared
+    delete!(flat.index_sets, "_liftdim1_3")
+    sv = sysview(flat)
+    @test sv.index_sets["_liftdim1_3"].size == 3
+    @test EarthSciASTDiff._ctx(sv).shapes["Chem.O3"] == [3]
+    @test !isempty(jacobian_bands(sv))
+end
+
+@testset "sysview(flat): a recorded lift shape is checked" begin
+    check(shape, isets = Dict{String, Any}("x" => EarthSciAST.IndexSet("interval"; size = 3))) =
+        EarthSciASTDiff._check_lifted_shape("Chem.O3", shape, [3], isets)
+    @test check(["x"]) === nothing
+    @test_throws ArgumentError check(["x", "x"])          # rank
+    @test_throws ArgumentError check(String[])            # rank
+    @test_throws ArgumentError check(["z"])               # undeclared
+    @test_throws ArgumentError check(["_liftdim2_3"])     # not this dimension's
+    @test_throws ArgumentError check(
+        ["x"], Dict{String, Any}("x" => EarthSciAST.IndexSet("interval"; size = 4))
+    )                                                     # size
+    @test_throws ArgumentError check(
+        ["_liftdim1_3"], Dict{String, Any}("_liftdim1_3" => EarthSciAST.IndexSet("interval"; size = 5))
+    )
+end

@@ -784,7 +784,16 @@ Fixture corpus in `tests/` of this repository:
    flattens and builds each with its EarthSciAST (with the native compiler
    and the interpreter) to check the placed values against the golden; the
    Julia reference also checks the golden against ForwardDiff through
-   EarthSciAST's evaluator of the flattened source. A fixture
+   EarthSciAST's evaluator of the flattened source. The flattened fixture
+   `lift_same_size_index_sets.esm` (EarthSciAST's pointwise-lift
+   conformance case of that name: a scalar state lifted onto a grid whose
+   two index sets, `y` then `x`, both have size 3, named `[x, y]` by an
+   operand declared on `[x, y]`, here with a different value in every cell)
+   carries the evaluation document and value goldens (it has nothing to
+   hoist, so no `.evaldoc-nocse.json`), which pin
+   the lifted state's recorded shape through the view, the bands and the
+   document; a binding whose `flatten` records no lifted shape (before
+   EarthSciAST 0.8) skips them. A fixture
    whose right-hand side reads `t` also carries the same four for
    `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
@@ -1048,14 +1057,27 @@ needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
 The derived model is named `JacobianEval` and holds:
 
 - every variable of the source, `unknown` or `parameter`, with its `shape`
-  and `default`. A pointwise-lifted state of a flattened system takes its
-  grid shape: each grid dimension `d` (1-based) of extent `n` takes the one
-  index set of that size, else a synthetic dense index set `_liftdim<d>_<n>`,
-  which is added to `index_sets`. (The Julia reference reads the shape its
-  `flatten` records, which follows the same rule wherever each extent names
-  one index set; where several do, it may pick one by what the lifted
-  equations read, so documents of such a system may differ across bindings
-  in index-set names, never in extents or values.);
+  and `default`. A pointwise-lifted state of a flattened system has the
+  `shape` its `flatten` records: the lift's index sets, which EarthSciAST
+  0.8 and later names in every binding by the rules of esm-libraries-spec
+  §4.7.5, "Pointwise lift: index sets" (an operand declaring a shape and
+  read at the lift's loops, else the one index set of that size, else a
+  synthetic `_liftdim<d>_<n>` that `flatten` adds to `index_sets`). The
+  producer takes that shape as it stands and derives none, so the document,
+  the bands and any scatter plan name a lifted state's dimensions exactly as
+  EarthSciAST does. It MUST refuse a recorded shape whose rank differs from
+  the state's `lifted_shapes` entry, or whose dimension `d` names an index
+  set absent from `index_sets` or of a size other than that entry's `n`;
+  the one exception is an absent `_liftdim<d>_<n>` naming its own dimension
+  (Julia's `flatten` before EarthSciAST 0.8 names it without adding it),
+  which the producer adds as `{"kind": "interval", "size": n}`. Only where
+  `flatten` records no shape (the Rust and Python `flatten` before
+  EarthSciAST 0.8) does the producer fall back to the second and third of
+  those rules, which cannot tell same-size index sets apart: each grid
+  dimension `d` (1-based) of extent `n` takes the one index set of that
+  size the document itself declares, else `_liftdim<d>_<n>`, added to
+  `index_sets` (a document declaring that name with another size is
+  refused, as esm-libraries-spec §4.7.5 rule 3 requires);
 - the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
   (for an array state, a `makearray` of `0.0` over its whole shape), and the
   observed definitions the coefficients do not read, directly or through

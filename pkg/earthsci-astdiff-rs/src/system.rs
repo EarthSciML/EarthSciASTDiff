@@ -82,22 +82,28 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
 /// entries, in the same order, as it gives for a one-model document holding
 /// these variables and equations.
 ///
-/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid keeps
-/// its declared scalar shape in Rust's `flatten`, which records the grid
-/// extents in `lifted_shapes` instead; the reference's `flatten` promotes
-/// the declared shape itself. The view promotes it as the reference does:
-/// each grid dimension takes the one index set of its extent, or, when no
-/// index set or more than one has that extent, a synthetic dense axis
-/// `_liftdim<d>_<extent>` the view adds to its index sets (the reference
-/// names the same axis). The reference can also pick among several
-/// same-sized index sets by what the lifted equations gather; the view
-/// does not, so such a state differs from it in axis names only, never in
-/// extents or bands.
+/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid takes
+/// the shape `flatten` records on it: from EarthSciAST 0.8, every binding's
+/// `flatten` names the lift's index sets there (esm-libraries-spec §4.7.5,
+/// "Pointwise lift: index sets": an operand's declared shape at the lift's
+/// loops, else the one index set of that size, else a synthetic
+/// `_liftdim<d>_<extent>` it adds to `index_sets`), so the view uses the
+/// lifted state's declaration as it stands, once it is checked against
+/// `lifted_shapes` (the same rank, every entry an index set of that
+/// dimension's extent; a missing `_liftdim<d>_<extent>` of its own dimension,
+/// which Julia's `flatten` before 0.8 names without adding, is added). Rust's
+/// `flatten` before 0.8 keeps the declared scalar shape and records only the
+/// extents, in `lifted_shapes`; for such a state alone the view falls back to
+/// rules 2 and 3 of that section (it cannot apply rule 1), which agree with
+/// 0.8 whenever each extent names one index set or none. Those rules match
+/// sizes against the document's own index sets only, so a synthetic set one
+/// lifted state adds is never matched for the next, and a declared
+/// `_liftdim<d>_<extent>` of another size is refused.
 ///
 /// The reference expands surviving `apply_expression_template` references
 /// first (`expand_flattened_refs`); there is nothing to expand here, since
 /// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
-pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
+pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
     let mut variables: IndexMap<String, Cow<'_, ModelVariable>> = IndexMap::new();
     for (n, v) in flat
         .state_variables
@@ -108,46 +114,113 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
         variables.insert(n.clone(), Cow::Borrowed(v));
     }
     let mut index_sets = flat.index_sets.clone();
+    let declared: Vec<(String, Option<i64>)> = flat
+        .index_sets
+        .iter()
+        .map(|(k, s)| (k.clone(), s.size))
+        .collect();
     for (name, extents) in &flat.lifted_shapes {
         let Some(var) = variables.get_mut(name) else {
             continue;
         };
-        if var.shape.as_ref().is_some_and(|s| !s.is_empty()) {
-            continue; // already spatial: the lift leaves it alone
+        if let Some(shape) = var.shape.as_ref().filter(|s| !s.is_empty()) {
+            // the shape `flatten` recorded (EarthSciAST >= 0.8)
+            check_lifted_shape(name, shape, extents, &mut index_sets)?;
+            continue;
         }
         let axes = extents
             .iter()
             .enumerate()
-            .map(|(d, &n)| lift_axis(&mut index_sets, d + 1, n))
-            .collect();
+            .map(|(d, &n)| lift_axis(&mut index_sets, &declared, d + 1, n))
+            .collect::<Result<Vec<_>, _>>()?;
         var.to_mut().shape = Some(axes);
     }
-    SysView {
+    Ok(SysView {
         variables,
         equations: &flat.equations,
         index_sets,
         domain: flat.domain.as_ref(),
-    }
+    })
 }
 
-/// The index set naming grid dimension `d` (1-based) of extent `n` of a
-/// lifted state: the one declared set of that size, else the synthetic
-/// dense `_liftdim<d>_<n>` (added to `index_sets` once).
-fn lift_axis(index_sets: &mut IndexMap<String, IndexSet>, d: usize, n: i64) -> String {
-    let mut sized = index_sets
+fn interval(n: i64) -> IndexSet {
+    serde_json::from_value(serde_json::json!({"kind": "interval", "size": n}))
+        .expect("an interval index set deserializes")
+}
+
+/// Check the shape `flatten` recorded on lifted state `name` against its
+/// `lifted_shapes` extents (esm-libraries-spec §4.7.5): the same rank, every
+/// entry an index set of the flattened system, of that dimension's extent.
+/// The one entry that may be missing is the synthetic `_liftdim<d>_<n>` of
+/// its own dimension, which an older `flatten` names without adding (Julia's,
+/// before 0.8); it is added here.
+fn check_lifted_shape(
+    name: &str,
+    shape: &[String],
+    extents: &[i64],
+    index_sets: &mut IndexMap<String, IndexSet>,
+) -> Result<(), BandError> {
+    if shape.len() != extents.len() {
+        return Err(BandError(format!(
+            "lifted state `{name}` has shape {shape:?} of rank {}, but its \
+             lifted_shapes entry {extents:?} has rank {}",
+            shape.len(),
+            extents.len()
+        )));
+    }
+    for (i, (axis, &n)) in shape.iter().zip(extents).enumerate() {
+        let d = i + 1;
+        if !index_sets.contains_key(axis) {
+            if *axis != format!("_liftdim{d}_{n}") {
+                return Err(BandError(format!(
+                    "lifted state `{name}`: dimension {d} names index set \
+                     `{axis}`, which the flattened system does not declare"
+                )));
+            }
+            index_sets.insert(axis.clone(), interval(n));
+        }
+        let size = index_sets[axis].size;
+        if size != Some(n) {
+            return Err(BandError(format!(
+                "lifted state `{name}`: dimension {d} names index set `{axis}` \
+                 of size {size:?}, but its lifted_shapes extent is {n}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The fallback for a `flatten` that records no lifted shape (EarthSciAST
+/// before 0.8): the index set naming grid dimension `d` (1-based) of extent
+/// `n` of a lifted state is the one set of that size the document declares
+/// (`declared`), else the synthetic dense `_liftdim<d>_<n>` (added to
+/// `index_sets` once; a declared one of another size is refused, rule 3).
+fn lift_axis(
+    index_sets: &mut IndexMap<String, IndexSet>,
+    declared: &[(String, Option<i64>)],
+    d: usize,
+    n: i64,
+) -> Result<String, BandError> {
+    let mut sized = declared
         .iter()
-        .filter(|(k, s)| s.size == Some(n) && !k.starts_with("_liftdim"))
+        .filter(|(_, size)| *size == Some(n))
         .map(|(k, _)| k);
     if let (Some(k), None) = (sized.next(), sized.next()) {
-        return k.clone();
+        return Ok(k.clone());
     }
     let name = format!("_liftdim{d}_{n}");
-    if !index_sets.contains_key(&name) {
-        let set = serde_json::from_value(serde_json::json!({"kind": "interval", "size": n}))
-            .expect("an interval index set deserializes");
-        index_sets.insert(name.clone(), set);
+    match index_sets.get(&name) {
+        Some(set) if set.size != Some(n) => Err(BandError(format!(
+            "dimension promotion: the document declares index set `{name}` \
+             with size {:?}, but the lift's dimension {d} has extent {n}",
+            set.size
+        ))),
+        Some(_) => Ok(name),
+        None => {
+            index_sets.insert(name.clone(), interval(n));
+            Ok(name)
+        }
     }
-    name
 }
 
 pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {

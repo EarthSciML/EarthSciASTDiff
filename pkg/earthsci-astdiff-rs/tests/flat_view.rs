@@ -138,7 +138,7 @@ fn view_matches_the_wrapped_document() {
     for name in NAMES {
         let flat = flat_of(name);
         let file = wrapped(&flat);
-        let direct = sysview_flat(&flat);
+        let direct = sysview_flat(&flat).unwrap();
         let via = sysview(&file, Some(MODEL)).unwrap();
         // Order-sensitive: the variable maps compare as serialized objects
         // in their own order, not as sets.
@@ -166,7 +166,7 @@ fn bands_match_the_wrapped_document_on_every_axis() {
     for name in NAMES {
         let flat = flat_of(name);
         let file = wrapped(&flat);
-        let sv = sysview_flat(&flat);
+        let sv = sysview_flat(&flat).unwrap();
         for wrt in AXES {
             let direct = jacobian_bands_view(&sv, wrt, None);
             let via = jacobian_bands(&file, Some(MODEL), wrt);
@@ -187,7 +187,7 @@ fn bands_match_the_wrapped_document_on_every_axis() {
     // The lifted coupled document differentiates: its chemistry rows are
     // read as the grid arrays they are.
     let flat = flat_of("coupled_chem_advection");
-    let coupled = jacobian_bands_view(&sysview_flat(&flat), Wrt::States, None).unwrap();
+    let coupled = jacobian_bands_view(&sysview_flat(&flat).unwrap(), Wrt::States, None).unwrap();
     assert!(coupled.iter().any(|e| e.u == "SimpleOzone.O3"));
     assert!(
         nonempty >= NAMES.len(),
@@ -200,7 +200,7 @@ fn evaluation_document_matches_the_wrapped_document() {
     for name in NAMES {
         let flat = flat_of(name);
         let file = wrapped(&flat);
-        let direct = sysview_flat(&flat);
+        let direct = sysview_flat(&flat).unwrap();
         let via = sysview(&file, Some(MODEL)).unwrap();
         let Ok(entries) = jacobian_bands_view(&direct, Wrt::States, None) else {
             continue; // refused alike by both routes (checked above)
@@ -245,7 +245,7 @@ fn two_coupled_models() {
     }))
     .expect("document loads");
     let flat = earthsci_ast::flatten(&file).expect("document flattens");
-    let entries = jacobian_bands_view(&sysview_flat(&flat), Wrt::States, None).unwrap();
+    let entries = jacobian_bands_view(&sysview_flat(&flat).unwrap(), Wrt::States, None).unwrap();
     let pairs: Vec<(&str, &str)> = entries
         .iter()
         .map(|e| (e.u.as_str(), e.v.as_str()))
@@ -272,7 +272,7 @@ fn repeated_names_take_the_last_declaration() {
         .expect("bd_chem has a state");
     var.description = Some("from observed_variables".into());
     flat.observed_variables.insert(name.clone(), var);
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     assert_eq!(sv.variables.get_index_of(&name), Some(0));
     assert_eq!(
         sv.variables[&name].description.as_deref(),
@@ -285,9 +285,16 @@ fn repeated_names_take_the_last_declaration() {
 }
 
 /// Chemistry lifted onto an advection grid (esm-spec §10.5): `Chem.O3` is
-/// declared scalar, and Rust's `flatten` records its grid only in
-/// `lifted_shapes`. `index_sets` is the document's.
-fn lifted(index_sets: Value) -> FlattenedSystem {
+/// declared scalar. `index_sets` is the document's.
+///
+/// The view's fallback for a `flatten` that records only the grid extents
+/// (`lifted_shapes`, EarthSciAST before 0.8): from 0.8, `flatten` records the
+/// lifted state's index sets as its shape (esm-libraries-spec §4.7.5), and
+/// the view takes that as it stands. The flattened system is returned as an
+/// older `flatten` leaves it, the recorded shape and any synthetic index set
+/// removed, so the fallback is tested on every EarthSciAST; the shape a newer
+/// `flatten` recorded is returned beside it, to check the fallback against.
+fn lifted(index_sets: Value) -> (FlattenedSystem, Option<Vec<String>>) {
     let file = earthsci_ast::load_document(&json!({
         "esm": "1.1.0",
         "metadata": {"name": "Lifted"},
@@ -322,29 +329,31 @@ fn lifted(index_sets: Value) -> FlattenedSystem {
                       "lifting": "pointwise"}]
     }))
     .expect("document loads");
-    let flat = earthsci_ast::flatten(&file).expect("document flattens");
+    let mut flat = earthsci_ast::flatten(&file).expect("document flattens");
     assert_eq!(
         flat.lifted_shapes.get("Chem.O3"),
         Some(&vec![3]),
         "the lift ran"
     );
-    assert!(
-        flat.state_variables["Chem.O3"]
-            .shape
-            .as_ref()
-            .is_none_or(|s| s.is_empty()),
-        "flatten leaves the declared shape scalar"
-    );
-    flat
+    let recorded = flat.state_variables["Chem.O3"]
+        .shape
+        .take()
+        .filter(|s| !s.is_empty());
+    flat.index_sets.retain(|k, _| !k.starts_with("_liftdim"));
+    (flat, recorded)
 }
 
-/// A lifted state takes its grid shape from `lifted_shapes`: the one index
-/// set of its extent names the axis, and the bands are those of the same
-/// system written with that shape.
+/// With no recorded shape, a lifted state takes its grid shape from
+/// `lifted_shapes`: the one index set of its extent names the axis (what a
+/// newer `flatten` records too), and the bands are those of the same system
+/// written with that shape.
 #[test]
 fn lifted_states_take_their_grid_shape() {
-    let flat = lifted(json!({"x": {"kind": "interval", "size": 3}}));
-    let sv = sysview_flat(&flat);
+    let (flat, recorded) = lifted(json!({"x": {"kind": "interval", "size": 3}}));
+    if let Some(r) = recorded {
+        assert_eq!(r, ["x"]);
+    }
+    let sv = sysview_flat(&flat).unwrap();
     assert_eq!(
         sv.variables["Chem.O3"].shape.as_deref(),
         Some(&["x".to_string()][..])
@@ -367,15 +376,19 @@ fn lifted_states_take_their_grid_shape() {
     assert_eq!(stable_json(&dd), stable_json(&dv));
 }
 
-/// With no single index set of the grid's extent, the axis is the
-/// synthetic dense `_liftdim<d>_<extent>` the reference names, added to
-/// the view's index sets.
+/// With no recorded shape and no single index set of the grid's extent, the
+/// axis is the synthetic dense `_liftdim<d>_<extent>`, added to the view's
+/// index sets.
 #[test]
 fn ambiguous_lift_extents_take_a_synthetic_axis() {
-    let flat = lifted(json!({
+    let (flat, recorded) = lifted(json!({
         "x": {"kind": "interval", "size": 3},
         "y": {"kind": "interval", "size": 3}}));
-    let sv = sysview_flat(&flat);
+    // no operand names the grid, so a newer `flatten` records the same
+    if let Some(r) = recorded {
+        assert_eq!(r, ["_liftdim1_3"]);
+    }
+    let sv = sysview_flat(&flat).unwrap();
     assert_eq!(
         sv.variables["Chem.O3"].shape.as_deref(),
         Some(&["_liftdim1_3".to_string()][..])
@@ -390,4 +403,90 @@ fn ambiguous_lift_extents_take_a_synthetic_axis() {
     );
     let via = jacobian_bands(&file, Some(MODEL), Wrt::States).unwrap();
     assert_eq!(ser(&direct), ser(&via));
+}
+
+/// A recorded shape stands as `flatten` wrote it: the view neither
+/// re-derives it (`["x"]`, which the fallback would name `_liftdim1_3` here)
+/// nor copies the declaration, and adds no index set of its own.
+#[test]
+fn recorded_lift_shapes_stand() {
+    let (mut flat, _) = lifted(json!({
+        "x": {"kind": "interval", "size": 3},
+        "y": {"kind": "interval", "size": 3}}));
+    flat.state_variables["Chem.O3"].shape = Some(vec!["x".into()]);
+    let sv = sysview_flat(&flat).unwrap();
+    assert!(matches!(sv.variables["Chem.O3"], Cow::Borrowed(_)));
+    assert_eq!(
+        sv.variables["Chem.O3"].shape.as_deref(),
+        Some(&["x".to_string()][..])
+    );
+    assert_eq!(
+        sv.index_sets.keys().collect::<Vec<_>>(),
+        flat.index_sets.keys().collect::<Vec<_>>()
+    );
+}
+
+/// A recorded synthetic `_liftdim<d>_<n>` the flattened `index_sets` lacks
+/// (as Julia's `flatten` before 0.8 leaves it) is added, of extent `n`.
+#[test]
+fn recorded_synthetic_lift_axis_is_declared() {
+    let (mut flat, _) = lifted(json!({
+        "x": {"kind": "interval", "size": 3},
+        "y": {"kind": "interval", "size": 3}}));
+    flat.state_variables["Chem.O3"].shape = Some(vec!["_liftdim1_3".into()]);
+    let sv = sysview_flat(&flat).unwrap();
+    assert_eq!(sv.index_sets["_liftdim1_3"].size, Some(3));
+    assert_eq!(ctx_of(&sv).unwrap().shapes.get("Chem.O3"), Some(&vec![3]));
+}
+
+/// A recorded shape of the wrong rank, naming an undeclared index set (other
+/// than its own dimension's synthetic one), or of an extent other than
+/// `lifted_shapes` gives, is refused.
+#[test]
+fn recorded_lift_shapes_are_checked() {
+    let isets = json!({
+        "x": {"kind": "interval", "size": 3},
+        "w": {"kind": "interval", "size": 4}});
+    for shape in [
+        vec!["x", "x"],
+        vec!["z"],
+        vec!["_liftdim2_3"],
+        vec!["_liftdim1_4"],
+        vec!["w"],
+    ] {
+        let (mut flat, _) = lifted(isets.clone());
+        flat.state_variables["Chem.O3"].shape = Some(shape.iter().map(|s| s.to_string()).collect());
+        assert!(sysview_flat(&flat).is_err(), "{shape:?} accepted");
+    }
+}
+
+/// esm-libraries-spec §4.7.5 rule 3: a document declaring the synthetic name
+/// with a different size is refused, not reused at that size.
+#[test]
+fn declared_liftdim_of_another_size_is_refused() {
+    let (mut flat, _) = lifted(json!({
+        "x": {"kind": "interval", "size": 3},
+        "y": {"kind": "interval", "size": 3}}));
+    let five = serde_json::from_value(json!({"kind": "interval", "size": 5})).unwrap();
+    flat.index_sets.insert("_liftdim1_3".into(), five);
+    let err = sysview_flat(&flat).err().expect("refused");
+    assert!(err.0.contains("dimension promotion"), "{}", err.0);
+}
+
+/// A synthetic set one lifted state adds is not "declared": a second lifted
+/// state of an extent no declared set has takes its own `_liftdim<d>_<n>`,
+/// not the first state's by size.
+#[test]
+fn synthetic_lift_axes_are_not_matched_by_size() {
+    let (mut flat, _) = lifted(json!({}));
+    flat.lifted_shapes.insert("Chem.k1".into(), vec![3, 3]);
+    let sv = sysview_flat(&flat).unwrap();
+    assert_eq!(
+        sv.variables["Chem.O3"].shape.as_deref(),
+        Some(&["_liftdim1_3".to_string()][..])
+    );
+    assert_eq!(
+        sv.variables["Chem.k1"].shape.as_deref(),
+        Some(&["_liftdim1_3".to_string(), "_liftdim2_3".to_string()][..])
+    );
 }
