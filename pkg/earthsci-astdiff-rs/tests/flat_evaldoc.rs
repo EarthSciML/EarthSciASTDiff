@@ -612,3 +612,97 @@ fn product_documents_carry_the_domain() {
     let (jv, _) = jvp_document(&sv, &entries, Wrt::States, &opts).unwrap();
     assert!(jv.get("domain").is_none());
 }
+
+// ── a lifted state on one of two same-size index sets ─────────────────────
+//
+// `lift_same_size_index_sets` (EarthSciAST's pointwise-lift conformance case
+// of that name): `y` and `x` both have size 3, `y` declared first, and the
+// operand `Wind.u`, declared on `[x, y]` and gathered at the lift's loops,
+// names the grid. EarthSciAST's `flatten` records `Chem.c` on `[x, y]` from
+// 0.8 (esm-libraries-spec §4.7.5); the view, its context, the bands and the
+// evaluation document take that shape as recorded, byte-identical to the
+// reference's goldens. A `flatten` that records no lifted shape (before 0.8)
+// leaves the view to its fallback, which cannot tell `x` from `y`, so the
+// goldens do not apply there and the test returns early.
+
+const LIFT: &str = "lift_same_size_index_sets";
+
+/// The flattened fixture, or `None` when this EarthSciAST's `flatten`
+/// records no lifted shape.
+fn lift_flat() -> Option<FlattenedSystem> {
+    let flat = earthsci_ast::flatten(&load(LIFT)).unwrap();
+    if flat.state_variables["Chem.c"]
+        .shape
+        .as_ref()
+        .is_none_or(|s| s.is_empty())
+    {
+        eprintln!("skipped: this earthsci-ast's flatten records no lifted shape (before 0.8)");
+        return None;
+    }
+    Some(flat)
+}
+
+#[test]
+fn lifted_shape_is_flattens() {
+    let Some(flat) = lift_flat() else { return };
+    let xy = json!(["x", "y"]);
+    assert_eq!(json!(flat.state_variables["Chem.c"].shape), xy);
+    let sv = sysview_flat(&flat);
+    assert_eq!(json!(sv.variables["Chem.c"].shape), xy);
+    assert_eq!(ctx_of(&sv).unwrap().shapes.get("Chem.c"), Some(&vec![3, 3]));
+    assert!(sv.index_sets.keys().all(|k| !k.starts_with("_liftdim")));
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    for (cse, tag) in [(true, "evaldoc"), (false, "evaldoc-nocse")] {
+        let (doc, fields) = evaluation_document(&sv, &entries, cse, 12).unwrap();
+        assert_eq!(
+            stable_json(&doc),
+            golden(&format!("{LIFT}.{tag}.json")),
+            "{tag} diverges"
+        );
+        assert_eq!(doc["models"]["Chem"]["variables"]["c"]["shape"], xy);
+        for f in &fields {
+            assert_eq!(doc["models"]["JacobianEval"]["variables"][f]["shape"], xy);
+        }
+    }
+}
+
+#[test]
+fn lifted_shape_values() {
+    let Some(flat) = lift_flat() else { return };
+    let g: Value = serde_json::from_str(&golden(&format!("{LIFT}.jvals.json"))).unwrap();
+    let u: HashMap<String, f64> = g["u"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
+        .collect();
+    assert_eq!(u.len(), 9, "the golden pins every state cell");
+    let want: BTreeMap<(String, String), f64> = g["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                (
+                    e[0].as_str().unwrap().to_string(),
+                    e[1].as_str().unwrap().to_string(),
+                ),
+                e[2].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let t = g["t"].as_f64().unwrap();
+    for compiler in [Compiler::Native, Compiler::Interpreter] {
+        let got = band_jacobian(&flat, &u, t, true, compiler);
+        assert_eq!(
+            got.keys().collect::<Vec<_>>(),
+            want.keys().collect::<Vec<_>>()
+        );
+        for (k, w) in &want {
+            assert!(
+                (got[k] - w).abs() <= 1e-10 * w.abs() + 1e-13,
+                "{compiler:?}: {k:?}"
+            );
+        }
+    }
+}

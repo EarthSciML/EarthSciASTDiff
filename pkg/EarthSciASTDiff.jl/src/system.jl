@@ -65,6 +65,12 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
     # references survived (empty registry), so single-model and
     # `ESS_TEMPLATE_REF_DISABLE=1` documents are byte-identical to before.
     flat = expand_flattened_refs(flat)
+    # A pointwise-lifted state's `shape` is the one `flatten` records: the
+    # lift's index sets (esm-libraries-spec §4.7.5, "Pointwise lift: index
+    # sets"; Julia's `flatten` has recorded one since before 0.6, by that
+    # section's rules from 0.8). Nothing here derives it, so the view, its
+    # context, the bands and every derived document name a lifted state's
+    # dimensions exactly as EarthSciAST does.
     vars = Dict{String, Any}()
     for d in (flat.state_variables, flat.parameters, flat.observed_variables),
             (k, v) in d

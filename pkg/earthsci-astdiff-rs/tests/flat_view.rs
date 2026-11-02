@@ -285,9 +285,16 @@ fn repeated_names_take_the_last_declaration() {
 }
 
 /// Chemistry lifted onto an advection grid (esm-spec §10.5): `Chem.O3` is
-/// declared scalar, and Rust's `flatten` records its grid only in
-/// `lifted_shapes`. `index_sets` is the document's.
-fn lifted(index_sets: Value) -> FlattenedSystem {
+/// declared scalar. `index_sets` is the document's.
+///
+/// The view's fallback for a `flatten` that records only the grid extents
+/// (`lifted_shapes`, EarthSciAST before 0.8): from 0.8, `flatten` records the
+/// lifted state's index sets as its shape (esm-libraries-spec §4.7.5), and
+/// the view takes that as it stands. The flattened system is returned as an
+/// older `flatten` leaves it, the recorded shape and any synthetic index set
+/// removed, so the fallback is tested on every EarthSciAST; the shape a newer
+/// `flatten` recorded is returned beside it, to check the fallback against.
+fn lifted(index_sets: Value) -> (FlattenedSystem, Option<Vec<String>>) {
     let file = earthsci_ast::load_document(&json!({
         "esm": "1.1.0",
         "metadata": {"name": "Lifted"},
@@ -322,28 +329,30 @@ fn lifted(index_sets: Value) -> FlattenedSystem {
                       "lifting": "pointwise"}]
     }))
     .expect("document loads");
-    let flat = earthsci_ast::flatten(&file).expect("document flattens");
+    let mut flat = earthsci_ast::flatten(&file).expect("document flattens");
     assert_eq!(
         flat.lifted_shapes.get("Chem.O3"),
         Some(&vec![3]),
         "the lift ran"
     );
-    assert!(
-        flat.state_variables["Chem.O3"]
-            .shape
-            .as_ref()
-            .is_none_or(|s| s.is_empty()),
-        "flatten leaves the declared shape scalar"
-    );
-    flat
+    let recorded = flat.state_variables["Chem.O3"]
+        .shape
+        .take()
+        .filter(|s| !s.is_empty());
+    flat.index_sets.retain(|k, _| !k.starts_with("_liftdim"));
+    (flat, recorded)
 }
 
-/// A lifted state takes its grid shape from `lifted_shapes`: the one index
-/// set of its extent names the axis, and the bands are those of the same
-/// system written with that shape.
+/// With no recorded shape, a lifted state takes its grid shape from
+/// `lifted_shapes`: the one index set of its extent names the axis (what a
+/// newer `flatten` records too), and the bands are those of the same system
+/// written with that shape.
 #[test]
 fn lifted_states_take_their_grid_shape() {
-    let flat = lifted(json!({"x": {"kind": "interval", "size": 3}}));
+    let (flat, recorded) = lifted(json!({"x": {"kind": "interval", "size": 3}}));
+    if let Some(r) = recorded {
+        assert_eq!(r, ["x"]);
+    }
     let sv = sysview_flat(&flat);
     assert_eq!(
         sv.variables["Chem.O3"].shape.as_deref(),
@@ -367,14 +376,18 @@ fn lifted_states_take_their_grid_shape() {
     assert_eq!(stable_json(&dd), stable_json(&dv));
 }
 
-/// With no single index set of the grid's extent, the axis is the
-/// synthetic dense `_liftdim<d>_<extent>` the reference names, added to
-/// the view's index sets.
+/// With no recorded shape and no single index set of the grid's extent, the
+/// axis is the synthetic dense `_liftdim<d>_<extent>`, added to the view's
+/// index sets.
 #[test]
 fn ambiguous_lift_extents_take_a_synthetic_axis() {
-    let flat = lifted(json!({
+    let (flat, recorded) = lifted(json!({
         "x": {"kind": "interval", "size": 3},
         "y": {"kind": "interval", "size": 3}}));
+    // no operand names the grid, so a newer `flatten` records the same
+    if let Some(r) = recorded {
+        assert_eq!(r, ["_liftdim1_3"]);
+    }
     let sv = sysview_flat(&flat);
     assert_eq!(
         sv.variables["Chem.O3"].shape.as_deref(),

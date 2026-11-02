@@ -44,7 +44,7 @@ end
 # the evaluation document of a flattened system (spec §8.1): a coupled
 # document's scoped names laid out as its component tree. The bands are the
 # flattened system's, through `sysview(flat)`.
-for name in ("coupled_chem_advection",)
+for name in ("coupled_chem_advection", "lift_same_size_index_sets")
     flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
     sv = sysview(flat)
     entries = jacobian_bands(sv)

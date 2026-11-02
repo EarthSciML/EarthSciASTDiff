@@ -82,17 +82,17 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
 /// entries, in the same order, as it gives for a one-model document holding
 /// these variables and equations.
 ///
-/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid keeps
-/// its declared scalar shape in Rust's `flatten`, which records the grid
-/// extents in `lifted_shapes` instead; the reference's `flatten` promotes
-/// the declared shape itself. The view promotes it as the reference does:
-/// each grid dimension takes the one index set of its extent, or, when no
-/// index set or more than one has that extent, a synthetic dense axis
-/// `_liftdim<d>_<extent>` the view adds to its index sets (the reference
-/// names the same axis). The reference can also pick among several
-/// same-sized index sets by what the lifted equations gather; the view
-/// does not, so such a state differs from it in axis names only, never in
-/// extents or bands.
+/// A state the pointwise spatial lift (esm-spec §10.5) put on a grid takes
+/// the shape `flatten` records on it: from EarthSciAST 0.8, every binding's
+/// `flatten` names the lift's index sets there (esm-libraries-spec §4.7.5,
+/// "Pointwise lift: index sets": an operand's declared shape at the lift's
+/// loops, else the one index set of that size, else a synthetic
+/// `_liftdim<d>_<extent>` it adds to `index_sets`), so the view uses the
+/// lifted state's declaration as it stands. Rust's `flatten` before 0.8
+/// keeps the declared scalar shape and records only the extents, in
+/// `lifted_shapes`; for such a state alone the view falls back to rules 2
+/// and 3 of that section (it cannot apply rule 1), which agree with 0.8
+/// whenever each extent names one index set or none.
 ///
 /// The reference expands surviving `apply_expression_template` references
 /// first (`expand_flattened_refs`); there is nothing to expand here, since
@@ -113,7 +113,7 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
             continue;
         };
         if var.shape.as_ref().is_some_and(|s| !s.is_empty()) {
-            continue; // already spatial: the lift leaves it alone
+            continue; // the shape `flatten` recorded (EarthSciAST >= 0.8)
         }
         let axes = extents
             .iter()
@@ -130,9 +130,10 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> SysView<'_> {
     }
 }
 
-/// The index set naming grid dimension `d` (1-based) of extent `n` of a
-/// lifted state: the one declared set of that size, else the synthetic
-/// dense `_liftdim<d>_<n>` (added to `index_sets` once).
+/// The fallback for a `flatten` that records no lifted shape (EarthSciAST
+/// before 0.8): the index set naming grid dimension `d` (1-based) of extent
+/// `n` of a lifted state is the one declared set of that size, else the
+/// synthetic dense `_liftdim<d>_<n>` (added to `index_sets` once).
 fn lift_axis(index_sets: &mut IndexMap<String, IndexSet>, d: usize, n: i64) -> String {
     let mut sized = index_sets
         .iter()

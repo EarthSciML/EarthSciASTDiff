@@ -12,6 +12,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   - `coupled_chem_advection.esm` — reaction system ⊕ advection through
     `operator_compose` + pointwise lift (differentiates the *flattened*
     system)
+  - `lift_same_size_index_sets.esm` — EarthSciAST's pointwise-lift
+    conformance case of that name: a scalar state lifted onto a 3 × 3 grid
+    whose index sets `y` and `x` have the same size, named `[x, y]` by the
+    operand `Wind.u` (esm-libraries-spec §4.7.5). Pins the shape `flatten`
+    records on a lifted state through the view and the evaluation document
+    (`lift_same_size_index_sets.evaldoc[-nocse].json`, `.jvals.json`);
+    skipped by a binding whose `flatten` records no lifted shape (before
+    EarthSciAST 0.8)
   - `minmod_adv.esm` — minmod-TVD periodic advection (N = 16), a
     self-contained serialization of the EarthSciDiscretizations
     `advection_1d_periodic_minmod_tvd` problem — the limiter-family

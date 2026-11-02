@@ -69,17 +69,21 @@ def sysview(obj, model_name: str | None = None) -> SysView:
 def _promote_lifted(vars: dict, index_sets: dict, lifted_shapes: dict) -> None:
     """Give each pointwise-lifted state (esm-spec §10.5) its grid shape.
 
-    Python's ``flatten``, like Rust's, keeps a lifted state's declared scalar
-    shape and records the grid's extents only in ``lifted_shapes``; the
-    reference's ``flatten`` promotes the declared shape itself. As the Rust
-    binding's ``sysview_flat`` does, each grid dimension ``d`` (1-based) of
+    From EarthSciAST 0.8, every binding's ``flatten`` records the lift's
+    index sets as the lifted state's ``shape`` (esm-libraries-spec §4.7.5,
+    "Pointwise lift: index sets": an operand's declared shape at the lift's
+    loops, else the one index set of that size, else a synthetic
+    ``_liftdim<d>_<n>`` it adds to ``index_sets``), and that shape is used
+    as it stands. Python's ``flatten`` before 0.8 keeps the declared scalar
+    shape and records only the extents, in ``lifted_shapes``; for such a
+    state alone this falls back to rules 2 and 3 of that section, as the Rust
+    binding's ``sysview_flat`` does: each grid dimension ``d`` (1-based) of
     extent ``n`` takes the one index set of that size, else the synthetic
-    dense axis ``_liftdim<d>_<n>``, added to ``index_sets``. A state that
-    already has a shape is left alone."""
+    dense axis ``_liftdim<d>_<n>``, added to ``index_sets``."""
     for name, extents in lifted_shapes.items():
         var = vars.get(name)
         if var is None or getattr(var, "shape", None):
-            continue
+            continue  # the shape `flatten` recorded (EarthSciAST >= 0.8)
         axes = [_lift_axis(index_sets, d + 1, int(n)) for d, n in enumerate(extents)]
         vars[name] = dataclasses.replace(var, shape=axes)
 
