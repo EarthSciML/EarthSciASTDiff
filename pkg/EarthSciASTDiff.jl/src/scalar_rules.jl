@@ -15,6 +15,9 @@
 #   * `abs`                  → `ifelse(x < 0, -1, 1) · dx` (subgradient at 0).
 #   * comparisons, logicals, `sign`/`floor`/`ceil` → 0. Comparisons return
 #     1.0/0.0 VALUES and may appear multiplicatively; still 0.
+#   * `Pre(a)`               → `d[a]`: in a right-hand side `Pre` is the
+#                              identity (EarthSciAST's tree-walk passes it
+#                              through), so its derivative is its operand's.
 #   * `interp.linear`        → slope of the active segment (0 outside the
 #                              axis — extrapolate-flat), emitted as a segment
 #                              `ifelse` over slopes precomputed from the
@@ -44,7 +47,6 @@ const ZERO_DERIV_OPS = Set(
     [
         "<", "<=", ">", ">=", "==", "!=", "and", "or", "not",
         "sign", "floor", "ceil", "pi", "π", "e", "true", "false", "const", "enum",
-        "Pre",
     ]
 )
 
@@ -131,6 +133,8 @@ function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
         return length(a) == 1 ? neg(d(a[1])) : add(d(a[1]), neg(d(a[2])))
     elseif o == "neg"
         return neg(d(a[1]))
+    elseif o == "Pre"
+        return d(a[1])
     elseif o == "*"
         terms = ASTExpr[]
         for (i, x) in enumerate(a)

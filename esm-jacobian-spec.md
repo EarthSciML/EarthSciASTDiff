@@ -94,7 +94,8 @@ Textbook rules, with these bindings-relevant details:
 | `abs` | `ifelse(a < 0, −1, 1) · d[a]` | subgradient −1/+1 at 0 per the tie rule |
 | comparisons, `and`/`or`/`not` | `0` | comparisons return 1.0/0.0 *values*; still 0 even in multiplicative position |
 | `sign`, `floor`, `ceil` | `0` | a.e. |
-| `Pre`, `const`, `enum`, niladic constants | `0` | |
+| `const`, `enum`, niladic constants | `0` | |
+| `Pre(a)` | `d[a]` | the identity: esm-spec §5.1 gives `Pre` a meaning of its own only in an event affect (the value of `a` before the event fires); in a right-hand side `Pre(a)` evaluates to `a` (EarthSciAST's tree-walk passes it through), so its derivative is `d[a]`, never `0` |
 
 ### 3.3 Rewrite-target operators
 

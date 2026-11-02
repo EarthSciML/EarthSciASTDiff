@@ -37,7 +37,7 @@ const PIECEWISE_CONSTANT_DATETIME: &[&str] = &[
 
 const ZERO_DERIV_OPS: &[&str] = &[
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor", "ceil", "pi", "π", "e",
-    "true", "false", "const", "enum", "Pre",
+    "true", "false", "const", "enum",
 ];
 
 /// The derivative of the scalar expression `e` with respect to the site `s`
@@ -65,6 +65,8 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
         }
         "neg" => Ok(neg(d(&a[0])?)),
+        // the identity in a right-hand side (scalar_rules.jl): d[a]
+        "Pre" => d(&a[0]),
         "*" => {
             let mut terms = Vec::new();
             for (i, x) in a.iter().enumerate() {
@@ -541,5 +543,18 @@ mod tests {
                                         "args": ["x", "x"]}),
         );
         assert!(dscalar(&bad, &s).is_err());
+    }
+
+    #[test]
+    fn pre_is_the_identity() {
+        // `Pre(x)` differentiates as `x` (spec §3.2): the identity in a
+        // right-hand side, as EarthSciAST evaluates it, not a constant
+        let s = Site::of(&Expr::Variable("x".into()));
+        let pre = ex(serde_json::json!({"op": "Pre", "args": ["x"]}));
+        assert_eq!(dscalar(&pre, &s).unwrap(), Expr::Integer(1));
+        let pre3 = ex(serde_json::json!({"op": "*", "args": [{"op": "Pre", "args": ["x"]}, 3.0]}));
+        let d = dscalar(&pre3, &s).unwrap();
+        let v = earthsci_ast::evaluate(&d, &std::collections::HashMap::new()).unwrap();
+        assert!((v - 3.0).abs() < 1e-15, "{v}");
     }
 }

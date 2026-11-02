@@ -50,6 +50,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     (first argmax), a nested `min` observed, a suffix product (exclusion
     products), a `max_product` semiring, and a level search used as a
     subscript (one-hot over the axis)
+  - `pre_operator.esm` — `Pre` in a right-hand side, which EarthSciAST
+    evaluates as the identity, so its derivative is its operand's (spec
+    §3.2): `Pre` of an indexed array state in a faq body, of a scalar state
+    read by every cell, of one cell read by a scalar equation, and a state
+    read both through `Pre` and directly. Linear in every `Pre` read, so no
+    coefficient carries a `Pre` (earthsci-ast for Python does not evaluate
+    one)
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a

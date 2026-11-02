@@ -52,6 +52,20 @@ end
     @test res.structure == :general      # chemistry blocks ⊕ transport + faces
 end
 
+# `Pre(x)` in a right-hand side is the identity (spec §3.2): EarthSciAST
+# evaluates it as `x`, so ForwardDiff sees the dependence and the bands must
+# carry it. Before, the rule was `0` and these entries were missing.
+@testset "oracle: Pre is the identity" begin
+    file = fixture("pre_operator.esm")
+    f!, u0, p, _, _ = build_evaluator(file)
+    u = 0.2 .+ rand(length(u0))
+    res = doc_jacobian(file; u = u, p = p)
+    Jad = ad_jacobian(f!, u, p, 0.0)
+    @test nnz(Jad) > 0
+    @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-14
+    @test all((Jad .!= 0) .<= res.pattern)
+end
+
 @testset "pattern is point-independent" begin
     file = fixture("adv_react_2d.esm")
     r1 = jacobian_pattern(file)

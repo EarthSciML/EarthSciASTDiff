@@ -48,7 +48,6 @@ ZERO_DERIV_OPS = {
     "false",
     "const",
     "enum",
-    "Pre",
 }
 
 
@@ -75,6 +74,9 @@ def dscalar(e: Expr, s: Site) -> Expr:
         return neg(d(a[0])) if len(a) == 1 else add(d(a[0]), neg(d(a[1])))
     if o == "neg":
         return neg(d(a[0]))
+    if o == "Pre":
+        # the identity in a right-hand side (scalar_rules.jl): d[a]
+        return d(a[0])
     if o == "*":
         terms = []
         for i, x in enumerate(a):

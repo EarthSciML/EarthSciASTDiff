@@ -88,6 +88,11 @@ def test_structural_zero_and_policies():
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))
+    # `Pre(x)` differentiates as `x` (spec §3.2): the identity in a right-hand
+    # side, as EarthSciAST evaluates it, not a constant
+    assert dscalar(ex({"op": "Pre", "args": ["x"]}), Site.of("x")) == 1
+    pre3 = ex({"op": "*", "args": [{"op": "Pre", "args": ["x"]}, 3.0]})
+    assert evaluate(dscalar(pre3, Site.of("x")), {"x": 0.7}) == pytest.approx(3.0)
 
 
 def test_interp_linear_slope():

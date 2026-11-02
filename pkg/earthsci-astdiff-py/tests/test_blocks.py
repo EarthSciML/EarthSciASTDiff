@@ -23,6 +23,7 @@ NAMES = (
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    "pre_operator",
     "recurrence_sweep",
     "pbl_rank1",
 )
