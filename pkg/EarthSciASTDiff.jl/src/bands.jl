@@ -284,10 +284,11 @@ function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[]):
     if isempty(shape_u)
         nested = _nested_sums(rhs, v, String[])
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
+        occ = _OccIndex(v)
         for s in sorted_sites(rhs, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, rhs, cidx, dscalar(rhs, s), ctx,
+                nested, s, rhs, cidx, dscalar(rhs, s, _SiteScan(occ, s)), ctx,
                 String[], taken
             )
             coef = _simp(d)
@@ -314,16 +315,18 @@ end
 # exact.
 function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale)
     outer = String[r for r in ridx if r isa String]
+    occ = _OccIndex(v)                 # one occurrence index for every region
+    sm = _SimpMemo()
     for (rows2, body) in clip_regions(e, ridx, rows)
         nested = _nested_sums(body, v, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, body, cidx, dscalar(body, s), ctx,
+                nested, s, body, cidx, dscalar(body, s, _SiteScan(occ, s)), ctx,
                 outer, taken
             )
-            coef = _simp(mul(d, scale...))
+            coef = _simp(mul(d, scale...), sm)
             iszero_lit(coef) && continue
             _push_band!(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
         end
@@ -459,6 +462,8 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     end
     vfilt = _conj(gval)
     body = e.expr_body
+    occ = _OccIndex(v)                 # one occurrence index for every region
+    sm = _SimpMemo()
     for (rows_p, crange, guard) in pieces, (rows2, body2) in clip_regions(body, oidx, rows_p)
         nested = _nested_sums(body2, v, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
@@ -470,13 +475,13 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
             )
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, body2, cidx, dscalar(body2, s),
+                nested, s, body2, cidx, dscalar(body2, s, _SiteScan(occ, s)),
                 ctx, outer, taken
             )
             d = _window_weight(red, e, cnames, d, BandError)
             vfilt === nothing || iszero_lit(d) || (d = op("ifelse", vfilt, d, lit(0)))
             if isempty(crange)
-                coef = _simp(mul(d, scale...))
+                coef = _simp(mul(d, scale...), sm)
                 iszero_lit(coef) && continue
                 _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
             elseif !any(
@@ -502,14 +507,14 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                     ),
                     filter = _conj(gc)
                 )
-                coef = _simp(mul(red_sum, scale...))
+                coef = _simp(mul(red_sum, scale...), sm)
                 iszero_lit(coef) && continue
                 _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
             else
                 # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
                 # with free contracted column dimensions; entries landing on
                 # one column accumulate at assembly.
-                coef = _simp(mul(d, scale...))
+                coef = _simp(mul(d, scale...), sm)
                 iszero_lit(coef) && continue
                 _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
             end

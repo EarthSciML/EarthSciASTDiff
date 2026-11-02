@@ -159,6 +159,141 @@ function occurs(e::ASTExpr, s::Site, memo::IdDict{OpExpr, Bool})::Bool
     return found
 end
 
+# ── every site of one variable at once ───────────────────────────────────────
+#
+# The band calculus differentiates a body once per site of `v`, and a faq
+# body is clipped into one body per region first: on ReSEACT's lowered
+# advection operator that is 343 regions × ~16 sites, each body ~4.5×10⁴
+# nodes. A per-site occurrence memo walks the whole body once per site, and
+# `is_site` re-serializes every `index` node of `v` it meets once per site.
+# `_OccIndex` answers both for ALL sites of `v` from one walk: each node gets
+# the set of site keys under it (a `BitSet` of key ids), and each `index`
+# node of `v` its key, both memoized on node identity. Regions keep the
+# subtrees clipping did not touch (`map_children` is identity-preserving),
+# so one index serves every region of a body.
+#
+# Exact: a node's key set holds a site's key iff `occurs` would find it —
+# `is_site` on a `VarExpr` compares the name, which for a site of `v` is the
+# key compare; on an `index` node of `v` it compares `_site_key`, which is
+# what the set records — and `_is_site` repeats `is_site`'s decision with
+# the key read from the memo.
+
+"""
+    _OccIndex(v)
+
+Occurrence of every site of variable `v`, memoized on node identity, for the
+derivative scans of one band computation. See [`_SiteScan`](@ref).
+"""
+struct _OccIndex
+    v::String
+    keyid::Dict{String, Int}          # site key → id
+    nodekey::IdDict{OpExpr, Int}      # `index` node of `v` → id of its key
+    bits::IdDict{OpExpr, BitSet}      # node → ids of the site keys under it
+    var::Base.RefValue{BitSet}        # the set of a bare `VarExpr(v)`, once keyed
+    deriv::Dict{String, IdDict{OpExpr, ASTExpr}}  # site → node → its derivative
+end
+_OccIndex(v::String) = _OccIndex(
+    v, Dict{String, Int}(), IdDict{OpExpr, Int}(), IdDict{OpExpr, BitSet}(), Ref(BitSet()),
+    Dict{String, IdDict{OpExpr, ASTExpr}}()
+)
+
+const _NO_SITES = BitSet()            # shared, never mutated
+
+_keyid!(ix::_OccIndex, k::String) = get!(ix.keyid, k, length(ix.keyid) + 1)
+
+_is_v_index(ix::_OccIndex, e::OpExpr) = e.op == "index" && !isempty(e.args) &&
+    e.args[1] isa VarExpr && e.args[1].name == ix.v
+
+function _nodekey!(ix::_OccIndex, e::OpExpr)::Int
+    k = get(ix.nodekey, e, 0)
+    k == 0 || return k
+    return ix.nodekey[e] = _keyid!(ix, _site_key(e))
+end
+
+# The ids of the site keys of `v` at or under `e`. A stored set is never
+# mutated: a node whose sites all come from one child shares that child's set.
+function _site_bits!(ix::_OccIndex, e::ASTExpr)::BitSet
+    if e isa VarExpr
+        e.name == ix.v || return _NO_SITES
+        isempty(ix.var[]) && (ix.var[] = BitSet(_keyid!(ix, _site_key(e))))
+        return ix.var[]
+    end
+    e isa OpExpr || return _NO_SITES
+    cached = get(ix.bits, e, nothing)
+    cached === nothing || return cached
+    own = _is_v_index(ix, e)
+    out = own ? BitSet(_nodekey!(ix, e)) : _NO_SITES
+    mine = own                        # `out` is this node's own set
+    map_children(e) do c
+        b = _site_bits!(ix, c)
+        if !isempty(b) && b !== out
+            if isempty(out)
+                out = b
+            elseif !issubset(b, out)
+                mine || (out = copy(out); mine = true)
+                union!(out, b)
+            end
+        end
+        c
+    end
+    ix.bits[e] = out
+    return out
+end
+
+"""
+    _SiteScan(ix::_OccIndex, s::Site)
+
+The occurrence argument of one derivative scan ([`dscalar`](@ref)) for site
+`s`: answered from the shared index `ix` when `s` is a site of `ix.v` (else
+from a per-scan memo, as `occurs` does), with a memo of the derivatives
+already taken, so a subtree shared by several parents is differentiated
+once. For a site of `ix.v` that memo is the index's, shared by every scan of
+the same site: the regions of one clipped body share every subtree clipping
+left alone, and on ReSEACT's advection operator that is most of each body.
+The derivative of a node with respect to a site is a function of the two
+alone, and nothing rewrites an expression in place, so sharing it is
+exact. The memo is keyed by the site's key and its own expression, so two
+spellings of one site never share.
+"""
+struct _SiteScan
+    ix::_OccIndex
+    bit::Int                          # 0: `s` is not a site of `ix.v`
+    memo::IdDict{OpExpr, Bool}        # the fallback occurrence memo
+    d::IdDict{OpExpr, ASTExpr}        # node → its derivative in this scan
+end
+function _SiteScan(ix::_OccIndex, s::Site)
+    ok = s.name == ix.v && s.rank >= -1
+    ok || return _SiteScan(ix, 0, IdDict{OpExpr, Bool}(), IdDict{OpExpr, ASTExpr}())
+    d = get!(() -> IdDict{OpExpr, ASTExpr}(), ix.deriv, s.key * "\0" * skey(s.expr))
+    return _SiteScan(ix, _keyid!(ix, s.key), IdDict{OpExpr, Bool}(), d)
+end
+_SiteScan(s::Site) = _SiteScan(_OccIndex(s.name), s)
+
+# `is_site(e, s)`, with an `index` node's key read from the index.
+function _is_site(e::ASTExpr, s::Site, sc::_SiteScan)::Bool
+    sc.bit == 0 && return is_site(e, s)
+    if e isa VarExpr
+        return s.rank == -1 && e.name == s.name
+    elseif e isa OpExpr && e.op == "index"
+        s.rank >= 0 && length(e.args) == s.rank + 1 || return false
+        a1 = e.args[1]
+        (a1 isa VarExpr && a1.name == s.name) || return false
+        return _nodekey!(sc.ix, e) == sc.bit
+    end
+    return false
+end
+_is_site(e::ASTExpr, s::Site, ::IdDict{OpExpr, Bool}) = is_site(e, s)
+
+function occurs(e::ASTExpr, s::Site, sc::_SiteScan)::Bool
+    sc.bit == 0 && return occurs(e, s, sc.memo)
+    e isa OpExpr || return _is_site(e, s, sc)
+    return sc.bit in _site_bits!(sc.ix, e)
+end
+
+# What a derivative scan threads for occurrence: a per-site memo, or a scan
+# over an `_OccIndex`.
+const _Occ = Union{IdDict{OpExpr, Bool}, _SiteScan}
+
 occurs_var(e::ASTExpr, v::String) = v in free_variables(e)
 
 # A literal region/range bound, possibly still an (already metaparameter-

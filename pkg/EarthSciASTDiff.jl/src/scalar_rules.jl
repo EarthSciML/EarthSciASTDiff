@@ -68,7 +68,7 @@ differentiates to a literal zero without descent. Throws
 joined or value-invention `faq` nodes in scalar position, unknown closed
 functions).
 """
-dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, IdDict{OpExpr, Bool}())
+dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, _SiteScan(s))
 
 # A faq node's reduction, for messages (`_reduce_op` decides it, reductions.jl).
 _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" :
@@ -90,7 +90,7 @@ _reduction(e::OpExpr)::String = e.semiring === nothing ? "reduce=`$(e.reduce)`" 
 # keeps its window — the remaining sum's filter, or an `ifelse` once every
 # bound index is left free — and its own Dirac term is dropped. A join or a
 # value-invention node has no rule (spec §3.5).
-function _dsum(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
+function _dsum(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
     red = _reduce_op(e, DerivativeRuleError)
     db = dscalar(e.expr_body, s, occ)
     iszero_lit(db) && return lit(0)
@@ -119,10 +119,19 @@ end
 # RHS a lowered transport operator produces, that quadratic was half of
 # `jacobian_bands`' entire runtime (measured). Memoized it is Θ(n) per site,
 # and the derivative walk itself is Θ(n).
-function dscalar(e::ASTExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
-    is_site(e, s) && return lit(1)
+function dscalar(e::ASTExpr, s::Site, occ::_Occ)::ASTExpr
+    _is_site(e, s, occ) && return lit(1)
     e isa OpExpr || return lit(0)          # literal, or a different variable
     occurs(e, s, occ) || return lit(0)     # structural short-circuit
+    occ isa _SiteScan || return _dscalar_op(e, s, occ)
+    # A node reached through several parents is differentiated once (see
+    # `_SiteScan`).
+    done = get(occ.d, e, nothing)
+    done === nothing || return done
+    return occ.d[e] = _dscalar_op(e, s, occ)
+end
+
+function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
     o = e.op; a = e.args
     d(x) = dscalar(x, s, occ)
     if o == "+"
@@ -281,7 +290,7 @@ end
 # decided here — an unknown name is a spec violation, not a fallthrough).
 dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr, Bool}())
 
-function dfn(e::OpExpr, s::Site, occ::IdDict{OpExpr, Bool})::ASTExpr
+function dfn(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
     name = e.name
     a = e.args
     if name in PIECEWISE_CONSTANT_DATETIME || name == "interp.searchsorted"
