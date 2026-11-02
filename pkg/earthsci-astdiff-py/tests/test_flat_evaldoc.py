@@ -9,6 +9,7 @@ cell (the consumer's work, done here to check the document by value)."""
 import dataclasses
 import json
 import math
+import re
 
 import earthsci_ast as ea
 import pytest
@@ -28,6 +29,10 @@ from earthsci_astdiff.emit import _cellname, _evaluation_document, foreach_point
 from earthsci_astdiff.system import SysView, ctx_of, view_states
 
 NAME = "coupled_chem_advection"
+
+
+def _ea_version() -> tuple[int, ...]:
+    return tuple(int(p) for p in re.findall(r"\d+", ea.__version__)[:2])
 
 
 def _flat(valid_dir):
@@ -62,6 +67,12 @@ def test_flat_band_golden(wrt, tag, recorded, valid_dir, golden_dir):
     lifted shapes ``flatten`` records (EarthSciAST >= 0.8) and without them
     (before 0.8, the view's fallback; every grid extent here names one index
     set, so the fallback gives the same shapes)."""
+    if wrt == "parameters" and _ea_version() < (0, 6):
+        pytest.skip(
+            "earthsci-ast before 0.6 flattens a mass-action rate as nested "
+            "products, (k*NO)*O3, which the reference's coefficients do not "
+            "match term for term"
+        )
     flat = _flat(valid_dir)
     if not recorded:
         for n in flat.lifted_shapes:
