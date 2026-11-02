@@ -19,6 +19,7 @@ from earthsci_astdiff import (
     hvp_document,
     jacobian_bands,
     jvp_document,
+    serialize_band,
     stable_json,
     sysview,
     vjp_document,
@@ -50,6 +51,25 @@ def test_flat_evaldoc_golden_and_layout(cse, tag, valid_dir, golden_dir):
     for n in list(flat.state_variables) + list(flat.parameters):
         assert n in back.state_variables or n in back.parameters
     assert all(f"JacobianEval.{f}" in back.state_variables for f in fields)
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+@pytest.mark.parametrize("wrt,tag", [("states", ""), ("parameters", ".parameters")])
+def test_flat_band_golden(wrt, tag, recorded, valid_dir, golden_dir):
+    """The flattened coupled document differentiates, its pointwise-lifted
+    chemistry read as the grid arrays it is (#36), byte-identical to the
+    reference's ``coupled_chem_advection[.parameters].bands.json``: with the
+    lifted shapes ``flatten`` records (EarthSciAST >= 0.8) and without them
+    (before 0.8, the view's fallback; every grid extent here names one index
+    set, so the fallback gives the same shapes)."""
+    flat = _flat(valid_dir)
+    if not recorded:
+        for n in flat.lifted_shapes:
+            flat.state_variables[n] = dataclasses.replace(flat.state_variables[n], shape=None)
+    entries = jacobian_bands(sysview(flat), wrt=wrt)
+    assert entries
+    text = stable_json([serialize_band(e) for e in entries])
+    assert text == (golden_dir / f"{NAME}{tag}.bands.json").read_text()
 
 
 def _state_cells(sv) -> list[str]:

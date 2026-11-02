@@ -14,8 +14,8 @@ use earthsci_ast::{esm_problem, rhs_program, Compiler, FlattenedSystem, ProblemO
 use earthsci_astdiff::points::{cellname, foreach_point, outside};
 use earthsci_astdiff::system::{observed_defs, view_states};
 use earthsci_astdiff::{
-    ctx_of, evaluation_document, jacobian_bands_view, jvp_document, stable_json, sysview_flat,
-    vjp_document, IoMap, ProductOptions, SysView, Wrt,
+    ctx_of, evaluation_document, jacobian_bands_view, jvp_document, serialize_band, stable_json,
+    sysview_flat, vjp_document, IoMap, ProductOptions, SysView, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -74,6 +74,25 @@ fn goldens_and_layout() {
                 .state_variables
                 .contains_key(&format!("JacobianEval.{f}")));
         }
+    }
+}
+
+/// The flattened coupled document's bands on the axes it has bands on (its
+/// pointwise-lifted chemistry read as the grid arrays it is), byte-identical
+/// to the reference's `coupled_chem_advection[.parameters].bands.json`.
+#[test]
+fn band_goldens() {
+    let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+    let sv = sysview_flat(&flat).unwrap();
+    for (wrt, tag) in [(Wrt::States, ""), (Wrt::Parameters, ".parameters")] {
+        let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
+        assert!(!entries.is_empty(), "{wrt:?}: no bands");
+        let text = stable_json(&Value::Array(entries.iter().map(serialize_band).collect()));
+        assert_eq!(
+            text,
+            golden(&format!("{NAME}{tag}.bands.json")),
+            "{wrt:?} diverges"
+        );
     }
 }
 

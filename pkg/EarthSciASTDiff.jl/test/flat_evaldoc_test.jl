@@ -39,6 +39,19 @@ const _FLAT_GOLDENS = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
     end
 end
 
+# The flattened coupled document's bands on the axes it has bands on (its
+# pointwise-lifted chemistry read as the grid arrays it is): the goldens every
+# binding's `sysview` of a flattened system must reproduce.
+@testset "flattened system: band goldens" begin
+    sv = sysview(EarthSciAST.flatten(fixture("coupled_chem_advection.esm")))
+    for (wrt, tag) in ((:states, ""), (:parameters, ".parameters"))
+        entries = jacobian_bands(sv; wrt = wrt)
+        @test !isempty(entries)
+        @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) ==
+            read(joinpath(_FLAT_GOLDENS, "coupled_chem_advection$tag.bands.json"), String)
+    end
+end
+
 @testset "flattened evaluation document: values" begin
     file = fixture("coupled_chem_advection.esm")
     flat = EarthSciAST.flatten(file)
