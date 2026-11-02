@@ -62,6 +62,19 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
         println("wrote ", path0)
     end
 end
+# the bands of the flattened coupled document on the axes it has bands on:
+# `<name>.bands.json` (states) and `<name>.parameters.bands.json`
+let name = "coupled_chem_advection"
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    sv = sysview(flat)
+    for wrt in (:states, :parameters)
+        entries = jacobian_bands(sv; wrt = wrt)
+        tag = wrt == :states ? "" : ".$wrt"
+        path = joinpath(root, "tests", "goldens", "$name$tag.bands.json")
+        write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+        println("wrote ", path)
+    end
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

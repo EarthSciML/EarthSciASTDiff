@@ -72,7 +72,10 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   `coupled_chem_advection.jvals.json` the values its right-hand side gives,
   checked in every binding by loading and building the document with
   EarthSciAST, and the flattened system's `JvpEval` / `VjpEval` documents
-  (component tree too, spec §9.1) checked against it by value.
+  (component tree too, spec §9.1) checked against it by value. Its bands,
+  `coupled_chem_advection[.parameters].bands.json`, are the flattened
+  system's (`sysview(flat)`) on the states and parameters axes, compared
+  byte-exactly by every binding.
 - `goldens/` — `<fixture>[.<axis>].{jvp,vjp}.evaldoc.json` and
   `<fixture>.<a1>-<a2>.{hvp,hvp-sym}.evaldoc.json`: the product documents
   (spec §9), models `JvpEval`, `VjpEval`, `HvpEval` (two stages) and, on a
