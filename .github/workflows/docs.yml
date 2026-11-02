@@ -82,6 +82,21 @@ jobs:
       # Rust examples' [patch.crates-io] goes unused (two `EsmFile` types).
       - name: Admit the EarthSciAST checkout
         run: python3 scripts/earthsci-ast-versions.py --admit-checkout ../EarthSciAST
+      # The extraction builds the crate first and the examples then reuse its
+      # Cargo.lock. Without the patch the crate locks the crates.io
+      # earthsci-ast, and when the checkout is a newer version than crates.io
+      # has (main released ahead of publishing), Cargo keeps that locked
+      # version and ignores the examples' [patch.crates-io]: two `EsmFile`
+      # types. Patch every cargo build of this job to the checkout instead.
+      # The path is the unresolved ../EarthSciAST link, as the examples
+      # manifest names it, so Cargo sees one package.
+      - name: Patch cargo to the EarthSciAST checkout
+        if: matrix.binding == 'rust'
+        run: |
+          mkdir -p "${CARGO_HOME:-$HOME/.cargo}"
+          printf '[patch.crates-io]\nearthsci-ast = { path = "%s" }\n' \
+            "$(dirname "$GITHUB_WORKSPACE")/EarthSciAST/pkg/earthsci-ast-rs" \
+            >> "${CARGO_HOME:-$HOME/.cargo}/config.toml"
       - uses: EarthSciML/earthsci.dev/.github/actions/api-extract@main
         with:
           binding: ${{ matrix.binding }}
