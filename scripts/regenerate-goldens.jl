@@ -48,11 +48,18 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
     flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
     sv = sysview(flat)
     entries = jacobian_bands(sv)
-    for (cse, tag) in ((true, "evaldoc"), (false, "evaldoc-nocse"))
-        doc, _ = EarthSciASTDiff._evaluation_document(sv, entries; cse = cse)
-        path = joinpath(root, "tests", "goldens", "$name.$tag.json")
-        write(path, stable_json(doc))
-        println("wrote ", path)
+    doc = stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries)))
+    path = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
+    write(path, doc)
+    println("wrote ", path)
+    # without hoisting, kept only where it differs (as for the models above)
+    doc0 = stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries; cse = false)))
+    path0 = joinpath(root, "tests", "goldens", "$name.evaldoc-nocse.json")
+    if doc0 == doc
+        rm(path0; force = true)
+    else
+        write(path0, doc0)
+        println("wrote ", path0)
     end
 end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)

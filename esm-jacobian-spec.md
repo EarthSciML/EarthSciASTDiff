@@ -788,7 +788,9 @@ Fixture corpus in `tests/` of this repository:
    `lift_same_size_index_sets.esm` (EarthSciAST's pointwise-lift
    conformance case of that name: a scalar state lifted onto a grid whose
    two index sets, `y` then `x`, both have size 3, named `[x, y]` by an
-   operand declared on `[x, y]`) carries the same three goldens, which pin
+   operand declared on `[x, y]`, here with a different value in every cell)
+   carries the evaluation document and value goldens (it has nothing to
+   hoist, so no `.evaldoc-nocse.json`), which pin
    the lifted state's recorded shape through the view, the bands and the
    document; a binding whose `flatten` records no lifted shape (before
    EarthSciAST 0.8) skips them. A fixture
@@ -1063,11 +1065,19 @@ The derived model is named `JacobianEval` and holds:
   synthetic `_liftdim<d>_<n>` that `flatten` adds to `index_sets`). The
   producer takes that shape as it stands and derives none, so the document,
   the bands and any scatter plan name a lifted state's dimensions exactly as
-  EarthSciAST does. Only where `flatten` records no shape (the Rust and
-  Python `flatten` before EarthSciAST 0.8) does the producer fall back to
-  the second and third of those rules, which cannot tell same-size index
-  sets apart: each grid dimension `d` (1-based) of extent `n` takes the one
-  index set of that size, else `_liftdim<d>_<n>`, added to `index_sets`;
+  EarthSciAST does. It MUST refuse a recorded shape whose rank differs from
+  the state's `lifted_shapes` entry, or whose dimension `d` names an index
+  set absent from `index_sets` or of a size other than that entry's `n`;
+  the one exception is an absent `_liftdim<d>_<n>` naming its own dimension
+  (Julia's `flatten` before EarthSciAST 0.8 names it without adding it),
+  which the producer adds as `{"kind": "interval", "size": n}`. Only where
+  `flatten` records no shape (the Rust and Python `flatten` before
+  EarthSciAST 0.8) does the producer fall back to the second and third of
+  those rules, which cannot tell same-size index sets apart: each grid
+  dimension `d` (1-based) of extent `n` takes the one index set of that
+  size the document itself declares, else `_liftdim<d>_<n>`, added to
+  `index_sets` (a document declaring that name with another size is
+  refused, as esm-libraries-spec §4.7.5 rule 3 requires);
 - the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
   (for an array state, a `makearray` of `0.0` over its whole shape), and the
   observed definitions the coefficients do not read, directly or through

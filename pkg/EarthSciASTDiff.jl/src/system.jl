@@ -70,17 +70,59 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
     # sets"; Julia's `flatten` has recorded one since before 0.6, by that
     # section's rules from 0.8). Nothing here derives it, so the view, its
     # context, the bands and every derived document name a lifted state's
-    # dimensions exactly as EarthSciAST does.
+    # dimensions exactly as EarthSciAST does. It is checked against
+    # `lifted_shapes` (`_check_lifted_shape`), which also declares the
+    # synthetic `_liftdim<d>_<n>` that `flatten` before 0.8 names in the
+    # shape without adding to `index_sets`.
     vars = Dict{String, Any}()
     for d in (flat.state_variables, flat.parameters, flat.observed_variables),
             (k, v) in d
         vars[String(k)] = v
     end
-    return SysView(
-        vars, flat.equations,
-        Dict{String, Any}(String(k) => v for (k, v) in flat.index_sets),
-        flat.domain
+    isets = Dict{String, Any}(String(k) => v for (k, v) in flat.index_sets)
+    for (name, extents) in flat.lifted_shapes
+        var = get(vars, String(name), nothing)
+        var === nothing && continue
+        _check_lifted_shape(String(name), var.shape, extents, isets)
+    end
+    return SysView(vars, flat.equations, isets, flat.domain)
+end
+
+# Check the shape `flatten` recorded on lifted state `name` against its
+# `lifted_shapes` extents (esm-libraries-spec §4.7.5): the same rank, every
+# entry an index set of the flattened system, of that dimension's extent.
+# The one entry that may be missing is the synthetic `_liftdim<d>_<n>` of its
+# own dimension, which `flatten` before EarthSciAST 0.8 names without adding;
+# it is added to `isets` here.
+function _check_lifted_shape(name::String, shape, extents, isets::Dict{String, Any})
+    shape = shape === nothing ? Any[] : shape
+    length(shape) == length(extents) || throw(
+        ArgumentError(
+            "lifted state `$name` has shape $(collect(shape)) of rank " *
+                "$(length(shape)), but its lifted_shapes entry $(collect(extents)) " *
+                "has rank $(length(extents))"
+        )
     )
+    for (d, (axis, n)) in enumerate(zip(shape, extents))
+        axis = String(axis)
+        if !haskey(isets, axis)
+            axis == "_liftdim$(d)_$(n)" || throw(
+                ArgumentError(
+                    "lifted state `$name`: dimension $d names index set " *
+                        "`$axis`, which the flattened system does not declare"
+                )
+            )
+            isets[axis] = EarthSciAST.IndexSet("interval"; size = Int(n))
+        end
+        size = isets[axis].size
+        size == n || throw(
+            ArgumentError(
+                "lifted state `$name`: dimension $d names index set `$axis` " *
+                    "of size $size, but its lifted_shapes extent is $n"
+            )
+        )
+    end
+    return nothing
 end
 
 function _ctx(sv::SysView)

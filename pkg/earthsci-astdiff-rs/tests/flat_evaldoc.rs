@@ -36,7 +36,7 @@ fn flat_of(doc: &Value) -> FlattenedSystem {
 #[test]
 fn goldens_and_layout() {
     let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     for (cse, tag) in [(true, "evaldoc"), (false, "evaldoc-nocse")] {
         let (doc, fields) = evaluation_document(&sv, &entries, cse, 12).unwrap();
@@ -87,7 +87,7 @@ fn band_jacobian(
     cse: bool,
     compiler: Compiler,
 ) -> BTreeMap<(String, String), f64> {
-    let sv = sysview_flat(flat);
+    let sv = sysview_flat(flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     let (doc, fields) = evaluation_document(&sv, &entries, cse, 12).unwrap();
     let file = earthsci_ast::load_document(&doc).expect("the evaluation document loads");
@@ -161,7 +161,7 @@ fn values_match_the_golden() {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_f64().unwrap()))
         .collect();
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let states = view_states(&sv, &observed_defs(&sv).unwrap());
     let ctx = ctx_of(&sv).unwrap();
     let ncells: usize = states
@@ -238,7 +238,7 @@ fn nested_and_coupled_components() {
         "coupling": [{"type": "variable_map", "from": "Source.s", "to": "Chem.r",
                       "transform": "param_to_var"}]
     }));
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     let (doc, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
     assert!(doc["models"]["Chem"]["subsystems"]["Inner"]["variables"]
@@ -279,7 +279,7 @@ fn refuses_a_component_named_like_the_derived_model() {
             "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
                            "rhs": {"op": "*", "args": [-1.0, "c", "c"]}}]}}
     }));
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     assert!(evaluation_document(&sv, &entries, true, 12).is_err());
 }
@@ -331,7 +331,7 @@ fn carries_the_domain() {
     let flat = earthsci_ast::flatten(&file).unwrap();
     let views = [
         earthsci_astdiff::sysview(&file, None).unwrap(),
-        sysview_flat(&flat),
+        sysview_flat(&flat).unwrap(),
     ];
     for sv in &views {
         let entries = jacobian_bands_view(sv, Wrt::States, None).unwrap();
@@ -440,7 +440,7 @@ fn layout_ok(doc: &Value, model: &str) -> bool {
 #[test]
 fn product_documents() {
     let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     let g: Value = serde_json::from_str(&golden(&format!("{NAME}.jvals.json"))).unwrap();
     let u: HashMap<String, f64> = g["u"]
@@ -523,7 +523,7 @@ fn product_documents() {
 #[test]
 fn refuses_bad_sources() {
     let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
     let par = sv
         .variables
@@ -598,7 +598,7 @@ fn product_documents_carry_the_domain() {
     let opts = ProductOptions::default();
     for sv in [
         earthsci_astdiff::sysview(&file, None).unwrap(),
-        sysview_flat(&flat),
+        sysview_flat(&flat).unwrap(),
     ] {
         let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
         let (jv, _) = jvp_document(&sv, &entries, Wrt::States, &opts).unwrap();
@@ -647,17 +647,18 @@ fn lifted_shape_is_flattens() {
     let Some(flat) = lift_flat() else { return };
     let xy = json!(["x", "y"]);
     assert_eq!(json!(flat.state_variables["Chem.c"].shape), xy);
-    let sv = sysview_flat(&flat);
+    let sv = sysview_flat(&flat).unwrap();
     assert_eq!(json!(sv.variables["Chem.c"].shape), xy);
     assert_eq!(ctx_of(&sv).unwrap().shapes.get("Chem.c"), Some(&vec![3, 3]));
     assert!(sv.index_sets.keys().all(|k| !k.starts_with("_liftdim")));
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
-    for (cse, tag) in [(true, "evaldoc"), (false, "evaldoc-nocse")] {
+    // nothing to hoist: the unhoisted document is the same (no nocse golden)
+    for cse in [true, false] {
         let (doc, fields) = evaluation_document(&sv, &entries, cse, 12).unwrap();
         assert_eq!(
             stable_json(&doc),
-            golden(&format!("{LIFT}.{tag}.json")),
-            "{tag} diverges"
+            golden(&format!("{LIFT}.evaldoc.json")),
+            "cse = {cse} diverges"
         );
         assert_eq!(doc["models"]["Chem"]["variables"]["c"]["shape"], xy);
         for f in &fields {
