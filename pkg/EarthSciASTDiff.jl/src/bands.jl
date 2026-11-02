@@ -85,12 +85,17 @@ _set_size(name, ctx::Ctx)::Int = haskey(ctx.index_sets, name) ? ctx.index_sets[n
     throw(BandError("range over undeclared index set `$name`"))
 
 # All distinct sites of `v` inside a scalar body: the bare VarExpr and every
-# `index(v, …)` node, keyed by canonical JSON.
+# `index(v, …)` node, keyed by canonical JSON. A `faq` node's `args` is its
+# operand list (esm-spec §4.3.1), a serializer's copy of the arrays its `expr`
+# reads: it reads nothing itself, so it holds no site (spec §3.5). Walking it
+# would see each listed array as a whole-array reference.
 function sites_of(e::ASTExpr, v::String, acc = Dict{String, Site}())
     if e isa VarExpr && e.name == v
         s = Site(e); acc[s.key] = s
     elseif e isa OpExpr && e.op == "index" && e.args[1] isa VarExpr && e.args[1].name == v
         s = Site(e); acc[s.key] = s
+    elseif e isa OpExpr && e.op == "faq" && !isempty(e.args)
+        sites_of(EarthSciAST.reconstruct(e; args = ASTExpr[]), v, acc)
     elseif e isa OpExpr
         map_children(x -> (sites_of(x, v, acc); x), e)
     end

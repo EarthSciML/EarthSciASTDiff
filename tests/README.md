@@ -50,6 +50,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     (first argmax), a nested `min` observed, a suffix product (exclusion
     products), a `max_product` semiring, and a level search used as a
     subscript (one-hot over the axis)
+  - `faq_operand_list.esm` — faq nodes carrying their operand list `args`
+    (esm-spec §4.3.1), as reseact's boundary-layer mixing observed are
+    written: a column sum `colsum[i] = Σ_k dp[k]·q[i,k]` with `args: ["q"]`,
+    its broadcast mean, a bare-read scalar observed `c = Σ_k q[1,k]` with
+    `args: ["q"]`, and a tendency `(mean − q)/tau + 0.01·c`. The operand list
+    names whole arrays but reads nothing (spec §3.5): the bands are those of
+    the same document with every `args` emptied (a column band contracted
+    over `lev`, the diagonal, and the row read by `c`)
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a
