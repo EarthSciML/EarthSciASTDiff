@@ -5,6 +5,7 @@
 //! (the `hvp` product document of the reference, spec §9), never a Hessian
 //! tensor.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -18,11 +19,11 @@ use crate::bands::{
 use crate::branches::simp;
 use crate::clip::{clip_regions, RIdx};
 use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
-use crate::helpers::{is_zero, ser_expr};
+use crate::helpers::{is_zero, ser_expr, OccIndex, SiteScan};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
 use crate::recurrence::{ExtendedBands, Recurrence};
 use crate::reductions::{conj, one_hot};
-use crate::rules::dscalar;
+use crate::rules::dscalar_in;
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
 type R<T> = Result<T, BandError>;
@@ -180,6 +181,8 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
         })
         .chain(b.contracted.iter().map(|(n, _, _)| n.clone()))
         .collect();
+    // One occurrence index for every region.
+    let occ = RefCell::new(OccIndex::new(w));
     for (rows2, body) in clip_regions(&b.coef, &b.ridx, &b.rows) {
         let nested = nested_sums(&body, w, &outer);
         let mut taken = None;
@@ -194,7 +197,7 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
                 &s,
                 &body,
                 site_cidx(&s),
-                dscalar(&body, &s)?,
+                dscalar_in(&body, &s, &SiteScan::new(&occ, &s))?,
                 ctx,
                 &outer,
                 &mut taken,

@@ -391,15 +391,29 @@ fn index_makearray(
         }
         let v = if let Expr::Operator(vn) = val {
             if vn.op == "faq" {
-                let oidx = vn.output_idx.clone().unwrap_or_default();
-                if oidx.len() != sub_idx.len() {
+                // Two legal value shapes (esm-spec §4.3.2, and the pair
+                // `bands_makearray` tells apart with `val_fullrank`): a
+                // FULL-RANK faq names every region dim, singleton dims
+                // included (a 3-D field's boundary face); a REDUCED-RANK one
+                // names only the non-singleton dims. Bind each output index
+                // to the read index of the dim it names. As in the Julia
+                // reference, the value's own range for a dim is assumed to
+                // start where the region does (no origin shift).
+                let rank = vn.output_idx.as_ref().map(|o| o.len()).unwrap_or(0);
+                let tgt: &[Expr] = if rank == idx.len() {
+                    idx
+                } else if rank == sub_idx.len() {
+                    &sub_idx
+                } else {
                     return Err(InlineError(format!(
-                        "makearray value rank {} ≠ region free rank {}",
-                        oidx.len(),
+                        "makearray value rank {} matches neither the region rank {} \
+                         nor the region free rank {}",
+                        rank,
+                        idx.len(),
                         sub_idx.len()
                     )));
-                }
-                beta_faq(vn, &sub_idx, fresh, scope)?
+                };
+                beta_faq(vn, tgt, fresh, scope)?
             } else if matches!(vn.op.as_str(), "makearray" | "index") {
                 let mut args = vec![val.clone()];
                 args.extend(sub_idx.iter().cloned());
