@@ -27,6 +27,10 @@ class SysView:
     # the document's (or flattened system's) domain, None when it has none:
     # the evaluation document carries its time origin (spec §8.1)
     domain: object = None
+    # the document's data_sources (name -> DataSource), None when unknown: a
+    # flattened system carries none. The derived documents copy the entries a
+    # data-fed parameter names (spec §8.1).
+    data_sources: object = None
 
 
 def _only_model(file: EsmFile) -> str:
@@ -35,7 +39,7 @@ def _only_model(file: EsmFile) -> str:
     return next(iter(file.models))
 
 
-def sysview(obj, model_name: str | None = None) -> SysView:
+def sysview(obj, model_name: str | None = None, data_sources=None) -> SysView:
     """View a model of an ``EsmFile``, or a ``FlattenedSystem``, for differentiation.
 
     **Parameters**
@@ -44,9 +48,16 @@ def sysview(obj, model_name: str | None = None) -> SysView:
       (returned as is, ``model_name`` ignored).
     - ``model_name`` — which model of an ``EsmFile``; may be omitted when the
       file has exactly one.
+    - ``data_sources`` — a document's ``data_sources`` (name → ``DataSource``),
+      the entries the derived documents copy for each data-fed parameter
+      (spec §8.1). ``None`` keeps the input's own: an ``EsmFile``'s, none for
+      a flattened system, which does not carry them, so pass the flattened
+      document's when its parameters read data.
     """
     if isinstance(obj, SysView):
-        return obj
+        if data_sources is None:
+            return obj
+        return dataclasses.replace(obj, data_sources=data_sources)
     if isinstance(obj, EsmFile):
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)
@@ -56,6 +67,7 @@ def sysview(obj, model_name: str | None = None) -> SysView:
             list(model.equations),
             dict(expanded.index_sets),
             getattr(expanded, "domain", None),
+            data_sources if data_sources is not None else getattr(obj, "data_sources", None),
         )
     # FlattenedSystem
     vars: dict[str, object] = {}
@@ -63,7 +75,9 @@ def sysview(obj, model_name: str | None = None) -> SysView:
         vars.update(d)
     index_sets = dict(obj.index_sets)
     _promote_lifted(vars, index_sets, getattr(obj, "lifted_shapes", None) or {})
-    return SysView(vars, list(obj.equations), index_sets, getattr(obj, "domain", None))
+    return SysView(
+        vars, list(obj.equations), index_sets, getattr(obj, "domain", None), data_sources
+    )
 
 
 def _promote_lifted(vars: dict, index_sets: dict, lifted_shapes: dict) -> None:

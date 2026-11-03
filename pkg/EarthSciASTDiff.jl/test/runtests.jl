@@ -39,6 +39,7 @@ end
     include("eval_cse_test.jl")
     include("evaldoc_test.jl")
     include("flat_evaldoc_test.jl")
+    include("data_fed_test.jl")
     include("contracted_test.jl")
     include("oracle_test.jl")
     include("prune_test.jl")

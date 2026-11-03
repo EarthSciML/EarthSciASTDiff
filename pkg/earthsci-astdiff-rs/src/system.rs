@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::IndexSet;
 use earthsci_ast::{
-    free_variables, Domain, Equation, EsmFile, Expr, ExpressionNode, FlattenedSystem, Model,
-    ModelVariable, VariableType,
+    free_variables, DataSource, Domain, Equation, EsmFile, Expr, ExpressionNode, FlattenedSystem,
+    Model, ModelVariable, VariableType,
 };
 use indexmap::IndexMap;
 
@@ -29,6 +29,25 @@ pub struct SysView<'a> {
     /// The document's (or flattened system's) domain, `None` when it has
     /// none: the evaluation document carries its time origin (spec §8.1).
     pub domain: Option<&'a Domain>,
+    /// The document's `data_sources`, `None` when unknown: a flattened
+    /// system carries none, so [`sysview_flat`] leaves it unset and a caller
+    /// whose parameters read data sets it with [`SysView::with_data_sources`].
+    /// The derived documents copy the entries a data-fed parameter names
+    /// (spec §8.1).
+    pub data_sources: Option<&'a IndexMap<String, DataSource>>,
+}
+
+impl<'a> SysView<'a> {
+    /// This view with `data_sources` (a document's, name → source) as the
+    /// entries the derived documents copy for each data-fed parameter (spec
+    /// §8.1): for a flattened system, the flattened document's own.
+    pub fn with_data_sources(
+        mut self,
+        data_sources: Option<&'a IndexMap<String, DataSource>>,
+    ) -> Self {
+        self.data_sources = data_sources;
+        self
+    }
 }
 
 fn models(file: &EsmFile) -> Result<&IndexMap<String, Model>, BandError> {
@@ -67,6 +86,7 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         equations: &model.equations,
         index_sets: file.index_sets.clone().unwrap_or_default(),
         domain: file.domain.as_ref(),
+        data_sources: file.data_sources.as_ref(),
     })
 }
 
@@ -140,6 +160,7 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
         equations: &flat.equations,
         index_sets,
         domain: flat.domain.as_ref(),
+        data_sources: None,
     })
 }
 

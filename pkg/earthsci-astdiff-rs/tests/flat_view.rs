@@ -200,8 +200,15 @@ fn evaluation_document_matches_the_wrapped_document() {
     for name in NAMES {
         let flat = flat_of(name);
         let file = wrapped(&flat);
-        let direct = sysview_flat(&flat).unwrap();
-        let via = sysview(&file, Some(MODEL)).unwrap();
+        // A flattened system carries no `data_sources`, nor does the wrapped
+        // document: both routes take the source document's (spec §8.1).
+        let src = load(name);
+        let direct = sysview_flat(&flat)
+            .unwrap()
+            .with_data_sources(src.data_sources.as_ref());
+        let via = sysview(&file, Some(MODEL))
+            .unwrap()
+            .with_data_sources(src.data_sources.as_ref());
         let Ok(entries) = jacobian_bands_view(&direct, Wrt::States, None) else {
             continue; // refused alike by both routes (checked above)
         };

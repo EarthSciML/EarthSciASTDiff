@@ -4,7 +4,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use earthsci_ast::{free_variables, Expr, ExpressionNode, VariableType};
+use earthsci_ast::{
+    free_variables, Expr, ExpressionNode, ModelVariable, ParameterUpdate, VariableType,
+};
 use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
@@ -1415,6 +1417,18 @@ pub(crate) fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Ma
                 serde_json::to_value(def).expect("default serializes"),
             );
         }
+        let rules = data_rules(var);
+        if !rules.is_empty() {
+            let ser = |r: &ParameterUpdate| serde_json::to_value(r).expect("update serializes");
+            d.insert(
+                "update".into(),
+                if rules.len() == 1 {
+                    ser(rules[0])
+                } else {
+                    Value::Array(rules.into_iter().map(ser).collect())
+                },
+            );
+        }
         vars.insert(n.clone(), Value::Object(d));
     }
     let eqs: Vec<Value> = sv
@@ -1752,8 +1766,74 @@ pub(crate) fn finish_derived(
     if let Some(d) = sv.domain.and_then(domain_field) {
         doc.insert("domain".into(), d);
     }
+    if let Some(d) = data_sources_field(sv)? {
+        doc.insert("data_sources".into(), d);
+    }
     derived_version(doc);
     Ok(())
+}
+
+// ── data-fed parameters (spec §8.1) ─────────────────────────────────────────
+//
+// A parameter whose `update` has a `data` rule is an input a provider fills:
+// EarthSciAST makes it a forcing slot of `rhs_program`, not a constant of the
+// build. So the derived documents keep those rules, as EarthSciAST serializes
+// them, and the `data_sources` entries they name. The other kinds are left
+// out: they fire between right-hand-side calls, never within one, and their
+// expressions may read observed the derived model drops.
+
+/// The `data` rules of a parameter's `update`, in their order (none for an
+/// unknown).
+fn data_rules(var: &ModelVariable) -> Vec<&ParameterUpdate> {
+    if var.var_type != VariableType::Parameter {
+        return Vec::new();
+    }
+    var.update
+        .as_ref()
+        .map(|u| {
+            u.rules()
+                .iter()
+                .filter(|r| matches!(r, ParameterUpdate::Data { .. }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The `data_sources` entries the data-fed parameters of `sv` name, as
+/// EarthSciAST serializes them, keys sorted; `None` when none is named. A
+/// named source the view does not hold is refused: a flattened system carries
+/// no `data_sources`, so its caller sets the flattened document's
+/// ([`SysView::with_data_sources`]).
+fn data_sources_field(sv: &SysView) -> Result<Option<Value>, crate::bands::BandError> {
+    let mut names: Vec<&String> = sv.variables.keys().collect();
+    names.sort();
+    // source → the first parameter naming it
+    let mut named: BTreeMap<&str, &str> = BTreeMap::new();
+    for n in names {
+        for r in data_rules(&sv.variables[n]) {
+            if let ParameterUpdate::Data { source, .. } = r {
+                named.entry(source.as_str()).or_insert(n.as_str());
+            }
+        }
+    }
+    if named.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Map::new();
+    for (k, n) in named {
+        let src = sv.data_sources.and_then(|d| d.get(k)).ok_or_else(|| {
+            crate::bands::BandError(format!(
+                "parameter `{n}` reads data source `{k}`, which the source does not \
+                 declare (a flattened system carries no `data_sources`: pass the \
+                 flattened document's)"
+            ))
+        })?;
+        out.insert(
+            k.to_string(),
+            serde_json::to_value(src).expect("data source serializes"),
+        );
+    }
+    Ok(Some(Value::Object(out)))
 }
 
 /// The source's `domain`, as far as it bears on evaluation (spec §8.1): its

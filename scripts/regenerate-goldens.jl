@@ -43,10 +43,13 @@ for name in (
 end
 # the evaluation document of a flattened system (spec §8.1): a coupled
 # document's scoped names laid out as its component tree. The bands are the
-# flattened system's, through `sysview(flat)`.
-for name in ("coupled_chem_advection", "lift_same_size_index_sets")
-    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
-    sv = sysview(flat)
+# flattened system's, through `sysview(flat)`. A flattened system carries no
+# `data_sources`, so the view takes the document's: `data_fed_flat`'s
+# data-fed parameters keep their `data` rules and the sources they name.
+for name in ("coupled_chem_advection", "lift_same_size_index_sets", "data_fed_flat")
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    flat = EarthSciAST.flatten(file)
+    sv = sysview(flat; data_sources = file.data_sources)
     entries = jacobian_bands(sv)
     doc = stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries)))
     path = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
@@ -61,6 +64,14 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
         write(path0, doc0)
         println("wrote ", path0)
     end
+end
+# the state bands of the flattened data-fed document: each data-fed parameter
+# a constant of the state Jacobian, as without its rule
+let name = "data_fed_flat"
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sysview(flat))]))
+    println("wrote ", path)
 end
 # the bands of the flattened coupled document on the axes it has bands on:
 # `<name>.bands.json` (states) and `<name>.parameters.bands.json`
