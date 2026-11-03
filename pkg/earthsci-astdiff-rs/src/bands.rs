@@ -11,7 +11,7 @@ use crate::branches::{canon_lits, simp, SimpMemo};
 use crate::clip::{clip_regions, RIdx};
 use crate::hashcons::StructIndex;
 use crate::helpers::{
-    add, free_vars, is_zero, map_expr_children, mul, op, skey, OccIndex, Site, SiteScan,
+    add, free_vars, is_zero, map_expr_children, mul, op, site_var, skey, OccIndex, Site, SiteScan,
 };
 use crate::inline::{all_names, binders};
 use crate::reductions::{
@@ -172,14 +172,7 @@ fn nested_walk(
     fstack: &mut FilterStack,
     acc: &mut Nested,
 ) {
-    let is_site = match e {
-        Expr::Variable(nm) => nm == v,
-        Expr::Operator(n) => {
-            n.op == "index" && matches!(n.args.first(), Some(Expr::Variable(t)) if t == v)
-        }
-        _ => false,
-    };
-    if is_site {
+    if site_var(e) == Some(v) {
         if stack.is_empty() {
             return;
         }
@@ -366,6 +359,7 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
         let nested = nested_sums(rhs, v, &[]);
         let mut taken = None;
         let occ = RefCell::new(OccIndex::new(v));
+        let mut sm = SimpMemo::default();
         for s in sorted_sites(rhs, v) {
             let (cidx, d, extra, g) = lift_nested(
                 &nested,
@@ -377,7 +371,7 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
                 &[],
                 &mut taken,
             )?;
-            let coef = simp(&d);
+            let coef = sm.simp(&d);
             if is_zero(&coef) {
                 continue;
             }
@@ -1068,39 +1062,15 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         while changed {
             changed = false;
             for (p, &a) in idxs.iter().enumerate() {
-                if !alive[a] {
-                    continue;
-                }
                 for &b in &idxs[p + 1..] {
-                    if !alive[b] {
+                    if !alive[a] || !alive[b] {
                         continue;
                     }
-                    let (ra, rb) = (out[a].rows.clone(), out[b].rows.clone());
-                    if ra.len() != rb.len() {
-                        continue;
+                    if let Some((k, r)) = adjacent(&out[a].rows, &out[b].rows) {
+                        out[a].rows[k] = r;
+                        alive[b] = false;
+                        changed = true;
                     }
-                    let mut d: isize = -1;
-                    let mut ok = true;
-                    for k in 0..ra.len() {
-                        if ra[k] == rb[k] {
-                            continue;
-                        }
-                        if d < 0 && (ra[k].1 + 1 == rb[k].0 || rb[k].1 + 1 == ra[k].0) {
-                            d = k as isize;
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if !ok || d < 0 {
-                        continue;
-                    }
-                    let du = d as usize;
-                    let lo = ra[du].0.min(rb[du].0);
-                    let hi = ra[du].1.max(rb[du].1);
-                    out[a].rows[du] = (lo, hi);
-                    alive[b] = false;
-                    changed = true;
                 }
             }
         }
@@ -1110,4 +1080,25 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         .filter(|(_, a)| *a)
         .map(|(b, _)| b)
         .collect()
+}
+
+/// Where two row boxes abut: the one dimension `k` in which they are
+/// adjacent ranges, with every other dimension equal, and the union of the
+/// two ranges there. `None` when the boxes differ in rank, in no dimension,
+/// or in more than one.
+fn adjacent(ra: &[(i64, i64)], rb: &[(i64, i64)]) -> Option<(usize, (i64, i64))> {
+    if ra.len() != rb.len() {
+        return None;
+    }
+    let mut d = None;
+    for (k, (x, y)) in ra.iter().zip(rb).enumerate() {
+        if x == y {
+            continue;
+        }
+        if d.is_some() || !(x.1 + 1 == y.0 || y.1 + 1 == x.0) {
+            return None;
+        }
+        d = Some((k, (x.0.min(y.0), x.1.max(y.1))));
+    }
+    d
 }

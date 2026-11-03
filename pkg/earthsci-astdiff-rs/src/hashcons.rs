@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use earthsci_ast::{Expr, ExpressionNode};
 
@@ -40,10 +40,45 @@ impl Hash for NodeRef {
     }
 }
 
-/// Whether `a` and `b` are the same node (operators) or equal leaves.
+/// An operator node compared and hashed by identity, NOT keeping it alive:
+/// the `Weak` pins only the node's allocation (so the address cannot be
+/// reused while the key exists) and lets its children be freed with it. A
+/// key whose node is gone ([`WeakRef::is_dead`]) can never be reached again,
+/// so a memo may drop it.
+pub(crate) struct WeakRef(Weak<ExpressionNode>);
+
+impl WeakRef {
+    pub(crate) fn of(a: &Arc<ExpressionNode>) -> WeakRef {
+        WeakRef(Arc::downgrade(a))
+    }
+
+    pub(crate) fn is_dead(&self) -> bool {
+        self.0.strong_count() == 0
+    }
+}
+
+impl PartialEq for WeakRef {
+    fn eq(&self, o: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl Eq for WeakRef {}
+
+impl Hash for WeakRef {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        (self.0.as_ptr() as usize).hash(h);
+    }
+}
+
+/// Whether `a` and `b` are the same node (operators) or the same leaf. A
+/// float leaf compares by its bits, not `==`: [`map_children_shared`] then
+/// never drops a rewrite of a float (`0.0` → `-0.0`, which `==` calls equal),
+/// and a NaN leaf is the same as itself instead of forcing a rebuild.
 pub(crate) fn same_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Operator(x), Expr::Operator(y)) => Arc::ptr_eq(x, y),
+        (Expr::Number(x), Expr::Number(y)) => x.to_bits() == y.to_bits(),
         (Expr::Operator(_), _) | (_, Expr::Operator(_)) => false,
         _ => a == b,
     }
@@ -178,6 +213,14 @@ mod tests {
             _ => c.clone(),
         });
         assert!(!same_expr(&other, &e));
+        let z = ex(json!({"op": "+", "args": [0.0, "x"]}));
+        let nz = map_children_shared(&z, &mut |c| match c {
+            Expr::Number(x) if *x == 0.0 => Expr::Number(-0.0),
+            _ => c.clone(),
+        });
+        assert!(!same_expr(&nz, &z));
+        let nan = Expr::Number(f64::NAN);
+        assert!(same_expr(&nan, &nan));
         assert_eq!(
             skey(&other),
             skey(&ex(
