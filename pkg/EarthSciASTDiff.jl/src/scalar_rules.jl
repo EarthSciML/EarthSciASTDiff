@@ -270,7 +270,7 @@ function _drule_check_op(e::OpExpr, s::Site, occ::_Occ, memo)::Bool
         nz = map(d, a)
         return any(
             nz[i] && !any(j -> j != i && iszero_lit(a[j]), eachindex(a))
-            for i in eachindex(a)
+                for i in eachindex(a)
         )
     elseif o == "^" || o == "pow"
         db, dx = d(a[1]), d(a[2])
