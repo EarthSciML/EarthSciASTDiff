@@ -13,25 +13,62 @@ use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed_bands;
 use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
-use crate::jacobian::{FirstOrder, JacEntry, Wrt};
+use crate::jacobian::{FirstOrder, JacEntry, StructureEntry, Wrt};
 use crate::second_order::JacEntry2;
 use crate::system::{defined_name, is_derivative, lhs_state, SysView};
 
 /// One entry of the `jacobians` block, as JSON (spec §4).
 pub fn serialize_band(en: &JacEntry) -> Value {
     let b = &en.band;
+    let mut d = ser_fields(
+        &en.u,
+        &en.v,
+        &b.rows,
+        &b.ridx,
+        &b.cidx,
+        &b.contracted,
+        b.guard.as_ref(),
+    );
+    d.insert("coef".into(), ser_expr(&b.coef));
+    Value::Object(d)
+}
+
+/// A structure-only entry (spec §2.1) as JSON: the fields of
+/// [`serialize_band`] without `coef`.
+pub fn serialize_structure_band(en: &StructureEntry) -> Value {
+    let b = &en.band;
+    Value::Object(ser_fields(
+        &en.u,
+        &en.v,
+        &b.rows,
+        &b.ridx,
+        &b.cidx,
+        &b.contracted,
+        b.guard.as_ref(),
+    ))
+}
+
+/// Every field of an entry but `coef`.
+fn ser_fields(
+    u: &str,
+    v: &str,
+    rows: &[(i64, i64)],
+    ridx: &[RIdx],
+    cidx: &[Expr],
+    contracted: &[(String, i64, i64)],
+    guard: Option<&Expr>,
+) -> Map<String, Value> {
     let mut d = serde_json::Map::new();
-    d.insert("row".into(), json!(en.u));
-    d.insert("col".into(), json!(en.v));
+    d.insert("row".into(), json!(u));
+    d.insert("col".into(), json!(v));
     d.insert(
         "rows".into(),
-        Value::Array(b.rows.iter().map(|(lo, hi)| json!([lo, hi])).collect()),
+        Value::Array(rows.iter().map(|(lo, hi)| json!([lo, hi])).collect()),
     );
     d.insert(
         "row_idx".into(),
         Value::Array(
-            b.ridx
-                .iter()
+            ridx.iter()
                 .map(|r| match r {
                     RIdx::Name(n) => json!(n),
                     RIdx::Fixed(i) => json!(i),
@@ -41,24 +78,23 @@ pub fn serialize_band(en: &JacEntry) -> Value {
     );
     d.insert(
         "col_idx".into(),
-        Value::Array(b.cidx.iter().map(ser_expr).collect()),
+        Value::Array(cidx.iter().map(ser_expr).collect()),
     );
-    d.insert("coef".into(), ser_expr(&b.coef));
-    if !b.contracted.is_empty() {
+    if !contracted.is_empty() {
         d.insert(
             "contracted".into(),
             Value::Array(
-                b.contracted
+                contracted
                     .iter()
                     .map(|(n, lo, hi)| json!([n, lo, hi]))
                     .collect(),
             ),
         );
     }
-    if let Some(g) = &b.guard {
+    if let Some(g) = guard {
         d.insert("where".into(), ser_expr(g));
     }
-    Value::Object(d)
+    d
 }
 
 // ── template CSE (cse.jl) ────────────────────────────────────────────────────

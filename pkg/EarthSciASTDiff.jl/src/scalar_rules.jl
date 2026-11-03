@@ -234,6 +234,73 @@ function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
     end
 end
 
+"""
+    drule_check(e, s, occ) -> Bool
+
+The rule check of `dscalar(e, s, occ)` without the derivative, for the
+structure-only mode (esm-jacobian-spec.md §2.1): throws exactly the
+[`DerivativeRuleError`](@ref) `dscalar` would, and returns `false` exactly
+when `dscalar` would return a literal 0, so a check the full mode skips on a
+zero derivative (`_window_weight`'s) is skipped here too. It visits the
+nodes `dscalar` visits and builds no derivative; a closed function (`fn`, a
+small and rare node) is decided by `dfn` itself.
+"""
+drule_check(e::ASTExpr, s::Site, occ::_Occ)::Bool =
+    _drule_check(e, s, occ, IdDict{OpExpr, Bool}())
+
+function _drule_check(e::ASTExpr, s::Site, occ::_Occ, memo::IdDict{OpExpr, Bool})::Bool
+    _is_site(e, s, occ) && return true
+    e isa OpExpr || return false
+    occurs(e, s, occ) || return false
+    done = get(memo, e, nothing)
+    done === nothing || return done
+    return memo[e] = _drule_check_op(e, s, occ, memo)
+end
+
+# `_dscalar_op`, branch for branch: every child it differentiates is checked
+# (`map`, never a short-circuit, so no rule error is missed), and the result
+# follows the literal-zero folding of `add`, `mul` and `neg` there — an
+# `op(…)` node it builds is never a literal 0.
+function _drule_check_op(e::OpExpr, s::Site, occ::_Occ, memo)::Bool
+    o = e.op; a = e.args
+    d(x) = _drule_check(x, s, occ, memo)
+    if o in ("+", "-", "neg", "/")
+        return any(map(d, a))
+    elseif o == "*"
+        nz = map(d, a)
+        return any(
+            nz[i] && !any(j -> j != i && iszero_lit(a[j]), eachindex(a))
+                for i in eachindex(a)
+        )
+    elseif o == "^" || o == "pow"
+        db, dx = d(a[1]), d(a[2])
+        return (db && !iszero_lit(a[2])) || dx
+    elseif o in ("exp", "sin", "cos", "tan", "tanh", "sinh", "cosh", "abs")
+        return d(a[1])
+    elseif o in ("log", "log10", "sqrt", "asin", "acos", "asinh", "acosh", "atanh", "atan", "atan2")
+        foreach(d, a)
+        return true
+    elseif o == "ifelse"
+        d(a[2]); d(a[3])
+        return true
+    elseif o == "max" || o == "min"
+        nz = map(d, a)
+        return length(a) == 1 ? nz[1] : true
+    elseif o == "faq" && isempty(something(e.output_idx, Any[]))
+        red = _reduce_op(e, DerivativeRuleError)
+        d(e.expr_body) || return false
+        ranges = e.ranges === nothing ? Dict{String, Any}() : e.ranges
+        _check_window(red, sort!(String.(collect(keys(ranges)))), DerivativeRuleError)
+        return true
+    elseif o in ZERO_DERIV_OPS
+        return false
+    elseif o == "fn"
+        return !iszero_lit(dfn(e, s, occ))
+    end
+    # `index`, and every op without a rule: `_dscalar_op` throws.
+    return !iszero_lit(_dscalar_op(e, s, occ))
+end
+
 # The numeric vector of a literal `const` table node, or nothing.
 function _const_vector(e::ASTExpr)
     e isa OpExpr && e.op == "const" || return nothing

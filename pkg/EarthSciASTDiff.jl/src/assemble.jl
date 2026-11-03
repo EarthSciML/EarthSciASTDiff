@@ -211,13 +211,18 @@ function _rowslot(vm0, rowname::String, cs::Int, strict::Bool)
 end
 
 """
-    jacobian_pattern(input; wrt = :states, forcing = nothing) -> (pattern, rownames, colnames, entries)
+    jacobian_pattern(input; wrt = :states, forcing = nothing, coefficients = true) -> (pattern, rownames, colnames, entries)
 
 The structural (global, point-independent) sparsity pattern of the Jacobian
 as a `SparseMatrixCSC{Bool}`. `input` is an `EsmFile` + model name pair
 (pass a `Tuple`), an `EsmFile` with a single model, or a `FlattenedSystem`.
 On the `:parameters` and `:forcing` axes the columns are the canonical column
 space of [`jacobian_columns`](@ref).
+
+`coefficients = false` builds the pattern from structure-only entries
+(esm-jacobian-spec.md §2.1), which costs no differentiation: a superset of
+the default pattern, equal to it unless a band's coefficient simplifies to
+zero. `entries` are then the structure-only entries.
 
 The pattern needs the source model's state layout (the name → slot map),
 and by default learns it by running a complete `build_evaluator` of the
@@ -238,10 +243,10 @@ the source evaluator can skip that build by passing its layout:
 """
 function jacobian_pattern(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        build_kwargs = NamedTuple(), source_layout = nothing
+        build_kwargs = NamedTuple(), source_layout = nothing, coefficients::Bool = true
     )
     sv, src = _sv_src(input, model_name)
-    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
+    entries = jacobian_bands(sv; wrt = wrt, forcing = forcing, coefficients = coefficients)
     _, _, vm0 = _source_layout(src, model_name, build_kwargs, source_layout, wrt)
     colslot, ncol, colnames = _colmap(vm0, _axis_columns(sv, wrt, forcing), wrt)
     n = length(vm0)

@@ -281,6 +281,13 @@ def test_rank_one_plan(valid_dir):
         en = b["entries"][t - 1]
         assert en["row"] == en["col"] and len(en["contracted"]) == 1
     assert jacobian_block(file)["structure"] == "general"
+    # structure-only entries carry no coefficient to split: no rank-one term
+    from earthsci_astdiff import column_lines, jacobian_bands
+
+    sv = sysview(file)
+    so = column_lines(jacobian_bands(sv, coefficients=False), sv, "lev")
+    assert so["pattern"] != "diag_plus_rank1"
+    assert not so.get("rank1")
 
 
 def _lifted(u, lo, hi, rhs):

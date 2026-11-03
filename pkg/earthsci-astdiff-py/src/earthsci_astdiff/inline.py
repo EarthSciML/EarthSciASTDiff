@@ -220,12 +220,24 @@ def _index_makearray(
             if region_bound(r[1]) > region_bound(r[0]):
                 sub_idx.append(idx[k])
         if isinstance(val, ExprNode) and val.op == "faq":
-            oidx = [str(x) for x in val.output_idx]
-            if len(oidx) != len(sub_idx):
+            # Two legal value shapes (esm-spec §4.3.2, and the pair
+            # `_bands_makearray` tells apart with `val_fullrank`): a FULL-RANK
+            # faq names every region dim, singleton dims included (a 3-D
+            # field's boundary face); a REDUCED-RANK one names only the
+            # non-singleton dims. Bind each output index to the read index of
+            # the dim it names. As in the Julia reference, the value's own
+            # range for a dim is assumed to start where the region does.
+            rank = len(val.output_idx or [])
+            if rank == len(idx):
+                tgt = list(idx)
+            elif rank == len(sub_idx):
+                tgt = sub_idx
+            else:
                 raise InlineError(
-                    f"makearray value rank {len(oidx)} ≠ region free rank {len(sub_idx)}"
+                    f"makearray value rank {rank} matches neither the region rank "
+                    f"{len(idx)} nor the region free rank {len(sub_idx)}"
                 )
-            v = _beta_faq(val, sub_idx, fresh, scope)
+            v = _beta_faq(val, tgt, fresh, scope)
         elif isinstance(val, str) or (
             isinstance(val, ExprNode) and val.op in ("makearray", "index")
         ):

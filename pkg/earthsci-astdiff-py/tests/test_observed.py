@@ -156,3 +156,69 @@ def test_element_derivative_lhs_is_refused():
     )
     with pytest.raises(BandError, match="unsupported derivative LHS"):
         jacobian_bands(file)
+
+
+def test_full_rank_faq_value_over_a_pinned_makearray_region():
+    # Port of the reference's inline_test.jl. A makearray region VALUE may be
+    # a full-rank faq (naming every region dim, the pinned one included: a
+    # 3-D field's boundary face) as well as a reduced-rank one (esm-spec
+    # §4.3.2); the inliner accepted only the reduced-rank shape. `F` is
+    # state-dependent so pruning cannot make this vacuous.
+    #
+    #   F = makearray(0 over [1,3]x[1,2]; 2·u[i,j] over the pinned row i = 2)
+    #   D(u)[i,j] = -u[i,j] + F[i,j]   ⇒   ∂/∂u = -1, and +1 on row 2
+    def u2(i, j):
+        return {"op": "index", "args": ["u", i, j]}
+
+    face = {
+        "op": "faq",
+        "args": [],
+        "output_idx": ["i", "j"],
+        "ranges": {"i": [2, 2], "j": [1, 2]},
+        "expr": {"op": "*", "args": [2.0, u2("i", "j")]},
+    }
+    fdef = {
+        "op": "makearray",
+        "args": [],
+        "regions": [[[1, 3], [1, 2]], [[2, 2], [1, 2]]],
+        "values": [0.0, face],
+    }
+    rhs = {
+        "op": "faq",
+        "args": [],
+        "output_idx": ["i", "j"],
+        "ranges": {"i": [1, 3], "j": [1, 2]},
+        "expr": {
+            "op": "+",
+            "args": [{"op": "-", "args": [u2("i", "j")]}, {"op": "index", "args": ["F", "i", "j"]}],
+        },
+    }
+    file = ea.load_document(
+        {
+            "esm": "1.1.0",
+            "metadata": {"name": "PinnedFace"},
+            "index_sets": {
+                "x": {"kind": "interval", "size": 3},
+                "y": {"kind": "interval", "size": 2},
+            },
+            "models": {
+                "PinnedFace": {
+                    "variables": {
+                        "u": {"type": "unknown", "shape": ["x", "y"], "default": 0.5},
+                        "F": {"type": "unknown", "shape": ["x", "y"]},
+                    },
+                    "equations": [
+                        {"lhs": "F", "rhs": fdef},
+                        {"lhs": {"op": "D", "args": ["u"], "wrt": "t"}, "rhs": rhs},
+                    ],
+                }
+            },
+        }
+    )
+    u = [0.3, 0.7, 1.1, 1.9, 2.3, 2.9]
+    cells = {f"u[{i},{j}]": u[2 * (i - 1) + (j - 1)] for i in (1, 2, 3) for j in (1, 2)}
+    j = doc_jacobian(file, states=cells).J
+    for c in cells:
+        want = 1.0 if c.startswith("u[2,") else -1.0
+        assert j.get((c, c), 0.0) == pytest.approx(want, abs=1e-14), c
+    assert sum(1 for v in j.values() if v != 0.0) == 6, j

@@ -31,8 +31,10 @@ def serialize_band(en: JacEntry | JacEntry2) -> dict:
         "rows": [[lo, hi] for lo, hi in b.rows],
         "row_idx": list(b.ridx),
         "col_idx": [ser_expr(c) for c in b.cidx],
-        "coef": ser_expr(b.coef),
     }
+    # a structure-only band (spec §2.1) carries no `coef`
+    if b.coef is not None:
+        d["coef"] = ser_expr(b.coef)
     if b.contracted:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
     if b.guard is not None:
@@ -45,7 +47,8 @@ def parse_band(d: dict) -> JacEntry:
         [(int(r[0]), int(r[1])) for r in d["rows"]],
         [x if isinstance(x, str) else int(x) for x in d["row_idx"]],
         [parse_expression(c) for c in d["col_idx"]],
-        parse_expression(d["coef"]),
+        # absent on a structure-only entry (spec §2.1)
+        parse_expression(d["coef"]) if "coef" in d else None,
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
         parse_expression(d["where"]) if "where" in d else None,
     )
@@ -119,14 +122,22 @@ def scatter_pairs(sv, entries: list[JacEntry]):
     return pairs
 
 
-def jacobian_pattern(obj, model_name: str | None = None, wrt: str = "states", forcing=None):
+def jacobian_pattern(
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    forcing=None,
+    coefficients: bool = True,
+):
     """The structural sparsity pattern as sorted (rowname, colname) pairs
     plus the entries — dependency-light (no scipy). On the ``"parameters"``
     and ``"forcing"`` axes the columns are cells of the canonical column
     space (:func:`jacobian_columns`): a forcing column must resolve to one,
-    and a parameter column outside its variable's extent is a ghost read."""
+    and a parameter column outside its variable's extent is a ghost read.
+    ``coefficients=False`` builds it from structure-only entries (spec §2.1),
+    a superset of the default pattern that costs no differentiation."""
     sv = sysview(obj, model_name)
-    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
+    entries = jacobian_bands(sv, wrt=wrt, forcing=forcing, coefficients=coefficients)
     if wrt != "states":
         triples = scatter_pairs(sv, entries)
     if wrt in ("parameters", "forcing"):

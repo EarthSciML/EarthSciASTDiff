@@ -6,7 +6,7 @@ use std::rc::Rc;
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 
-use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
+use crate::bands::{bands_in, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
 use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
@@ -235,6 +235,73 @@ pub fn jacobian_bands_view(
     bands_of_view(sv, &ctx, &obs, wrt, forcing)
 }
 
+/// One block of the structure-only Jacobian (spec §2.1): a [`JacEntry`]
+/// without its coefficient.
+#[derive(Clone, Debug)]
+pub struct StructureEntry {
+    pub u: String,
+    pub v: String,
+    pub band: StructureBand,
+}
+
+/// A [`Band`] without its coefficient: the rows it covers (named by
+/// `ridx`), the column-index expressions, the contracted column dimensions
+/// and the `where` guard, exactly as in a full band.
+#[derive(Clone, Debug)]
+pub struct StructureBand {
+    pub rows: Vec<(i64, i64)>,
+    pub ridx: Vec<RIdx>,
+    pub cidx: Vec<Expr>,
+    pub contracted: Vec<(String, i64, i64)>,
+    pub guard: Option<Expr>,
+}
+
+impl From<JacEntry> for StructureEntry {
+    fn from(en: JacEntry) -> Self {
+        let b = en.band;
+        StructureEntry {
+            u: en.u,
+            v: en.v,
+            band: StructureBand {
+                rows: b.rows,
+                ridx: b.ridx,
+                cidx: b.cidx,
+                contracted: b.contracted,
+                guard: b.guard,
+            },
+        }
+    }
+}
+
+/// The structure-only entries of `wrt` (spec §2.1), the reference's
+/// `jacobian_bands(sv; wrt, forcing, coefficients = false)`. Regions are
+/// clipped and sites found as in [`jacobian_bands_view`], but no derivative
+/// is taken, no coefficient simplified, and bands merge on (`ridx`, `cidx`,
+/// `contracted`, `guard`) alone. Their points include
+/// [`jacobian_bands_view`]'s, and equal them unless a full band's
+/// coefficient simplifies to zero. Through an active recurrence (§4.5) the
+/// pass runs in full and the coefficients are dropped.
+pub fn jacobian_structure_view(
+    sv: &SysView,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+) -> Result<Vec<StructureEntry>, BandError> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    let rows = bands_seeded_in(sv, &ctx, &obs, wrt, forcing, &[], false)?;
+    Ok(rows.into_iter().map(StructureEntry::from).collect())
+}
+
+/// [`jacobian_structure_view`] of a model of `file` (`model_name` may be
+/// `None` when the file has exactly one), its forcing set inferred.
+pub fn jacobian_structure(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+) -> Result<Vec<StructureEntry>, BandError> {
+    jacobian_structure_view(&sysview(file, model_name)?, wrt, None)
+}
+
 /// The body of [`jacobian_bands`], for callers that
 /// already hold the view, its context and its observed definitions.
 pub(crate) fn bands_of_view(
@@ -260,11 +327,52 @@ pub(crate) fn jacobian_bands_seeded(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
-    let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
+    bands_seeded_in(sv, ctx, obs, wrt, forcing, seed, true)
+}
+
+/// [`jacobian_bands_seeded`], or with `co = false` the structure-only
+/// entries (spec §2.1), each with a placeholder coefficient. Through an
+/// active recurrence the pass runs in full ([`extended_pass_in`]), so its
+/// entries are then merged again on structure alone (§2.1 item 2: two
+/// entries the full mode kept apart for their coefficients alone coalesce)
+/// and pinned (item 3).
+fn bands_seeded_in(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+    co: bool,
+) -> Result<Vec<JacEntry>, BandError> {
+    let ext = extended_pass_in(sv, ctx, obs, wrt, forcing, seed, co)?;
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
-    materialize(ctx, &ext)
+    let rows = materialize(ctx, &ext)?;
+    if co {
+        return Ok(rows);
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut it = rows.into_iter().peekable();
+    while let Some(first) = it.next() {
+        let (u, v) = (first.u, first.v);
+        let mut group = vec![first.band];
+        while let Some(en) = it.next_if(|en| en.u == u && en.v == v) {
+            group.push(en.band);
+        }
+        for b in group.iter_mut() {
+            b.coef = placeholder();
+        }
+        for b in merge_bands(group) {
+            out.push(JacEntry {
+                u: u.clone(),
+                v: v.clone(),
+                band: normalize_band(&b),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state
@@ -306,6 +414,24 @@ pub(crate) fn extended_pass(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<ExtendedBands, BandError> {
+    extended_pass_in(sv, ctx, obs, wrt, forcing, seed, true)
+}
+
+/// [`extended_pass`], or with `co = false` its structure-only bands (spec
+/// §2.1), each with a placeholder coefficient. An axis with an active
+/// recurrence is the exception: its composition through the transfer
+/// (§4.5) reads the coefficients, so that pass runs in full and only the
+/// caller drops them (spec §2.1).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn extended_pass_in(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+    co: bool,
+) -> Result<ExtendedBands, BandError> {
     let src_obs = obs;
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
@@ -317,6 +443,7 @@ pub(crate) fn extended_pass(
         s.extend(seed.iter().cloned());
         active(&recs, obs, &s)
     };
+    let co = co || !act.is_empty();
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
     // opaque reads. Time is not pruned: it also enters implicitly through
@@ -355,13 +482,31 @@ pub(crate) fn extended_pass(
             }
             continue;
         };
-        row_bands(&mut entries, &u, &eq.rhs, obs, &mut obs_names, &cols, ctx)?;
+        row_bands(
+            &mut entries,
+            &u,
+            &eq.rhs,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
         row_eq.resize(entries.len(), q);
     }
     let mut rec_rows = Vec::new();
     for r in &act {
         let def = &src_obs[&r.name];
-        row_bands(&mut rec_rows, &r.name, def, obs, &mut obs_names, &cols, ctx)?;
+        row_bands(
+            &mut rec_rows,
+            &r.name,
+            def,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
     }
     for en in rec_rows.iter().filter(|en| en.u == en.v) {
         // every self band is a lag back along the axis, or refused
@@ -392,7 +537,9 @@ pub(crate) fn extended_pass(
 
 /// The bands of one row variable `u` (a state, or a recurrence over its
 /// own definition) with respect to every column in `cols` its inlined
-/// right-hand side reads, in sorted column order.
+/// right-hand side reads, in sorted column order; structure-only (spec
+/// §2.1) when `co` is false.
+#[allow(clippy::too_many_arguments)]
 fn row_bands(
     out: &mut Vec<JacEntry>,
     u: &str,
@@ -401,6 +548,7 @@ fn row_bands(
     obs_names: &mut Option<HashSet<String>>,
     cols: &HashSet<String>,
     ctx: &Ctx,
+    co: bool,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
     let rhs = inline_observed_cached(rhs, obs, obs_names).map_err(|e| BandError(e.0))?;
@@ -414,7 +562,7 @@ fn row_bands(
         .collect();
     hits.sort();
     for v in &hits {
-        for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
+        for b in merge_bands(bands_in(&rhs, v, ctx, &shape_u, co)?) {
             out.push(JacEntry {
                 u: u.to_string(),
                 v: v.clone(),

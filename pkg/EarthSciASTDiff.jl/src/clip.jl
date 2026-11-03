@@ -230,7 +230,8 @@ end
     merge_bands(bs::Vector{Band}) -> Vector{Band}
 
 Coalesce bands that are identical in `ridx`, `cidx`, `coef`, `contracted`
-and `guard` (structural keys) and whose `rows` boxes are adjacent along exactly one dimension.
+and `guard` (structural keys; a structure-only band's `coef` is `nothing`,
+so those merge on structure alone, esm-jacobian-spec.md §2.1) and whose `rows` boxes are adjacent along exactly one dimension.
 Iterated to a fixpoint; band order is preserved (a merge keeps the
 earlier band's position), so emission stays deterministic.
 
@@ -258,7 +259,8 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
     hx = StructHash()
     hkey(b) = (
-        b.ridx, UInt[shash(hx, c) for c in b.cidx], shash(hx, b.coef), b.contracted,
+        b.ridx, UInt[shash(hx, c) for c in b.cidx],
+        b.coef === nothing ? nothing : shash(hx, b.coef), b.contracted,
         b.guard === nothing ? nothing : shash(hx, b.guard),
     )
     groups = Dict{Any, Vector{Int}}()
@@ -270,7 +272,7 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
     same(x, y) = x[2] === y[2] && x[3] === y[3] && length(x[1]) == length(y[1]) &&
         all(k -> x[1][k] === y[1][k], eachindex(x[1]))
     ekey(b) = (
-        Int[sid(ix, c) for c in b.cidx], sid(ix, b.coef),
+        Int[sid(ix, c) for c in b.cidx], b.coef === nothing ? 0 : sid(ix, b.coef),
         b.guard === nothing ? 0 : sid(ix, b.guard),
     )
     buckets = Vector{Int}[]

@@ -17,9 +17,9 @@ use std::fs;
 
 use earthsci_astdiff::{
     evaluation_document, hvp_document, jacobian_bands, jacobian_bands2, jacobian_block,
-    jacobian_block2, jacobian_block_with, jvp_document, serialize_band, serialize_band2,
-    stable_json, sysview, vjp_document, BlockOptions, HvpForm, Layout, ProductOptions, ScatterPlan,
-    Wrt,
+    jacobian_block2, jacobian_block_with, jacobian_structure, jvp_document, serialize_band,
+    serialize_band2, serialize_structure_band, stable_json, sysview, vjp_document, BlockOptions,
+    HvpForm, Layout, ProductOptions, ScatterPlan, Wrt,
 };
 use serde_json::{json, Map, Value};
 
@@ -108,6 +108,16 @@ fn write_rust_goldens() {
                 &format!("{name}{t}.bands.json"),
                 stable_json(&Value::Array(entries.iter().map(serialize_band).collect())),
             );
+            if wrt == Wrt::States {
+                // structure-only entries (spec §2.1)
+                let so = jacobian_structure(&file, None, wrt).unwrap();
+                write(
+                    &format!("{name}.structure.bands.json"),
+                    stable_json(&Value::Array(
+                        so.iter().map(serialize_structure_band).collect(),
+                    )),
+                );
+            }
             write(
                 &format!("{name}{t}.block.json"),
                 stable_json(&jacobian_block(&file, None, wrt, true, 12).unwrap()),

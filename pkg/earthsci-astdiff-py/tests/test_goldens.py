@@ -131,3 +131,122 @@ def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
     assert entries
     text = stable_json([serialize_band(e) for e in entries])
     assert text == (golden_dir / f"{name}.{wrt}.bands.json").read_text()
+
+
+# Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
+# entries without coefficients. The reference writes those of the first ten
+# fixtures and of the flattened coupled document; the Rust binding those of
+# the two recurrence fixtures, whose pass runs in full (§2.1).
+@pytest.mark.parametrize("name", (*GOLDEN_NAMES, "coupled_chem_advection"))
+def test_structure_golden(name, valid_dir, golden_dir):
+    from earthsci_astdiff import sysview
+
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
+    if name == "coupled_chem_advection":
+        sv = sysview(ea.flatten(file))
+    else:
+        sv = sysview(file, next(iter(file.models)))
+    entries = jacobian_bands(sv, coefficients=False)
+    assert all(e.band.coef is None for e in entries)
+    text = stable_json([serialize_band(e) for e in entries])
+    assert text == (golden_dir / f"{name}.structure.bands.json").read_text()
+    # a structure-only entry reads back as it was written
+    from earthsci_astdiff import parse_band
+
+    assert stable_json([serialize_band(parse_band(serialize_band(e))) for e in entries]) == text
+
+
+def test_structure_keeps_zero_coefficient():
+    """d/dx[i] of x[i] - x[i] simplifies to 0: the full mode drops the band,
+    the structure-only mode keeps it (spec §2.1)."""
+    from earthsci_ast.esm_types import ExprNode
+    from earthsci_astdiff.bands import Ctx, bands
+
+    ctx = Ctx({"i": 4}, {"x": [4]}, set())
+    xi = ExprNode(op="index", args=["x", "i"])
+    rhs = ExprNode(
+        op="faq",
+        args=[],
+        output_idx=["i"],
+        expr=ExprNode(op="-", args=[xi, xi]),
+        ranges={"i": [1, 4]},
+    )
+    assert bands(rhs, "x", ctx, shape_u=[4]) == []
+    so = bands(rhs, "x", ctx, shape_u=[4], coefficients=False)
+    assert len(so) == 1 and so[0].coef is None and so[0].rows == [(1, 4)]
+
+
+def test_structure_refuses_what_the_full_mode_refuses():
+    """An op with no derivative rule (spec §3) is refused in both modes."""
+    from earthsci_ast.esm_types import ExprNode
+    from earthsci_astdiff.bands import Ctx, bands
+    from earthsci_astdiff.scalar_rules import DerivativeRuleError
+
+    ctx = Ctx({"i": 4}, {"x": [4]}, set())
+    xi = ExprNode(op="index", args=["x", "i"])
+    week = ExprNode(op="fn", args=[xi], name="datetime.week")
+    for body in (
+        ExprNode(op="D", args=[xi], wrt="lon"),
+        week,
+        ExprNode(op="*", args=[2, week]),
+    ):
+        rhs = ExprNode(op="faq", args=[], output_idx=["i"], expr=body, ranges={"i": [1, 4]})
+        for co in (True, False):
+            with pytest.raises(DerivativeRuleError):
+                bands(rhs, "x", ctx, shape_u=[4], coefficients=co)
+
+
+def test_drule_check_agrees_with_dscalar():
+    from earthsci_ast.esm_types import ExprNode
+    from earthsci_astdiff.expr_helpers import Site, is_zero
+    from earthsci_astdiff.scalar_rules import DerivativeRuleError, drule_check, dscalar
+
+    def o(op, *a, **kw):
+        return ExprNode(op=op, args=list(a), **kw)
+
+    s = Site.of("x")
+    tab = o("const", value=[0.0, 1.0, 4.0])
+    ax = o("const", value=[0.0, 1.0, 2.0])
+    for e in (
+        "x",
+        "y",
+        0,
+        o("+", "x", "y"),
+        o("-", "x"),
+        o("-", "y", "x"),
+        o("neg", "y"),
+        o("*", "x", "y"),
+        o("*", 0, "x"),
+        o("*", o("sign", "x"), "y"),
+        o("/", "y", "x"),
+        o("/", o("floor", "x"), "y"),
+        o("^", "x", 0),
+        o("^", "x", 2),
+        o("^", 2, "x"),
+        o("^", o("sign", "x"), "y"),
+        o("exp", "x"),
+        o("log", o("sign", "x")),
+        o("sqrt", "x"),
+        o("cos", o("ceil", "x")),
+        o("atan", "y", "x"),
+        o("abs", "x"),
+        o("ifelse", o("<", "x", "y"), "y", 1),
+        o("max", "x", "y"),
+        o("min", o("sign", "x")),
+        o("<", "x", "y"),
+        o("fn", "x", tab, ax, name="interp.searchsorted"),
+        o("fn", tab, ax, "x", name="interp.linear"),
+        o("fn", o("*", 3, "x"), name="datetime.julian_day"),
+        o("faq", output_idx=[], reduce="max", ranges={"k": [1, 3]}, expr=o("*", "x", "k")),
+    ):
+        assert drule_check(e, s) == (not is_zero(dscalar(e, s))), e
+
+    def m2(body):
+        return o("faq", output_idx=[], reduce="max", ranges={"j": [1, 3], "k": [1, 3]}, expr=body)
+
+    with pytest.raises(DerivativeRuleError):
+        dscalar(m2("x"), s)
+    with pytest.raises(DerivativeRuleError):
+        drule_check(m2("x"), s)
+    assert not drule_check(m2(o("sign", "x")), s)
+    assert is_zero(dscalar(m2(o("sign", "x")), s))
