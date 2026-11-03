@@ -446,13 +446,31 @@ pub(crate) fn extended_pass_in(
             }
             continue;
         };
-        row_bands(&mut entries, &u, &eq.rhs, obs, &mut obs_names, &cols, ctx, co)?;
+        row_bands(
+            &mut entries,
+            &u,
+            &eq.rhs,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
         row_eq.resize(entries.len(), q);
     }
     let mut rec_rows = Vec::new();
     for r in &act {
         let def = &src_obs[&r.name];
-        row_bands(&mut rec_rows, &r.name, def, obs, &mut obs_names, &cols, ctx, co)?;
+        row_bands(
+            &mut rec_rows,
+            &r.name,
+            def,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
     }
     for en in rec_rows.iter().filter(|en| en.u == en.v) {
         // every self band is a lag back along the axis, or refused

@@ -377,13 +377,7 @@ fn placeholder() -> Expr {
 
 /// [`bands`], or with `co = false` the structure-only bands (spec §2.1),
 /// each with the placeholder coefficient.
-pub(crate) fn bands_in(
-    rhs: &Expr,
-    v: &str,
-    ctx: &Ctx,
-    shape_u: &[i64],
-    co: bool,
-) -> R<Vec<Band>> {
+pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool) -> R<Vec<Band>> {
     let mut out = Vec::new();
     if shape_u.is_empty() {
         let nested = nested_sums(rhs, v, &[]);
@@ -442,6 +436,7 @@ fn push_band(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scalar_bands(
     out: &mut Vec<Band>,
     e: &Expr,

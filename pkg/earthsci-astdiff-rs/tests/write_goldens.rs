@@ -18,9 +18,8 @@ use std::fs;
 use earthsci_astdiff::{
     evaluation_document, hvp_document, jacobian_bands, jacobian_bands2, jacobian_block,
     jacobian_block2, jacobian_block_with, jacobian_structure, jvp_document, serialize_band,
-    serialize_band2, serialize_structure_band,
-    stable_json, sysview, vjp_document, BlockOptions, HvpForm, Layout, ProductOptions, ScatterPlan,
-    Wrt,
+    serialize_band2, serialize_structure_band, stable_json, sysview, vjp_document, BlockOptions,
+    HvpForm, Layout, ProductOptions, ScatterPlan, Wrt,
 };
 use serde_json::{json, Map, Value};
 

@@ -137,7 +137,7 @@ def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
 # entries without coefficients. The reference writes those of the first ten
 # fixtures and of the flattened coupled document; the Rust binding those of
 # the two recurrence fixtures, whose pass runs in full (§2.1).
-@pytest.mark.parametrize("name", GOLDEN_NAMES + ("coupled_chem_advection",))
+@pytest.mark.parametrize("name", (*GOLDEN_NAMES, "coupled_chem_advection"))
 def test_structure_golden(name, valid_dir, golden_dir):
     from earthsci_astdiff import sysview
 

@@ -31,9 +31,8 @@ pub use emit::{
     jacobian_block_with, jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with,
     lu_fill, markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
     parse_jacobian_blocks, plan_factorization, plan_factorization_along, serialize_band,
-    serialize_structure_band,
-    serialize_plan, BlockLu, BlockOptions, BlockWrt, ColumnLines, FactorizationPlan, ParsedBlock,
-    Rank1, STRUCTURE_CLASSES,
+    serialize_plan, serialize_structure_band, BlockLu, BlockOptions, BlockWrt, ColumnLines,
+    FactorizationPlan, ParsedBlock, Rank1, STRUCTURE_CLASSES,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};

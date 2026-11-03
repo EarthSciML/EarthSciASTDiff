@@ -229,6 +229,17 @@
       }
     },
     {
+      "name": "jacobian_structure",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "julia": "jacobian_bands",
+        "python": "jacobian_bands",
+        "rust": "jacobian_structure"
+      },
+      "notes": "Structure-only entries (spec \u00a72.1): Julia and Python pass `coefficients = false` to `jacobian_bands` (each `band.coef` is then `nothing` / `None`); Rust returns `StructureEntry`s, and differentiates a view through `jacobian_structure_view`."
+    },
+    {
       "name": "jvp_document",
       "kind": "function",
       "tier": "stable",
@@ -327,6 +338,15 @@
       }
     },
     {
+      "name": "serialize_structure_band",
+      "kind": "function",
+      "tier": "stable",
+      "bindings": {
+        "rust": "serialize_structure_band"
+      },
+      "notes": "Python's `serialize_band` omits `coef` for a structure-only entry."
+    },
+    {
       "name": "simplify_branches",
       "kind": "function",
       "tier": "stable",
@@ -355,6 +375,15 @@
         "python": "stable_json",
         "rust": "stable_json"
       }
+    },
+    {
+      "name": "structure_entry",
+      "kind": "type",
+      "tier": "stable",
+      "bindings": {
+        "rust": "StructureEntry"
+      },
+      "notes": "Julia and Python return a `JacEntry` whose band has no coefficient."
     },
     {
       "name": "sys_view",
