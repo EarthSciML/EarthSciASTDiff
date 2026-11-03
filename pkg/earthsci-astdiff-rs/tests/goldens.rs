@@ -104,6 +104,15 @@ fn structure_goldens() {
     );
 }
 
+/// Each summand clipped on its own axes (spec §2.2): the band form the
+/// reference writes for `split_sum_2d.esm`.
+#[test]
+fn split_sum_golden() {
+    let entries = jacobian_bands(&load("split_sum_2d"), Some("S"), Wrt::States).unwrap();
+    let text = stable_json(&Value::Array(entries.iter().map(serialize_band).collect()));
+    assert_eq!(text, golden("split_sum_2d.bands.json"));
+}
+
 #[test]
 fn block_goldens() {
     for name in NAMES {

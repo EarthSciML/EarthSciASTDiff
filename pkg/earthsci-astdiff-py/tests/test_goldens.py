@@ -170,3 +170,11 @@ def test_structure_keeps_zero_coefficient():
     assert bands(rhs, "x", ctx, shape_u=[4]) == []
     so = bands(rhs, "x", ctx, shape_u=[4], coefficients=False)
     assert len(so) == 1 and so[0].coef is None and so[0].rows == [(1, 4)]
+
+
+def test_split_sum_golden(valid_dir, golden_dir):
+    """Each summand clipped on its own axes (spec §2.2): the band form the
+    reference writes for ``split_sum_2d.esm``."""
+    file = ea.load_path(str(valid_dir / "split_sum_2d.esm"))
+    text = stable_json([serialize_band(e) for e in jacobian_bands(file, "S")])
+    assert text == (golden_dir / "split_sum_2d.bands.json").read_text()

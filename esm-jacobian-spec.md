@@ -918,7 +918,10 @@ Fixture corpus in `tests/` of this repository:
    at `w = 0` exactly, with the buffers at the document defaults). Each fixture with a state band golden also carries
    `<name>.structure.bands.json`, its structure-only entries (§2.1) in the
    same deterministic JSON, each entry without `coef`; the Julia reference
-   checks that their points include the full entries' points (§2.1). A
+   checks that their points include the full entries' points (§2.1). The
+   §2.2 fixture `split_sum_2d.esm` (an x-split and a y-split term over a
+   state divisor) carries `<name>.bands.json` only, whose overlapping entries
+   the Julia reference checks against ForwardDiff. A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried

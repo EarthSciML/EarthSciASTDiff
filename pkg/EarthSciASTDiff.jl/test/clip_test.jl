@@ -87,38 +87,15 @@ end
 # Each summand clipped on its own axes (clip.jl `clip_summands`,
 # esm-jacobian-spec.md §2.2): a sum of an x-split and a y-split term divided
 # by a state is split 3 + 3 ways instead of 3 × 3, and the bands of the
-# overlapping pieces add to the ForwardDiff Jacobian.
-const _SPLIT_SUM_DOC = """
-{"esm": "1.1.0", "metadata": {"name": "SplitSum"},
- "index_sets": {"x": {"kind": "interval", "size": 6}, "y": {"kind": "interval", "size": 5}},
- "models": {"S": {
-  "variables": {"q": {"type": "unknown", "shape": ["x", "y"], "default": 0.5},
-                "m": {"type": "unknown", "shape": ["x", "y"], "default": 1.5}},
-  "equations": [
-   {"lhs": {"op": "D", "args": ["q"], "wrt": "t"},
-    "rhs": {"op": "faq", "output_idx": ["i", "j"], "args": [], "ranges": {"i": {"from": "x"}, "j": {"from": "y"}},
-     "expr": {"op": "/", "args": [
-      {"op": "+", "args": [
-       {"op": "ifelse", "args": [{"op": "<=", "args": ["i", 1]},
-         {"op": "*", "args": [0.5, {"op": "index", "args": ["q", "i", "j"]}, {"op": "index", "args": ["q", "i", "j"]}]},
-         {"op": "ifelse", "args": [{"op": ">=", "args": ["i", 6]},
-           {"op": "index", "args": ["m", "i", "j"]},
-           {"op": "*", "args": [{"op": "index", "args": ["q", {"op": "-", "args": ["i", 1]}, "j"]}, {"op": "index", "args": ["q", "i", "j"]}]}]}]},
-       {"op": "-", "args": [{"op": "ifelse", "args": [{"op": ">=", "args": ["j", 5]},
-         {"op": "index", "args": ["q", "i", "j"]},
-         {"op": "ifelse", "args": [{"op": "<=", "args": ["j", 1]},
-           {"op": "*", "args": [2.0, {"op": "index", "args": ["m", "i", "j"]}]},
-           {"op": "*", "args": [{"op": "index", "args": ["q", "i", {"op": "+", "args": ["j", 1]}]}, {"op": "index", "args": ["m", "i", "j"]}]}]}]}]},
-       {"op": "index", "args": ["q", "i", "j"]}]},
-      {"op": "index", "args": ["m", "i", "j"]}]}}},
-   {"lhs": {"op": "D", "args": ["m"], "wrt": "t"},
-    "rhs": {"op": "faq", "output_idx": ["i", "j"], "args": [], "ranges": {"i": {"from": "x"}, "j": {"from": "y"}},
-     "expr": {"op": "*", "args": [-0.1, {"op": "index", "args": ["m", "i", "j"]}]}}}]}}}
-"""
+# overlapping pieces add to the ForwardDiff Jacobian. Fixture
+# split_sum_2d.esm; its band golden pins the form for every binding.
 
 @testset "clip_summands: each summand on its own axes" begin
-    file = EarthSciAST.load_string(_SPLIT_SUM_DOC)
+    file = fixture("split_sum_2d.esm")
     sv = sysview(file, "S")
+    gold = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "split_sum_2d")
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sv)]) ==
+        read("$gold.bands.json", String)
     eq = first(sv.equations)
     body = eq.rhs.expr_body
     @test length(EarthSciASTDiff.clip_regions(body, ["i", "j"], [(1, 6), (1, 5)])) == 9
