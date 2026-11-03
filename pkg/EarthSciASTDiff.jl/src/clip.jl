@@ -217,6 +217,113 @@ function clip_regions(body::ASTExpr, ridx, rows)
     return out
 end
 
+# ── clipping each summand on its own axes ────────────────────────────────────
+#
+# `clip_regions` cuts the whole body at every breakpoint of every dimension,
+# so a body that is a SUM of terms each split along one dimension (the flux
+# divergence of a dimension-split advection scheme: an x, a y and a z flux
+# difference, each a lowered region read along its own axis) is cut into the
+# PRODUCT of their regions — 7 × 7 × 7 bodies for ReSEACT's PPM transport,
+# each carrying all three terms. The band calculus is linear in the body's
+# summands (the derivative, a `reduce: "+"` window and a value filter all
+# distribute over `+`), so each group of summands can be clipped on its own
+# axes instead — 7 + 7 + 7 bodies — and their bands ADD where they overlap
+# (esm-jacobian-spec.md §2.2).
+
+# The summands of `e`, distributing a scalar factor or divisor over a sum:
+# `(a + b) / m` ↦ `[a / m, b / m]`, `q * (a + b)` ↦ `[q * a, q * b]`,
+# `-(a + b)` ↦ `[-a, -b]`, `a - b` ↦ `[a, -b]`. A product of two sums is not
+# expanded (only one factor of a `*` may be a sum). An `e` with nothing to
+# distribute is its own single summand.
+function _summands(e::ASTExpr)::Vector{ASTExpr}
+    e isa OpExpr || return ASTExpr[e]
+    a = e.args
+    if e.op == "+"
+        out = ASTExpr[]
+        for x in a
+            append!(out, _summands(x))
+        end
+        return out
+    elseif (e.op == "-" || e.op == "neg") && length(a) == 1
+        ts = _summands(a[1])
+        length(ts) == 1 && return ASTExpr[e]
+        return ASTExpr[OpExpr(e.op, ASTExpr[t]) for t in ts]
+    elseif e.op == "-" && length(a) == 2
+        ta = _summands(a[1]); tb = _summands(a[2])
+        length(ta) + length(tb) == 2 && return ASTExpr[e]
+        return vcat(ta, ASTExpr[OpExpr("-", ASTExpr[t]) for t in tb])
+    elseif e.op == "*"
+        k = 0; ts = ASTExpr[]
+        for (j, x) in enumerate(a)
+            tx = _summands(x)
+            length(tx) > 1 || continue
+            k == 0 || return ASTExpr[e]          # a product of two sums
+            k = j; ts = tx
+        end
+        k == 0 && return ASTExpr[e]
+        return ASTExpr[OpExpr("*", ASTExpr[j == k ? t : x for (j, x) in enumerate(a)]) for t in ts]
+    elseif e.op == "/" && length(a) == 2
+        ts = _summands(a[1])
+        length(ts) == 1 && return ASTExpr[e]
+        return ASTExpr[OpExpr("/", ASTExpr[t, a[2]]) for t in ts]
+    end
+    return ASTExpr[e]
+end
+
+"""
+    clip_summands(body, ridx, rows) -> Vector{(rows′, body′)}
+
+[`clip_regions`](@ref), but with each group of `body`'s summands clipped on
+its own axes. The summands (a sum, with scalar factors and divisors
+distributed over it) are grouped so that two summands cut along a common
+dimension of `rows` share a group; a summand cut along none joins the first
+group. With fewer than two groups this is `clip_regions(body, ridx, rows)`
+exactly. Otherwise it is the concatenation, group by group in order of
+their first summand, of `clip_regions` of each group's sum: the pieces of
+different groups OVERLAP, and the bands of a body linear in its summands
+(the band calculus with a `reduce: "+"` window or no contraction) are the
+sum of the groups' bands.
+"""
+function clip_summands(body::ASTExpr, ridx, rows)
+    names = String[r for r in ridx if r isa String]
+    isempty(names) && return clip_regions(body, ridx, rows)
+    ts = _summands(body)
+    length(ts) < 2 && return clip_regions(body, ridx, rows)
+    box = Dict{String, Tuple{Int, Int}}(
+        r => rows[k] for (k, r) in enumerate(ridx) if r isa String
+    )
+    # the dimensions each summand is actually cut along inside `rows`
+    cuts = Vector{Vector{String}}(undef, length(ts))
+    for (t, x) in enumerate(ts)
+        bp = Dict{String, Set{Int}}()
+        _breakpoints!(bp, x, names)
+        cuts[t] = sort!(
+            String[n for (n, cs) in bp if any(c -> box[n][1] < c <= box[n][2], cs)]
+        )
+    end
+    # union-find over dimensions: a summand cut along two joins them
+    parent = Dict{String, String}(n => n for n in names)
+    root(n) = (p = parent[n]; p == n ? n : (parent[n] = root(p)))
+    for c in cuts, k in 2:length(c)
+        parent[root(c[k])] = root(c[1])
+    end
+    order = String[]                      # group roots, by first summand
+    for c in cuts
+        isempty(c) && continue
+        r = root(c[1]); r in order || push!(order, r)
+    end
+    length(order) < 2 && return clip_regions(body, ridx, rows)
+    groups = [ASTExpr[] for _ in order]
+    for (t, c) in enumerate(cuts)
+        push!(groups[isempty(c) ? 1 : findfirst(==(root(c[1])), order)], ts[t])
+    end
+    out = Vector{Tuple{Vector{Tuple{Int, Int}}, ASTExpr}}()
+    for g in groups
+        append!(out, clip_regions(length(g) == 1 ? g[1] : OpExpr("+", g), ridx, rows))
+    end
+    return out
+end
+
 # ── re-merging ───────────────────────────────────────────────────────────────
 #
 # Clipping partitions per BODY, so every site in a composed equation is split

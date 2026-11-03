@@ -305,6 +305,179 @@ pub fn clip_regions(
     }
 }
 
+// ── clipping each summand on its own axes (clip.jl `clip_summands`) ─────────
+
+/// The summands of `e`, distributing a scalar factor or divisor over a sum
+/// (clip.jl `_summands`): `(a + b) / m` ↦ `[a / m, b / m]`, `q * (a + b)` ↦
+/// `[q * a, q * b]`, `-(a + b)` ↦ `[-a, -b]`, `a - b` ↦ `[a, -b]`. A product
+/// of two sums is not expanded. An `e` with nothing to distribute is its own
+/// single summand.
+fn summands(e: &Expr) -> Vec<Expr> {
+    let Expr::Operator(n) = e else {
+        return vec![e.clone()];
+    };
+    let a = &n.args;
+    match n.op.as_str() {
+        "+" => a.iter().flat_map(summands).collect(),
+        "-" | "neg" if a.len() == 1 => {
+            let ts = summands(&a[0]);
+            if ts.len() == 1 {
+                return vec![e.clone()];
+            }
+            ts.into_iter().map(|t| op(&n.op, vec![t])).collect()
+        }
+        "-" if a.len() == 2 => {
+            let ta = summands(&a[0]);
+            let tb = summands(&a[1]);
+            if ta.len() + tb.len() == 2 {
+                return vec![e.clone()];
+            }
+            ta.into_iter()
+                .chain(tb.into_iter().map(|t| op("-", vec![t])))
+                .collect()
+        }
+        "*" => {
+            let mut k = None;
+            let mut ts = Vec::new();
+            for (j, x) in a.iter().enumerate() {
+                let tx = summands(x);
+                if tx.len() < 2 {
+                    continue;
+                }
+                if k.is_some() {
+                    return vec![e.clone()]; // a product of two sums
+                }
+                k = Some(j);
+                ts = tx;
+            }
+            let Some(k) = k else {
+                return vec![e.clone()];
+            };
+            ts.into_iter()
+                .map(|t| {
+                    let args = a
+                        .iter()
+                        .enumerate()
+                        .map(|(j, x)| if j == k { t.clone() } else { x.clone() })
+                        .collect();
+                    op("*", args)
+                })
+                .collect()
+        }
+        "/" if a.len() == 2 => {
+            let ts = summands(&a[0]);
+            if ts.len() == 1 {
+                return vec![e.clone()];
+            }
+            ts.into_iter()
+                .map(|t| op("/", vec![t, a[1].clone()]))
+                .collect()
+        }
+        _ => vec![e.clone()],
+    }
+}
+
+/// [`clip_regions`], but with each group of `body`'s summands clipped on
+/// its own axes (clip.jl `clip_summands`). Two summands cut along a common
+/// dimension of `rows` share a group, and a summand cut along none joins
+/// the first. With fewer than two groups this is `clip_regions(body, ridx,
+/// rows)` exactly; otherwise the concatenation, group by group in order of
+/// their first summand, of `clip_regions` of each group's sum. The pieces
+/// of different groups overlap, and their bands add (spec §2.2).
+pub fn clip_summands(
+    body: &Expr,
+    ridx: &[RIdx],
+    rows: &[(i64, i64)],
+) -> Vec<(Vec<(i64, i64)>, Expr)> {
+    let names: Vec<String> = ridx
+        .iter()
+        .filter_map(|r| match r {
+            RIdx::Name(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    if names.is_empty() {
+        return clip_regions(body, ridx, rows);
+    }
+    let ts = summands(body);
+    if ts.len() < 2 {
+        return clip_regions(body, ridx, rows);
+    }
+    let mut bx: HashMap<&str, (i64, i64)> = HashMap::new();
+    for (k, r) in ridx.iter().enumerate() {
+        if let RIdx::Name(nm) = r {
+            bx.insert(nm.as_str(), rows[k]);
+        }
+    }
+    // the dimensions each summand is actually cut along inside `rows`
+    let cuts: Vec<Vec<String>> = ts
+        .iter()
+        .map(|t| {
+            let mut bp = BTreeMap::new();
+            breakpoints(&mut bp, t, &names);
+            bp.into_iter()
+                .filter(|(nm, cs)| {
+                    let (lo, hi) = bx[nm.as_str()];
+                    cs.iter().any(|c| lo < *c && *c <= hi)
+                })
+                .map(|(nm, _)| nm)
+                .collect()
+        })
+        .collect();
+    // union-find over dimensions: a summand cut along two joins them
+    let mut parent: HashMap<String, String> =
+        names.iter().map(|n| (n.clone(), n.clone())).collect();
+    fn root(parent: &mut HashMap<String, String>, n: &str) -> String {
+        let p = parent[n].clone();
+        if p == n {
+            return p;
+        }
+        let r = root(parent, &p);
+        parent.insert(n.to_string(), r.clone());
+        r
+    }
+    for c in &cuts {
+        for k in 1..c.len() {
+            let a = root(&mut parent, &c[k]);
+            let b = root(&mut parent, &c[0]);
+            parent.insert(a, b);
+        }
+    }
+    let mut order: Vec<String> = Vec::new(); // group roots, by first summand
+    for c in &cuts {
+        if let Some(c0) = c.first() {
+            let r = root(&mut parent, c0);
+            if !order.contains(&r) {
+                order.push(r);
+            }
+        }
+    }
+    if order.len() < 2 {
+        return clip_regions(body, ridx, rows);
+    }
+    let mut groups: Vec<Vec<Expr>> = vec![Vec::new(); order.len()];
+    for (t, c) in ts.into_iter().zip(&cuts) {
+        let g = match c.first() {
+            None => 0,
+            Some(c0) => {
+                let r = root(&mut parent, c0);
+                order.iter().position(|o| *o == r).unwrap()
+            }
+        };
+        groups[g].push(t);
+    }
+    let mut out = Vec::new();
+    for mut g in groups {
+        let gb = if g.len() == 1 {
+            g.pop().unwrap()
+        } else {
+            op("+", g)
+        };
+        out.extend(clip_regions(&gb, ridx, rows));
+    }
+    out
+}
+
 // ── interval bounds over a band's box (§9.1, §4.5) ─────────────────────────
 
 /// A band's index names (row names, then contracted names) and their ranges.

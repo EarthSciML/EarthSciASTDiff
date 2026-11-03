@@ -83,3 +83,65 @@ end
     col = findfirst(==("uin"), rp.colnames)
     @test findall(Vector(rp.pattern[:, col])) == [1]
 end
+
+# Each summand clipped on its own axes (clip.jl `clip_summands`,
+# esm-jacobian-spec.md §2.2): a sum of an x-split and a y-split term divided
+# by a state is split 3 + 3 ways instead of 3 × 3, and the bands of the
+# overlapping pieces add to the ForwardDiff Jacobian.
+const _SPLIT_SUM_DOC = """
+{"esm": "1.1.0", "metadata": {"name": "SplitSum"},
+ "index_sets": {"x": {"kind": "interval", "size": 6}, "y": {"kind": "interval", "size": 5}},
+ "models": {"S": {
+  "variables": {"q": {"type": "unknown", "shape": ["x", "y"], "default": 0.5},
+                "m": {"type": "unknown", "shape": ["x", "y"], "default": 1.5}},
+  "equations": [
+   {"lhs": {"op": "D", "args": ["q"], "wrt": "t"},
+    "rhs": {"op": "faq", "output_idx": ["i", "j"], "args": [], "ranges": {"i": {"from": "x"}, "j": {"from": "y"}},
+     "expr": {"op": "/", "args": [
+      {"op": "+", "args": [
+       {"op": "ifelse", "args": [{"op": "<=", "args": ["i", 1]},
+         {"op": "*", "args": [0.5, {"op": "index", "args": ["q", "i", "j"]}, {"op": "index", "args": ["q", "i", "j"]}]},
+         {"op": "ifelse", "args": [{"op": ">=", "args": ["i", 6]},
+           {"op": "index", "args": ["m", "i", "j"]},
+           {"op": "*", "args": [{"op": "index", "args": ["q", {"op": "-", "args": ["i", 1]}, "j"]}, {"op": "index", "args": ["q", "i", "j"]}]}]}]},
+       {"op": "-", "args": [{"op": "ifelse", "args": [{"op": ">=", "args": ["j", 5]},
+         {"op": "index", "args": ["q", "i", "j"]},
+         {"op": "ifelse", "args": [{"op": "<=", "args": ["j", 1]},
+           {"op": "*", "args": [2.0, {"op": "index", "args": ["m", "i", "j"]}]},
+           {"op": "*", "args": [{"op": "index", "args": ["q", "i", {"op": "+", "args": ["j", 1]}]}, {"op": "index", "args": ["m", "i", "j"]}]}]}]}]},
+       {"op": "index", "args": ["q", "i", "j"]}]},
+      {"op": "index", "args": ["m", "i", "j"]}]}}},
+   {"lhs": {"op": "D", "args": ["m"], "wrt": "t"},
+    "rhs": {"op": "faq", "output_idx": ["i", "j"], "args": [], "ranges": {"i": {"from": "x"}, "j": {"from": "y"}},
+     "expr": {"op": "*", "args": [-0.1, {"op": "index", "args": ["m", "i", "j"]}]}}}]}}}
+"""
+
+@testset "clip_summands: each summand on its own axes" begin
+    file = EarthSciAST.load_string(_SPLIT_SUM_DOC)
+    sv = sysview(file, "S")
+    eq = first(sv.equations)
+    body = eq.rhs.expr_body
+    @test length(EarthSciASTDiff.clip_regions(body, ["i", "j"], [(1, 6), (1, 5)])) == 9
+    parts = EarthSciASTDiff.clip_summands(body, ["i", "j"], [(1, 6), (1, 5)])
+    @test [p[1] for p in parts] == [
+        [(1, 1), (1, 5)], [(2, 5), (1, 5)], [(6, 6), (1, 5)],
+        [(1, 6), (1, 1)], [(1, 6), (2, 4)], [(1, 6), (5, 5)],
+    ]
+    # one summand group: exactly clip_regions
+    xonly = body.args[1].args[1]
+    @test [p[1] for p in EarthSciASTDiff.clip_summands(xonly, ["i", "j"], [(1, 6), (1, 5)])] ==
+        [p[1] for p in EarthSciASTDiff.clip_regions(xonly, ["i", "j"], [(1, 6), (1, 5)])]
+    # values: the overlapping bands add up to ForwardDiff's Jacobian
+    f!, u0, p, _, _ = build_evaluator(file)
+    for _ in 1:2
+        u = 0.5 .+ rand(length(u0))
+        res = doc_jacobian(file; u = u, p = p)
+        Jad = ad_jacobian(f!, u, p, 0.0)
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-12
+        @test all((Jad .!= 0) .<= res.pattern)
+    end
+    # structure-only points equal the full points
+    full = jacobian_bands(sv); so = jacobian_bands(sv; coefficients = false)
+    @test Set(EarthSciASTDiff._scatter_pairs(sv, full)) ==
+        Set(EarthSciASTDiff._scatter_pairs(sv, so))
+end

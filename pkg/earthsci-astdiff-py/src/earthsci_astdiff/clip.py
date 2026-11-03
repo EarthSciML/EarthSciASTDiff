@@ -262,3 +262,93 @@ def clip_regions(body: Expr, ridx, rows):
         env = {dimname[k]: rows2[k] for k in range(len(rows2)) if dimname[k] is not None}
         out.append((rows2, _decide(body, env)))
     return out
+
+
+# ── clipping each summand on its own axes (clip.jl `clip_summands`) ─────────
+
+
+def _summands(e: Expr) -> list:
+    """The summands of ``e``, distributing a scalar factor or divisor over a
+    sum: ``(a + b) / m`` ↦ ``[a / m, b / m]``, ``q * (a + b)`` ↦ ``[q * a,
+    q * b]``, ``-(a + b)`` ↦ ``[-a, -b]``, ``a - b`` ↦ ``[a, -b]``. A product
+    of two sums is not expanded."""
+    if not isinstance(e, ExprNode):
+        return [e]
+    a = e.args
+    if e.op == "+":
+        return [t for x in a for t in _summands(x)]
+    if e.op in ("-", "neg") and len(a) == 1:
+        ts = _summands(a[0])
+        return [e] if len(ts) == 1 else [op(e.op, t) for t in ts]
+    if e.op == "-" and len(a) == 2:
+        ta = _summands(a[0])
+        tb = _summands(a[1])
+        if len(ta) + len(tb) == 2:
+            return [e]
+        return ta + [op("-", t) for t in tb]
+    if e.op == "*":
+        k = None
+        ts: list = []
+        for j, x in enumerate(a):
+            tx = _summands(x)
+            if len(tx) < 2:
+                continue
+            if k is not None:
+                return [e]  # a product of two sums
+            k, ts = j, tx
+        if k is None:
+            return [e]
+        return [op("*", *[t if j == k else x for j, x in enumerate(a)]) for t in ts]
+    if e.op == "/" and len(a) == 2:
+        ts = _summands(a[0])
+        return [e] if len(ts) == 1 else [op("/", t, a[1]) for t in ts]
+    return [e]
+
+
+def clip_summands(body: Expr, ridx, rows):
+    """:func:`clip_regions`, but with each group of ``body``'s summands
+    clipped on its own axes (clip.jl ``clip_summands``). Two summands cut
+    along a common dimension of ``rows`` share a group, and a summand cut
+    along none joins the first. With fewer than two groups this is
+    ``clip_regions(body, ridx, rows)`` exactly; otherwise the concatenation,
+    group by group in order of their first summand, of ``clip_regions`` of
+    each group's sum. The pieces of different groups overlap, and their bands
+    add (spec §2.2)."""
+    names = [r for r in ridx if isinstance(r, str)]
+    if not names:
+        return clip_regions(body, ridx, rows)
+    ts = _summands(body)
+    if len(ts) < 2:
+        return clip_regions(body, ridx, rows)
+    box = {r: rows[k] for k, r in enumerate(ridx) if isinstance(r, str)}
+    cuts = []
+    for t in ts:
+        bp: dict[str, set[int]] = {}
+        _breakpoints(bp, t, names)
+        cuts.append(
+            sorted(n for n, cs in bp.items() if any(box[n][0] < c <= box[n][1] for c in cs))
+        )
+    parent = {n: n for n in names}
+
+    def root(n):
+        while parent[n] != n:
+            parent[n] = parent[parent[n]]
+            n = parent[n]
+        return n
+
+    for c in cuts:
+        for k in range(1, len(c)):
+            parent[root(c[k])] = root(c[0])
+    order: list[str] = []
+    for c in cuts:
+        if c and root(c[0]) not in order:
+            order.append(root(c[0]))
+    if len(order) < 2:
+        return clip_regions(body, ridx, rows)
+    groups: list[list] = [[] for _ in order]
+    for t, c in zip(ts, cuts, strict=True):
+        groups[order.index(root(c[0])) if c else 0].append(t)
+    out = []
+    for g in groups:
+        out.extend(clip_regions(g[0] if len(g) == 1 else op("+", *g), ridx, rows))
+    return out

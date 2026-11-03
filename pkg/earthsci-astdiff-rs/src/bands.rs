@@ -8,7 +8,7 @@ use earthsci_ast::substitute;
 use earthsci_ast::{Expr, ExpressionNode, RegionBound};
 
 use crate::branches::{canon_lits, simp, SimpMemo};
-use crate::clip::{clip_regions, RIdx};
+use crate::clip::{clip_regions, clip_summands, RIdx};
 use crate::hashcons::StructIndex;
 use crate::helpers::{
     add, free_vars, is_zero, map_expr_children, mul, op, skey, OccIndex, Site, SiteScan,
@@ -457,7 +457,7 @@ fn scalar_bands(
     // One occurrence index and one coefficient memo for every region.
     let occ = RefCell::new(OccIndex::new(v));
     let mut sm = SimpMemo::default();
-    for (rows2, body) in clip_regions(e, ridx, rows) {
+    for (rows2, body) in clip_summands(e, ridx, rows) {
         let nested = nested_sums(&body, v, &outer);
         let mut taken = None;
         for s in sorted_sites(&body, v) {
@@ -725,7 +725,14 @@ fn bands_faq(
     let occ = RefCell::new(OccIndex::new(v));
     let mut sm = SimpMemo::default();
     for (rows_p, crange, guard) in pieces {
-        for (rows2, body2) in clip_regions(body, &ridx, &rows_p) {
+        // Each summand group clips on its own axes (`clip_summands`) when
+        // the bands are linear in the body: a `+` window, or no contraction.
+        let pieces2 = if red == "+" || cnames.is_empty() {
+            clip_summands(body, &ridx, &rows_p)
+        } else {
+            clip_regions(body, &ridx, &rows_p)
+        };
+        for (rows2, body2) in pieces2 {
             let nested = nested_sums(&body2, v, &outer);
             let mut taken = None;
             for s in sorted_sites(&body2, v) {

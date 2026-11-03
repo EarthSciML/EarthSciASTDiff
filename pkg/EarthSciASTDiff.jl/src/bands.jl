@@ -339,7 +339,7 @@ function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale,
     outer = String[r for r in ridx if r isa String]
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
-    for (rows2, body) in clip_regions(e, ridx, rows)
+    for (rows2, body) in clip_summands(e, ridx, rows)
         nested = _nested_sums(body, v, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body, v)
@@ -488,7 +488,10 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
     body = e.expr_body
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
-    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip_regions(body, oidx, rows_p)
+    # Each summand group clips on its own axes (`clip_summands`) when the
+    # bands are linear in the body: a `+` window, or no contraction.
+    clip = red == "+" || isempty(cnames) ? clip_summands : clip_regions
+    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip(body, oidx, rows_p)
         nested = _nested_sums(body2, v, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body2, v)

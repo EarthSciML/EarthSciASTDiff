@@ -10,7 +10,7 @@ from earthsci_ast.expr_walk import map_children
 from earthsci_ast.expression import free_variables
 from earthsci_ast.substitute import substitute
 
-from .clip import clip_regions
+from .clip import clip_regions, clip_summands
 from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
 from .inline import all_names
 from .inline import subst_free as _subst_free
@@ -296,7 +296,7 @@ def _push_band(out, rows, ridx, cidx, coef, contracted, guard, v: str, ctx: Ctx)
 
 def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale, co: bool) -> None:
     outer = [r for r in ridx if isinstance(r, str)]
-    for rows2, body in clip_regions(e, ridx, rows):
+    for rows2, body in clip_summands(e, ridx, rows):
         nested = _nested_sums(body, v, outer)
         taken: list = [None]
         for s in sorted_sites(body, v):
@@ -409,7 +409,10 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
     vfilt = conj_list(gval)
     body = e.expr
     for rows_p, crange, guard in pieces:
-        for rows2, body2 in clip_regions(body, oidx, rows_p):
+        # Each summand group clips on its own axes (`clip_summands`) when the
+        # bands are linear in the body: a `+` window, or no contraction.
+        clip = clip_summands if red == "+" or not cnames else clip_regions
+        for rows2, body2 in clip(body, oidx, rows_p):
             nested = _nested_sums(body2, v, outer)
             taken: list = [None]
             for s in sorted_sites(body2, v):
