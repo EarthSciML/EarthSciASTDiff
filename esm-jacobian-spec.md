@@ -75,6 +75,10 @@ entries are, with these differences, and no others:
    gives one entry, with the `rows`, `row_idx`, `col_idx`, `contracted` and
    `where` the full mode gives that pair before merging. No derivative is
    taken, so no entry is dropped for a coefficient that simplifies to zero.
+   A right-hand side the full mode refuses is still refused, with the same
+   error: an op with no §3 rule on the path to a site, or a `max`/`min`
+   reduction over more than one contracted index (§3.5), where the full
+   mode's derivative there is not the literal 0.
 2. **Merging on structure.** Entries are coalesced as in the full mode
    (adjacent `rows` boxes along one dimension, iterated to a fixed point),
    but two entries need only agree on `row_idx`, `col_idx`, `contracted` and
@@ -105,9 +109,9 @@ the full mode can drop an entry the structure-only list keeps.
 
 **Through a recurrence.** On an axis with an active recurrence (§4.5) the
 entries are composed through the transfer, which reads the coefficients. A
-producer MAY then compute the structure-only entries as the full entries
-without `coef`, so the two point sets are equal. (The bindings that run
-recurrences do this.)
+producer MAY then compute the structure-only entries from the full entries:
+without `coef`, merged again on structure (item 2) and pinned (item 3), so
+the two point sets are equal. (The bindings that run recurrences do this.)
 
 On the `parameters` and `forcing` axes the closed-column rule of §4.3
 applies to the structure-only entries too. Since none is dropped, a document

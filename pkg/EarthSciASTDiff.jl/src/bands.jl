@@ -301,6 +301,17 @@ end
 # one-hot lifting), and `bands` drops the placeholder before returning.
 const _ONE = IntExpr(1)
 
+# A site's derivative and whether it may be nonzero. The structure-only mode
+# takes no derivative, but refuses what the full mode refuses: `drule_check`
+# throws the `DerivativeRuleError` `dscalar` would, and says whether the
+# derivative is a literal 0 (on which the full mode skips its window check).
+function _site_deriv(co::Bool, e::ASTExpr, s::Site, occ::_OccIndex)
+    sc = _SiteScan(occ, s)
+    co || return _ONE, drule_check(e, s, sc)
+    d = dscalar(e, s, sc)
+    return d, !iszero_lit(d)
+end
+
 function _bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co::Bool)
     out = Band[]
     if isempty(shape_u)
@@ -310,7 +321,7 @@ function _bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co::Boo
         for s in sorted_sites(rhs, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, rhs, cidx, co ? dscalar(rhs, s, _SiteScan(occ, s)) : _ONE,
+                nested, s, rhs, cidx, _site_deriv(co, rhs, s, occ)[1],
                 ctx, String[], taken
             )
             coef = co ? _simp(d) : _ONE
@@ -345,7 +356,7 @@ function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale,
         for s in sorted_sites(body, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, body, cidx, co ? dscalar(body, s, _SiteScan(occ, s)) : _ONE,
+                nested, s, body, cidx, _site_deriv(co, body, s, occ)[1],
                 ctx, outer, taken
             )
             coef = co ? _simp(mul(d, scale...), sm) : _ONE
@@ -498,13 +509,13 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
                 )
             )
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra, g = _lift_nested(
-                nested, s, body2, cidx,
-                co ? dscalar(body2, s, _SiteScan(occ, s)) : _ONE, ctx, outer, taken
-            )
+            d0, nz = _site_deriv(co, body2, s, occ)
+            cidx, d, extra, g = _lift_nested(nested, s, body2, cidx, d0, ctx, outer, taken)
             if co
                 d = _window_weight(red, e, cnames, d, BandError)
                 vfilt === nothing || iszero_lit(d) || (d = op("ifelse", vfilt, d, lit(0)))
+            elseif nz
+                _check_window(red, cnames, BandError)   # what `_window_weight` refuses
             end
             if isempty(crange)
                 coef = co ? _simp(mul(d, scale...), sm) : _ONE
@@ -525,15 +536,19 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
                 gg === nothing || for c in _conjuncts(gg)
                     push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
                 end
-                red_sum = OpExpr(
-                    "faq", ASTExpr[];
-                    output_idx = Any[], reduce = "+", expr_body = d,
-                    ranges = Dict{String, Any}(
-                        n => Any[lo, hi] for (n, lo, hi) in crange
-                    ),
-                    filter = _conj(gc)
-                )
-                coef = co ? _simp(mul(red_sum, scale...), sm) : _ONE
+                coef = if co
+                    red_sum = OpExpr(
+                        "faq", ASTExpr[];
+                        output_idx = Any[], reduce = "+", expr_body = d,
+                        ranges = Dict{String, Any}(
+                            n => Any[lo, hi] for (n, lo, hi) in crange
+                        ),
+                        filter = _conj(gc)
+                    )
+                    _simp(mul(red_sum, scale...), sm)
+                else
+                    _ONE
+                end
                 iszero_lit(coef) && continue
                 _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
             else

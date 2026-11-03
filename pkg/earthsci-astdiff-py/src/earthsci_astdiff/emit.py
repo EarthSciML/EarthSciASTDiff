@@ -47,7 +47,8 @@ def parse_band(d: dict) -> JacEntry:
         [(int(r[0]), int(r[1])) for r in d["rows"]],
         [x if isinstance(x, str) else int(x) for x in d["row_idx"]],
         [parse_expression(c) for c in d["col_idx"]],
-        parse_expression(d["coef"]),
+        # absent on a structure-only entry (spec §2.1)
+        parse_expression(d["coef"]) if "coef" in d else None,
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
         parse_expression(d["where"]) if "where" in d else None,
     )

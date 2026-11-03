@@ -172,7 +172,25 @@ def _jacobian_bands(
     ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co)
     if not ext.recurrences:
         return ext.rows
-    return materialize(sv, ctx, ext)
+    entries = materialize(sv, ctx, ext)
+    return entries if co else _structure_only(entries)
+
+
+def _structure_only(entries: list[JacEntry]) -> list[JacEntry]:
+    # Full entries (the pass through an active recurrence runs in full) as
+    # structure-only ones (spec §2.1): without `coef`, merged again on
+    # structure alone (item 2) — two entries the full mode kept apart for
+    # their coefficients alone coalesce — and pinned (item 3).
+    out: list[JacEntry] = []
+    i = 0
+    while i < len(entries):
+        j = i
+        while j < len(entries) and (entries[j].u, entries[j].v) == (entries[i].u, entries[i].v):
+            j += 1
+        bs = merge_bands([replace(en.band, coef=None) for en in entries[i:j]])
+        out.extend(JacEntry(entries[i].u, entries[i].v, normalize_band(b)) for b in bs)
+        i = j
+    return out
 
 
 def extended_bands(

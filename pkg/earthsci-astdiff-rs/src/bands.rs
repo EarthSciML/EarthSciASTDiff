@@ -15,9 +15,10 @@ use crate::helpers::{
 };
 use crate::inline::{all_names, binders};
 use crate::reductions::{
-    conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard, window_weight,
+    check_window, conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard,
+    window_weight,
 };
-use crate::rules::{dscalar_in, DerivativeRuleError};
+use crate::rules::{drule_check, dscalar_in, DerivativeRuleError};
 use crate::simplify_port::simplify_jl;
 
 /// One rectangular region of a Jacobian block: the rows it covers
@@ -371,8 +372,23 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
 /// bands then merge on structure alone. The placeholder never leaves the
 /// crate: [`crate::jacobian::jacobian_structure_view`] returns
 /// [`crate::jacobian::StructureEntry`]s, which have no coefficient.
-fn placeholder() -> Expr {
+pub(crate) fn placeholder() -> Expr {
     Expr::Integer(1)
+}
+
+/// A site's derivative and whether it may be nonzero. The structure-only
+/// mode takes no derivative, but refuses what the full mode refuses:
+/// [`drule_check`] fails with the [`DerivativeRuleError`] `dscalar_in` would,
+/// and says whether the derivative is a literal 0 (on which the full mode
+/// skips its window check).
+fn site_deriv(co: bool, e: &Expr, s: &Site, occ: &RefCell<OccIndex>) -> R<(Expr, bool)> {
+    let sc = SiteScan::new(occ, s);
+    if !co {
+        return Ok((placeholder(), drule_check(e, s, &sc)?));
+    }
+    let d = dscalar_in(e, s, &sc)?;
+    let nz = !is_zero(&d);
+    Ok((d, nz))
 }
 
 /// [`bands`], or with `co = false` the structure-only bands (spec §2.1),
@@ -389,11 +405,7 @@ pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool
                 &s,
                 rhs,
                 site_cidx(&s),
-                if co {
-                    dscalar_in(rhs, &s, &SiteScan::new(&occ, &s))?
-                } else {
-                    placeholder()
-                },
+                site_deriv(co, rhs, &s, &occ)?.0,
                 ctx,
                 &[],
                 &mut taken,
@@ -466,11 +478,7 @@ fn scalar_bands(
                 &s,
                 &body,
                 site_cidx(&s),
-                if co {
-                    dscalar_in(&body, &s, &SiteScan::new(&occ, &s))?
-                } else {
-                    placeholder()
-                },
+                site_deriv(co, &body, &s, &occ)?.0,
                 ctx,
                 &outer,
                 &mut taken,
@@ -734,16 +742,13 @@ fn bands_faq(
                         "whole-array reference to `{v}` inside a faq body"
                     )));
                 }
+                let (d0, nz) = site_deriv(co, &body2, &s, &occ)?;
                 let (cidx, d, extra, g) = lift_nested(
                     &nested,
                     &s,
                     &body2,
                     site_cidx(&s),
-                    if co {
-                        dscalar_in(&body2, &s, &SiteScan::new(&occ, &s))?
-                    } else {
-                        placeholder()
-                    },
+                    d0,
                     ctx,
                     &outer,
                     &mut taken,
@@ -756,6 +761,9 @@ fn bands_faq(
                             d = op("ifelse", vec![vf.clone(), d, Expr::Integer(0)]);
                         }
                     }
+                } else if nz {
+                    // what `window_weight` refuses
+                    check_window(red, &cnames).map_err(BandError)?;
                 }
                 if crange.is_empty() {
                     let coef = if co {
@@ -802,20 +810,20 @@ fn bands_faq(
                             }
                         }
                     }
-                    let mut rngs = HashMap::new();
-                    for (nm, lo, hi) in &crange {
-                        rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
-                    }
-                    let red_sum = Expr::operator(ExpressionNode {
-                        op: "faq".into(),
-                        output_idx: Some(vec![]),
-                        reduce: Some("+".into()),
-                        expr: Some(Box::new(d)),
-                        ranges: Some(rngs),
-                        filter: conj_list(gc).map(Box::new),
-                        ..Default::default()
-                    });
                     let coef = if co {
+                        let mut rngs = HashMap::new();
+                        for (nm, lo, hi) in &crange {
+                            rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
+                        }
+                        let red_sum = Expr::operator(ExpressionNode {
+                            op: "faq".into(),
+                            output_idx: Some(vec![]),
+                            reduce: Some("+".into()),
+                            expr: Some(Box::new(d)),
+                            ranges: Some(rngs),
+                            filter: conj_list(gc).map(Box::new),
+                            ..Default::default()
+                        });
                         let mut fac = vec![red_sum];
                         fac.extend(scale.iter().cloned());
                         sm.simp(&mul(fac))

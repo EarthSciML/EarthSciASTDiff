@@ -184,7 +184,9 @@ def _rank1_term(b, dim: int):
     # A band whose every point reads one other cell of its row's line — the
     # line position being its one contracted name, under no `where` — with
     # a coefficient that splits as `u(row) · v(κ)`: a rank-one term.
-    if b.guard is not None or len(b.contracted) != 1:
+    # A structure-only band (coef None, spec §2.1) has no coefficient to
+    # split, so it is no rank-one term.
+    if b.coef is None or b.guard is not None or len(b.contracted) != 1:
         return None
     kap = b.contracted[0][0]
     if not (dim < len(b.cidx) and isinstance(b.cidx[dim], str) and b.cidx[dim] == kap):

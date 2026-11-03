@@ -64,12 +64,9 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
 end
 # structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
 # entries without coefficients, for every model fixture above and the
-# flattened coupled document
-for name in (
-        "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
-        "contracting_observed", "tgrad_photolysis", "forcing_bracket",
-        "filtered_scan", "semiring_reduce", "coupled_chem_advection",
-    )
+# flattened coupled document (the list the tests check, shared with them)
+include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
+for name in STRUCTURE_FIXTURES
     src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
         sysview(src, first(keys(src.models)))

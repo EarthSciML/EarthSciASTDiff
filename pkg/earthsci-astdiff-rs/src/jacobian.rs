@@ -6,7 +6,7 @@ use std::rc::Rc;
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 
-use crate::bands::{bands_in, merge_bands, normalize_band, Band, BandError, Ctx};
+use crate::bands::{bands_in, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
 use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
@@ -288,12 +288,7 @@ pub fn jacobian_structure_view(
 ) -> Result<Vec<StructureEntry>, BandError> {
     let ctx = ctx_of(sv)?;
     let obs = observed_defs(sv)?;
-    let ext = extended_pass_in(sv, &ctx, &obs, wrt, forcing, &[], false)?;
-    let rows = if ext.recurrences.is_empty() {
-        ext.rows
-    } else {
-        materialize(&ctx, &ext)?
-    };
+    let rows = bands_seeded_in(sv, &ctx, &obs, wrt, forcing, &[], false)?;
     Ok(rows.into_iter().map(StructureEntry::from).collect())
 }
 
@@ -332,11 +327,52 @@ pub(crate) fn jacobian_bands_seeded(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
-    let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
+    bands_seeded_in(sv, ctx, obs, wrt, forcing, seed, true)
+}
+
+/// [`jacobian_bands_seeded`], or with `co = false` the structure-only
+/// entries (spec §2.1), each with a placeholder coefficient. Through an
+/// active recurrence the pass runs in full ([`extended_pass_in`]), so its
+/// entries are then merged again on structure alone (§2.1 item 2: two
+/// entries the full mode kept apart for their coefficients alone coalesce)
+/// and pinned (item 3).
+fn bands_seeded_in(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+    co: bool,
+) -> Result<Vec<JacEntry>, BandError> {
+    let ext = extended_pass_in(sv, ctx, obs, wrt, forcing, seed, co)?;
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
-    materialize(ctx, &ext)
+    let rows = materialize(ctx, &ext)?;
+    if co {
+        return Ok(rows);
+    }
+    let mut out = Vec::with_capacity(rows.len());
+    let mut it = rows.into_iter().peekable();
+    while let Some(first) = it.next() {
+        let (u, v) = (first.u, first.v);
+        let mut group = vec![first.band];
+        while let Some(en) = it.next_if(|en| en.u == u && en.v == v) {
+            group.push(en.band);
+        }
+        for b in group.iter_mut() {
+            b.coef = placeholder();
+        }
+        for b in merge_bands(group) {
+            out.push(JacEntry {
+                u: u.clone(),
+                v: v.clone(),
+                band: normalize_band(&b),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state

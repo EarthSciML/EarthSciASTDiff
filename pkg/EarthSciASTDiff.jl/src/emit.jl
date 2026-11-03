@@ -62,7 +62,8 @@ function parse_band(d::AbstractDict)::JacEntry
                 for x in d["row_idx"]
         ],
         ASTExpr[expression_from_json(c) for c in d["col_idx"]],
-        expression_from_json(d["coef"]),
+        # absent on a structure-only entry (esm-jacobian-spec.md §2.1)
+        haskey(d, "coef") ? expression_from_json(d["coef"]) : nothing,
         haskey(d, "contracted") ?
             Tuple{String, Int, Int}[
                 (String(c[1]), Int(c[2]), Int(c[3]))

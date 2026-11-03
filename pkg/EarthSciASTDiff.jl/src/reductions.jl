@@ -58,6 +58,21 @@ function _fresh!(taken::Set{String}, base::String, suffix::String)::String
     return f
 end
 
+# The refusal of `_window_weight` alone, for the structure-only mode
+# (esm-jacobian-spec.md §2.1), which weighs nothing but must refuse what the
+# full mode refuses: a max/min over more than one contracted name has no
+# single ascending order. A no-op where `_window_weight` returns early
+# (`d` a literal 0 is the caller's to decide).
+function _check_window(red::String, cn::Vector{String}, E)
+    (red == "+" || red == "*" || length(cn) <= 1) && return
+    throw(
+        E(
+            "a `$red` reduction over $(length(cn)) contracted indices " *
+                "($(join(cn, ", "))) has no first-extremum order"
+        )
+    )
+end
+
 """
     _window_weight(red, e, cn, d, E) -> ASTExpr
 
@@ -74,12 +89,7 @@ ascending order, so it is refused.
 function _window_weight(red::String, e::OpExpr, cn::Vector{String}, d::ASTExpr, E)
     (red == "+" || isempty(cn) || iszero_lit(d)) && return d
     rng = something(e.ranges, Dict{String, Any}())
-    red == "*" || length(cn) == 1 || throw(
-        E(
-            "a `$red` reduction over $(length(cn)) contracted indices " *
-                "($(join(cn, ", "))) has no first-extremum order"
-        )
-    )
+    _check_window(red, cn, E)
     taken = _all_names!(Set{String}(), e)
     ren = Dict{String, ASTExpr}(n => VarExpr(_fresh!(taken, n * "_p", "_p")) for n in cn)
     b′ = _subst_free(e.expr_body, ren)

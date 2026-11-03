@@ -14,9 +14,10 @@ from .clip import clip_regions
 from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
 from .inline import all_names
 from .inline import subst_free as _subst_free
+from .reductions import check_window as _check_window
 from .reductions import conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard
 from .reductions import window_weight as _window_weight
-from .scalar_rules import dscalar
+from .scalar_rules import drule_check, dscalar
 from .simplify_branches import canon_lits, simp
 from .simplify_port import simplify_jl as simplify
 
@@ -263,6 +264,18 @@ def bands(
 _ONE = 1
 
 
+def _site_deriv(co: bool, e: Expr, s) -> tuple:
+    """A site's derivative and whether it may be nonzero. The structure-only
+    mode takes no derivative, but refuses what the full mode refuses:
+    ``drule_check`` raises the ``DerivativeRuleError`` ``dscalar`` would, and
+    says whether the derivative is a literal 0 (on which the full mode skips
+    its window check)."""
+    if not co:
+        return _ONE, drule_check(e, s)
+    d = dscalar(e, s)
+    return d, not is_zero(d)
+
+
 def bands_in(rhs: Expr, v: str, ctx: Ctx, shape_u, co: bool) -> list[Band]:
     """:func:`bands` with the placeholder coefficient kept when ``co`` is false."""
     shape_u = shape_u or []
@@ -272,7 +285,7 @@ def bands_in(rhs: Expr, v: str, ctx: Ctx, shape_u, co: bool) -> list[Band]:
         taken: list = [None]
         for s in sorted_sites(rhs, v):
             cidx, d, extra, g = _lift_nested(
-                nested, s, rhs, _site_cidx(s), dscalar(rhs, s) if co else _ONE, ctx, [], taken
+                nested, s, rhs, _site_cidx(s), _site_deriv(co, rhs, s)[0], ctx, [], taken
             )
             coef = simp(d) if co else d
             if is_zero(coef):
@@ -301,7 +314,7 @@ def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale, co: bool) -
         taken: list = [None]
         for s in sorted_sites(body, v):
             cidx, d, extra, g = _lift_nested(
-                nested, s, body, _site_cidx(s), dscalar(body, s) if co else _ONE, ctx, outer, taken
+                nested, s, body, _site_cidx(s), _site_deriv(co, body, s)[0], ctx, outer, taken
             )
             coef = simp(mul(d, *scale)) if co else d
             if is_zero(coef):
@@ -415,7 +428,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
             for s in sorted_sites(body2, v):
                 if isinstance(s.expr, str) and is_array(ctx, v):
                     raise BandError(f"whole-array reference to `{v}` inside a faq body")
-                d0 = dscalar(body2, s) if co else _ONE
+                d0, nz = _site_deriv(co, body2, s)
                 cidx, d, extra, g = _lift_nested(
                     nested, s, body2, _site_cidx(s), d0, ctx, outer, taken
                 )
@@ -423,6 +436,8 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
                     d = _window_weight(red, e, cnames, d, BandError)
                     if vfilt is not None and not is_zero(d):
                         d = op("ifelse", vfilt, d, 0)
+                elif nz:
+                    _check_window(red, cnames, BandError)  # what `window_weight` refuses
                 if not crange:
                     coef = simp(mul(d, *scale)) if co else d
                     if is_zero(coef):
@@ -443,16 +458,18 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
                         for c in conjuncts(gg):
                             fv = free_variables(c)
                             (gc if any(n in cnames for n in fv) else gr).append(c)
-                    red_sum = ExprNode(
-                        op="faq",
-                        args=[],
-                        output_idx=[],
-                        reduce="+",
-                        expr=d,
-                        ranges={n: [lo, hi] for n, lo, hi in crange},
-                        filter=conj_list(gc),
-                    )
-                    coef = simp(mul(red_sum, *scale)) if co else _ONE
+                    coef = _ONE
+                    if co:
+                        red_sum = ExprNode(
+                            op="faq",
+                            args=[],
+                            output_idx=[],
+                            reduce="+",
+                            expr=d,
+                            ranges={n: [lo, hi] for n, lo, hi in crange},
+                            filter=conj_list(gc),
+                        )
+                        coef = simp(mul(red_sum, *scale))
                     if is_zero(coef):
                         continue
                     _push_band(out, rows2, oidx, cidx, coef, extra, conj_list(gr), v, ctx)
