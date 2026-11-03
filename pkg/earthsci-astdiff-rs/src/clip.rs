@@ -7,7 +7,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use earthsci_ast::Expr;
 
 use crate::bands::Band;
-use crate::helpers::{map_expr_children, op};
+use crate::hashcons::map_children_shared;
+use crate::helpers::op;
 
 const CMP_OPS: &[&str] = &["<", "<=", ">", ">="];
 
@@ -87,10 +88,7 @@ fn sole_name<'a>(e: &Expr, names: &'a [String]) -> Option<&'a str> {
             }
         }
         if let Expr::Operator(n) = x {
-            n.map_children(&mut |c: &Expr| {
-                walk(c, names, found, ok);
-                c.clone()
-            });
+            n.for_each_child(&mut |c: &Expr| walk(c, names, found, ok));
         }
     }
     let mut found = None;
@@ -142,10 +140,7 @@ fn breakpoints(bp: &mut BTreeMap<String, BTreeSet<i64>>, e: &Expr, names: &[Stri
             }
         }
     }
-    n.map_children(&mut |c: &Expr| {
-        breakpoints(bp, c, names);
-        c.clone()
-    });
+    n.for_each_child(&mut |c: &Expr| breakpoints(bp, c, names));
 }
 
 fn uniform(cond: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Option<bool> {
@@ -216,7 +211,11 @@ pub(crate) fn decide(e: &Expr, env: &BTreeMap<String, (i64, i64)>) -> Expr {
             return Expr::Integer(if u { 1 } else { 0 });
         }
     }
-    map_expr_children(e, &mut |x| decide(x, env))
+    // Identity-preserving: a subtree with nothing to decide comes back as
+    // the same node, so the regions of one body share it and the band
+    // calculus's identity memos (`OccIndex`, the derivative memo) serve
+    // every region from one walk.
+    map_children_shared(e, &mut |x| decide(x, env))
 }
 
 /// Row-index entry: a free name or a pinned integer.

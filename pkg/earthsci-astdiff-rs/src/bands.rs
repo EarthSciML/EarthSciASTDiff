@@ -1,19 +1,23 @@
 //! The array-level band calculus (the reference's bands.jl).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::substitute;
 use earthsci_ast::{Expr, ExpressionNode, RegionBound};
 
-use crate::branches::{canon_lits, simp};
+use crate::branches::{canon_lits, simp, SimpMemo};
 use crate::clip::{clip_regions, RIdx};
-use crate::helpers::{add, free_vars, is_zero, map_expr_children, mul, op, skey, Site};
+use crate::hashcons::StructIndex;
+use crate::helpers::{
+    add, free_vars, is_zero, map_expr_children, mul, op, site_var, skey, OccIndex, Site, SiteScan,
+};
 use crate::inline::{all_names, binders};
 use crate::reductions::{
     conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard, window_weight,
 };
-use crate::rules::{dscalar, DerivativeRuleError};
+use crate::rules::{dscalar_in, DerivativeRuleError};
 use crate::simplify_port::simplify_jl;
 
 /// One rectangular region of a Jacobian block: the rows it covers
@@ -93,12 +97,7 @@ fn sites_of(e: &Expr, v: &str, acc: &mut BTreeMap<String, Site>) {
             let s = Site::of(e);
             acc.insert(s.key.clone(), s);
         }
-        Expr::Operator(n) => {
-            n.map_children(&mut |c: &Expr| {
-                sites_of(c, v, acc);
-                c.clone()
-            });
-        }
+        Expr::Operator(n) => n.for_each_child(&mut |c: &Expr| sites_of(c, v, acc)),
         _ => {}
     }
 }
@@ -173,14 +172,7 @@ fn nested_walk(
     fstack: &mut FilterStack,
     acc: &mut Nested,
 ) {
-    let is_site = match e {
-        Expr::Variable(nm) => nm == v,
-        Expr::Operator(n) => {
-            n.op == "index" && matches!(n.args.first(), Some(Expr::Variable(t)) if t == v)
-        }
-        _ => false,
-    };
-    if is_site {
+    if site_var(e) == Some(v) {
         if stack.is_empty() {
             return;
         }
@@ -366,18 +358,20 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
     if shape_u.is_empty() {
         let nested = nested_sums(rhs, v, &[]);
         let mut taken = None;
+        let occ = RefCell::new(OccIndex::new(v));
+        let mut sm = SimpMemo::default();
         for s in sorted_sites(rhs, v) {
             let (cidx, d, extra, g) = lift_nested(
                 &nested,
                 &s,
                 rhs,
                 site_cidx(&s),
-                dscalar(rhs, &s)?,
+                dscalar_in(rhs, &s, &SiteScan::new(&occ, &s))?,
                 ctx,
                 &[],
                 &mut taken,
             )?;
-            let coef = simp(&d);
+            let coef = sm.simp(&d);
             if is_zero(&coef) {
                 continue;
             }
@@ -431,6 +425,9 @@ fn scalar_bands(
             _ => None,
         })
         .collect();
+    // One occurrence index and one coefficient memo for every region.
+    let occ = RefCell::new(OccIndex::new(v));
+    let mut sm = SimpMemo::default();
     for (rows2, body) in clip_regions(e, ridx, rows) {
         let nested = nested_sums(&body, v, &outer);
         let mut taken = None;
@@ -440,14 +437,14 @@ fn scalar_bands(
                 &s,
                 &body,
                 site_cidx(&s),
-                dscalar(&body, &s)?,
+                dscalar_in(&body, &s, &SiteScan::new(&occ, &s))?,
                 ctx,
                 &outer,
                 &mut taken,
             )?;
             let mut fac = vec![d];
             fac.extend(scale.iter().cloned());
-            let coef = simp(&mul(fac));
+            let coef = sm.simp(&mul(fac));
             if is_zero(&coef) {
                 continue;
             }
@@ -681,6 +678,9 @@ fn bands_faq(
         }
     };
     let vfilt = conj_list(gval);
+    // One occurrence index and one coefficient memo for every region.
+    let occ = RefCell::new(OccIndex::new(v));
+    let mut sm = SimpMemo::default();
     for (rows_p, crange, guard) in pieces {
         for (rows2, body2) in clip_regions(body, &ridx, &rows_p) {
             let nested = nested_sums(&body2, v, &outer);
@@ -696,7 +696,7 @@ fn bands_faq(
                     &s,
                     &body2,
                     site_cidx(&s),
-                    dscalar(&body2, &s)?,
+                    dscalar_in(&body2, &s, &SiteScan::new(&occ, &s))?,
                     ctx,
                     &outer,
                     &mut taken,
@@ -710,7 +710,7 @@ fn bands_faq(
                 if crange.is_empty() {
                     let mut fac = vec![d];
                     fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = sm.simp(&mul(fac));
                     if is_zero(&coef) {
                         continue;
                     }
@@ -763,7 +763,7 @@ fn bands_faq(
                     });
                     let mut fac = vec![red_sum];
                     fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = sm.simp(&mul(fac));
                     if is_zero(&coef) {
                         continue;
                     }
@@ -785,7 +785,7 @@ fn bands_faq(
                     // landing on one column accumulate at assembly.
                     let mut fac = vec![d];
                     fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = sm.simp(&mul(fac));
                     if is_zero(&coef) {
                         continue;
                     }
@@ -1026,55 +1026,52 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
     if bs.len() < 2 {
         return bs;
     }
-    let key = |b: &Band| {
-        (
-            b.ridx.clone(),
-            b.cidx.iter().map(skey).collect::<Vec<_>>(),
-            skey(&b.coef),
-            b.contracted.clone(),
-            b.guard.as_ref().map(skey),
-        )
-    };
-    let ks: Vec<_> = bs.iter().map(key).collect();
+    // Two bands can merge only when this key agrees. Structural ids agree
+    // exactly when the `skey`s do, without serializing a coefficient of a
+    // lowered stencil operator (~10⁴ nodes) once per band; the coefficient
+    // memo hands one object to every band whose coefficient repeats, so most
+    // ids are an identity lookup.
+    let mut ix = StructIndex::new();
+    let ks: Vec<_> = bs
+        .iter()
+        .map(|b| {
+            (
+                b.ridx.clone(),
+                b.cidx.iter().map(|c| ix.sid(c)).collect::<Vec<_>>(),
+                ix.sid(&b.coef),
+                b.contracted.clone(),
+                b.guard.as_ref().map(|g| ix.sid(g)),
+            )
+        })
+        .collect();
+    // The classes of the key, each in ascending order. A merge never
+    // crosses a class and leaves every other class as it was, so running
+    // the fixed point per class merges exactly what one fixed point over
+    // every pair does, in the same order.
+    let mut classes: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    for (i, k) in ks.iter().enumerate() {
+        classes.entry(k).or_default().push(i);
+    }
     let mut out = bs;
     let mut alive = vec![true; out.len()];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for a in 0..out.len() {
-            if !alive[a] {
-                continue;
-            }
-            for b in (a + 1)..out.len() {
-                if !alive[b] || ks[a] != ks[b] {
-                    continue;
-                }
-                let (ra, rb) = (out[a].rows.clone(), out[b].rows.clone());
-                if ra.len() != rb.len() {
-                    continue;
-                }
-                let mut d: isize = -1;
-                let mut ok = true;
-                for k in 0..ra.len() {
-                    if ra[k] == rb[k] {
+    for idxs in classes.values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (p, &a) in idxs.iter().enumerate() {
+                for &b in &idxs[p + 1..] {
+                    if !alive[a] || !alive[b] {
                         continue;
                     }
-                    if d < 0 && (ra[k].1 + 1 == rb[k].0 || rb[k].1 + 1 == ra[k].0) {
-                        d = k as isize;
-                    } else {
-                        ok = false;
-                        break;
+                    if let Some((k, r)) = adjacent(&out[a].rows, &out[b].rows) {
+                        out[a].rows[k] = r;
+                        alive[b] = false;
+                        changed = true;
                     }
                 }
-                if !ok || d < 0 {
-                    continue;
-                }
-                let du = d as usize;
-                let lo = ra[du].0.min(rb[du].0);
-                let hi = ra[du].1.max(rb[du].1);
-                out[a].rows[du] = (lo, hi);
-                alive[b] = false;
-                changed = true;
             }
         }
     }
@@ -1083,4 +1080,25 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         .filter(|(_, a)| *a)
         .map(|(b, _)| b)
         .collect()
+}
+
+/// Where two row boxes abut: the one dimension `k` in which they are
+/// adjacent ranges, with every other dimension equal, and the union of the
+/// two ranges there. `None` when the boxes differ in rank, in no dimension,
+/// or in more than one.
+fn adjacent(ra: &[(i64, i64)], rb: &[(i64, i64)]) -> Option<(usize, (i64, i64))> {
+    if ra.len() != rb.len() {
+        return None;
+    }
+    let mut d = None;
+    for (k, (x, y)) in ra.iter().zip(rb).enumerate() {
+        if x == y {
+            continue;
+        }
+        if d.is_some() || !(x.1 + 1 == y.0 || y.1 + 1 == x.0) {
+            return None;
+        }
+        d = Some((k, (x.0.min(y.0), x.1.max(y.1))));
+    }
+    d
 }

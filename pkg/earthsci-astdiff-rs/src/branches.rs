@@ -75,3 +75,26 @@ pub fn canon_lits(e: &Expr) -> Expr {
 pub fn simp(e: &Expr) -> Expr {
     canon_lits(&simplify_jl(&simplify_branches(&simplify_jl(e))))
 }
+
+/// [`simp`] memoized on structure, for the coefficients of one band
+/// computation (the reference's `_SimpMemo`). A clipped body yields one
+/// coefficient per region and site, and the regions of a stencil operator
+/// mostly agree (ReSEACT's advection term: ~6000 coefficients, ~500 bands
+/// once merged), so most are a coefficient already simplified. `simp` is a
+/// function of structure alone, so a structural id decides the repeat, and
+/// the repeat gets the same coefficient object back.
+#[derive(Default)]
+pub(crate) struct SimpMemo {
+    ix: crate::hashcons::StructIndex,
+    out: std::collections::HashMap<usize, Expr>,
+}
+
+impl SimpMemo {
+    pub(crate) fn simp(&mut self, e: &Expr) -> Expr {
+        if !matches!(e, Expr::Operator(_)) {
+            return simp(e);
+        }
+        let id = self.ix.sid(e);
+        self.out.entry(id).or_insert_with(|| simp(e)).clone()
+    }
+}
