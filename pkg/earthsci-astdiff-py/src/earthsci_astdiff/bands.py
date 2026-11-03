@@ -75,6 +75,10 @@ def is_array(ctx: Ctx, name) -> bool:
 
 
 def sites_of(e: Expr, v: str, acc: dict[str, Site] | None = None) -> dict[str, Site]:
+    """All distinct sites of ``v`` in ``e`` (bands.jl ``sites_of``). A faq
+    node's ``args`` is its operand list (esm-spec §4.3.1), a serializer's copy
+    of the arrays its ``expr`` reads: it reads nothing itself, so it holds no
+    site (spec §3.5)."""
     if acc is None:
         acc = {}
     if isinstance(e, str) and e == v:
@@ -83,6 +87,8 @@ def sites_of(e: Expr, v: str, acc: dict[str, Site] | None = None) -> dict[str, S
     elif isinstance(e, ExprNode) and e.op == "index" and e.args[0] == v:
         s = Site.of(e)
         acc[s.key] = s
+    elif isinstance(e, ExprNode) and e.op == "faq" and e.args:
+        sites_of(replace(e, args=[]), v, acc)
     elif isinstance(e, ExprNode):
         map_children(e, lambda x: (sites_of(x, v, acc), x)[1])
     return acc

@@ -21,6 +21,7 @@ NAMES = (
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    "faq_operand_list",
     "recurrence_sweep",
     "pbl_rank1",
 )

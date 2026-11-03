@@ -81,6 +81,10 @@ pub fn is_array(ctx: &Ctx, name: &str) -> bool {
     ctx.shapes.contains_key(name)
 }
 
+/// All distinct sites of `v` in `e` (bands.jl `sites_of`). A faq node's
+/// `args` is its operand list (esm-spec §4.3.1), a serializer's copy of the
+/// arrays its `expr` reads: it reads nothing itself, so it holds no site
+/// (spec §3.5).
 fn sites_of(e: &Expr, v: &str, acc: &mut BTreeMap<String, Site>) {
     match e {
         Expr::Variable(n) if n == v => {
@@ -92,6 +96,13 @@ fn sites_of(e: &Expr, v: &str, acc: &mut BTreeMap<String, Site>) {
         {
             let s = Site::of(e);
             acc.insert(s.key.clone(), s);
+        }
+        Expr::Operator(n) if n.op == "faq" && !n.args.is_empty() => {
+            let body = ExpressionNode {
+                args: vec![],
+                ..(**n).clone()
+            };
+            sites_of(&Expr::operator(body), v, acc);
         }
         Expr::Operator(n) => {
             n.map_children(&mut |c: &Expr| {

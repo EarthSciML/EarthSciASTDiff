@@ -19,7 +19,7 @@ include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "docvals.jl"))
 const STATE_NAMES = (
     "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
     "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
-    "filtered_scan", "semiring_reduce",
+    "filtered_scan", "semiring_reduce", "faq_operand_list",
 )
 # The native compiler declines a derived model whose coefficients carry a sum,
 # a filter or a non-`+` reduction (`compiler_refused_rule`); the interpreter
