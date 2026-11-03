@@ -1,13 +1,15 @@
 //! Scalar derivative rules — one rule per evaluable-core operator, matching
 //! esm-jacobian-spec.md §3 row-for-row (goldens pin the table).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
-use crate::helpers::{add, free_vars, is_site, is_zero, mul, neg, occurs, op, Site};
+use crate::hashcons::NodeRef;
+use crate::helpers::{add, free_vars, is_zero, mul, neg, op, OccIndex, Site, SiteScan};
 
 /// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
@@ -43,17 +45,49 @@ const ZERO_DERIV_OPS: &[&str] = &[
 /// The derivative of the scalar expression `e` with respect to the site `s`
 /// (a variable or an indexed read), by the §3 rule table.
 pub fn dscalar(e: &Expr, s: &Site) -> R {
-    if is_site(e, s) {
+    let v = match &s.expr {
+        Expr::Variable(n) => Some(n.clone()),
+        Expr::Operator(n) => match n.args.first() {
+            Some(Expr::Variable(t)) if n.op == "index" => Some(t.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    match v {
+        Some(v) => {
+            let ix = RefCell::new(OccIndex::new(&v));
+            dscalar_in(e, s, &SiteScan::new(&ix, s))
+        }
+        None => dscalar_in(e, s, &SiteScan::plain()),
+    }
+}
+
+/// [`dscalar`] for one scan of a band computation: occurrence answered by
+/// `sc` (one [`OccIndex`] shared by every site and region of the
+/// computation), and a node reached through several parents, or shared by
+/// several regions, differentiated once.
+pub(crate) fn dscalar_in(e: &Expr, s: &Site, sc: &SiteScan) -> R {
+    if sc.is_site(e, s) {
         return Ok(Expr::Integer(1));
     }
     let Expr::Operator(n) = e else {
         return Ok(Expr::Integer(0));
     };
-    if !occurs(e, s) {
+    if !sc.occurs(e, s) {
         return Ok(Expr::Integer(0));
     }
+    let k = NodeRef(n.clone());
+    if let Some(d) = sc.memo_get(&k) {
+        return Ok(d);
+    }
+    let d = dscalar_op(e, n, s, sc)?;
+    sc.memo_put(k, d.clone());
+    Ok(d)
+}
+
+fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let a = &n.args;
-    let d = |x: &Expr| dscalar(x, s);
+    let d = |x: &Expr| dscalar_in(x, s, sc);
     let lit = Expr::Integer;
     match n.op.as_str() {
         "+" => Ok(add(a.iter().map(d).collect::<Result<Vec<_>, _>>()?)),
@@ -235,9 +269,9 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
             Ok(dacc)
         }
-        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s),
+        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s, sc),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
-        "fn" => dfn(n, s),
+        "fn" => dfn(n, s, sc),
         "index" => Err(DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent \
              index) has no scalar rule"
@@ -267,13 +301,13 @@ pub(crate) fn reduction(n: &ExpressionNode) -> String {
 /// turn into contracted column dimensions (bands.rs `lift_nested`), and once
 /// every index is free the filter becomes `ifelse(φ, ·, 0)`. A join or a
 /// value-invention node has no rule (spec §3.5).
-fn dsum(n: &ExpressionNode, s: &Site) -> R {
+fn dsum(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let red = crate::reductions::reduce_op(n).map_err(DerivativeRuleError)?;
     let body = n
         .expr
         .as_deref()
         .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;
-    let db = dscalar(body, s)?;
+    let db = dscalar_in(body, s, sc)?;
     if is_zero(&db) {
         return Ok(Expr::Integer(0));
     }
@@ -405,7 +439,7 @@ fn bilinear_partial(t: &[Vec<f64>], xv: &[f64], yv: &[f64], xe: &Expr, ye: &Expr
     )
 }
 
-fn dfn(n: &ExpressionNode, s: &Site) -> R {
+fn dfn(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let a = &n.args;
     let name = n
         .name
@@ -422,7 +456,7 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
                 a.len()
             )));
         }
-        let dx = dscalar(&a[0], s)?;
+        let dx = dscalar_in(&a[0], s, sc)?;
         if is_zero(&dx) {
             return Ok(Expr::Integer(0));
         }
@@ -430,7 +464,7 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     }
     if name == "interp.linear" {
         let (table, axis, x) = (&a[0], &a[1], &a[2]);
-        let dx = dscalar(x, s)?;
+        let dx = dscalar_in(x, s, sc)?;
         if is_zero(&dx) {
             return Ok(Expr::Integer(0));
         }
@@ -472,8 +506,8 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     }
     if name == "interp.bilinear" {
         let (table, ax, ay, x, y) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
-        let dx = dscalar(x, s)?;
-        let dy = dscalar(y, s)?;
+        let dx = dscalar_in(x, s, sc)?;
+        let dy = dscalar_in(y, s, sc)?;
         if is_zero(&dx) && is_zero(&dy) {
             return Ok(Expr::Integer(0));
         }

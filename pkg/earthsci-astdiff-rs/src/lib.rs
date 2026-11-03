@@ -8,6 +8,7 @@ pub mod branches;
 pub mod clip;
 pub mod emit;
 pub mod eval_cse;
+pub(crate) mod hashcons;
 pub mod helpers;
 pub mod inline;
 pub mod jacobian;
