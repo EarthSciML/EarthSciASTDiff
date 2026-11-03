@@ -103,6 +103,12 @@ number of entries, nor entries in one-to-one correspondence: merging on
 structure alone can coalesce entries that the full mode keeps apart, and
 the full mode can drop an entry the structure-only list keeps.
 
+**Through a recurrence.** On an axis with an active recurrence (§4.5) the
+entries are composed through the transfer, which reads the coefficients. A
+producer MAY then compute the structure-only entries as the full entries
+without `coef`, so the two point sets are equal. (The bindings that run
+recurrences do this.)
+
 On the `parameters` and `forcing` axes the closed-column rule of §4.3
 applies to the structure-only entries too. Since none is dropped, a document
 whose only unclosed column has a coefficient that simplifies to zero is
