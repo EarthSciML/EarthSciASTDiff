@@ -122,3 +122,38 @@ function shash(hx::StructHash, e::ASTExpr)::UInt
     hx.memo[e] = h[]
     return h[]
 end
+
+# ── sharing: one object per distinct subtree ─────────────────────────────────
+#
+# The band calculus builds every coefficient on its own: a derivative, then
+# `simplify`, then `normalize_band`'s substitution. Equal subtrees of
+# different coefficients — the stencil weights, the upwind switches and the
+# face fluxes that every band of one region of a lowered transport operator
+# carries — come out as distinct objects. On ReSEACT's advection term the
+# 146 bands' coefficients are 2.1×10⁶ tree nodes but only 6×10³ distinct
+# subtrees, and they held 209 MiB. Interning maps each subtree to ONE
+# representative per structural id ([`sid`](@ref)), so every coefficient
+# references the shared copies instead of holding its own. The trees are
+# unchanged structurally (same `skey`, same serialization); only identity
+# changes, which nothing downstream may observe (no pass mutates a node).
+
+struct _Interner
+    ix::StructIndex
+    canon::Dict{Int, OpExpr}          # structural id → representative
+    memo::IdDict{OpExpr, OpExpr}      # node identity → representative
+end
+_Interner() = _Interner(StructIndex(), Dict{Int, OpExpr}(), IdDict{OpExpr, OpExpr}())
+
+function _intern(t::_Interner, e::ASTExpr)::ASTExpr
+    e isa OpExpr || return e
+    r = get(t.memo, e, nothing)
+    r === nothing || return r
+    id = sid(t.ix, e)
+    c = get(t.canon, id, nothing)
+    if c === nothing
+        c = map_children(x -> _intern(t, x), e)
+        t.canon[id] = c
+    end
+    t.memo[e] = c
+    return c
+end

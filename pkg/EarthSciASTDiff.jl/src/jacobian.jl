@@ -219,7 +219,19 @@ function _jacobian_bands(
         end
     end
     wrt in (:parameters, :forcing) && foreach(_check_closed_columns, entries)
-    return entries
+    # One object per distinct subtree across every coefficient (hashcons.jl
+    # `_Interner`): the entries reference shared copies, not their own.
+    coefficients || return entries
+    t = _Interner()
+    return JacEntry[
+        JacEntry(
+            en.u, en.v,
+            _rebuild(
+                en.band; coef = _intern(t, en.band.coef),
+                guard = en.band.guard === nothing ? nothing : _intern(t, en.band.guard)
+            )
+        ) for en in entries
+    ]
 end
 
 # A column of the parameters / forcing axes is a cell of a buffer, so it must

@@ -8,6 +8,7 @@ use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 
 use crate::bands::{bands_in, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::clip::RIdx;
+use crate::hashcons::Interner;
 use crate::inline::inline_observed_cached;
 use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
 use crate::system::{
@@ -333,10 +334,21 @@ pub(crate) fn jacobian_bands_seeded(
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
     let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
-    if ext.recurrences.is_empty() {
-        return Ok(ext.rows);
+    let mut rows = if ext.recurrences.is_empty() {
+        ext.rows
+    } else {
+        materialize(ctx, &ext)?
+    };
+    // One object per distinct subtree across every coefficient
+    // (`hashcons::Interner`): the entries share copies, not hold their own.
+    let mut t = Interner::new();
+    for en in &mut rows {
+        en.band.coef = t.intern(&en.band.coef);
+        if let Some(g) = &en.band.guard {
+            en.band.guard = Some(t.intern(g));
+        }
     }
-    materialize(ctx, &ext)
+    Ok(rows)
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state

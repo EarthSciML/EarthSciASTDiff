@@ -116,6 +116,46 @@ impl StructIndex {
     }
 }
 
+/// One object per distinct subtree (hashcons.jl `_Interner`): the band
+/// calculus builds every coefficient on its own, so equal subtrees of
+/// different coefficients are distinct allocations. Interning maps each
+/// subtree to one representative per structural id, so the coefficients
+/// share it. Structure (and serialization) is unchanged; only `Arc` identity
+/// is.
+#[derive(Default)]
+pub(crate) struct Interner {
+    ix: StructIndex,
+    canon: HashMap<usize, Expr>,
+    memo: HashMap<NodeRef, Expr>,
+}
+
+impl Interner {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn intern(&mut self, e: &Expr) -> Expr {
+        let Expr::Operator(a) = e else {
+            return e.clone();
+        };
+        let k = NodeRef(a.clone());
+        if let Some(r) = self.memo.get(&k) {
+            return r.clone();
+        }
+        let id = self.ix.sid(e);
+        let c = match self.canon.get(&id) {
+            Some(c) => c.clone(),
+            None => {
+                let c = map_children_shared(e, &mut |x| self.intern(x));
+                self.canon.insert(id, c.clone());
+                c
+            }
+        };
+        self.memo.insert(k, c.clone());
+        c
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +206,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn interning_shares_equal_subtrees() {
+        let a = ex(json!({"op": "+", "args": [{"op": "*", "args": [2, "x"]}, 1]}));
+        let b = ex(json!({"op": "-", "args": [{"op": "*", "args": [2, "x"]}]}));
+        let mut t = Interner::new();
+        let (a2, b2) = (t.intern(&a), t.intern(&b));
+        assert_eq!(skey(&a2), skey(&a));
+        assert_eq!(skey(&b2), skey(&b));
+        let (Expr::Operator(na), Expr::Operator(nb)) = (&a2, &b2) else {
+            panic!()
+        };
+        assert!(same_expr(&na.args[0], &nb.args[0]));
     }
 
     #[test]
