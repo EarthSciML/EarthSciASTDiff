@@ -113,3 +113,57 @@ fn element_derivative_lhs_is_refused() {
     let sv = sysview(&file, None).unwrap();
     assert!(earthsci_astdiff::evaluation_document(&sv, &[], false, 12).is_err());
 }
+
+#[test]
+fn full_rank_faq_value_over_a_pinned_makearray_region() {
+    // Port of the reference's inline_test.jl. A makearray region VALUE may be
+    // a full-rank faq (naming every region dim, the pinned one included: a
+    // 3-D field's boundary face) as well as a reduced-rank one (esm-spec
+    // §4.3.2). The inliner accepted only the reduced-rank shape and refused
+    // ReSEACT's advection terms with "makearray value rank 3 ≠ region free
+    // rank 2". `F` is state-dependent so pruning cannot make this vacuous.
+    //
+    //   F = makearray(0 over [1,3]×[1,2]; 2·u[i,j] over the pinned row i = 2)
+    //   D(u)[i,j] = -u[i,j] + F[i,j]   ⇒   ∂/∂u = -1, and +1 on row 2
+    let u2 = |i: Value, j: Value| json!({"op": "index", "args": ["u", i, j]});
+    let face = json!({"op": "faq", "args": [], "output_idx": ["i", "j"],
+        "ranges": {"i": [2, 2], "j": [1, 2]},
+        "expr": {"op": "*", "args": [2.0, u2(json!("i"), json!("j"))]}});
+    let fdef = json!({"op": "makearray", "args": [],
+        "regions": [[[1, 3], [1, 2]], [[2, 2], [1, 2]]],
+        "values": [0.0, face]});
+    let rhs = json!({"op": "faq", "args": [], "output_idx": ["i", "j"],
+        "ranges": {"i": [1, 3], "j": [1, 2]},
+        "expr": {"op": "+", "args": [
+            {"op": "-", "args": [u2(json!("i"), json!("j"))]},
+            {"op": "index", "args": ["F", "i", "j"]}]}});
+    let d = json!({
+        "esm": "1.1.0",
+        "metadata": {"name": "PinnedFace"},
+        "index_sets": {"x": {"kind": "interval", "size": 3},
+                       "y": {"kind": "interval", "size": 2}},
+        "models": {"PinnedFace": {
+            "variables": {
+                "u": {"type": "unknown", "shape": ["x", "y"], "default": 0.5},
+                "F": {"type": "unknown", "shape": ["x", "y"]}},
+            "equations": [
+                {"lhs": "F", "rhs": fdef},
+                {"lhs": {"op": "D", "args": ["u"], "wrt": "t"}, "rhs": rhs}]}}});
+    let file = earthsci_ast::load_document(&d).expect("doc loads");
+    let u = [[0.3, 0.7], [1.1, 1.9], [2.3, 2.9]];
+    let env = Env {
+        states: HashMap::from([("u".to_string(), json!(u))]),
+        params: HashMap::new(),
+        t: 0.0,
+    };
+    let j = doc_jacobian(&file, None, Wrt::States, None, &env).unwrap();
+    for i in 1..=3 {
+        for k in 1..=2 {
+            let c = format!("u[{i},{k}]");
+            let want = if i == 2 { 1.0 } else { -1.0 };
+            let got = j.get(&(c.clone(), c.clone())).copied().unwrap_or(0.0);
+            assert!((got - want).abs() <= 1e-14, "∂{c}/∂{c} = {got}");
+        }
+    }
+    assert_eq!(j.values().filter(|v| **v != 0.0).count(), 6, "{j:?}");
+}
