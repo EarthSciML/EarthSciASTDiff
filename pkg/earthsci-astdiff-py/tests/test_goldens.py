@@ -131,3 +131,42 @@ def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
     assert entries
     text = stable_json([serialize_band(e) for e in entries])
     assert text == (golden_dir / f"{name}.{wrt}.bands.json").read_text()
+
+
+# Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
+# entries without coefficients. The reference writes those of the first ten
+# fixtures and of the flattened coupled document; the Rust binding those of
+# the two recurrence fixtures, whose pass runs in full (§2.1).
+@pytest.mark.parametrize("name", GOLDEN_NAMES + ("coupled_chem_advection",))
+def test_structure_golden(name, valid_dir, golden_dir):
+    from earthsci_astdiff import sysview
+
+    file = ea.load_path(str(valid_dir / f"{name}.esm"))
+    if name == "coupled_chem_advection":
+        sv = sysview(ea.flatten(file))
+    else:
+        sv = sysview(file, next(iter(file.models)))
+    entries = jacobian_bands(sv, coefficients=False)
+    assert all(e.band.coef is None for e in entries)
+    text = stable_json([serialize_band(e) for e in entries])
+    assert text == (golden_dir / f"{name}.structure.bands.json").read_text()
+
+
+def test_structure_keeps_zero_coefficient():
+    """d/dx[i] of x[i] - x[i] simplifies to 0: the full mode drops the band,
+    the structure-only mode keeps it (spec §2.1)."""
+    from earthsci_ast.esm_types import ExprNode
+    from earthsci_astdiff.bands import Ctx, bands
+
+    ctx = Ctx({"i": 4}, {"x": [4]}, set())
+    xi = ExprNode(op="index", args=["x", "i"])
+    rhs = ExprNode(
+        op="faq",
+        args=[],
+        output_idx=["i"],
+        expr=ExprNode(op="-", args=[xi, xi]),
+        ranges={"i": [1, 4]},
+    )
+    assert bands(rhs, "x", ctx, shape_u=[4]) == []
+    so = bands(rhs, "x", ctx, shape_u=[4], coefficients=False)
+    assert len(so) == 1 and so[0].coef is None and so[0].rows == [(1, 4)]

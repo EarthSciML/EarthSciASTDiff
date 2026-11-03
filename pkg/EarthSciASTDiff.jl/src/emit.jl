@@ -45,8 +45,9 @@ function serialize_band(en::JacEntry)
         "rows" => Any[Any[lo, hi] for (lo, hi) in b.rows],
         "row_idx" => Any[b.ridx...],
         "col_idx" => Any[_ser_expr(c) for c in b.cidx],
-        "coef" => _ser_expr(b.coef),
     )
+    # a structure-only band (esm-jacobian-spec.md §2.1) carries no `coef`
+    b.coef === nothing || (d["coef"] = _ser_expr(b.coef))
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
     b.guard === nothing || (d["where"] = _ser_expr(b.guard))

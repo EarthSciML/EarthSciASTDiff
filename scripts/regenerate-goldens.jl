@@ -62,6 +62,22 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
         println("wrote ", path0)
     end
 end
+# structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
+# entries without coefficients, for every model fixture above and the
+# flattened coupled document
+for name in (
+        "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
+        "contracting_observed", "tgrad_photolysis", "forcing_bracket",
+        "filtered_scan", "semiring_reduce", "coupled_chem_advection",
+    )
+    src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
+        sysview(src, first(keys(src.models)))
+    entries = jacobian_bands(sv; coefficients = false)
+    path = joinpath(root, "tests", "goldens", "$name.structure.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the bands of the flattened coupled document on the axes it has bands on:
 # `<name>.bands.json` (states) and `<name>.parameters.bands.json`
 let name = "coupled_chem_advection"

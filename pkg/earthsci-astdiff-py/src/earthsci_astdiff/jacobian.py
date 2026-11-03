@@ -5,11 +5,11 @@ in its RHS — or w.r.t. time itself (``wrt="time"``)."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError, bands, merge_bands, normalize_band
+from .bands import Band, BandError, bands_in, merge_bands, normalize_band
 from .expr_helpers import ser_expr
 from .inline import inline_observed
 from .system import (
@@ -109,7 +109,11 @@ def jacobian_columns(obj, model_name: str | None = None, wrt: str = "parameters"
 
 
 def jacobian_bands(
-    obj, model_name: str | None = None, wrt: str = "states", forcing=None
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    forcing=None,
+    coefficients: bool = True,
 ) -> list[JacEntry]:
     """Differentiate a model's right-hand side into a list of Jacobian bands.
 
@@ -123,6 +127,14 @@ def jacobian_bands(
       (the cells of the forcing buffers, record axis included) or ``"time"``.
     - ``forcing`` — the forcing set; ``None`` infers it (every array
       parameter with a ``data`` update, see :func:`forcing_names`).
+    - ``coefficients`` — ``False`` returns structure-only entries (spec
+      §2.1): regions are clipped and sites found as in the full mode, but no
+      derivative is taken, no coefficient simplified, and bands merge on
+      (``ridx``, ``cidx``, ``contracted``, ``guard``) alone. Every
+      ``band.coef`` is ``None``. Their points include the full mode's, and
+      equal them unless a full band's coefficient simplifies to zero.
+      Through an active recurrence (§4.5) the pass runs in full and the
+      coefficients are dropped.
 
     **Returns**
 
@@ -139,10 +151,15 @@ def jacobian_bands(
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
     sv = sysview(obj, model_name)
-    return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing)
+    entries = _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, co=coefficients)
+    if coefficients:
+        return entries
+    return [JacEntry(en.u, en.v, replace(en.band, coef=None)) for en in entries]
 
 
-def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
+def _jacobian_bands(
+    sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True
+) -> list[JacEntry]:
     # The body of `jacobian_bands`, for callers that
     # already hold the view's context and observed definitions. `seed` adds
     # names to the inlining seed without making them targets: the
@@ -152,7 +169,7 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()
     # Through a recurrence the extended system is materialized (spec §4.5).
     from .recurrence import materialize
 
-    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed)
+    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co)
     if not ext.recurrences:
         return ext.rows
     return materialize(sv, ctx, ext)
@@ -178,7 +195,7 @@ def extended_bands(
     return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed)
 
 
-def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()):
+def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True):
     # The extended first-order system of one pass (spec §4.5): the bands of
     # every state equation with respect to the axis's targets AND the active
     # recurrences, and the bands of each active recurrence's own definition
@@ -193,6 +210,11 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
     tset = set(targets)
     recs = recurrences(sv, obs, ctx)
     act = active(recs, obs, tset | set(seed)) if recs else []
+    # Structure-only (`co` false, spec §2.1) runs on a placeholder
+    # coefficient, except through an active recurrence: its composition
+    # through the transfer (§4.5) reads the coefficients, so that pass runs
+    # in full and only the caller drops them.
+    co = co or bool(act)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
@@ -214,11 +236,11 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
                     "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                 )
             continue
-        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx)
+        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
         row_eq.extend([q] * (len(entries) - len(row_eq)))
     rec_rows: list[JacEntry] = []
     for r in act:
-        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx)
+        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
     for en in rec_rows:
         if en.u == en.v:
             # every self band is a lag back along the axis, or refused
@@ -232,7 +254,9 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
     return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
 
 
-def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx) -> None:
+def _row_bands(
+    out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx, co: bool = True
+) -> None:
     # The bands of one row variable `u` (a state, or a recurrence over its
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
@@ -242,7 +266,7 @@ def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ct
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
     for v in hits:
-        for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
+        for b in merge_bands(bands_in(rhs, v, ctx, shape_u, co)):
             out.append(JacEntry(u, v, normalize_band(b)))
 
 

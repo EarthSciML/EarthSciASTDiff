@@ -31,6 +31,7 @@ pub use emit::{
     jacobian_block_with, jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with,
     lu_fill, markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
     parse_jacobian_blocks, plan_factorization, plan_factorization_along, serialize_band,
+    serialize_structure_band,
     serialize_plan, BlockLu, BlockOptions, BlockWrt, ColumnLines, FactorizationPlan, ParsedBlock,
     Rank1, STRUCTURE_CLASSES,
 };
@@ -39,7 +40,8 @@ pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{
     column_names, extended_bands, forcing_names, jacobian_bands, jacobian_bands_view,
-    jacobian_bands_with_forcing, jacobian_columns, JacEntry, Wrt,
+    jacobian_bands_with_forcing, jacobian_columns, jacobian_structure, jacobian_structure_view,
+    JacEntry, StructureBand, StructureEntry, Wrt,
 };
 pub use products::{
     hvp_document, jvp_document, vjp_document, HvpForm, HvpIo, IoMap, JvpIo, ProductOptions, VjpIo,
