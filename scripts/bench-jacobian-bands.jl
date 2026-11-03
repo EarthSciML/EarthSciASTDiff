@@ -15,6 +15,13 @@
 #   --esm PATH                  a real document. Repeat --metaparameters once
 #                               per rung; `--include`/`--select` reach a
 #                               sub-system (e.g. one half of a split).
+#   --stages PATH...            each document timed by stage: load, flatten,
+#                               sysview, jacobian_bands. A planner's probe
+#                               documents (EarthSciIntegrator spec/plan.md
+#                               §5.2.2: one document holding many terms) are
+#                               the intended input; a ladder of them over
+#                               growing term counts shows which stage grows
+#                               faster than the document.
 #
 # Examples
 #   julia --project=pkg/EarthSciASTDiff.jl scripts/bench-jacobian-bands.jl --synthetic
@@ -22,6 +29,8 @@
 #       --esm /path/reseact.esm \
 #       --metaparameters '{"LON0":11,"LAT0":29,"NLON":6,"NLAT":6,"NLEV":8}' \
 #       --metaparameters '{"LON0":11,"LAT0":29,"NLON":6,"NLAT":6,"NLEV":12}'
+#   julia --project=<env> scripts/bench-jacobian-bands.jl \
+#       --stages probe_1.esm probe_10.esm probe_103.esm
 
 using Printf, JSON3
 using EarthSciAST
@@ -188,9 +197,44 @@ function run_document(esm, mps, incl, select, wrt)
     return nothing
 end
 
+# ── stages mode ──────────────────────────────────────────────────────────────
+
+function run_stages(paths)
+    say("=== stages ===")
+    # Compile every stage on the smallest document first, so no row is a
+    # compile measurement.
+    let p = paths[argmin(filesize.(paths))]
+        try
+            ED.jacobian_bands(ED.sysview(EA.flatten(EA.load_path(p))); wrt = :states)
+        catch
+        end
+    end
+    for p in paths
+        GC.gc()
+        tl = @elapsed file = EA.load_path(p)
+        tf = @elapsed flat = EA.flatten(file)
+        ts = @elapsed sv = ED.sysview(flat)
+        n = sum(nodes(eq.rhs) for eq in sv.equations if ED.lhs_state(eq) !== nothing; init = 0)
+        res = "ok"
+        tb = @elapsed try
+            res = "$(length(ED.jacobian_bands(sv; wrt = :states))) bands"
+        catch e
+            res = "refused: " * first(sprint(showerror, e), 120)
+        end
+        say(
+            @sprintf(
+                "%s  %.2f MB  rhs nodes=%d  load=%.2f s  flatten=%.2f s  sysview=%.2f s  jacobian_bands=%.2f s  (%s)  peak rss=%.2f GiB",
+                basename(p), filesize(p) / 1.0e6, n, tl, tf, ts, tb, res, rssgib()
+            )
+        )
+    end
+    return nothing
+end
+
 function main(args)
     esm = nothing; mps = Any[]; incl = String[]; select = nothing
     wrt = :states; synth = false; ks = [50, 100, 200, 400]
+    stages = String[]
     i = 1
     while i <= length(args)
         a = args[i]
@@ -214,6 +258,11 @@ function main(args)
             select = args[i + 1]; i += 2
         elseif a == "--wrt"
             wrt = Symbol(args[i + 1]); i += 2
+        elseif a == "--stages"
+            i += 1
+            while i <= length(args) && !startswith(args[i], "--")
+                push!(stages, args[i]); i += 1
+            end
         else
             error("unknown argument $a")
         end
@@ -223,8 +272,9 @@ function main(args)
         esm, isempty(mps) ? [Dict{String, Int}()] : mps,
         incl, select, wrt
     )
-    (synth || esm !== nothing) ||
-        error("nothing to do: pass --synthetic and/or --esm PATH")
+    isempty(stages) || run_stages(stages)
+    (synth || esm !== nothing || !isempty(stages)) ||
+        error("nothing to do: pass --synthetic, --esm PATH and/or --stages PATH...")
     return nothing
 end
 

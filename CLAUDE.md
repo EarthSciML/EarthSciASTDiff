@@ -23,6 +23,10 @@ julia --project=pkg/EarthSciASTDiff.jl scripts/regenerate-goldens.jl
 # prints a fitted d log t / d log n per primitive; anything above ~1.2 there
 # is a pass that will not finish on a document flattened over a real grid.
 julia --project=pkg/EarthSciASTDiff.jl scripts/bench-jacobian-bands.jl --synthetic
+
+# Per-stage timings (load, flatten, sysview, jacobian_bands) of whole
+# documents, e.g. a planner's probe documents over growing term counts
+julia --project=<env> scripts/bench-jacobian-bands.jl --stages doc1.esm doc2.esm ...
 ```
 
 NOTE for agents on the shared UIUC cluster: `Pkg.test()` resolving a fresh env
