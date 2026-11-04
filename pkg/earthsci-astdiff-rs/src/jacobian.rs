@@ -4,15 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use earthsci_ast::free_variables;
-use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
+use earthsci_ast::{EsmFile, Expr, VariableType};
 
 use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
 use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
 use crate::system::{
-    ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
-    SysView,
+    ctx_of, data_rules, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview,
+    view_states, SysView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,13 +76,7 @@ pub fn forcing_names(sv: &SysView, forcing: Option<&[String]>) -> Result<Vec<Str
             .variables
             .iter()
             .filter(|(_, v)| {
-                v.var_type == VariableType::Parameter
-                    && v.shape.as_ref().is_some_and(|s| !s.is_empty())
-                    && v.update.as_ref().is_some_and(|u| {
-                        u.rules()
-                            .iter()
-                            .any(|r| matches!(r, ParameterUpdate::Data { .. }))
-                    })
+                v.shape.as_ref().is_some_and(|s| !s.is_empty()) && !data_rules(v).is_empty()
             })
             .map(|(n, _)| n.clone())
             .collect(),

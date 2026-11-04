@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use earthsci_ast::extension::types::IndexSet;
 use earthsci_ast::{
     free_variables, DataSource, Domain, Equation, EsmFile, Expr, ExpressionNode, FlattenedSystem,
-    Model, ModelVariable, VariableType,
+    Model, ModelVariable, ParameterUpdate, UnitConversion, VariableType,
 };
 use indexmap::IndexMap;
 
@@ -40,12 +40,17 @@ pub struct SysView<'a> {
 impl<'a> SysView<'a> {
     /// This view with `data_sources` (a document's, name → source) as the
     /// entries the derived documents copy for each data-fed parameter (spec
-    /// §8.1): for a flattened system, the flattened document's own.
+    /// §8.1): for a flattened system, the flattened document's own. `None`
+    /// keeps the view's own, as `data_sources = nothing` / `None` does in
+    /// Julia and Python, so a caller passing another document's optional
+    /// field never erases a file's sources.
     pub fn with_data_sources(
         mut self,
         data_sources: Option<&'a IndexMap<String, DataSource>>,
     ) -> Self {
-        self.data_sources = data_sources;
+        if let Some(d) = data_sources {
+            self.data_sources = Some(d);
+        }
         self
     }
 }
@@ -540,4 +545,49 @@ pub fn inlinable_observed(
     keep.into_iter()
         .map(|n| (n.to_string(), obs[n].clone()))
         .collect()
+}
+
+// ── data-fed parameters (spec §4.3, §8.1) ──────────────────────────────────
+
+/// The `data` rules of a parameter's `update`, in their order (none for an
+/// unknown). The one test of "data-fed": the inferred forcing axis
+/// ([`crate::jacobian::forcing_names`]) and the rules the derived documents
+/// carry agree.
+pub(crate) fn data_rules(var: &ModelVariable) -> Vec<&ParameterUpdate> {
+    if var.var_type != VariableType::Parameter {
+        return Vec::new();
+    }
+    var.update
+        .as_ref()
+        .map(|u| {
+            u.rules()
+                .iter()
+                .filter(|r| matches!(r, ParameterUpdate::Data { .. }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The names a kept `data` rule reads: its `expression`, an expression
+/// `from.unit_conversion`, and a handler's `read_vars` / `read_params`. The
+/// derived documents keep the observed these name, so a carried rule never
+/// references a variable they drop.
+pub(crate) fn rule_reads(rule: &ParameterUpdate) -> Vec<String> {
+    let ParameterUpdate::Data { value, .. } = rule else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    if let Some(e) = &value.expression {
+        names.extend(free_variables(e));
+    }
+    if let Some(UnitConversion::Expression(e)) =
+        value.from.as_ref().and_then(|f| f.unit_conversion.as_ref())
+    {
+        names.extend(free_variables(e));
+    }
+    if let Some(h) = &value.handler {
+        names.extend(h.read_vars.iter().flatten().cloned());
+        names.extend(h.read_params.iter().flatten().cloned());
+    }
+    names
 }

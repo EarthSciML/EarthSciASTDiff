@@ -100,3 +100,21 @@ def test_data_fed_parameters_are_inputs_of_the_build(valid_dir):
     du = evaluate_rhs(built, dict(u), 0.0, compiler="interpreter")
     assert du == evaluate_rhs(baked, dict(u), 0.0, compiler="interpreter")
     assert any(du[k] != 0.0 for k in du if k.startswith("JacobianEval."))
+
+
+@pytest.mark.parametrize("product", [False, True])
+def test_kept_rule_keeps_the_observed_it_reads(product, valid_dir):
+    """A kept rule's ``unit_conversion`` may be an expression reading an
+    observed the coefficients do not: the derived documents keep it."""
+    d = json.loads((valid_dir / f"{NAME}.esm").read_text())
+    chem = d["models"]["Chem"]
+    chem["variables"]["f"] = {"type": "unknown"}
+    chem["equations"].append({"lhs": "f", "rhs": {"op": "*", "args": [0.002, "k"]}})
+    chem["variables"]["E"]["update"]["from"]["unit_conversion"] = "f"
+    file = ea.load_string(json.dumps(d))
+    make = jvp_document if product else evaluation_document
+    doc, _ = make(ea.flatten(file), data_sources=file.data_sources)
+    chem = doc["models"]["Chem"]["variables"]
+    assert chem["E"]["update"]["from"]["unit_conversion"] == "f"
+    assert "f" in chem
+    ea.load_string(stable_json(doc))

@@ -7,17 +7,15 @@ byte-identical to the Julia reference's goldens."""
 
 from __future__ import annotations
 
+import functools
+
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
-from earthsci_ast.serialize import (
-    _serialize_data_source,
-    _serialize_domain,
-    _serialize_parameter_update,
-)
+from earthsci_ast.serialize import _serialize_domain
 
 from .bands import Band, BandError
 from .expr_helpers import ser_expr
-from .jacobian import JacEntry, jacobian_bands, jacobian_columns
+from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
 from .structure import column_lines
 from .system import sysview
@@ -439,11 +437,8 @@ def _base_document(sv, name: str) -> dict:
             d["default"] = _inline_value(default)
         rules = _data_rules(var)
         if rules:
-            d["update"] = (
-                _serialize_parameter_update(rules[0])
-                if len(rules) == 1
-                else [_serialize_parameter_update(r) for r in rules]
-            )
+            ser_rule, _ = _data_serializers()
+            d["update"] = ser_rule(rules[0]) if len(rules) == 1 else [ser_rule(r) for r in rules]
         variables[str(n)] = d
     equations = [{"lhs": ser_expr(eq.lhs), "rhs": ser_expr(eq.rhs)} for eq in sv.equations]
     isets = {}
@@ -471,14 +466,25 @@ def _base_document(sv, name: str) -> dict:
 # within one, and their expressions may read observed the derived model drops.
 
 
-def _data_rules(var) -> list:
-    """The ``data`` rules of a parameter's ``update``, in their order (none
-    for an unknown)."""
-    from .jacobian import _is_parameter, _updates
-
-    if not _is_parameter(var):
-        return []
-    return [r for r in _updates(var) if getattr(r, "kind", None) == "data"]
+@functools.cache
+def _data_serializers():
+    """EarthSciAST's serializers for a parameter's update rule and a data
+    source. They are private to ``earthsci_ast.serialize`` (no public form
+    exists in the supported range), so they are imported here, only when a
+    document has a data-fed parameter: a release that moves them breaks those
+    documents with a clear error, never ``import earthsci_astdiff``."""
+    try:
+        from earthsci_ast.serialize import (
+            _serialize_data_source,
+            _serialize_parameter_update,
+        )
+    except ImportError as e:  # pragma: no cover - depends on earthsci-ast
+        raise BandError(
+            "this earthsci-ast does not provide the update-rule and data-source "
+            "serializers a derived document with data-fed parameters needs "
+            f"({e})"
+        ) from e
+    return _serialize_parameter_update, _serialize_data_source
 
 
 def _data_sources(doc: dict, sv) -> dict:
@@ -494,6 +500,7 @@ def _data_sources(doc: dict, sv) -> dict:
     if not named:
         return doc
     held = sv.data_sources or {}
+    _, ser_source = _data_serializers()
     out: dict = {}
     for k in sorted(named):
         src = held.get(k)
@@ -503,7 +510,7 @@ def _data_sources(doc: dict, sv) -> dict:
                 "does not declare (a flattened system carries no `data_sources`: "
                 "pass the flattened document's)"
             )
-        out[k] = _serialize_data_source(src)
+        out[k] = ser_source(src)
     doc["data_sources"] = out
     return doc
 
@@ -579,6 +586,17 @@ def _zero_source_derivatives(m: dict, sv, ctx, roots: list) -> dict:
             reads.setdefault(n, []).append(eq.rhs)
     live: set[str] = set()
     stack = [v for r in roots for v in free_variables(r)]
+    # the carried ``data`` rules (``_base_document``) are evaluated too. A
+    # flattened system keeps a rule's names local to its component, so each is
+    # also read under the parameter's scope (``Chem.E`` reading ``f``:
+    # ``Chem.f``); a name that is no observed is skipped below.
+    for p, var in sv.variables.items():
+        scope = str(p).rpartition(".")[0]
+        for r in _data_rules(var):
+            for v in _rule_reads(r):
+                stack.append(v)
+                if scope:
+                    stack.append(f"{scope}.{v}")
     while stack:
         n = stack.pop()
         if n not in reads or n in live:

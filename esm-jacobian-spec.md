@@ -1083,8 +1083,12 @@ The derived model is named `JacobianEval` and holds:
 - the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
   (for an array state, a `makearray` of `0.0` over its whole shape), and the
   observed definitions the coefficients do not read, directly or through
-  other observed, dropped with their declarations. The source's other
-  equations, such as a model's `ic` equations, are kept;
+  other observed, dropped with their declarations. An observed a kept
+  `data` rule reads (below: its `expression`, an expression
+  `from.unit_conversion`, or a handler's `read_vars` / `read_params`, a name
+  local to the parameter's component read under its scope) is read and
+  kept. The source's other equations, such as a model's `ic` equations, are
+  kept;
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
   index sets) and their definitions, and the recurrence auxiliaries (§4.5);
 - one band field per entry, in entry order: `J_k`, an `unknown` with default
@@ -1117,7 +1121,8 @@ the rules.
 A flattened system does not carry `data_sources` (EarthSciAST's
 `FlattenedSystem` holds the data-fed parameters' rules but not the sources
 they name), so the producer takes them from the caller: the flattened
-document's own. A producer MUST refuse a data-fed parameter whose source it
+document's own. The same holds for any document a producer builds from a
+flattened system's model, such as a `jacobians` document (§4) over it. A producer MUST refuse a data-fed parameter whose source it
 does not have, rather than write the parameter without its rule (a constant
 of the build) or a document that does not validate
 (`data_source_undefined`).

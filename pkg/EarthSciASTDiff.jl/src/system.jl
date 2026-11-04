@@ -446,3 +446,29 @@ function inlinable_observed(
     end
     return Dict{String, ASTExpr}(n => obs[n] for n in keep)
 end
+
+# ── data-fed parameters (esm-jacobian-spec.md §4.3, §8.1) ───────────────────
+
+# The `data` rules of a parameter's `update`, in their order (none for an
+# unknown). The one test of "data-fed": the inferred forcing axis
+# ([`forcing_names`](@ref)) and the rules the derived documents carry agree.
+_data_rules(var) = var.type == EarthSciAST.ParameterVariable ?
+    [r for r in something(var.update, ()) if r.kind == "data"] : Any[]
+
+# The names a kept `data` rule reads: its `expression`, an expression
+# `from.unit_conversion`, and a handler's `read_vars` / `read_params`. The
+# derived documents keep the observed these name, so a carried rule never
+# references a variable they drop.
+function _rule_reads(r)
+    names = String[]
+    r.expression === nothing || append!(names, free_variables(r.expression))
+    f = r.from
+    f !== nothing && f.unit_conversion isa ASTExpr &&
+        append!(names, free_variables(f.unit_conversion))
+    h = r.handler
+    if h !== nothing
+        append!(names, something(h.read_vars, String[]))
+        append!(names, something(h.read_params, String[]))
+    end
+    return names
+end

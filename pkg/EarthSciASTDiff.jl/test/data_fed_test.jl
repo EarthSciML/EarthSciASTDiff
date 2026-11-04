@@ -108,3 +108,44 @@ end
     @test changes(findfirst(==("Box.P"), _DF_FED)) == ["JacobianEval.J_2"]
     @test isempty(changes(findfirst(==("Chem.E"), _DF_FED)))
 end
+
+@testset "data-fed parameters: flattened jacobian_document" begin
+    file = EarthSciAST.load_path(_DF_PATH)
+    flat = EarthSciAST.flatten(file)
+    # the model keeps the data rules, so the document declares their sources
+    doc = jacobian_document(flat; data_sources = file.data_sources)
+    @test sort!(collect(keys(doc["data_sources"]))) == ["EMIS", "MET"]
+    @test doc["models"]["Flattened"]["variables"]["Chem.T"]["update"]["source"] == "MET"
+    # it loads (every source a rule names is declared) once the draft
+    # `jacobians` block, which EarthSciAST does not read, is set aside
+    @test EarthSciAST.load_string(stable_json(delete!(copy(doc), "jacobians"))) isa
+        EarthSciAST.EsmFile
+    # without them the document is refused, never written undeclared
+    @test_throws BandError jacobian_document(flat)
+end
+
+# A kept rule's `unit_conversion` may be an expression reading an observed the
+# coefficients do not: the derived documents keep that observed.
+@testset "data-fed parameters: observed a kept rule reads" begin
+    d = EarthSciASTDiff.JSON3.read(read(_DF_PATH, String), Dict{String, Any})
+    chem = d["models"]["Chem"]
+    chem["variables"]["f"] = Dict{String, Any}("type" => "unknown")
+    push!(
+        chem["equations"],
+        Dict{String, Any}("lhs" => "f", "rhs" => Dict("op" => "*", "args" => Any[0.002, "k"]))
+    )
+    chem["variables"]["E"]["update"]["from"]["unit_conversion"] = "f"
+    file = EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(d))
+    flat = EarthSciAST.flatten(file)
+    for doc in (
+            first(evaluation_document(flat; data_sources = file.data_sources)),
+            first(jvp_document(flat; data_sources = file.data_sources)),
+        )
+        vars = doc["models"]["Chem"]["variables"]
+        # the rule as the flattened system holds it (`f`, or `Chem.f` where
+        # the flattener scopes it)
+        @test endswith(vars["E"]["update"]["from"]["unit_conversion"], "f")
+        @test haskey(vars, "f")
+        @test EarthSciAST.load_string(stable_json(doc)) isa EarthSciAST.EsmFile
+    end
+end

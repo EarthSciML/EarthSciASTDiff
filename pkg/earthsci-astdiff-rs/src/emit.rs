@@ -4,9 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use earthsci_ast::{
-    free_variables, Expr, ExpressionNode, ModelVariable, ParameterUpdate, VariableType,
-};
+use earthsci_ast::{free_variables, Expr, ExpressionNode, ParameterUpdate, VariableType};
 use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
@@ -17,7 +15,7 @@ use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, Wrt};
 use crate::second_order::JacEntry2;
-use crate::system::{defined_name, is_derivative, lhs_state, SysView};
+use crate::system::{data_rules, defined_name, is_derivative, lhs_state, rule_reads, SysView};
 
 /// One entry of the `jacobians` block, as JSON (spec §4).
 pub fn serialize_band(en: &JacEntry) -> Value {
@@ -1492,6 +1490,21 @@ pub(crate) fn zero_source_derivatives(
     }
     let mut live: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = roots.iter().flat_map(|r| free_variables(r)).collect();
+    // the carried `data` rules (`base_document`) are evaluated too. A
+    // flattened system keeps a rule's names local to its component, so each is
+    // also read under the parameter's scope (`Chem.E` reading `f`: `Chem.f`);
+    // a name that is no observed is skipped below.
+    for (p, var) in &sv.variables {
+        let scope = p.rsplit_once('.').map(|(s, _)| s);
+        for r in data_rules(var) {
+            for v in rule_reads(r) {
+                if let Some(s) = scope {
+                    stack.push(format!("{s}.{v}"));
+                }
+                stack.push(v);
+            }
+        }
+    }
     while let Some(n) = stack.pop() {
         let Some(rs) = reads.get(n.as_str()) else {
             continue;
@@ -1781,23 +1794,6 @@ pub(crate) fn finish_derived(
 // them, and the `data_sources` entries they name. The other kinds are left
 // out: they fire between right-hand-side calls, never within one, and their
 // expressions may read observed the derived model drops.
-
-/// The `data` rules of a parameter's `update`, in their order (none for an
-/// unknown).
-fn data_rules(var: &ModelVariable) -> Vec<&ParameterUpdate> {
-    if var.var_type != VariableType::Parameter {
-        return Vec::new();
-    }
-    var.update
-        .as_ref()
-        .map(|u| {
-            u.rules()
-                .iter()
-                .filter(|r| matches!(r, ParameterUpdate::Data { .. }))
-                .collect()
-        })
-        .unwrap_or_default()
-}
 
 /// The `data_sources` entries the data-fed parameters of `sv` name, as
 /// EarthSciAST serializes them, keys sorted; `None` when none is named. A

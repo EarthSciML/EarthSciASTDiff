@@ -50,6 +50,36 @@ def _is_parameter(var) -> bool:
     return _var_type(var) == "parameter"
 
 
+def _data_rules(var) -> list:
+    """The ``data`` rules of a parameter's ``update``, in their order (none
+    for an unknown). The one test of "data-fed": the inferred forcing axis
+    (:func:`forcing_names`) and the rules the derived documents carry
+    (spec §8.1) agree."""
+    if not _is_parameter(var):
+        return []
+    return [r for r in _updates(var) if getattr(r, "kind", None) == "data"]
+
+
+def _rule_reads(rule) -> list[str]:
+    """The names a kept ``data`` rule reads: its ``expression``, an expression
+    ``from.unit_conversion``, and a handler's ``read_vars`` / ``read_params``.
+    The derived documents keep the observed these name, so a carried rule
+    never references a variable they drop."""
+    names: list[str] = []
+    expr = getattr(rule, "expression", None)
+    if expr is not None:
+        names.extend(free_variables(expr))
+    src = getattr(rule, "from_source", None)
+    conv = getattr(src, "unit_conversion", None) if src is not None else None
+    if conv is not None and not isinstance(conv, (int, float)):
+        names.extend(free_variables(conv))
+    handler = getattr(rule, "handler", None)
+    if handler is not None:
+        names.extend(getattr(handler, "read_vars", None) or [])
+        names.extend(getattr(handler, "read_params", None) or [])
+    return names
+
+
 def forcing_names(sv: SysView, forcing=None) -> list[str]:
     """The forcing set of a system, sorted by name: the parameters whose cells
     are the columns of the ``wrt="forcing"`` axis (esm-jacobian-spec.md §4.3).
@@ -64,9 +94,7 @@ def forcing_names(sv: SysView, forcing=None) -> list[str]:
         return sorted(
             str(n)
             for n, var in sv.variables.items()
-            if _is_parameter(var)
-            and getattr(var, "shape", None)
-            and any(getattr(u, "kind", None) == "data" for u in _updates(var))
+            if getattr(var, "shape", None) and _data_rules(var)
         )
     # One buffer name is the natural call; iterating a str would split it
     # into characters.

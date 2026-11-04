@@ -13,7 +13,7 @@ use earthsci_ast::{
     esm_problem, rhs_program, EsmFile, ForcingSet, ProblemOptions, RhsProgram, SlotKind,
 };
 use earthsci_astdiff::{
-    evaluation_document, jacobian_bands_view, jvp_document, serialize_band, stable_json,
+    evaluation_document, jacobian_bands_view, jvp_document, serialize_band, stable_json, sysview,
     sysview_flat, ProductOptions, Wrt,
 };
 use serde_json::{json, Value};
@@ -173,4 +173,55 @@ fn data_fed_parameters_are_forcing_slots() {
     assert_eq!(changes("Chem.T"), ["JacobianEval.J_1"]);
     assert_eq!(changes("Box.P"), ["JacobianEval.J_2"]);
     assert!(changes("Chem.E").is_empty());
+}
+
+#[test]
+fn with_data_sources_none_keeps_the_view_s_own() {
+    // `None` keeps the sources (as Julia's `nothing` and Python's `None` do):
+    // a document's model keeps its own, a flattened view stays without
+    let file = load("forcing_bracket");
+    let sv = sysview(&file, None).unwrap().with_data_sources(None);
+    assert!(sv.data_sources.is_some_and(|d| d.contains_key("MET")));
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let (doc, _) = evaluation_document(&sv, &entries, false, 0).unwrap();
+    assert!(doc["data_sources"].get("MET").is_some());
+}
+
+#[test]
+fn kept_rule_keeps_the_observed_it_reads() {
+    // A kept rule's `unit_conversion` may be an expression reading an observed
+    // the coefficients do not: the derived documents keep it.
+    let mut d: Value = serde_json::from_str(
+        &fs::read_to_string(root().join(format!("tests/valid/{NAME}.esm"))).unwrap(),
+    )
+    .unwrap();
+    let chem = &mut d["models"]["Chem"];
+    chem["variables"]["f"] = json!({"type": "unknown"});
+    chem["equations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"lhs": "f", "rhs": {"op": "*", "args": [0.002, "k"]}}));
+    chem["variables"]["E"]["update"]["from"]["unit_conversion"] = json!("f");
+    let file = earthsci_ast::load_string(&d.to_string()).unwrap();
+    let flat = earthsci_ast::flatten(&file).unwrap();
+    let sv = sysview_flat(&flat)
+        .unwrap()
+        .with_data_sources(file.data_sources.as_ref());
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let docs = [
+        evaluation_document(&sv, &entries, false, 0).unwrap().0,
+        jvp_document(&sv, &entries, Wrt::States, &ProductOptions::default())
+            .unwrap()
+            .0,
+    ];
+    for doc in docs {
+        let vars = &doc["models"]["Chem"]["variables"];
+        // the rule as the flattened system holds it (`f`, or `Chem.f` where
+        // the flattener scopes it)
+        assert!(vars["E"]["update"]["from"]["unit_conversion"]
+            .as_str()
+            .is_some_and(|s| s.ends_with('f')));
+        assert!(vars.get("f").is_some(), "{vars}");
+        earthsci_ast::load_string(&stable_json(&doc)).unwrap();
+    }
 }
