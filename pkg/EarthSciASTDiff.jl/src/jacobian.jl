@@ -195,7 +195,7 @@ function _jacobian_bands(sv::SysView, wrt::Symbol, forcing, seed::Vector{String}
             continue
         end
         shape_u = get(ctx.shapes, u, Int[])
-        rhs = inline_observed(eq.rhs, obs; obs_names = obs_names)
+        rhs = inline_observed(eq.rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
         hits = sort!(String[v for v in free_variables(rhs) if v in tset])
         for v in hits
             for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))

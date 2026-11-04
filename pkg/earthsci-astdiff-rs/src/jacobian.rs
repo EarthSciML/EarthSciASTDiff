@@ -403,7 +403,8 @@ fn row_bands(
     ctx: &Ctx,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
-    let rhs = inline_observed_cached(rhs, obs, obs_names).map_err(|e| BandError(e.0))?;
+    let rhs =
+        inline_observed_cached(rhs, obs, obs_names, &ctx.shapes).map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the
     // RHS's free variables with the column set (a per-equation scan of
     // every target is quadratic on scalar-lowered documents). Sorting the

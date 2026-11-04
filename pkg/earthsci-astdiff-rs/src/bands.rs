@@ -857,10 +857,20 @@ fn bands_makearray(
             .collect();
         if is_array_expr(val, ctx) {
             let mut sub = Vec::new();
-            let val_fullrank = matches!(val, Expr::Operator(vn)
-                if vn.op == "faq"
-                   && vn.output_idx.as_ref().map(|o| o.len()).unwrap_or(0)
-                      == rows.len());
+            // A FULL-RANK value spans every region dim, singleton dims
+            // included; a reduced-rank one only the non-singleton dims. The
+            // rank is a faq node's output arity, a makearray's region arity,
+            // or an array variable's declared rank (the inliner's
+            // `value_rank` reads it the same way).
+            let val_rank = match val {
+                Expr::Operator(vn) if vn.op == "faq" => vn.output_idx.as_ref().map(|o| o.len()),
+                Expr::Operator(vn) if vn.op == "makearray" => {
+                    vn.regions.as_ref().and_then(|r| r.first()).map(|r| r.len())
+                }
+                Expr::Variable(nm) => ctx.shapes.get(nm).map(|s| s.len()),
+                _ => None,
+            };
+            let val_fullrank = val_rank == Some(rows.len());
             let sub_shape: Vec<i64> = if val_fullrank {
                 rows.iter().map(|(lo, hi)| hi - lo + 1).collect()
             } else {
@@ -880,10 +890,10 @@ fn bands_makearray(
                     }
                     o
                 } else {
-                    vec![1; nonsing.len()]
+                    vec![1; sub_shape.len()]
                 }
             } else {
-                vec![1; nonsing.len()]
+                vec![1; sub_shape.len()]
             };
             for b in sub {
                 let mut ridx = Vec::new();

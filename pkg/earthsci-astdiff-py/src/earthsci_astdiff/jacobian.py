@@ -237,7 +237,7 @@ def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ct
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names)
+    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)

@@ -451,9 +451,19 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
         nonsing = [k for k, (lo, hi) in enumerate(rows) if hi > lo]
         if is_array_expr(val, ctx):
             sub: list[Band] = []
-            val_fullrank = (
-                isinstance(val, ExprNode) and val.op == "faq" and len(val.output_idx) == len(rows)
-            )
+            # A FULL-RANK value spans every region dim, singleton dims
+            # included; a reduced-rank one only the non-singleton dims. The
+            # rank is a faq node's output arity, a makearray's region arity,
+            # or an array variable's declared rank (the inliner's
+            # `_value_rank` reads it the same way).
+            val_rank = None
+            if isinstance(val, ExprNode) and val.op == "faq":
+                val_rank = len(val.output_idx or [])
+            elif isinstance(val, ExprNode) and val.op == "makearray" and val.regions:
+                val_rank = len(val.regions[0])
+            elif isinstance(val, str) and val in ctx.shapes:
+                val_rank = len(ctx.shapes[val])
+            val_fullrank = val_rank == len(rows)
             if val_fullrank:
                 sub_shape = [hi - lo + 1 for lo, hi in rows]
             else:
@@ -465,7 +475,7 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
                     _range_of(vr[str(n)], ctx)[0] if str(n) in vr else 1 for n in val.output_idx
                 ]
             else:
-                origins = [1] * len(nonsing)
+                origins = [1] * len(sub_shape)
             for b in sub:
                 ridx: list = []
                 subst: dict[str, Expr] = {}

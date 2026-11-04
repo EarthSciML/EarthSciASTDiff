@@ -119,7 +119,13 @@ are not expressed as rewritten array expressions; they are expressed as
 **bands** (§4). `makearray` overlap follows §4.3.2: later regions overwrite
 earlier ones, so a band from an overwritten sub-region MUST NOT be emitted
 (equivalently: emission may lower a per-cell read of a `makearray` to nested
-region-membership `ifelse`, folded first-region-outward).
+region-membership `ifelse`, folded first-region-outward). An array-valued
+region value fills its region by position: the value's element at its own
+index `origin + p` (a `faq` value's range start; 1 for a `makearray` or an
+array variable) is the region's element at `lo + p`, along every dim the
+value spans. A value spans either every region dim, singleton dims
+included, or only the non-singleton dims; both lowerings (bands and the
+per-cell `ifelse`) MUST read it this way.
 
 Contracted (reduced) `faq` indices with `reduce: "+"` (explicit or
 the default) differentiate per site of the faq body: a site whose

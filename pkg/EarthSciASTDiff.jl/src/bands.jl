@@ -525,11 +525,22 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
         nonsing = [k for (k, (lo, hi)) in enumerate(rows) if hi > lo]
         if is_array_expr(val, ctx)
             sub = Band[]
-            # A full-rank faq value names every region dim explicitly
-            # (singleton dims included); a reduced-rank value covers only the
-            # non-singleton dims.
-            val_fullrank = val isa OpExpr && val.op == "faq" &&
-                length(val.output_idx) == length(rows)
+            # A FULL-RANK value spans every region dim, singleton dims
+            # included; a reduced-rank one only the non-singleton dims. The
+            # rank is a faq node's output arity, a makearray's region arity,
+            # or an array variable's declared rank (the inliner's
+            # `_value_rank` reads it the same way).
+            val_rank = if val isa OpExpr && val.op == "faq"
+                length(val.output_idx)
+            elseif val isa OpExpr && val.op == "makearray" &&
+                    val.regions !== nothing && !isempty(val.regions)
+                length(val.regions[1])
+            elseif val isa VarExpr && haskey(ctx.shapes, val.name)
+                length(ctx.shapes[val.name])
+            else
+                nothing
+            end
+            val_fullrank = val_rank == length(rows)
             sub_shape = val_fullrank ?
                 [hi - lo + 1 for (lo, hi) in rows] :
                 [rows[k][2] - rows[k][1] + 1 for k in nonsing]
@@ -547,7 +558,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
                         for n in val.output_idx
                 ]
             else
-                ones(Int, length(nonsing))   # identity/broadcast bands are 1-based
+                ones(Int, length(sub_shape))   # identity/broadcast bands are 1-based
             end
             for b in sub
                 ridx = Union{String, Int}[]; subst = Dict{String, ASTExpr}()
