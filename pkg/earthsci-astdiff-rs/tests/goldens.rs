@@ -76,8 +76,8 @@ fn band_goldens() {
 }
 
 /// Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the
-/// state entries without coefficients, for every fixture above and the
-/// flattened coupled document.
+/// state entries without coefficients, for every fixture above, the
+/// flattened coupled document and `onehot_clipped`.
 #[test]
 fn structure_goldens() {
     let check = |name: &str, so: Vec<earthsci_astdiff::StructureEntry>| {
@@ -96,6 +96,12 @@ fn structure_goldens() {
             jacobian_structure(&load(name), None, Wrt::States).unwrap(),
         );
     }
+    // structure-only goldens alone: a one-hot column split by clipping, a
+    // state of two equations (spec §2.1)
+    check(
+        "onehot_clipped",
+        jacobian_structure(&load("onehot_clipped"), None, Wrt::States).unwrap(),
+    );
     let flat = earthsci_ast::flatten(&load("coupled_chem_advection")).unwrap();
     let sv = earthsci_astdiff::sysview_flat(&flat).unwrap();
     check(

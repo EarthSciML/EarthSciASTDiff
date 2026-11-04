@@ -984,18 +984,28 @@ impl ExtendedBands {
 /// state are never merged) the entries are stably sorted by column name, a
 /// column's direct bands before its composites.
 pub(crate) fn materialize(ctx: &Ctx, ext: &ExtendedBands) -> R<Vec<JacEntry>> {
+    Ok(materialize_eq(ctx, ext)?.0)
+}
+
+/// [`materialize`], with the row equation of each entry.
+pub(crate) fn materialize_eq(ctx: &Ctx, ext: &ExtendedBands) -> R<(Vec<JacEntry>, Vec<usize>)> {
     let names = &ext.transfer;
     let mut memo: HashMap<String, Vec<JacEntry>> = HashMap::new();
     let mut out: Vec<JacEntry> = Vec::new();
+    let mut eqs: Vec<usize> = Vec::new();
     // (composite?, entry), sorted by (column, composite?)
     let mut group: Vec<(bool, JacEntry)> = Vec::new();
-    let flush = |group: &mut Vec<(bool, JacEntry)>, out: &mut Vec<JacEntry>| {
+    let flush = |group: &mut Vec<(bool, JacEntry)>,
+                 out: &mut Vec<JacEntry>,
+                 eqs: &mut Vec<usize>,
+                 q: usize| {
         group.sort_by(|(ca, a), (cb, b)| a.v.cmp(&b.v).then(ca.cmp(cb)));
+        eqs.resize(eqs.len() + group.len(), q);
         out.extend(group.drain(..).map(|(_, en)| en));
     };
     for (k, en) in ext.rows.iter().enumerate() {
         if k > 0 && ext.row_eq[k - 1] != ext.row_eq[k] {
-            flush(&mut group, &mut out);
+            flush(&mut group, &mut out, &mut eqs, ext.row_eq[k - 1]);
         }
         match ext.recurrence(&en.v) {
             None => group.push((false, en.clone())),
@@ -1016,8 +1026,10 @@ pub(crate) fn materialize(ctx: &Ctx, ext: &ExtendedBands) -> R<Vec<JacEntry>> {
             }
         }
     }
-    flush(&mut group, &mut out);
-    Ok(out)
+    if let Some(&q) = ext.row_eq.last() {
+        flush(&mut group, &mut out, &mut eqs, q);
+    }
+    Ok((out, eqs))
 }
 
 /// `dV/dx` of recurrence `rec` as bands with rows `V` and target columns:

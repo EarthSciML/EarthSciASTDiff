@@ -111,7 +111,9 @@ the full mode can drop an entry the structure-only list keeps.
 entries are composed through the transfer, which reads the coefficients. A
 producer MAY then compute the structure-only entries from the full entries:
 without `coef`, merged again on structure (item 2) and pinned (item 3), so
-the two point sets are equal. (The bindings that run recurrences do this.)
+the two point sets are equal. As in the full mode, only entries of one row
+equation and one column merge: two equations of one state stay apart even
+where one's entries of a column meet the next one's. (The bindings that run recurrences do this.)
 
 On the `parameters` and `forcing` axes the closed-column rule of §4.3
 applies to the structure-only entries too. Since none is dropped, a document
@@ -872,7 +874,13 @@ Fixture corpus in `tests/` of this repository:
    at `w = 0` exactly, with the buffers at the document defaults). Each fixture with a state band golden also carries
    `<name>.structure.bands.json`, its structure-only entries (§2.1) in the
    same deterministic JSON, each entry without `coef`; the Julia reference
-   checks that their points include the full entries' points (§2.1). A
+   checks that their points include the full entries' points (§2.1).
+   `onehot_clipped.esm` carries that golden alone: a level search used as a
+   subscript under a row-index `ifelse`, so clipping splits one one-hot
+   column into two adjacent regions whose selections differ (two full
+   entries, one structure-only entry, §2.1 item 2), and a state defined by
+   two equations whose same-structure entries meet at a row boundary (never
+   merged, in either mode). A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried

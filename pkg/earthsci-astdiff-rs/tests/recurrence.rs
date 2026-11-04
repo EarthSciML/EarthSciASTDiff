@@ -590,3 +590,46 @@ fn entries_keep_each_equation_of_a_state_apart() {
     assert_eq!(&cols[..2], ["y", "x"], "{cols:?}");
     assert!(cols[2..].iter().all(|c| c == "y"), "{cols:?}");
 }
+
+#[test]
+fn structure_only_keeps_each_equation_of_a_state_apart() {
+    // two equations of `x` (rows 1..2, then 3..4), each reading `y[i]`, the
+    // second also the recurrence V (a sweep of `y`): the first equation's run
+    // of column `y` ends where the second's begins, and the structure-only
+    // re-merge through the recurrence (spec §2.1) must not join them, as the
+    // full mode and the pass without a recurrence never do
+    let lev = json!({"type": "unknown", "shape": ["lev"], "default": 0.5});
+    let faq = |lo: i64, hi: i64, body: Value| {
+        json!({"op": "faq", "args": [], "output_idx": ["i"], "ranges": {"i": [lo, hi]},
+               "expr": body})
+    };
+    let doc = model(
+        json!({"x": lev, "y": lev, "V": {"type": "unknown", "shape": ["lev"]}}),
+        vec![
+            sweep("V", "y", 0.5),
+            lifted("x", 1, 2, faq(1, 2, ix("y", vec![json!("i")]))),
+            lifted(
+                "x",
+                3,
+                4,
+                faq(
+                    3,
+                    4,
+                    o(
+                        "+",
+                        vec![ix("y", vec![json!("i")]), ix("V", vec![json!("i")])],
+                    ),
+                ),
+            ),
+        ],
+    );
+    let file = earthsci_ast::load_document(&doc).unwrap();
+    let xy: Vec<(i64, i64)> = earthsci_astdiff::jacobian_structure(&file, None, Wrt::States)
+        .unwrap()
+        .into_iter()
+        .filter(|en| en.u == "x" && en.v == "y")
+        .map(|en| en.band.rows[0])
+        .collect();
+    assert!(xy.contains(&(1, 2)), "{xy:?}");
+    assert!(xy.iter().all(|&(lo, hi)| hi <= 2 || lo >= 3), "{xy:?}");
+}

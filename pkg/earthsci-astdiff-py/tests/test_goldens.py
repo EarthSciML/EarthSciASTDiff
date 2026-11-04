@@ -135,9 +135,10 @@ def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
 
 # Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
 # entries without coefficients. The reference writes those of the first ten
-# fixtures and of the flattened coupled document; the Rust binding those of
-# the two recurrence fixtures, whose pass runs in full (§2.1).
-@pytest.mark.parametrize("name", (*GOLDEN_NAMES, "coupled_chem_advection"))
+# fixtures, of the flattened coupled document and of `onehot_clipped` (a
+# one-hot column split by clipping, a state of two equations); the Rust
+# binding those of the two recurrence fixtures, whose pass runs in full (§2.1).
+@pytest.mark.parametrize("name", (*GOLDEN_NAMES, "coupled_chem_advection", "onehot_clipped"))
 def test_structure_golden(name, valid_dir, golden_dir):
     from earthsci_astdiff import sysview
 
@@ -154,6 +155,30 @@ def test_structure_golden(name, valid_dir, golden_dir):
     from earthsci_astdiff import parse_band
 
     assert stable_json([serialize_band(parse_band(serialize_band(e))) for e in entries]) == text
+
+
+def test_structure_merges_on_structure_alone(valid_dir):
+    """`onehot_clipped` (spec §2.1 item 2): the one-hot column of `c` that
+    clipping splits into rows 1..2 and 3..5 is two full bands (their one-hot
+    selections differ) and ONE structure-only band; `e`'s two equations keep
+    their bands on `c` apart in both modes."""
+    from earthsci_astdiff import sysview
+
+    file = ea.load_path(str(valid_dir / "onehot_clipped.esm"))
+    sv = sysview(file, next(iter(file.models)))
+    full = jacobian_bands(sv)
+    so = jacobian_bands(sv, coefficients=False)
+
+    def rows(entries, u, v, onehot):
+        return [
+            e.band.rows
+            for e in entries
+            if e.u == u and e.v == v and bool(e.band.contracted) == onehot
+        ]
+
+    assert rows(full, "c", "c", True) == [[(1, 2)], [(3, 5)]]
+    assert rows(so, "c", "c", True) == [[(1, 5)]]
+    assert rows(full, "e", "c", False) == rows(so, "e", "c", False) == [[(1, 2)], [(3, 5)]]
 
 
 def test_structure_keeps_zero_coefficient():

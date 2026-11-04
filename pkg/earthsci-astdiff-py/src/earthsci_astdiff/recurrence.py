@@ -722,27 +722,32 @@ class ExtendedBands:
         return next((r for r in self.recurrences if r.name == v), None)
 
 
-def materialize(sv, ctx, ext: ExtendedBands) -> list:
+def materialize(sv, ctx, ext: ExtendedBands, eqs: list | None = None) -> list:
     """The materialized band list of an extended system (spec §4.5): every
     state band whose column is a target, plus, for each state band reading a
     recurrence ``V``, its composition with ``dV/dx``. Per row equation (two
     equations of one state are never merged) the entries are stably sorted
-    by column name, a column's direct bands before its composites."""
+    by column name, a column's direct bands before its composites. With
+    ``eqs`` (a list) the row equation of each entry is appended to it."""
     from .jacobian import JacEntry
 
     names = ext.transfer
     memo: dict = {}
     out: list = []
     group: list = []  # (column, 0 direct | 1 composite, entry)
+    cur = [None]  # the row equation of `group`
 
     def flush():
         group.sort(key=lambda g: (g[0], g[1]))
         out.extend(g[2] for g in group)
+        if eqs is not None:
+            eqs.extend([cur[0]] * len(group))
         group.clear()
 
     for k, en in enumerate(ext.rows):
         if k > 0 and ext.row_eq[k - 1] != ext.row_eq[k]:
             flush()
+        cur[0] = ext.row_eq[k]
         rec = ext.recurrence(en.v)
         if rec is None:
             group.append((en.v, 0, en))

@@ -33,6 +33,22 @@ _so_view(name) = name == "coupled_chem_advection" ?
     end
 end
 
+@testset "structure-only entries merge on structure alone" begin
+    # `onehot_clipped`: the one-hot column of `c` that clipping splits into
+    # rows 1..2 and 3..5 is two full bands (their one-hot selections differ)
+    # and ONE structure-only band; `e`'s two equations keep their bands on `c`
+    # apart in both modes.
+    sv = _so_view("onehot_clipped")
+    full = jacobian_bands(sv)
+    so = jacobian_bands(sv; coefficients = false)
+    rows(es, u, v, hot) = [
+        en.band.rows for en in es if en.u == u && en.v == v && !isempty(en.band.contracted) == hot
+    ]
+    @test rows(full, "c", "c", true) == [[(1, 2)], [(3, 5)]]
+    @test rows(so, "c", "c", true) == [[(1, 5)]]
+    @test rows(full, "e", "c", false) == rows(so, "e", "c", false) == [[(1, 2)], [(3, 5)]]
+end
+
 @testset "structure-only entries: other axes" begin
     for (name, wrt) in (
             ("tgrad_photolysis", :time), ("forcing_bracket", :forcing),

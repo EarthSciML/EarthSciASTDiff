@@ -172,20 +172,26 @@ def _jacobian_bands(
     ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co)
     if not ext.recurrences:
         return ext.rows
-    entries = materialize(sv, ctx, ext)
-    return entries if co else _structure_only(entries)
+    if co:
+        return materialize(sv, ctx, ext)
+    eqs: list[int] = []
+    entries = materialize(sv, ctx, ext, eqs)
+    return _structure_only(entries, eqs)
 
 
-def _structure_only(entries: list[JacEntry]) -> list[JacEntry]:
+def _structure_only(entries: list[JacEntry], eqs: list[int]) -> list[JacEntry]:
     # Full entries (the pass through an active recurrence runs in full) as
     # structure-only ones (spec §2.1): without `coef`, merged again on
     # structure alone (item 2) — two entries the full mode kept apart for
-    # their coefficients alone coalesce — and pinned (item 3).
+    # their coefficients alone coalesce — and pinned (item 3). A merge group
+    # is one column of one row EQUATION (`eqs[k]`, the equation of entry
+    # k), as without a recurrence: two equations of one state are never
+    # merged, even where one's run of a column meets the next one's.
     out: list[JacEntry] = []
     i = 0
     while i < len(entries):
         j = i
-        while j < len(entries) and (entries[j].u, entries[j].v) == (entries[i].u, entries[i].v):
+        while j < len(entries) and (eqs[j], entries[j].v) == (eqs[i], entries[i].v):
             j += 1
         bs = merge_bands([replace(en.band, coef=None) for en in entries[i:j]])
         out.extend(JacEntry(entries[i].u, entries[i].v, normalize_band(b)) for b in bs)
@@ -284,7 +290,15 @@ def _row_bands(
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
     for v in hits:
-        for b in merge_bands(bands_in(rhs, v, ctx, shape_u, co)):
+        bs = bands_in(rhs, v, ctx, shape_u, co)
+        if not co:
+            # Structure-only bands merge on structure alone (spec §2.1 item
+            # 2): the placeholder is gone before the merge, as in the
+            # reference's `bands(...; coefficients = false)` — one-hot
+            # lifting has rewritten it per band (`ifelse(_oh == κ + d, 1,
+            # 0)`), which would otherwise keep such bands apart.
+            bs = [replace(b, coef=None) for b in bs]
+        for b in merge_bands(bs):
             out.append(JacEntry(u, v, normalize_band(b)))
 
 

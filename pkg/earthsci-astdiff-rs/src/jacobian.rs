@@ -9,7 +9,9 @@ use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
 use crate::bands::{bands_in, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::inline::inline_observed_cached;
-use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
+use crate::recurrence::{
+    active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
+};
 use crate::system::{
     ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
     SysView,
@@ -349,16 +351,19 @@ fn bands_seeded_in(
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
-    let rows = materialize(ctx, &ext)?;
     if co {
-        return Ok(rows);
+        return materialize(ctx, &ext);
     }
+    // A merge group is one column of one row EQUATION, as without a
+    // recurrence: two equations of one state are never merged, even where
+    // one's run of a column meets the next one's.
+    let (rows, eqs) = materialize_eq(ctx, &ext)?;
     let mut out = Vec::with_capacity(rows.len());
-    let mut it = rows.into_iter().peekable();
-    while let Some(first) = it.next() {
+    let mut it = rows.into_iter().zip(eqs).peekable();
+    while let Some((first, q)) = it.next() {
         let (u, v) = (first.u, first.v);
         let mut group = vec![first.band];
-        while let Some(en) = it.next_if(|en| en.u == u && en.v == v) {
+        while let Some((en, _)) = it.next_if(|(en, q2)| *q2 == q && en.v == v) {
             group.push(en.band);
         }
         for b in group.iter_mut() {
@@ -562,7 +567,17 @@ fn row_bands(
         .collect();
     hits.sort();
     for v in &hits {
-        for b in merge_bands(bands_in(&rhs, v, ctx, &shape_u, co)?) {
+        let mut bs = bands_in(&rhs, v, ctx, &shape_u, co)?;
+        if !co {
+            // Structure-only bands merge on structure alone (spec §2.1 item
+            // 2): one-hot lifting has rewritten the placeholder per band
+            // (`ifelse(_oh == κ + d, 1, 0)`), so it is reset before the
+            // merge, as the reference drops it (`coef = nothing`).
+            for b in bs.iter_mut() {
+                b.coef = placeholder();
+            }
+        }
+        for b in merge_bands(bs) {
             out.push(JacEntry {
                 u: u.to_string(),
                 v: v.clone(),
