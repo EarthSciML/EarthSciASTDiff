@@ -175,4 +175,3 @@ function _intern_id(t::_Interner, e::ASTExpr)::Tuple{ASTExpr, Int}
     t.memo[e] = (c, id)
     return (c, id)
 end
-
