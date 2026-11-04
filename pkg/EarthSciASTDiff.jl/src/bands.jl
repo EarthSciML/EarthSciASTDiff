@@ -350,19 +350,31 @@ function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale,
     outer = String[r for r in ridx if r isa String]
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
-    for (rows2, body) in clip_regions(e, ridx, rows)
-        nested = _nested_sums(body, v, outer)
-        taken = Ref{Union{Nothing, Set{String}}}(nothing)
-        for s in sorted_sites(body, v)
-            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra, g = _lift_nested(
-                nested, s, body, cidx, _site_deriv(co, body, s, occ)[1],
-                ctx, outer, taken
-            )
-            coef = co ? _simp(mul(d, scale...), sm) : _ONE
-            iszero_lit(coef) && continue
-            _push_band!(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
-        end
+    regions = clip_regions(e, ridx, rows)
+    length(regions) > 1 && _scope!(occ, e)
+    # Each region is released once done (`_end_region!`, and popped so the
+    # list does not keep every rebuilt body alive).
+    reverse!(regions)
+    while !isempty(regions)
+        rows2, body = pop!(regions)
+        _scalar_region!(out, body, rows2, v, ctx, ridx, outer, scale, co, occ, sm)
+        _end_region!(occ, body, sm)
+    end
+    return
+end
+
+function _scalar_region!(out, body, rows2, v, ctx, ridx, outer, scale, co, occ, sm)
+    nested = _nested_sums(body, v, outer)
+    taken = Ref{Union{Nothing, Set{String}}}(nothing)
+    for s in sorted_sites(body, v)
+        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+        cidx, d, extra, g = _lift_nested(
+            nested, s, body, cidx, _site_deriv(co, body, s, occ)[1],
+            ctx, outer, taken
+        )
+        coef = co ? _simp(mul(d, scale...), sm) : _ONE
+        iszero_lit(coef) && continue
+        _push_band!(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
     end
     return
 end
@@ -499,66 +511,90 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
     body = e.expr_body
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
-    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip_regions(body, oidx, rows_p)
-        nested = _nested_sums(body2, v, outer)
-        taken = Ref{Union{Nothing, Set{String}}}(nothing)
-        for s in sorted_sites(body2, v)
-            s.expr isa VarExpr && is_array(ctx, v) && throw(
-                BandError(
-                    "whole-array reference to `$v` inside a faq body"
-                )
+    scoped = false
+    for (rows_p, crange, guard) in pieces
+        regions = clip_regions(body, oidx, rows_p)
+        # Each region is released once done (`_end_region!`, and popped so
+        # the list does not keep every rebuilt body alive).
+        if !scoped && (length(regions) > 1 || length(pieces) > 1)
+            _scope!(occ, body)
+            scoped = true
+        end
+        reverse!(regions)
+        while !isempty(regions)
+            rows2, body2 = pop!(regions)
+            _faq_region!(
+                out, e, body2, rows2, crange, guard, v, ctx, oidx, outer, cnames,
+                red, vfilt, scale, co, occ, sm
             )
-            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            d0, nz = _site_deriv(co, body2, s, occ)
-            cidx, d, extra, g = _lift_nested(nested, s, body2, cidx, d0, ctx, outer, taken)
-            if co
-                d = _window_weight(red, e, cnames, d, BandError)
-                vfilt === nothing || iszero_lit(d) || (d = op("ifelse", vfilt, d, lit(0)))
-            elseif nz
-                _check_window(red, cnames, BandError)   # what `_window_weight` refuses
+            _end_region!(occ, body2, sm)
+        end
+    end
+    return
+end
+
+function _faq_region!(
+        out, e, body2, rows2, crange, guard, v, ctx, oidx, outer, cnames, red, vfilt,
+        scale, co, occ, sm
+    )
+    nested = _nested_sums(body2, v, outer)
+    taken = Ref{Union{Nothing, Set{String}}}(nothing)
+    for s in sorted_sites(body2, v)
+        s.expr isa VarExpr && is_array(ctx, v) && throw(
+            BandError(
+                "whole-array reference to `$v` inside a faq body"
+            )
+        )
+        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+        d0, nz = _site_deriv(co, body2, s, occ)
+        cidx, d, extra, g = _lift_nested(nested, s, body2, cidx, d0, ctx, outer, taken)
+        if co
+            d = _window_weight(red, e, cnames, d, BandError)
+            vfilt === nothing || iszero_lit(d) || (d = op("ifelse", vfilt, d, lit(0)))
+        elseif nz
+            _check_window(red, cnames, BandError)   # what `_window_weight` refuses
+        end
+        if isempty(crange)
+            coef = co ? _simp(mul(d, scale...), sm) : _ONE
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
+        elseif !any(
+                n -> any(c -> n in free_variables(c), cidx),
+                first.(crange)
+            )
+            # The column is independent of every contracted index: a
+            # plain band whose coefficient is the (scalar) `reduce: "+"`
+            # of the site derivative over the contraction. A guard
+            # conjunct reading a contracted name — the piece's own, or a
+            # nested sum's filter tied to it (`Σ_k Σ_{j≤k}`) — is no
+            # condition on the band's point: it filters that sum.
+            gc = ASTExpr[]; gr = ASTExpr[]
+            gg = _conj(guard, g)
+            gg === nothing || for c in _conjuncts(gg)
+                push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
             end
-            if isempty(crange)
-                coef = co ? _simp(mul(d, scale...), sm) : _ONE
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
-            elseif !any(
-                    n -> any(c -> n in free_variables(c), cidx),
-                    first.(crange)
+            coef = if co
+                red_sum = OpExpr(
+                    "faq", ASTExpr[];
+                    output_idx = Any[], reduce = "+", expr_body = d,
+                    ranges = Dict{String, Any}(
+                        n => Any[lo, hi] for (n, lo, hi) in crange
+                    ),
+                    filter = _conj(gc)
                 )
-                # The column is independent of every contracted index: a
-                # plain band whose coefficient is the (scalar) `reduce: "+"`
-                # of the site derivative over the contraction. A guard
-                # conjunct reading a contracted name — the piece's own, or a
-                # nested sum's filter tied to it (`Σ_k Σ_{j≤k}`) — is no
-                # condition on the band's point: it filters that sum.
-                gc = ASTExpr[]; gr = ASTExpr[]
-                gg = _conj(guard, g)
-                gg === nothing || for c in _conjuncts(gg)
-                    push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
-                end
-                coef = if co
-                    red_sum = OpExpr(
-                        "faq", ASTExpr[];
-                        output_idx = Any[], reduce = "+", expr_body = d,
-                        ranges = Dict{String, Any}(
-                            n => Any[lo, hi] for (n, lo, hi) in crange
-                        ),
-                        filter = _conj(gc)
-                    )
-                    _simp(mul(red_sum, scale...), sm)
-                else
-                    _ONE
-                end
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
+                _simp(mul(red_sum, scale...), sm)
             else
-                # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
-                # with free contracted column dimensions; entries landing on
-                # one column accumulate at assembly.
-                coef = co ? _simp(mul(d, scale...), sm) : _ONE
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
+                _ONE
             end
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
+        else
+            # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
+            # with free contracted column dimensions; entries landing on
+            # one column accumulate at assembly.
+            coef = co ? _simp(mul(d, scale...), sm) : _ONE
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
         end
     end
     return

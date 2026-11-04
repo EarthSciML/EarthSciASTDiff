@@ -145,10 +145,17 @@ _simp(e::ASTExpr)::ASTExpr = _canon_lits(simplify(simplify_branches(simplify(e))
 # already simplified. `_simp` is a function of structure alone, so a
 # structural id (`sid`, which interns each distinct node once and sees the
 # sharing the derivative memo leaves between regions) decides the repeat.
+# The inputs of the current region are recorded (`pending`) so that
+# `_end_region!` (expr_helpers.jl) can evict the ids of their region-local
+# nodes once the region is done.
 struct _SimpMemo
     ix::StructIndex
     out::Dict{Int, ASTExpr}
+    pending::Vector{OpExpr}
 end
-_SimpMemo() = _SimpMemo(StructIndex(), Dict{Int, ASTExpr}())
-_simp(e::ASTExpr, m::_SimpMemo)::ASTExpr =
-    e isa OpExpr ? get!(() -> _simp(e), m.out, sid(m.ix, e)) : _simp(e)
+_SimpMemo() = _SimpMemo(StructIndex(), Dict{Int, ASTExpr}(), OpExpr[])
+function _simp(e::ASTExpr, m::_SimpMemo)::ASTExpr
+    e isa OpExpr || return _simp(e)
+    push!(m.pending, e)
+    return get!(() -> _simp(e), m.out, sid(m.ix, e))
+end

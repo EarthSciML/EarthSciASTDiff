@@ -191,11 +191,93 @@ struct _OccIndex
     bits::IdDict{OpExpr, BitSet}      # node → ids of the site keys under it
     var::Base.RefValue{BitSet}        # the set of a bare `VarExpr(v)`, once keyed
     deriv::Dict{String, IdDict{OpExpr, ASTExpr}}  # site → node → its derivative
+    orig::IdDict{OpExpr, Nothing}     # the nodes of the unclipped body (`_scope!`)
+    keep::IdDict{OpExpr, Nothing}     # derivatives of `orig` nodes, kept across regions
 end
 _OccIndex(v::String) = _OccIndex(
     v, Dict{String, Int}(), IdDict{OpExpr, Int}(), IdDict{OpExpr, BitSet}(), Ref(BitSet()),
-    Dict{String, IdDict{OpExpr, ASTExpr}}()
+    Dict{String, IdDict{OpExpr, ASTExpr}}(), IdDict{OpExpr, Nothing}(),
+    IdDict{OpExpr, Nothing}()
 )
+
+# ── bounding the index to one region at a time ──────────────────────────────
+#
+# What the index shares between regions is what clipping left alone: the
+# nodes of the unclipped body. Everything else it records — the key sets,
+# keys and derivatives of the nodes clipping rebuilt for one region, and the
+# coefficient nodes `_SimpMemo` interned for that region — is never asked
+# for again once the region is done, yet an identity-keyed table keeps it
+# alive until the whole band computation returns: on a stencil operator
+# clipped into hundreds of regions that is hundreds of rebuilt bodies and
+# their derivatives at once. `_scope!` records the shared nodes, and
+# `_end_region!` evicts the rest after each region. Eviction is exact: an
+# entry is a function of its node's structure, so one evicted by mistake is
+# only recomputed.
+
+"""
+    _scope!(ix::_OccIndex, body) -> ix
+
+Record the nodes of `body`, the unclipped body every region of one band
+computation is clipped from: their entries are kept across regions, and
+[`_end_region!`](@ref) evicts every other node's.
+"""
+function _scope!(ix::_OccIndex, body::ASTExpr)
+    stack = ASTExpr[body]
+    while !isempty(stack)
+        e = pop!(stack)
+        (e isa OpExpr && !haskey(ix.orig, e)) || continue
+        ix.orig[e] = nothing
+        map_children(c -> (push!(stack, c); c), e)
+    end
+    return ix
+end
+
+# A derivative of a node of the unclipped body: kept across regions.
+_keep!(ix::_OccIndex, e::OpExpr, d::ASTExpr) =
+    (d isa OpExpr && haskey(ix.orig, e) && (ix.keep[d] = nothing); nothing)
+
+"""
+    _end_region!(ix::_OccIndex, body, sm = nothing)
+
+Evict what one region `body` (clipped from the body [`_scope!`](@ref)
+recorded) left in `ix` — the key sets, keys and derivatives of its rebuilt
+nodes — and, with a [`_SimpMemo`](@ref) `sm`, the structural ids of the
+coefficient nodes interned for it.
+"""
+function _end_region!(ix::_OccIndex, body::ASTExpr, sm = nothing)
+    if isempty(ix.orig)                # one unclipped body: nothing is region-local
+        sm === nothing || empty!(sm.pending)
+        return
+    end
+    seen = IdDict{OpExpr, Nothing}()
+    stack = ASTExpr[body]
+    while !isempty(stack)
+        e = pop!(stack)
+        (e isa OpExpr && !haskey(ix.orig, e) && !haskey(seen, e)) || continue
+        seen[e] = nothing
+        delete!(ix.bits, e)
+        delete!(ix.nodekey, e)
+        for d in values(ix.deriv)
+            delete!(d, e)
+        end
+        map_children(c -> (push!(stack, c); c), e)
+    end
+    sm === nothing && return
+    empty!(seen)
+    append!(stack, sm.pending)
+    empty!(sm.pending)
+    while !isempty(stack)
+        e = pop!(stack)
+        (
+            e isa OpExpr && !haskey(ix.orig, e) && !haskey(ix.keep, e) &&
+                !haskey(seen, e)
+        ) || continue
+        seen[e] = nothing
+        delete!(sm.ix.memo, e)
+        map_children(c -> (push!(stack, c); c), e)
+    end
+    return
+end
 
 const _NO_SITES = BitSet()            # shared, never mutated
 

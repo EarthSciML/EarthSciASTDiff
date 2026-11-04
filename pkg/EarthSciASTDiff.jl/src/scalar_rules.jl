@@ -128,7 +128,9 @@ function dscalar(e::ASTExpr, s::Site, occ::_Occ)::ASTExpr
     # `_SiteScan`).
     done = get(occ.d, e, nothing)
     done === nothing || return done
-    return occ.d[e] = _dscalar_op(e, s, occ)
+    d = occ.d[e] = _dscalar_op(e, s, occ)
+    _keep!(occ.ix, e, d)
+    return d
 end
 
 function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
