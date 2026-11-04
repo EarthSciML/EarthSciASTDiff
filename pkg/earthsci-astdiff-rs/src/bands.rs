@@ -1,19 +1,24 @@
 //! The array-level band calculus (the reference's bands.jl).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::substitute;
 use earthsci_ast::{Expr, ExpressionNode, RegionBound};
 
-use crate::branches::{canon_lits, simp};
+use crate::branches::{canon_lits, simp, SimpMemo};
 use crate::clip::{clip_regions, RIdx};
-use crate::helpers::{add, free_vars, is_zero, map_expr_children, mul, op, skey, Site};
+use crate::hashcons::StructIndex;
+use crate::helpers::{
+    add, free_vars, is_zero, map_expr_children, mul, op, skey, OccIndex, Site, SiteScan,
+};
 use crate::inline::{all_names, binders};
 use crate::reductions::{
-    conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard, window_weight,
+    check_window, conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard,
+    window_weight,
 };
-use crate::rules::{dscalar, DerivativeRuleError};
+use crate::rules::{drule_check, dscalar_in, DerivativeRuleError};
 use crate::simplify_port::simplify_jl;
 
 /// One rectangular region of a Jacobian block: the rows it covers
@@ -104,12 +109,7 @@ fn sites_of(e: &Expr, v: &str, acc: &mut BTreeMap<String, Site>) {
             };
             sites_of(&Expr::operator(body), v, acc);
         }
-        Expr::Operator(n) => {
-            n.map_children(&mut |c: &Expr| {
-                sites_of(c, v, acc);
-                c.clone()
-            });
-        }
+        Expr::Operator(n) => n.for_each_child(&mut |c: &Expr| sites_of(c, v, acc)),
         _ => {}
     }
 }
@@ -373,22 +373,55 @@ pub(crate) fn site_cidx(s: &Site) -> Vec<Expr> {
 }
 
 pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
+    bands_in(rhs, v, ctx, shape_u, true)
+}
+
+/// The coefficient every band of the structure-only mode (`co = false`,
+/// spec §2.1) carries in place of its derivative: everything that builds a
+/// band's structural fields (clipping, sites, nested-sum and one-hot
+/// lifting) runs unchanged, no derivative is taken and none is dropped, and
+/// bands then merge on structure alone. The placeholder never leaves the
+/// crate: [`crate::jacobian::jacobian_structure_view`] returns
+/// [`crate::jacobian::StructureEntry`]s, which have no coefficient.
+pub(crate) fn placeholder() -> Expr {
+    Expr::Integer(1)
+}
+
+/// A site's derivative and whether it may be nonzero. The structure-only
+/// mode takes no derivative, but refuses what the full mode refuses:
+/// [`drule_check`] fails with the [`DerivativeRuleError`] `dscalar_in` would,
+/// and says whether the derivative is a literal 0 (on which the full mode
+/// skips its window check).
+fn site_deriv(co: bool, e: &Expr, s: &Site, occ: &RefCell<OccIndex>) -> R<(Expr, bool)> {
+    let sc = SiteScan::new(occ, s);
+    if !co {
+        return Ok((placeholder(), drule_check(e, s, &sc)?));
+    }
+    let d = dscalar_in(e, s, &sc)?;
+    let nz = !is_zero(&d);
+    Ok((d, nz))
+}
+
+/// [`bands`], or with `co = false` the structure-only bands (spec §2.1),
+/// each with the placeholder coefficient.
+pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool) -> R<Vec<Band>> {
     let mut out = Vec::new();
     if shape_u.is_empty() {
         let nested = nested_sums(rhs, v, &[]);
         let mut taken = None;
+        let occ = RefCell::new(OccIndex::new(v));
         for s in sorted_sites(rhs, v) {
             let (cidx, d, extra, g) = lift_nested(
                 &nested,
                 &s,
                 rhs,
                 site_cidx(&s),
-                dscalar(rhs, &s)?,
+                site_deriv(co, rhs, &s, &occ)?.0,
                 ctx,
                 &[],
                 &mut taken,
             )?;
-            let coef = simp(&d);
+            let coef = if co { simp(&d) } else { d };
             if is_zero(&coef) {
                 continue;
             }
@@ -396,7 +429,7 @@ pub fn bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64]) -> R<Vec<Band>> {
         }
         return Ok(out);
     }
-    bands_array(&mut out, rhs, v, ctx, shape_u, &[Expr::Integer(1)])?;
+    bands_array(&mut out, rhs, v, ctx, shape_u, &[Expr::Integer(1)], co)?;
     Ok(out)
 }
 
@@ -426,6 +459,7 @@ fn push_band(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scalar_bands(
     out: &mut Vec<Band>,
     e: &Expr,
@@ -434,6 +468,7 @@ fn scalar_bands(
     rows: &[(i64, i64)],
     ridx: &[RIdx],
     scale: &[Expr],
+    co: bool,
 ) -> R<()> {
     let outer: Vec<String> = ridx
         .iter()
@@ -442,6 +477,9 @@ fn scalar_bands(
             _ => None,
         })
         .collect();
+    // One occurrence index and one coefficient memo for every region.
+    let occ = RefCell::new(OccIndex::new(v));
+    let mut sm = SimpMemo::default();
     for (rows2, body) in clip_regions(e, ridx, rows) {
         let nested = nested_sums(&body, v, &outer);
         let mut taken = None;
@@ -451,14 +489,18 @@ fn scalar_bands(
                 &s,
                 &body,
                 site_cidx(&s),
-                dscalar(&body, &s)?,
+                site_deriv(co, &body, &s, &occ)?.0,
                 ctx,
                 &outer,
                 &mut taken,
             )?;
-            let mut fac = vec![d];
-            fac.extend(scale.iter().cloned());
-            let coef = simp(&mul(fac));
+            let coef = if co {
+                let mut fac = vec![d];
+                fac.extend(scale.iter().cloned());
+                sm.simp(&mul(fac))
+            } else {
+                d
+            };
             if is_zero(&coef) {
                 continue;
             }
@@ -491,6 +533,7 @@ fn bands_array(
     ctx: &Ctx,
     shape_u: &[i64],
     scale: &[Expr],
+    co: bool,
 ) -> R<()> {
     if let Expr::Variable(name) = e {
         if name != v {
@@ -507,7 +550,11 @@ fn bands_array(
                     RIdx::Fixed(i) => Expr::Integer(*i),
                 })
                 .collect(),
-            coef: mul(scale.to_vec()),
+            coef: if co {
+                mul(scale.to_vec())
+            } else {
+                placeholder()
+            },
             contracted: vec![],
             guard: None,
         });
@@ -517,24 +564,24 @@ fn bands_array(
     match n.op.as_str() {
         "+" => {
             for x in &n.args {
-                bands_array(out, x, v, ctx, shape_u, scale)?;
+                bands_array(out, x, v, ctx, shape_u, scale, co)?;
             }
         }
         "-" if n.args.len() == 1 => {
             let mut sc = scale.to_vec();
             sc.push(Expr::Integer(-1));
-            bands_array(out, &n.args[0], v, ctx, shape_u, &sc)?;
+            bands_array(out, &n.args[0], v, ctx, shape_u, &sc, co)?;
         }
         "-" => {
-            bands_array(out, &n.args[0], v, ctx, shape_u, scale)?;
+            bands_array(out, &n.args[0], v, ctx, shape_u, scale, co)?;
             let mut sc = scale.to_vec();
             sc.push(Expr::Integer(-1));
-            bands_array(out, &n.args[1], v, ctx, shape_u, &sc)?;
+            bands_array(out, &n.args[1], v, ctx, shape_u, &sc, co)?;
         }
         "neg" => {
             let mut sc = scale.to_vec();
             sc.push(Expr::Integer(-1));
-            bands_array(out, &n.args[0], v, ctx, shape_u, &sc)?;
+            bands_array(out, &n.args[0], v, ctx, shape_u, &sc, co)?;
         }
         "*" => {
             let arr: Vec<&Expr> = n.args.iter().filter(|x| is_array_expr(x, ctx)).collect();
@@ -553,7 +600,7 @@ fn bands_array(
             }
             let mut sc2 = scale.to_vec();
             sc2.extend(sc.into_iter().cloned());
-            bands_array(out, arr[0], v, ctx, shape_u, &sc2)?;
+            bands_array(out, arr[0], v, ctx, shape_u, &sc2, co)?;
         }
         "/" => {
             if is_array_expr(&n.args[1], ctx) {
@@ -561,14 +608,14 @@ fn bands_array(
             }
             let mut sc = scale.to_vec();
             sc.push(op("/", vec![Expr::Integer(1), n.args[1].clone()]));
-            bands_array(out, &n.args[0], v, ctx, shape_u, &sc)?;
+            bands_array(out, &n.args[0], v, ctx, shape_u, &sc, co)?;
         }
-        "makearray" => bands_makearray(out, n, v, ctx, scale)?,
-        "faq" => bands_faq(out, n, v, ctx, shape_u, scale)?,
+        "makearray" => bands_makearray(out, n, v, ctx, scale, co)?,
+        "faq" => bands_faq(out, n, v, ctx, shape_u, scale, co)?,
         "index" => {
             let names = row_names(shape_u);
             let rows: Vec<(i64, i64)> = shape_u.iter().map(|x| (1, *x)).collect();
-            scalar_bands(out, e, v, ctx, &rows, &names, scale)?;
+            scalar_bands(out, e, v, ctx, &rows, &names, scale, co)?;
         }
         _ => {
             if is_array_expr(e, ctx) {
@@ -596,11 +643,11 @@ fn bands_array(
                     ranges: Some(ranges),
                     ..Default::default()
                 });
-                bands_array(out, &agg, v, ctx, shape_u, scale)?;
+                bands_array(out, &agg, v, ctx, shape_u, scale, co)?;
             } else {
                 let names = row_names(shape_u);
                 let rows: Vec<(i64, i64)> = shape_u.iter().map(|x| (1, *x)).collect();
-                scalar_bands(out, e, v, ctx, &rows, &names, scale)?;
+                scalar_bands(out, e, v, ctx, &rows, &names, scale, co)?;
             }
         }
     }
@@ -624,6 +671,7 @@ fn bands_faq(
     ctx: &Ctx,
     shape_u: &[i64],
     scale: &[Expr],
+    co: bool,
 ) -> R<()> {
     let oidx: Vec<String> = n.output_idx.clone().unwrap_or_default();
     if oidx.iter().any(|x| x.parse::<i64>().is_ok()) {
@@ -692,6 +740,9 @@ fn bands_faq(
         }
     };
     let vfilt = conj_list(gval);
+    // One occurrence index and one coefficient memo for every region.
+    let occ = RefCell::new(OccIndex::new(v));
+    let mut sm = SimpMemo::default();
     for (rows_p, crange, guard) in pieces {
         for (rows2, body2) in clip_regions(body, &ridx, &rows_p) {
             let nested = nested_sums(&body2, v, &outer);
@@ -702,26 +753,37 @@ fn bands_faq(
                         "whole-array reference to `{v}` inside a faq body"
                     )));
                 }
+                let (d0, nz) = site_deriv(co, &body2, &s, &occ)?;
                 let (cidx, d, extra, g) = lift_nested(
                     &nested,
                     &s,
                     &body2,
                     site_cidx(&s),
-                    dscalar(&body2, &s)?,
+                    d0,
                     ctx,
                     &outer,
                     &mut taken,
                 )?;
-                let mut d = window_weight(red, n, &cnames, d).map_err(BandError)?;
-                if let Some(vf) = &vfilt {
-                    if !is_zero(&d) {
-                        d = op("ifelse", vec![vf.clone(), d, Expr::Integer(0)]);
+                let mut d = d;
+                if co {
+                    d = window_weight(red, n, &cnames, d).map_err(BandError)?;
+                    if let Some(vf) = &vfilt {
+                        if !is_zero(&d) {
+                            d = op("ifelse", vec![vf.clone(), d, Expr::Integer(0)]);
+                        }
                     }
+                } else if nz {
+                    // what `window_weight` refuses
+                    check_window(red, &cnames).map_err(BandError)?;
                 }
                 if crange.is_empty() {
-                    let mut fac = vec![d];
-                    fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = if co {
+                        let mut fac = vec![d];
+                        fac.extend(scale.iter().cloned());
+                        sm.simp(&mul(fac))
+                    } else {
+                        d
+                    };
                     if is_zero(&coef) {
                         continue;
                     }
@@ -759,22 +821,26 @@ fn bands_faq(
                             }
                         }
                     }
-                    let mut rngs = HashMap::new();
-                    for (nm, lo, hi) in &crange {
-                        rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
-                    }
-                    let red_sum = Expr::operator(ExpressionNode {
-                        op: "faq".into(),
-                        output_idx: Some(vec![]),
-                        reduce: Some("+".into()),
-                        expr: Some(Box::new(d)),
-                        ranges: Some(rngs),
-                        filter: conj_list(gc).map(Box::new),
-                        ..Default::default()
-                    });
-                    let mut fac = vec![red_sum];
-                    fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = if co {
+                        let mut rngs = HashMap::new();
+                        for (nm, lo, hi) in &crange {
+                            rngs.insert(nm.clone(), RangeSpec::Interval([*lo, *hi]));
+                        }
+                        let red_sum = Expr::operator(ExpressionNode {
+                            op: "faq".into(),
+                            output_idx: Some(vec![]),
+                            reduce: Some("+".into()),
+                            expr: Some(Box::new(d)),
+                            ranges: Some(rngs),
+                            filter: conj_list(gc).map(Box::new),
+                            ..Default::default()
+                        });
+                        let mut fac = vec![red_sum];
+                        fac.extend(scale.iter().cloned());
+                        sm.simp(&mul(fac))
+                    } else {
+                        placeholder()
+                    };
                     if is_zero(&coef) {
                         continue;
                     }
@@ -794,9 +860,13 @@ fn bands_faq(
                     // A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a
                     // band with free contracted column dimensions; entries
                     // landing on one column accumulate at assembly.
-                    let mut fac = vec![d];
-                    fac.extend(scale.iter().cloned());
-                    let coef = simp(&mul(fac));
+                    let coef = if co {
+                        let mut fac = vec![d];
+                        fac.extend(scale.iter().cloned());
+                        sm.simp(&mul(fac))
+                    } else {
+                        d
+                    };
                     if is_zero(&coef) {
                         continue;
                     }
@@ -846,6 +916,7 @@ fn bands_makearray(
     v: &str,
     ctx: &Ctx,
     scale: &[Expr],
+    co: bool,
 ) -> R<()> {
     let regions = n
         .regions
@@ -877,7 +948,7 @@ fn bands_makearray(
             } else {
                 nonsing.iter().map(|&k| rows[k].1 - rows[k].0 + 1).collect()
             };
-            bands_array(&mut sub, val, v, ctx, &sub_shape, scale)?;
+            bands_array(&mut sub, val, v, ctx, &sub_shape, scale, co)?;
             let origins: Vec<i64> = if let Expr::Operator(vn) = val {
                 if vn.op == "faq" {
                     let empty = HashMap::new();
@@ -952,7 +1023,7 @@ fn bands_makearray(
             }
         } else {
             let ridx: Vec<RIdx> = rows.iter().map(|(lo, _)| RIdx::Fixed(*lo)).collect();
-            scalar_bands(out, val, v, ctx, &rows, &ridx, scale)?;
+            scalar_bands(out, val, v, ctx, &rows, &ridx, scale, co)?;
         }
     }
     Ok(())
@@ -1037,55 +1108,76 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
     if bs.len() < 2 {
         return bs;
     }
-    let key = |b: &Band| {
-        (
-            b.ridx.clone(),
-            b.cidx.iter().map(skey).collect::<Vec<_>>(),
-            skey(&b.coef),
-            b.contracted.clone(),
-            b.guard.as_ref().map(skey),
-        )
-    };
-    let ks: Vec<_> = bs.iter().map(key).collect();
+    // Two bands can merge only when this key agrees. Structural ids agree
+    // exactly when the `skey`s do, without serializing a coefficient of a
+    // lowered stencil operator (~10⁴ nodes) once per band; the coefficient
+    // memo hands one object to every band whose coefficient repeats, so most
+    // ids are an identity lookup.
+    let mut ix = StructIndex::new();
+    let ks: Vec<_> = bs
+        .iter()
+        .map(|b| {
+            (
+                b.ridx.clone(),
+                b.cidx.iter().map(|c| ix.sid(c)).collect::<Vec<_>>(),
+                ix.sid(&b.coef),
+                b.contracted.clone(),
+                b.guard.as_ref().map(|g| ix.sid(g)),
+            )
+        })
+        .collect();
+    // The classes of the key, each in ascending order. A merge never
+    // crosses a class and leaves every other class as it was, so running
+    // the fixed point per class merges exactly what one fixed point over
+    // every pair does, in the same order.
+    let mut classes: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    for (i, k) in ks.iter().enumerate() {
+        classes.entry(k).or_default().push(i);
+    }
     let mut out = bs;
     let mut alive = vec![true; out.len()];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for a in 0..out.len() {
-            if !alive[a] {
-                continue;
-            }
-            for b in (a + 1)..out.len() {
-                if !alive[b] || ks[a] != ks[b] {
+    for idxs in classes.values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (p, &a) in idxs.iter().enumerate() {
+                if !alive[a] {
                     continue;
                 }
-                let (ra, rb) = (out[a].rows.clone(), out[b].rows.clone());
-                if ra.len() != rb.len() {
-                    continue;
-                }
-                let mut d: isize = -1;
-                let mut ok = true;
-                for k in 0..ra.len() {
-                    if ra[k] == rb[k] {
+                for &b in &idxs[p + 1..] {
+                    if !alive[b] {
                         continue;
                     }
-                    if d < 0 && (ra[k].1 + 1 == rb[k].0 || rb[k].1 + 1 == ra[k].0) {
-                        d = k as isize;
-                    } else {
-                        ok = false;
-                        break;
+                    let (ra, rb) = (out[a].rows.clone(), out[b].rows.clone());
+                    if ra.len() != rb.len() {
+                        continue;
                     }
+                    let mut d: isize = -1;
+                    let mut ok = true;
+                    for k in 0..ra.len() {
+                        if ra[k] == rb[k] {
+                            continue;
+                        }
+                        if d < 0 && (ra[k].1 + 1 == rb[k].0 || rb[k].1 + 1 == ra[k].0) {
+                            d = k as isize;
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if !ok || d < 0 {
+                        continue;
+                    }
+                    let du = d as usize;
+                    let lo = ra[du].0.min(rb[du].0);
+                    let hi = ra[du].1.max(rb[du].1);
+                    out[a].rows[du] = (lo, hi);
+                    alive[b] = false;
+                    changed = true;
                 }
-                if !ok || d < 0 {
-                    continue;
-                }
-                let du = d as usize;
-                let lo = ra[du].0.min(rb[du].0);
-                let hi = ra[du].1.max(rb[du].1);
-                out[a].rows[du] = (lo, hi);
-                alive[b] = false;
-                changed = true;
             }
         }
     }

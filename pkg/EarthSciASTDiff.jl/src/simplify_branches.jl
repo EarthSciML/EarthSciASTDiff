@@ -137,3 +137,25 @@ end
 # collapse exposed (e.g. an `ifelse` that became a literal inside a sum),
 # then literal normalization to the wire-canonical form.
 _simp(e::ASTExpr)::ASTExpr = _canon_lits(simplify(simplify_branches(simplify(e))))
+
+# `_simp` memoized on structure, for the coefficients of one band
+# computation. A clipped body yields one coefficient per region and site, and
+# the regions of a stencil operator mostly agree (ReSEACT's advection term:
+# ~6000 coefficients, ~500 bands once merged), so most are a coefficient
+# already simplified. `_simp` is a function of structure alone, so a
+# structural id (`sid`, which interns each distinct node once and sees the
+# sharing the derivative memo leaves between regions) decides the repeat.
+# The inputs of the current region are recorded (`pending`) so that
+# `_end_region!` (expr_helpers.jl) can evict the ids of their region-local
+# nodes once the region is done.
+struct _SimpMemo
+    ix::StructIndex
+    out::Dict{Int, ASTExpr}
+    pending::Vector{OpExpr}
+end
+_SimpMemo() = _SimpMemo(StructIndex(), Dict{Int, ASTExpr}(), OpExpr[])
+function _simp(e::ASTExpr, m::_SimpMemo)::ASTExpr
+    e isa OpExpr || return _simp(e)
+    push!(m.pending, e)
+    return get!(() -> _simp(e), m.out, sid(m.ix, e))
+end

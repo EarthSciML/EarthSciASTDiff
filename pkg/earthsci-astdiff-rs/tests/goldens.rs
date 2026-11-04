@@ -5,7 +5,8 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    evaluation_document, jacobian_bands, jacobian_block, parse_jacobian_block, serialize_band,
+    evaluation_document, jacobian_bands, jacobian_block, jacobian_structure,
+    jacobian_structure_view, parse_jacobian_block, serialize_band, serialize_structure_band,
     stable_json, sysview, Wrt,
 };
 use serde_json::Value;
@@ -74,6 +75,41 @@ fn band_goldens() {
             "band golden diverges: {name}"
         );
     }
+}
+
+/// Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the
+/// state entries without coefficients, for every fixture above, the
+/// flattened coupled document and `onehot_clipped`.
+#[test]
+fn structure_goldens() {
+    let check = |name: &str, so: Vec<earthsci_astdiff::StructureEntry>| {
+        let text = stable_json(&Value::Array(
+            so.iter().map(serialize_structure_band).collect(),
+        ));
+        assert_eq!(
+            text,
+            golden(&format!("{name}.structure.bands.json")),
+            "structure-only golden diverges: {name}"
+        );
+    };
+    for name in NAMES {
+        check(
+            name,
+            jacobian_structure(&load(name), None, Wrt::States).unwrap(),
+        );
+    }
+    // structure-only goldens alone: a one-hot column split by clipping, a
+    // state of two equations (spec §2.1)
+    check(
+        "onehot_clipped",
+        jacobian_structure(&load("onehot_clipped"), None, Wrt::States).unwrap(),
+    );
+    let flat = earthsci_ast::flatten(&load("coupled_chem_advection")).unwrap();
+    let sv = earthsci_astdiff::sysview_flat(&flat).unwrap();
+    check(
+        "coupled_chem_advection",
+        jacobian_structure_view(&sv, Wrt::States, None).unwrap(),
+    );
 }
 
 #[test]

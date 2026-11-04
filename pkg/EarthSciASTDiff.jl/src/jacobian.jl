@@ -86,9 +86,9 @@ function jacobian_columns(sv::SysView; wrt::Symbol, forcing = nothing)
 end
 
 """
-    jacobian_bands(file::EsmFile, model_name; wrt = :states, forcing = nothing) -> Vector{JacEntry}
-    jacobian_bands(flat::FlattenedSystem;    wrt = :states, forcing = nothing) -> Vector{JacEntry}
-    jacobian_bands(sv::SysView;              wrt = :states, forcing = nothing) -> Vector{JacEntry}
+    jacobian_bands(file::EsmFile, model_name; wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
+    jacobian_bands(flat::FlattenedSystem;    wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
+    jacobian_bands(sv::SysView;              wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
 
 Differentiate every differential equation of the system with respect to every
 state (`wrt = :states`), every parameter outside the forcing set
@@ -114,15 +114,26 @@ row and contracted index names); an unclosed one throws
 (esm-jacobian-spec.md §4.3). A model whose right-hand sides read the forcing
 set only where the derivative is identically zero (an `ifelse` condition, a
 piecewise-constant op) has an empty forcing list.
+
+`coefficients = false` returns STRUCTURE-ONLY entries (esm-jacobian-spec.md
+§2.1): regions are clipped and sites found as in the full mode, but no
+derivative is taken, no coefficient simplified, and bands merge on
+(`ridx`, `cidx`, `contracted`, `guard`) alone. Every `band.coef` is
+`nothing`. Their points include the full mode's, and equal them unless the
+full mode drops a band whose coefficient simplifies to zero. Use them where
+only the pattern is needed ([`jacobian_pattern`](@ref),
+[`detect_structure`](@ref)); a document or product needs the full mode.
 """
 jacobian_bands(file::EarthSciAST.EsmFile, model_name; kw...) =
     jacobian_bands(sysview(file, model_name); kw...)
 jacobian_bands(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands(sysview(flat); kw...)
 
-function jacobian_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing)
+function jacobian_bands(
+        sv::SysView; wrt::Symbol = :states, forcing = nothing, coefficients::Bool = true
+    )
     _check_axis(wrt)
-    return _jacobian_bands(sv, wrt, forcing, String[])
+    return _jacobian_bands(sv, wrt, forcing, String[]; coefficients = coefficients)
 end
 
 _check_axis(wrt::Symbol) = wrt in (:states, :parameters, :forcing, :time) || throw(
@@ -153,7 +164,9 @@ _structure!(memo::_FirstOrder, e1::Vector{JacEntry}, sv::SysView) =
 # second-order driver (second_order.jl) differentiates these coefficients
 # again with respect to its second axis, so an observed that moves only with
 # that axis must be inlined too, or its sites stay hidden behind its name.
-function _jacobian_bands(sv::SysView, wrt::Symbol, forcing, seed::Vector{String})
+function _jacobian_bands(
+        sv::SysView, wrt::Symbol, forcing, seed::Vector{String}; coefficients::Bool = true
+    )
     ctx = _ctx(sv)
     obs = _observed_defs(sv)
     targets = _targets(sv, wrt, forcing, obs)
@@ -197,7 +210,9 @@ function _jacobian_bands(sv::SysView, wrt::Symbol, forcing, seed::Vector{String}
         rhs = inline_observed(eq.rhs, obs; obs_names = obs_names)
         hits = sort!(String[v for v in free_variables(rhs) if v in tset])
         for v in hits
-            for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u))
+            for b in merge_bands(
+                    bands(rhs, v, ctx; shape_u = shape_u, coefficients = coefficients)
+                )
                 push!(entries, JacEntry(u, v, normalize_band(b)))
             end
         end

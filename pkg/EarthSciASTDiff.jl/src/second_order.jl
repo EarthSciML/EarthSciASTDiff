@@ -91,6 +91,7 @@ end
 function _coef_bands(b::Band, w::String, ctx::Ctx)
     out = Band[]
     outer = String[[r for r in b.ridx if r isa String]; [n for (n, _, _) in b.contracted]]
+    occ = _OccIndex(w)                 # one occurrence index for every region
     for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
         nested = _nested_sums(body, w, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
@@ -99,7 +100,7 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
                 BandError("whole-array reference to `$w` in a band coefficient")
             )
             c2 = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s), ctx, outer, taken)
+            c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s, _SiteScan(occ, s)), ctx, outer, taken)
             coef = _simp(d)
             iszero_lit(coef) && continue
             c2, coef, contracted = _one_hot(c2, coef, vcat(b.contracted, extra), b.ridx, w, ctx)

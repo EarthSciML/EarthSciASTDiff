@@ -74,6 +74,19 @@ let name = "data_fed_flat"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sysview(flat))]))
     println("wrote ", path)
 end
+# structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
+# entries without coefficients, for every model fixture above and the
+# flattened coupled document (the list the tests check, shared with them)
+include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
+for name in STRUCTURE_FIXTURES
+    src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
+        sysview(src, first(keys(src.models)))
+    entries = jacobian_bands(sv; coefficients = false)
+    path = joinpath(root, "tests", "goldens", "$name.structure.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the bands of the flattened coupled document on the axes it has bands on:
 # `<name>.bands.json` (states) and `<name>.parameters.bands.json`
 let name = "coupled_chem_advection"

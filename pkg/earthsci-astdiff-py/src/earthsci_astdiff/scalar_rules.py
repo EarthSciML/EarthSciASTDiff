@@ -12,8 +12,8 @@ from dataclasses import replace
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expression import free_variables
 
-from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
-from .reductions import reduce_op, window_weight
+from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, occurs_memo, op
+from .reductions import check_window, reduce_op, window_weight
 
 # The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
 # their time argument, so a.e. zero. ``datetime.julian_day`` is not one of them.
@@ -160,6 +160,82 @@ def dscalar(e: Expr, s: Site) -> Expr:
         f"no derivative rule for op `{o}` "
         "(rewrite-target ops must be lowered before differentiation)"
     )
+
+
+_NZ_UNARY = ("exp", "sin", "cos", "tan", "tanh", "sinh", "cosh", "abs")
+_DIV_OPS = ("log", "log10", "sqrt", "asin", "acos", "asinh", "acosh", "atanh", "atan", "atan2")
+
+
+def drule_check(e: Expr, s: Site) -> bool:
+    """The rule check of ``dscalar(e, s)`` without the derivative, for the
+    structure-only mode (spec §2.1; scalar_rules.jl ``drule_check``): raises
+    exactly the ``DerivativeRuleError`` ``dscalar`` would, and returns False
+    exactly when ``dscalar`` would return a literal 0, so a check the full
+    mode skips on a zero derivative (``window_weight``'s) is skipped here
+    too. It visits the nodes ``dscalar`` visits and builds no derivative; a
+    closed function (``fn``, a small and rare node) is decided by ``dfn``."""
+    return _drule_check(e, s, {}, {})
+
+
+def _drule_check(e: Expr, s: Site, memo: dict, occ: dict) -> bool:
+    # `occ` memoizes the occurrence short-circuit for the whole scan (as the
+    # Julia reference's `_SiteScan` does), so asking it at every node on the
+    # way down costs Θ(n) per site, not Θ(n·depth).
+    if is_site(e, s):
+        return True
+    if not isinstance(e, ExprNode) or not occurs_memo(e, s, occ):
+        return False
+    k = id(e)
+    if k not in memo:
+        memo[k] = (_drule_check_op(e, s, memo, occ), e)  # keep e alive: ids stay unique
+    return memo[k][0]
+
+
+def _drule_check_op(e: ExprNode, s: Site, memo: dict, occ: dict) -> bool:
+    # ``dscalar``, branch for branch: every child it differentiates is checked
+    # (a list, never a short-circuit, so no rule error is missed), and the
+    # result follows the literal-zero folding of ``add``, ``mul`` and ``neg``
+    # there — an ``op(...)`` node it builds is never a literal 0.
+    o, a = e.op, e.args
+
+    def d(x: Expr) -> bool:
+        return _drule_check(x, s, memo, occ)
+
+    if o in ("+", "-", "neg", "/"):
+        return any([d(x) for x in a])
+    if o == "*":
+        nz = [d(x) for x in a]
+        return any(
+            nz[i] and not any(is_zero(a[j]) for j in range(len(a)) if j != i) for i in range(len(a))
+        )
+    if o in ("^", "pow"):
+        db, dx = d(a[0]), d(a[1])
+        return (db and not is_zero(a[1])) or dx
+    if o in _NZ_UNARY:
+        return d(a[0])
+    if o in _DIV_OPS:
+        for x in a:
+            d(x)
+        return True
+    if o == "ifelse":
+        d(a[1])
+        d(a[2])
+        return True
+    if o in ("max", "min"):
+        nz = [d(x) for x in a]
+        return nz[0] if len(a) == 1 else True
+    if o == "faq" and not (e.output_idx or []):
+        red = reduce_op(e, DerivativeRuleError)
+        if not d(e.expr):
+            return False
+        check_window(red, sorted(str(n) for n in (e.ranges or {})), DerivativeRuleError)
+        return True
+    if o in ZERO_DERIV_OPS:
+        return False
+    if o == "fn":
+        return not is_zero(dfn(e, s))
+    # ``index``, and every op without a rule: ``dscalar`` raises.
+    return not is_zero(dscalar(e, s))
 
 
 def reduction(e: ExprNode) -> str:

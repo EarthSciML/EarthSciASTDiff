@@ -47,6 +47,7 @@ end
     include("contracting_observed_test.jl")
     include("reductions_test.jl")
     include("roundtrip_test.jl")
+    include("structure_only_test.jl")
     include("time_test.jl")
     include("forcing_test.jl")
     include("second_order_test.jl")

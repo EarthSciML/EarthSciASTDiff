@@ -78,6 +78,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     plain one only once `Pre` is lowered (`Pre(b)·b − b·b`), and whole-array
     `Pre` at array level (`D(c) = −k·Pre(c) + 0.3·Pre(a)`). Its bands equal
     those of the same document with every `Pre` removed
+  - `onehot_clipped.esm` — structure-only merging (spec §2.1), its only
+    golden `onehot_clipped.structure.bands.json`: a level-search subscript
+    under a row-index `ifelse` (`c[kap]` on rows 1..2, `c[6 - kap]` on rows
+    3..5), so clipping splits one one-hot column into two adjacent regions
+    whose selections differ — two full bands, ONE structure-only band — and
+    a state `e` defined by two equations whose same-structure bands on `c`
+    meet at a row boundary and stay apart in both modes
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a

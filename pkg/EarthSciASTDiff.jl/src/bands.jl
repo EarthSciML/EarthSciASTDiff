@@ -12,8 +12,10 @@ One structured block of `∂(rhs of the equation for u)/∂v`:
     NAME ranging over `rows[k]`, or a constant Int for a singleton dimension.
   - `cidx::Vector{ASTExpr}` — `v`'s column index expressions, one per
     dimension of `v`, in terms of the row index names. Empty for scalar `v`.
-  - `coef::ASTExpr` — scalar ESM coefficient expression in terms of the row
-    index names (plus parameters and other states).
+  - `coef::Union{Nothing,ASTExpr}` — scalar ESM coefficient expression in
+    terms of the row index names (plus parameters and other states);
+    `nothing` for a structure-only band (`coefficients = false`,
+    esm-jacobian-spec.md §2.1), which carries the pattern and no value.
   - `contracted::Vector{Tuple{String,Int,Int}}` — free CONTRACTED column
     dimensions `(name, lo, hi)`: when non-empty the band denotes, for every
     row cell AND every value of the contracted names over their inclusive
@@ -37,7 +39,7 @@ struct Band
     rows::Vector{Tuple{Int, Int}}
     ridx::Vector{Union{String, Int}}
     cidx::Vector{ASTExpr}
-    coef::ASTExpr
+    coef::Union{Nothing, ASTExpr}
     contracted::Vector{Tuple{String, Int, Int}}
     guard::Union{Nothing, ASTExpr}
 end
@@ -278,30 +280,62 @@ function is_array_expr(e::ASTExpr, ctx::Ctx)::Bool
 end
 
 """
-    bands(rhs, v, ctx; shape_u = Int[]) -> Vector{Band}
+    bands(rhs, v, ctx; shape_u = Int[], coefficients = true) -> Vector{Band}
 
 Differentiate the RHS of an equation for a variable of shape `shape_u`
 (`Int[]` for scalar) with respect to variable `v`. `rhs` must already be
 inlined ([`inline_observed`](@ref)).
+
+With `coefficients = false` the bands are structure-only
+(esm-jacobian-spec.md §2.1): regions are clipped and sites found as in the
+full mode, but no derivative is taken, every band's `coef` is `nothing`, and
+none is dropped for a coefficient that would simplify to zero.
 """
-function bands(rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[])::Vector{Band}
+function bands(
+        rhs::ASTExpr, v::String, ctx::Ctx; shape_u::Vector{Int} = Int[],
+        coefficients::Bool = true
+    )::Vector{Band}
+    out = _bands(rhs, v, ctx, shape_u, coefficients)
+    coefficients && return out
+    return Band[_rebuild(b; coef = nothing) for b in out]
+end
+
+# In the structure-only mode (`co = false`) the calculus runs on the literal
+# placeholder `_ONE` instead of each derivative: everything that builds a
+# band's structural fields is unchanged (clipping, sites, nested-sum and
+# one-hot lifting), and `bands` drops the placeholder before returning.
+const _ONE = IntExpr(1)
+
+# A site's derivative and whether it may be nonzero. The structure-only mode
+# takes no derivative, but refuses what the full mode refuses: `drule_check`
+# throws the `DerivativeRuleError` `dscalar` would, and says whether the
+# derivative is a literal 0 (on which the full mode skips its window check).
+function _site_deriv(co::Bool, e::ASTExpr, s::Site, occ::_OccIndex)
+    sc = _SiteScan(occ, s)
+    co || return _ONE, drule_check(e, s, sc)
+    d = dscalar(e, s, sc)
+    return d, !iszero_lit(d)
+end
+
+function _bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co::Bool)
     out = Band[]
     if isempty(shape_u)
         nested = _nested_sums(rhs, v, String[])
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
+        occ = _OccIndex(v)
         for s in sorted_sites(rhs, v)
             cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             cidx, d, extra, g = _lift_nested(
-                nested, s, rhs, cidx, dscalar(rhs, s), ctx,
-                String[], taken
+                nested, s, rhs, cidx, _site_deriv(co, rhs, s, occ)[1],
+                ctx, String[], taken
             )
-            coef = _simp(d)
+            coef = co ? _simp(d) : _ONE
             iszero_lit(coef) && continue
             _push_band!(out, Tuple{Int, Int}[], Union{String, Int}[], cidx, coef, extra, g, v, ctx)
         end
         return out
     end
-    _bands_array!(out, rhs, v, ctx, shape_u, ASTExpr[lit(1)])
+    _bands_array!(out, rhs, v, ctx, shape_u, ASTExpr[lit(1)], co)
     return out
 end
 
@@ -317,35 +351,51 @@ end
 # statically clipping decidable region guards first (clip.jl) so membership
 # `ifelse` never reaches the coefficients and the pattern is per-subrange
 # exact.
-function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale)
+function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale, co::Bool)
     outer = String[r for r in ridx if r isa String]
-    for (rows2, body) in clip_regions(e, ridx, rows)
-        nested = _nested_sums(body, v, outer)
-        taken = Ref{Union{Nothing, Set{String}}}(nothing)
-        for s in sorted_sites(body, v)
-            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra, g = _lift_nested(
-                nested, s, body, cidx, dscalar(body, s), ctx,
-                outer, taken
-            )
-            coef = _simp(mul(d, scale...))
-            iszero_lit(coef) && continue
-            _push_band!(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
-        end
+    occ = _OccIndex(v)                 # one occurrence index for every region
+    sm = _SimpMemo()
+    regions = clip_regions(e, ridx, rows)
+    length(regions) > 1 && _scope!(occ, e)
+    # Each region is released once done (`_end_region!`, and popped so the
+    # list does not keep every rebuilt body alive).
+    reverse!(regions)
+    while !isempty(regions)
+        rows2, body = pop!(regions)
+        _scalar_region!(out, body, rows2, v, ctx, ridx, outer, scale, co, occ, sm)
+        _end_region!(occ, body, sm)
+    end
+    return
+end
+
+function _scalar_region!(out, body, rows2, v, ctx, ridx, outer, scale, co, occ, sm)
+    nested = _nested_sums(body, v, outer)
+    taken = Ref{Union{Nothing, Set{String}}}(nothing)
+    for s in sorted_sites(body, v)
+        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+        cidx, d, extra, g = _lift_nested(
+            nested, s, body, cidx, _site_deriv(co, body, s, occ)[1],
+            ctx, outer, taken
+        )
+        coef = co ? _simp(mul(d, scale...), sm) : _ONE
+        iszero_lit(coef) && continue
+        _push_band!(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
     end
     return
 end
 
 # `scale` accumulates elementwise scalar multipliers from enclosing `*`, `-`,
 # `/`, and `neg` nodes on the way down to array leaves.
-function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vector{ASTExpr})
+function _bands_array!(
+        out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vector{ASTExpr}, co::Bool
+    )
     if e isa VarExpr
         e.name == v || return out
         names = ["_r$k" for k in 1:length(shape_u)]           # identity band
         push!(
             out, Band(
                 [(1, n) for n in shape_u], Union{String, Int}[names...],
-                ASTExpr[VarExpr(n) for n in names], mul(scale...)
+                ASTExpr[VarExpr(n) for n in names], co ? mul(scale...) : _ONE
             )
         )
         return out
@@ -354,15 +404,15 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
     o = e.op
     if o == "+"
         for x in e.args
-            _bands_array!(out, x, v, ctx, shape_u, scale)
+            _bands_array!(out, x, v, ctx, shape_u, scale, co)
         end
     elseif o == "-" && length(e.args) == 1
-        _bands_array!(out, e.args[1], v, ctx, shape_u, vcat(scale, [lit(-1)]))
+        _bands_array!(out, e.args[1], v, ctx, shape_u, vcat(scale, [lit(-1)]), co)
     elseif o == "-"
-        _bands_array!(out, e.args[1], v, ctx, shape_u, scale)
-        _bands_array!(out, e.args[2], v, ctx, shape_u, vcat(scale, [lit(-1)]))
+        _bands_array!(out, e.args[1], v, ctx, shape_u, scale, co)
+        _bands_array!(out, e.args[2], v, ctx, shape_u, vcat(scale, [lit(-1)]), co)
     elseif o == "neg"
-        _bands_array!(out, e.args[1], v, ctx, shape_u, vcat(scale, [lit(-1)]))
+        _bands_array!(out, e.args[1], v, ctx, shape_u, vcat(scale, [lit(-1)]), co)
     elseif o == "*"
         arr = [x for x in e.args if is_array_expr(x, ctx)]
         sc = [x for x in e.args if !is_array_expr(x, ctx)]
@@ -377,22 +427,22 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
                 "scalar factor depends on `$v` in an array-level product"
             )
         )
-        _bands_array!(out, arr[1], v, ctx, shape_u, vcat(scale, sc))
+        _bands_array!(out, arr[1], v, ctx, shape_u, vcat(scale, sc), co)
     elseif o == "/"
         is_array_expr(e.args[2], ctx) &&
             throw(BandError("array-valued divisor at array level"))
         _bands_array!(
             out, e.args[1], v, ctx, shape_u,
-            vcat(scale, [op("/", lit(1), e.args[2])])
+            vcat(scale, [op("/", lit(1), e.args[2])]), co
         )
     elseif o == "makearray"
-        _bands_makearray!(out, e, v, ctx, scale)
+        _bands_makearray!(out, e, v, ctx, scale, co)
     elseif o == "faq"
-        _bands_faq!(out, e, v, ctx, shape_u, scale)
+        _bands_faq!(out, e, v, ctx, shape_u, scale, co)
     elseif o == "index"
         # A scalar read of some array in an array-level position: a broadcast.
         names = ["_r$k" for k in 1:length(shape_u)]
-        _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
+        _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale, co)
     else
         if is_array_expr(e, ctx)
             # Generic elementwise op over whole arrays (exp(c), c^2, ifelse):
@@ -407,11 +457,11 @@ function _bands_array!(out, e::ASTExpr, v::String, ctx::Ctx, shape_u, scale::Vec
                     n => Any[1, shape_u[k]] for (k, n) in enumerate(names)
                 )
             )
-            _bands_array!(out, agg, v, ctx, shape_u, scale)
+            _bands_array!(out, agg, v, ctx, shape_u, scale, co)
         else
             # Scalar expression broadcast over u's shape.
             names = ["_r$k" for k in 1:length(shape_u)]
-            _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
+            _scalar_bands!(out, e, v, ctx, [(1, n) for n in shape_u], names, scale, co)
         end
     end
     return out
@@ -427,7 +477,7 @@ end
 # contracted conjuncts; its row-only conjuncts guard the band); a gathered
 # column yields a band with contracted dimensions and the whole residual
 # guard.
-function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
+function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bool)
     oidx = [String(x) for x in e.output_idx if x isa AbstractString]
     length(oidx) == length(e.output_idx) || throw(
         BandError(
@@ -464,41 +514,71 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
     end
     vfilt = _conj(gval)
     body = e.expr_body
-    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip_regions(body, oidx, rows_p)
-        nested = _nested_sums(body2, v, outer)
-        taken = Ref{Union{Nothing, Set{String}}}(nothing)
-        for s in sorted_sites(body2, v)
-            s.expr isa VarExpr && is_array(ctx, v) && throw(
-                BandError(
-                    "whole-array reference to `$v` inside a faq body"
-                )
+    occ = _OccIndex(v)                 # one occurrence index for every region
+    sm = _SimpMemo()
+    scoped = false
+    for (rows_p, crange, guard) in pieces
+        regions = clip_regions(body, oidx, rows_p)
+        # Each region is released once done (`_end_region!`, and popped so
+        # the list does not keep every rebuilt body alive).
+        if !scoped && (length(regions) > 1 || length(pieces) > 1)
+            _scope!(occ, body)
+            scoped = true
+        end
+        reverse!(regions)
+        while !isempty(regions)
+            rows2, body2 = pop!(regions)
+            _faq_region!(
+                out, e, body2, rows2, crange, guard, v, ctx, oidx, outer, cnames,
+                red, vfilt, scale, co, occ, sm
             )
-            cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            cidx, d, extra, g = _lift_nested(
-                nested, s, body2, cidx, dscalar(body2, s),
-                ctx, outer, taken
+            _end_region!(occ, body2, sm)
+        end
+    end
+    return
+end
+
+function _faq_region!(
+        out, e, body2, rows2, crange, guard, v, ctx, oidx, outer, cnames, red, vfilt,
+        scale, co, occ, sm
+    )
+    nested = _nested_sums(body2, v, outer)
+    taken = Ref{Union{Nothing, Set{String}}}(nothing)
+    for s in sorted_sites(body2, v)
+        s.expr isa VarExpr && is_array(ctx, v) && throw(
+            BandError(
+                "whole-array reference to `$v` inside a faq body"
             )
+        )
+        cidx = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
+        d0, nz = _site_deriv(co, body2, s, occ)
+        cidx, d, extra, g = _lift_nested(nested, s, body2, cidx, d0, ctx, outer, taken)
+        if co
             d = _window_weight(red, e, cnames, d, BandError)
             vfilt === nothing || iszero_lit(d) || (d = op("ifelse", vfilt, d, lit(0)))
-            if isempty(crange)
-                coef = _simp(mul(d, scale...))
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
-            elseif !any(
-                    n -> any(c -> n in free_variables(c), cidx),
-                    first.(crange)
-                )
-                # The column is independent of every contracted index: a
-                # plain band whose coefficient is the (scalar) `reduce: "+"`
-                # of the site derivative over the contraction. A guard
-                # conjunct reading a contracted name — the piece's own, or a
-                # nested sum's filter tied to it (`Σ_k Σ_{j≤k}`) — is no
-                # condition on the band's point: it filters that sum.
-                gc = ASTExpr[]; gr = ASTExpr[]
-                gg = _conj(guard, g)
-                gg === nothing || for c in _conjuncts(gg)
-                    push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
-                end
+        elseif nz
+            _check_window(red, cnames, BandError)   # what `_window_weight` refuses
+        end
+        if isempty(crange)
+            coef = co ? _simp(mul(d, scale...), sm) : _ONE
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
+        elseif !any(
+                n -> any(c -> n in free_variables(c), cidx),
+                first.(crange)
+            )
+            # The column is independent of every contracted index: a
+            # plain band whose coefficient is the (scalar) `reduce: "+"`
+            # of the site derivative over the contraction. A guard
+            # conjunct reading a contracted name — the piece's own, or a
+            # nested sum's filter tied to it (`Σ_k Σ_{j≤k}`) — is no
+            # condition on the band's point: it filters that sum.
+            gc = ASTExpr[]; gr = ASTExpr[]
+            gg = _conj(guard, g)
+            gg === nothing || for c in _conjuncts(gg)
+                push!(any(n -> n in cnames, free_variables(c)) ? gc : gr, c)
+            end
+            coef = if co
                 red_sum = OpExpr(
                     "faq", ASTExpr[];
                     output_idx = Any[], reduce = "+", expr_body = d,
@@ -507,23 +587,25 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale)
                     ),
                     filter = _conj(gc)
                 )
-                coef = _simp(mul(red_sum, scale...))
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
+                _simp(mul(red_sum, scale...), sm)
             else
-                # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
-                # with free contracted column dimensions; entries landing on
-                # one column accumulate at assembly.
-                coef = _simp(mul(d, scale...))
-                iszero_lit(coef) && continue
-                _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
+                _ONE
             end
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(gr), v, ctx)
+        else
+            # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
+            # with free contracted column dimensions; entries landing on
+            # one column accumulate at assembly.
+            coef = co ? _simp(mul(d, scale...), sm) : _ONE
+            iszero_lit(coef) && continue
+            _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
         end
     end
     return
 end
 
-function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
+function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
     for (region, val) in zip(e.regions, e.values)
         rows = [(_region_bound(r[1]), _region_bound(r[2])) for r in region]
         any(((lo, hi),) -> hi < lo, rows) && continue        # folded-empty region
@@ -538,7 +620,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             sub_shape = val_fullrank ?
                 [hi - lo + 1 for (lo, hi) in rows] :
                 [rows[k][2] - rows[k][1] + 1 for k in nonsing]
-            _bands_array!(sub, val, v, ctx, sub_shape, scale)
+            _bands_array!(sub, val, v, ctx, sub_shape, scale, co)
             # The value's bands are in the value's OWN index values (an
             # faq node ranging i ∈ [olo, ohi] fills region positions
             # lo..lo+(ohi−olo)); shift each dim by (lo − origin), where the
@@ -575,7 +657,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
                         push!(ridx, lo); push!(rows2, (lo, lo))
                     end
                 end
-                coef = isempty(subst) ? b.coef : substitute(b.coef, subst)
+                coef = isempty(subst) || b.coef === _ONE ? b.coef : substitute(b.coef, subst)
                 cidx = isempty(subst) ? b.cidx :
                     ASTExpr[substitute(c, subst) for c in b.cidx]
                 guard = isempty(subst) || b.guard === nothing ? b.guard :
@@ -586,7 +668,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale)
             # Scalar value broadcast over the region.
             _scalar_bands!(
                 out, val, v, ctx, rows,
-                Union{String, Int}[lo for (lo, _) in rows], scale
+                Union{String, Int}[lo for (lo, _) in rows], scale, co
             )
         end
     end
@@ -635,7 +717,7 @@ function normalize_band(b::Band)::Band
     return Band(
         b.rows, ridx,
         ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
-        _simp(substitute(b.coef, subst)), contracted,
+        b.coef === nothing ? nothing : _simp(substitute(b.coef, subst)), contracted,
         b.guard === nothing ? nothing : _canon_lits(simplify(substitute(b.guard, subst)))
     )
 end

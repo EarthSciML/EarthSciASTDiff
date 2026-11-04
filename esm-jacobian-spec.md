@@ -61,6 +61,69 @@ them exactly, so region structure appears as entry `rows` boundaries — never
 as `ifelse` guards inside `coef`, and never as branch-union padding in the
 pattern. Only genuinely value-dependent branches (limiters) remain unioned.
 
+### 2.1 Structure-only entries
+
+A producer MAY offer a **structure-only** mode, for a consumer that needs
+only the pattern (a planner's locality and stiffness classes, a sparsity
+prototype) and not the values. A structure-only entry has every field of a
+§4 entry except `coef`, which it does not carry. It is computed as the full
+entries are, with these differences, and no others:
+
+1. **No derivative.** Region clipping (§2, region exactness) and site
+   finding (§3: every distinct site of `col` that occurs structurally in a
+   clipped region body) run as in the full mode. Each (region, site) pair
+   gives one entry, with the `rows`, `row_idx`, `col_idx`, `contracted` and
+   `where` the full mode gives that pair before merging. No derivative is
+   taken, so no entry is dropped for a coefficient that simplifies to zero.
+   A right-hand side the full mode refuses is still refused, with the same
+   error: an op with no §3 rule on the path to a site, or a `max`/`min`
+   reduction over more than one contracted index (§3.5), where the full
+   mode's derivative there is not the literal 0.
+2. **Merging on structure.** Entries are coalesced as in the full mode
+   (adjacent `rows` boxes along one dimension, iterated to a fixed point),
+   but two entries need only agree on `row_idx`, `col_idx`, `contracted` and
+   `where`.
+3. **Pinning.** A free row index over a one-cell range, or a one-value
+   contraction, is pinned to its value in `row_idx`, `col_idx` and `where`
+   exactly as in the full mode.
+
+A name the producer chooses fresh (a one-hot column dimension, §3.5; a
+lifted nested-sum index) avoids the names of the entry's own fields, so it
+can differ from the full mode's choice; it is local to the entry either way.
+
+**Relation to the full mode (normative).** Write `P(E)` for the set of
+(row cell, column cell) points of an entry list `E` (each entry's `rows` box
+and `contracted` values, where `where` holds, through `col_idx`), for one
+system and one axis. Then
+
+    P(full) ⊆ P(structure-only),
+
+with equality whenever no (region, site) pair of the full mode has a
+coefficient that simplifies to the literal 0. Both lists are structural
+(§2), so the inclusion holds at every point. The structure-only list can
+also hold a (`row`, `col`) pair the full list lacks: one whose every
+coefficient simplified to zero. The two lists need not have the same
+number of entries, nor entries in one-to-one correspondence: merging on
+structure alone can coalesce entries that the full mode keeps apart, and
+the full mode can drop an entry the structure-only list keeps.
+
+**Through a recurrence.** On an axis with an active recurrence (§4.5) the
+entries are composed through the transfer, which reads the coefficients. A
+producer MAY then compute the structure-only entries from the full entries:
+without `coef`, merged again on structure (item 2) and pinned (item 3), so
+the two point sets are equal. As in the full mode, only entries of one row
+equation and one column merge: two equations of one state stay apart even
+where one's entries of a column meet the next one's. (The bindings that run recurrences do this.)
+
+On the `parameters` and `forcing` axes the closed-column rule of §4.3
+applies to the structure-only entries too. Since none is dropped, a document
+whose only unclosed column has a coefficient that simplifies to zero is
+refused in this mode and accepted in the full one.
+
+A consumer MAY use structure-only entries wherever it would use only the
+full entries' pattern; it MUST NOT emit them as a `"jacobians"` block (§4),
+which requires `coef`.
+
 ## 3. Derivative semantics (per-operator, normative)
 
 `d[e, s]` below is the derivative of expression `e` with respect to a
@@ -843,7 +906,16 @@ Fixture corpus in `tests/` of this repository:
    constant offset; a regrid-like `reduce: "+"` contraction with `const`
    weights over one record of a second buffer; and a const array parameter
    standing in for an emission field. Its value goldens are at `w = 0.37` and
-   at `w = 0` exactly, with the buffers at the document defaults). A
+   at `w = 0` exactly, with the buffers at the document defaults). Each fixture with a state band golden also carries
+   `<name>.structure.bands.json`, its structure-only entries (§2.1) in the
+   same deterministic JSON, each entry without `coef`; the Julia reference
+   checks that their points include the full entries' points (§2.1).
+   `onehot_clipped.esm` carries that golden alone: a level search used as a
+   subscript under a row-index `ifelse`, so clipping splits one one-hot
+   column into two adjacent regions whose selections differ (two full
+   entries, one structure-only entry, §2.1 item 2), and a state defined by
+   two equations whose same-structure entries meet at a row boundary (never
+   merged, in either mode). A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried

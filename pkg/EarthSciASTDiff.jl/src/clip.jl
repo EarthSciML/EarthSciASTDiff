@@ -230,7 +230,8 @@ end
     merge_bands(bs::Vector{Band}) -> Vector{Band}
 
 Coalesce bands that are identical in `ridx`, `cidx`, `coef`, `contracted`
-and `guard` (structural keys) and whose `rows` boxes are adjacent along exactly one dimension.
+and `guard` (structural keys; a structure-only band's `coef` is `nothing`,
+so those merge on structure alone, esm-jacobian-spec.md §2.1) and whose `rows` boxes are adjacent along exactly one dimension.
 Iterated to a fixpoint; band order is preserved (a merge keeps the
 earlier band's position), so emission stays deterministic.
 
@@ -244,23 +245,51 @@ never have merged. Buckets are searched in ascending original index and the
 survivors are read out in original order, so the emitted band order cannot
 see the bucket iteration order.
 
-(The key stays `skey`. It is taken ONCE per band and never compared
-elementwise afterwards, which is the one regime where a whole-subtree
-serialization beats interning it node by node.)
+The buckets are the classes of that key, found without serializing a
+coefficient: a coefficient of a lowered stencil operator is ~10⁴ nodes, and
+`skey` on every band was a third of `jacobian_bands` on ReSEACT. Bands are
+first grouped by a structural hash ([`shash`](@ref), which equal
+expressions always share), and only a group holding different expression
+objects is split by structural id ([`sid`](@ref), equal iff `skey` is).
+The band calculus hands one coefficient object to every band whose
+coefficient it already simplified (`_SimpMemo`), so most groups need no
+split. The classes, and the ascending order within each, are the key's.
 """
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
-    key(b) = (
-        b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted,
-        b.guard === nothing ? nothing : skey(b.guard),
+    hx = StructHash()
+    hkey(b) = (
+        b.ridx, UInt[shash(hx, c) for c in b.cidx],
+        b.coef === nothing ? nothing : shash(hx, b.coef), b.contracted,
+        b.guard === nothing ? nothing : shash(hx, b.guard),
     )
-    buckets = Dict{Any, Vector{Int}}()
+    groups = Dict{Any, Vector{Int}}()
     for (i, b) in enumerate(bs)
-        push!(get!(buckets, key(b), Int[]), i)
+        push!(get!(groups, hkey(b), Int[]), i)
+    end
+    ix = StructIndex()
+    exprs(b) = (b.cidx, b.coef, b.guard)
+    same(x, y) = x[2] === y[2] && x[3] === y[3] && length(x[1]) == length(y[1]) &&
+        all(k -> x[1][k] === y[1][k], eachindex(x[1]))
+    ekey(b) = (
+        Int[sid(ix, c) for c in b.cidx], b.coef === nothing ? 0 : sid(ix, b.coef),
+        b.guard === nothing ? 0 : sid(ix, b.guard),
+    )
+    buckets = Vector{Int}[]
+    for idxs in values(groups)
+        if length(idxs) < 2 || all(i -> same(exprs(bs[i]), exprs(bs[idxs[1]])), idxs)
+            push!(buckets, idxs)
+            continue
+        end
+        split = Dict{Any, Vector{Int}}()
+        for i in idxs                  # ascending, so each part is too
+            push!(get!(split, ekey(bs[i]), Int[]), i)
+        end
+        append!(buckets, values(split))
     end
     out = collect(Band, bs)
     alive = trues(length(out))
-    for idxs in values(buckets)
+    for idxs in buckets
         length(idxs) < 2 && continue
         changed = true
         while changed

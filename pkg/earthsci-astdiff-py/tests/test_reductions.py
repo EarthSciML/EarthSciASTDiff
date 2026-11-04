@@ -227,6 +227,9 @@ def test_max_over_two_contracted_indices_is_refused():
     mx2 = faq(["i"], {"i": [1, 3], "j": [1, 3], "k": [1, 4]}, idx("u", "j", "k"), reduce="max")
     with pytest.raises(BandError):
         jacobian_bands(doc(mx2, n=3, nz=4, ushape=("x", "z")), "U9")
+    # the structure-only mode refuses it too (spec §2.1)
+    with pytest.raises(BandError):
+        jacobian_bands(doc(mx2, n=3, nz=4, ushape=("x", "z")), "U9", coefficients=False)
 
 
 def test_level_search_as_an_index():

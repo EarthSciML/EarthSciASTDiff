@@ -1,0 +1,275 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "OnehotClipped",
+  "description": "Structure-only merging (spec \u00a72.1). c: a level search kap = min{k : c[k] > 0.3} read as a subscript under a row-index ifelse, c[kap] on rows i <= 2 and c[6 - kap] on rows 3..5, so static clipping splits the one-hot column into two adjacent regions whose one-hot selections differ: full bands kept apart by their coefficients, one structure-only band. e: one state defined by two equations (rows 1..2, then 3..5) whose bands on c have the same structure and adjacent rows: never merged across the equations, in either mode."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 5
+  }
+ },
+ "models": {
+  "OnehotClipped": {
+   "variables": {
+    "c": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.5
+    },
+    "e": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.6
+    },
+    "kap": {
+     "type": "unknown"
+    },
+    "w": {
+     "type": "parameter",
+     "default": 0.1
+    }
+   },
+   "equations": [
+    {
+     "lhs": "kap",
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [],
+      "ranges": {
+       "k": [
+        1,
+        5
+       ]
+      },
+      "expr": "k",
+      "reduce": "min",
+      "filter": {
+       "op": ">",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "c",
+          "k"
+         ]
+        },
+        0.3
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "c"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        1,
+        5
+       ]
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          "w",
+          {
+           "op": "ifelse",
+           "args": [
+            {
+             "op": "<=",
+             "args": [
+              "i",
+              2
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "c",
+              "kap"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "c",
+              {
+               "op": "-",
+               "args": [
+                6,
+                "kap"
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "c",
+          "i"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        1,
+        2
+       ]
+      },
+      "expr": {
+       "op": "D",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "e",
+          "i"
+         ]
+        }
+       ],
+       "wrt": "t"
+      }
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        1,
+        2
+       ]
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          "w",
+          {
+           "op": "index",
+           "args": [
+            "c",
+            "i"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "e",
+          "i"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        3,
+        5
+       ]
+      },
+      "expr": {
+       "op": "D",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "e",
+          "i"
+         ]
+        }
+       ],
+       "wrt": "t"
+      }
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": [
+        3,
+        5
+       ]
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          "w",
+          {
+           "op": "index",
+           "args": [
+            "c",
+            "i"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "e",
+          "i"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}

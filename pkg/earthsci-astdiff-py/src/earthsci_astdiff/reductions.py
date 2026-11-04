@@ -100,6 +100,19 @@ def fresh(taken: set, base: str, suffix: str) -> str:
     return f
 
 
+def check_window(red: str, cn: list, E) -> None:
+    """The refusal of ``window_weight`` alone (reductions.jl ``_check_window``),
+    for the structure-only mode (spec §2.1), which weighs nothing but must
+    refuse what the full mode refuses: a max/min over more than one
+    contracted name has no single ascending order."""
+    if red in ("+", "*") or len(cn) <= 1:
+        return
+    raise E(
+        f"a `{red}` reduction over {len(cn)} contracted indices "
+        f"({', '.join(cn)}) has no first-extremum order"
+    )
+
+
 def window_weight(red: str, e: ExprNode, cn: list, d: Expr, E) -> Expr:
     """The derivative ``d`` of one term of the reduction ``red`` of faq node
     ``e`` over its contracted names ``cn``, weighted by what the reduction
@@ -112,11 +125,7 @@ def window_weight(red: str, e: ExprNode, cn: list, d: Expr, E) -> Expr:
     if red == "+" or not cn or is_zero(d):
         return d
     rng = e.ranges or {}
-    if red != "*" and len(cn) != 1:
-        raise E(
-            f"a `{red}` reduction over {len(cn)} contracted indices "
-            f"({', '.join(cn)}) has no first-extremum order"
-        )
+    check_window(red, cn, E)
     taken = all_names(e, set())
     ren = {n: fresh(taken, n + "_p", "_p") for n in cn}
     b2 = subst_free(e.expr, ren)

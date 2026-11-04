@@ -197,6 +197,33 @@ def occurs(e: Expr, s: Site) -> bool:
     return found
 
 
+def occurs_memo(e: Expr, s: Site, memo: dict) -> bool:
+    """:func:`occurs`, memoized on node identity for one scan (expr_helpers.jl
+    ``occurs(e, s, memo)``): a scan that asks at every node on its way down
+    walks each subtree once, Θ(n) per site instead of Θ(n·depth). ``memo``
+    maps ``id(node)`` to ``(answer, node)``, the node kept alive so its id
+    stays unique for the scan."""
+    if is_site(e, s):
+        return True
+    if not isinstance(e, ExprNode):
+        return False
+    k = id(e)
+    hit = memo.get(k)
+    if hit is not None:
+        return hit[0]
+    found = False
+
+    def visit(c: Expr) -> Expr:
+        nonlocal found
+        if not found:
+            found = occurs_memo(c, s, memo)
+        return c
+
+    map_children(e, visit)
+    memo[k] = (found, e)
+    return found
+
+
 def region_bound(b: Any) -> int:
     """A literal region/range bound (post-load documents carry closed forms)."""
     if isinstance(b, bool):

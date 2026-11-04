@@ -14,9 +14,10 @@ from .clip import clip_regions
 from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
 from .inline import all_names
 from .inline import subst_free as _subst_free
+from .reductions import check_window as _check_window
 from .reductions import conj, conj_list, conjuncts, index_only, one_hot, reduce_op, split_guard
 from .reductions import window_weight as _window_weight
-from .scalar_rules import dscalar
+from .scalar_rules import drule_check, dscalar
 from .simplify_branches import canon_lits, simp
 from .simplify_port import simplify_jl as simplify
 
@@ -35,7 +36,7 @@ class Band:
     rows: list[tuple[int, int]]
     ridx: list  # str names or int singletons
     cidx: list  # column index expressions
-    coef: Expr
+    coef: Expr | None  # None for a structure-only band (spec §2.1)
     contracted: list[tuple[str, int, int]] = field(default_factory=list)
     guard: Expr | None = None
 
@@ -247,8 +248,42 @@ def occurs_var(e: Expr, v: str) -> bool:
     return v in free_variables(e)
 
 
-def bands(rhs: Expr, v: str, ctx: Ctx, shape_u: list[int] | None = None) -> list[Band]:
-    """Differentiate an equation RHS (already observed-inlined) w.r.t. ``v``."""
+def bands(
+    rhs: Expr, v: str, ctx: Ctx, shape_u: list[int] | None = None, coefficients: bool = True
+) -> list[Band]:
+    """Differentiate an equation RHS (already observed-inlined) w.r.t. ``v``.
+
+    With ``coefficients=False`` the bands are structure-only (spec §2.1):
+    regions are clipped and sites found as in the full mode, but no
+    derivative is taken, every band's ``coef`` is ``None``, and none is
+    dropped for a coefficient that would simplify to zero."""
+    out = bands_in(rhs, v, ctx, shape_u, coefficients)
+    if coefficients:
+        return out
+    return [replace(b, coef=None) for b in out]
+
+
+# In the structure-only mode (``co=False``) the calculus runs on the literal
+# placeholder ``_ONE`` instead of each derivative: everything that builds a
+# band's structural fields (clipping, sites, nested-sum and one-hot lifting)
+# is unchanged, and ``bands`` (or the driver) drops the placeholder.
+_ONE = 1
+
+
+def _site_deriv(co: bool, e: Expr, s) -> tuple:
+    """A site's derivative and whether it may be nonzero. The structure-only
+    mode takes no derivative, but refuses what the full mode refuses:
+    ``drule_check`` raises the ``DerivativeRuleError`` ``dscalar`` would, and
+    says whether the derivative is a literal 0 (on which the full mode skips
+    its window check)."""
+    if not co:
+        return _ONE, drule_check(e, s)
+    d = dscalar(e, s)
+    return d, not is_zero(d)
+
+
+def bands_in(rhs: Expr, v: str, ctx: Ctx, shape_u, co: bool) -> list[Band]:
+    """:func:`bands` with the placeholder coefficient kept when ``co`` is false."""
     shape_u = shape_u or []
     out: list[Band] = []
     if not shape_u:
@@ -256,14 +291,14 @@ def bands(rhs: Expr, v: str, ctx: Ctx, shape_u: list[int] | None = None) -> list
         taken: list = [None]
         for s in sorted_sites(rhs, v):
             cidx, d, extra, g = _lift_nested(
-                nested, s, rhs, _site_cidx(s), dscalar(rhs, s), ctx, [], taken
+                nested, s, rhs, _site_cidx(s), _site_deriv(co, rhs, s)[0], ctx, [], taken
             )
-            coef = simp(d)
+            coef = simp(d) if co else d
             if is_zero(coef):
                 continue
             _push_band(out, [], [], cidx, coef, extra, g, v, ctx)
         return out
-    _bands_array(out, rhs, v, ctx, shape_u, [1])
+    _bands_array(out, rhs, v, ctx, shape_u, [1], co)
     return out
 
 
@@ -278,41 +313,42 @@ def _push_band(out, rows, ridx, cidx, coef, contracted, guard, v: str, ctx: Ctx)
     out.append(Band(list(rows), ridx, cidx, coef, list(contracted), guard))
 
 
-def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale) -> None:
+def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale, co: bool) -> None:
     outer = [r for r in ridx if isinstance(r, str)]
     for rows2, body in clip_regions(e, ridx, rows):
         nested = _nested_sums(body, v, outer)
         taken: list = [None]
         for s in sorted_sites(body, v):
             cidx, d, extra, g = _lift_nested(
-                nested, s, body, _site_cidx(s), dscalar(body, s), ctx, outer, taken
+                nested, s, body, _site_cidx(s), _site_deriv(co, body, s)[0], ctx, outer, taken
             )
-            coef = simp(mul(d, *scale))
+            coef = simp(mul(d, *scale)) if co else d
             if is_zero(coef):
                 continue
             _push_band(out, rows2, ridx, cidx, coef, extra, g, v, ctx)
 
 
-def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
+def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale, co: bool) -> None:
     if isinstance(e, str):
         if e != v:
             return
         names = [f"_r{k + 1}" for k in range(len(shape_u))]
-        out.append(Band([(1, n) for n in shape_u], list(names), [n for n in names], mul(*scale)))
+        coef = mul(*scale) if co else _ONE
+        out.append(Band([(1, n) for n in shape_u], list(names), [n for n in names], coef))
         return
     if not isinstance(e, ExprNode):
         return
     o = e.op
     if o == "+":
         for x in e.args:
-            _bands_array(out, x, v, ctx, shape_u, scale)
+            _bands_array(out, x, v, ctx, shape_u, scale, co)
     elif o == "-" and len(e.args) == 1:
-        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, -1])
+        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, -1], co)
     elif o == "-":
-        _bands_array(out, e.args[0], v, ctx, shape_u, scale)
-        _bands_array(out, e.args[1], v, ctx, shape_u, [*scale, -1])
+        _bands_array(out, e.args[0], v, ctx, shape_u, scale, co)
+        _bands_array(out, e.args[1], v, ctx, shape_u, [*scale, -1], co)
     elif o == "neg":
-        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, -1])
+        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, -1], co)
     elif o == "*":
         arr = [x for x in e.args if is_array_expr(x, ctx)]
         sc = [x for x in e.args if not is_array_expr(x, ctx)]
@@ -323,18 +359,18 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
             )
         if any(occurs_var(x, v) for x in sc):
             raise BandError(f"scalar factor depends on `{v}` in an array-level product")
-        _bands_array(out, arr[0], v, ctx, shape_u, scale + sc)
+        _bands_array(out, arr[0], v, ctx, shape_u, scale + sc, co)
     elif o == "/":
         if is_array_expr(e.args[1], ctx):
             raise BandError("array-valued divisor at array level")
-        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, op("/", 1, e.args[1])])
+        _bands_array(out, e.args[0], v, ctx, shape_u, [*scale, op("/", 1, e.args[1])], co)
     elif o == "makearray":
-        _bands_makearray(out, e, v, ctx, scale)
+        _bands_makearray(out, e, v, ctx, scale, co)
     elif o == "faq":
-        _bands_faq(out, e, v, ctx, shape_u, scale)
+        _bands_faq(out, e, v, ctx, shape_u, scale, co)
     elif o == "index":
         names = [f"_r{k + 1}" for k in range(len(shape_u))]
-        _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
+        _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale, co)
     else:
         if is_array_expr(e, ctx):
             names = [f"_r{k + 1}" for k in range(len(shape_u))]
@@ -347,13 +383,13 @@ def _bands_array(out, e: Expr, v: str, ctx: Ctx, shape_u, scale) -> None:
                 expr=body,
                 ranges={n: [1, shape_u[k]] for k, n in enumerate(names)},
             )
-            _bands_array(out, agg, v, ctx, shape_u, scale)
+            _bands_array(out, agg, v, ctx, shape_u, scale, co)
         else:
             names = [f"_r{k + 1}" for k in range(len(shape_u))]
-            _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale)
+            _scalar_bands(out, e, v, ctx, [(1, n) for n in shape_u], names, scale, co)
 
 
-def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
+def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> None:
     """A faq node at array level (bands.jl ``_bands_faq!``). Each site of its
     body differentiates as a term of the node's reduction over its window
     (reductions.py): the derivative is weighted per term
@@ -398,14 +434,18 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
             for s in sorted_sites(body2, v):
                 if isinstance(s.expr, str) and is_array(ctx, v):
                     raise BandError(f"whole-array reference to `{v}` inside a faq body")
+                d0, nz = _site_deriv(co, body2, s)
                 cidx, d, extra, g = _lift_nested(
-                    nested, s, body2, _site_cidx(s), dscalar(body2, s), ctx, outer, taken
+                    nested, s, body2, _site_cidx(s), d0, ctx, outer, taken
                 )
-                d = _window_weight(red, e, cnames, d, BandError)
-                if vfilt is not None and not is_zero(d):
-                    d = op("ifelse", vfilt, d, 0)
+                if co:
+                    d = _window_weight(red, e, cnames, d, BandError)
+                    if vfilt is not None and not is_zero(d):
+                        d = op("ifelse", vfilt, d, 0)
+                elif nz:
+                    _check_window(red, cnames, BandError)  # what `window_weight` refuses
                 if not crange:
-                    coef = simp(mul(d, *scale))
+                    coef = simp(mul(d, *scale)) if co else d
                     if is_zero(coef):
                         continue
                     _push_band(out, rows2, oidx, cidx, coef, extra, conj(guard, g), v, ctx)
@@ -424,16 +464,18 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                         for c in conjuncts(gg):
                             fv = free_variables(c)
                             (gc if any(n in cnames for n in fv) else gr).append(c)
-                    red_sum = ExprNode(
-                        op="faq",
-                        args=[],
-                        output_idx=[],
-                        reduce="+",
-                        expr=d,
-                        ranges={n: [lo, hi] for n, lo, hi in crange},
-                        filter=conj_list(gc),
-                    )
-                    coef = simp(mul(red_sum, *scale))
+                    coef = _ONE
+                    if co:
+                        red_sum = ExprNode(
+                            op="faq",
+                            args=[],
+                            output_idx=[],
+                            reduce="+",
+                            expr=d,
+                            ranges={n: [lo, hi] for n, lo, hi in crange},
+                            filter=conj_list(gc),
+                        )
+                        coef = simp(mul(red_sum, *scale))
                     if is_zero(coef):
                         continue
                     _push_band(out, rows2, oidx, cidx, coef, extra, conj_list(gr), v, ctx)
@@ -441,7 +483,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                     # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a
                     # band with free contracted column dimensions; entries
                     # landing on one column accumulate at assembly.
-                    coef = simp(mul(d, *scale))
+                    coef = simp(mul(d, *scale)) if co else d
                     if is_zero(coef):
                         continue
                     _push_band(
@@ -449,7 +491,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale) -> None:
                     )
 
 
-def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
+def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale, co: bool) -> None:
     for region, val in zip(e.regions, e.values, strict=True):
         rows = [(region_bound(r[0]), region_bound(r[1])) for r in region]
         if any(hi < lo for lo, hi in rows):
@@ -464,7 +506,7 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
                 sub_shape = [hi - lo + 1 for lo, hi in rows]
             else:
                 sub_shape = [rows[k][1] - rows[k][0] + 1 for k in nonsing]
-            _bands_array(sub, val, v, ctx, sub_shape, scale)
+            _bands_array(sub, val, v, ctx, sub_shape, scale, co)
             if isinstance(val, ExprNode) and val.op == "faq":
                 vr = val.ranges or {}
                 origins = [
@@ -500,7 +542,7 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale) -> None:
                 guard = b.guard if not subst or b.guard is None else substitute(b.guard, subst)
                 out.append(Band(rows2, ridx, cidx, coef, b.contracted, guard))
         else:
-            _scalar_bands(out, val, v, ctx, rows, [lo for lo, _ in rows], scale)
+            _scalar_bands(out, val, v, ctx, rows, [lo for lo, _ in rows], scale, co)
 
 
 def _push_index(e: Expr, idx: list, ctx: Ctx) -> Expr:
@@ -537,7 +579,7 @@ def normalize_band(b: Band) -> Band:
         b.rows,
         ridx,
         [canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
-        simp(substitute(b.coef, subst)),
+        None if b.coef is None else simp(substitute(b.coef, subst)),
         contracted,
         None if b.guard is None else canon_lits(simplify(substitute(b.guard, subst))),
     )
@@ -553,7 +595,7 @@ def merge_bands(bs: list[Band]) -> list[Band]:
         return (
             tuple(b.ridx),
             tuple(skey(c) for c in b.cidx),
-            skey(b.coef),
+            None if b.coef is None else skey(b.coef),
             tuple(b.contracted),
             None if b.guard is None else skey(b.guard),
         )

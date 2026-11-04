@@ -126,6 +126,21 @@ fn scalar_faq(
     })
 }
 
+/// The refusal of [`window_weight`] alone (reductions.jl `_check_window`),
+/// for the structure-only mode (spec §2.1), which weighs nothing but must
+/// refuse what the full mode refuses: a max/min over more than one
+/// contracted name has no single ascending order.
+pub(crate) fn check_window(red: &str, cn: &[String]) -> Result<(), String> {
+    if red == "+" || red == "*" || cn.len() <= 1 {
+        return Ok(());
+    }
+    Err(format!(
+        "a `{red}` reduction over {} contracted indices ({}) has no first-extremum order",
+        cn.len(),
+        cn.join(", ")
+    ))
+}
+
 /// The derivative `d` of one term of the reduction `red` of faq node `n`
 /// over its contracted names `cn`, weighted by what the reduction does with
 /// that term (see the module header). The max/min indicator and the
@@ -144,13 +159,7 @@ pub(crate) fn window_weight(
     if red == "+" || cn.is_empty() || is_zero(&d) {
         return Ok(d);
     }
-    if red != "*" && cn.len() != 1 {
-        return Err(format!(
-            "a `{red}` reduction over {} contracted indices ({}) has no first-extremum order",
-            cn.len(),
-            cn.join(", ")
-        ));
-    }
+    check_window(red, cn)?;
     let empty = HashMap::new();
     let rng = n.ranges.as_ref().unwrap_or(&empty);
     let mut taken = HashSet::new();
