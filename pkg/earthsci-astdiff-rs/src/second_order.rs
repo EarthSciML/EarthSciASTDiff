@@ -5,6 +5,7 @@
 //! (the `hvp` product document of the reference, spec §9), never a Hessian
 //! tensor.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -15,14 +16,14 @@ use crate::bands::{
     is_array, lift_nested, merge_bands, nested_sums, normalize_band, site_cidx, sorted_sites, Band,
     BandError, Ctx,
 };
-use crate::branches::simp;
+use crate::branches::SimpMemo;
 use crate::clip::{clip_regions, RIdx};
 use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
-use crate::helpers::{is_zero, ser_expr};
+use crate::helpers::{is_zero, ser_expr, OccIndex, SiteScan};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
 use crate::recurrence::{ExtendedBands, Recurrence};
 use crate::reductions::{conj, one_hot};
-use crate::rules::dscalar;
+use crate::rules::dscalar_in;
 use crate::system::{ctx_of, observed_defs, sysview, SysView};
 
 type R<T> = Result<T, BandError>;
@@ -140,6 +141,11 @@ pub(crate) fn bands2_memo(
     let mut tset: HashSet<String> = t2.into_iter().collect();
     tset.extend(e1.recurrences.iter().map(|r| r.name.clone()));
     let mut out = Vec::new();
+    // One occurrence index and coefficient memo per second column, shared by
+    // every first-order band: the coefficient memo hands repeated first-order
+    // coefficients out as one object, so their nodes are indexed and
+    // differentiated once.
+    let mut per_w: HashMap<String, (RefCell<OccIndex>, SimpMemo)> = HashMap::new();
     for en in e1.rows.iter().chain(&e1.rec_rows) {
         let mut ws: Vec<String> = free_variables(&en.band.coef)
             .into_iter()
@@ -147,7 +153,10 @@ pub(crate) fn bands2_memo(
             .collect();
         ws.sort();
         for w in ws {
-            for b in merge_bands(coef_bands(&en.band, &w, ctx)?) {
+            let (occ, sm) = per_w
+                .entry(w.clone())
+                .or_insert_with(|| (RefCell::new(OccIndex::new(&w)), SimpMemo::default()));
+            for b in merge_bands(coef_bands(&en.band, &w, ctx, occ, sm)?) {
                 out.push(JacEntry2 {
                     u: en.u.clone(),
                     v: en.v.clone(),
@@ -163,13 +172,23 @@ pub(crate) fn bands2_memo(
             check_closed_col2(en)?;
         }
     }
+    // The second derivatives repeat the first-order coefficients' shared
+    // subtrees band after band: intern them as the first-order pass is.
+    crate::jacobian::intern_entries(out.iter_mut().map(|en| &mut en.band));
     Ok((e1, out))
 }
 
 /// One band per site of `w` in a first-order coefficient, broadcast over the
 /// entry's rows: the scalar band step with the entry's contracted names
-/// bound too.
-fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
+/// bound too. `occ` and `sm` are the caller's, shared across the bands of
+/// one second column `w`.
+fn coef_bands(
+    b: &Band,
+    w: &str,
+    ctx: &Ctx,
+    occ: &RefCell<OccIndex>,
+    sm: &mut SimpMemo,
+) -> R<Vec<Band>> {
     let mut out = Vec::new();
     let outer: Vec<String> = b
         .ridx
@@ -194,12 +213,12 @@ fn coef_bands(b: &Band, w: &str, ctx: &Ctx) -> R<Vec<Band>> {
                 &s,
                 &body,
                 site_cidx(&s),
-                dscalar(&body, &s)?,
+                dscalar_in(&body, &s, &SiteScan::new(occ, &s))?,
                 ctx,
                 &outer,
                 &mut taken,
             )?;
-            let coef = simp(&d);
+            let coef = sm.simp(&d);
             if is_zero(&coef) {
                 continue;
             }

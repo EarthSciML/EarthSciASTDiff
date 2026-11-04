@@ -161,6 +161,10 @@ end
         path = joinpath(dir, "mx2.esm")
         open(io -> JSON3.write(io, U.doc(mx2; n = 3, nz = 4, ushape = ["x", "z"])), path, "w")
         @test_throws BandError jacobian_bands(EarthSciAST.load_path(path), "U9")
+        # the structure-only mode refuses it too (esm-jacobian-spec.md §2.1)
+        @test_throws BandError jacobian_bands(
+            EarthSciAST.load_path(path), "U9"; coefficients = false
+        )
     end
 
     # ── products ──

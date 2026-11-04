@@ -8,6 +8,7 @@ pub mod branches;
 pub mod clip;
 pub mod emit;
 pub mod eval_cse;
+pub(crate) mod hashcons;
 pub mod helpers;
 pub mod inline;
 pub mod jacobian;
@@ -23,22 +24,23 @@ pub mod system;
 
 pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 pub use branches::{canon_lits, simp, simplify_branches};
-pub use clip::{clip_regions, RIdx};
+pub use clip::{clip_regions, clip_summands, RIdx};
 pub use emit::{
     block_diagonal_lu, block_diagonal_plan, column_block_plan, column_lines, cse_templates,
     detect_structure, detect_structure_along, evaluation_document, jacobian_block,
     jacobian_block_with, jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with,
     lu_fill, markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
     parse_jacobian_blocks, plan_factorization, plan_factorization_along, serialize_band,
-    serialize_plan, BlockLu, BlockOptions, BlockWrt, ColumnLines, FactorizationPlan, ParsedBlock,
-    Rank1, STRUCTURE_CLASSES,
+    serialize_plan, serialize_structure_band, BlockLu, BlockOptions, BlockWrt, ColumnLines,
+    FactorizationPlan, ParsedBlock, Rank1, STRUCTURE_CLASSES,
 };
 pub use eval_cse::{hoist_observed, Hoisted};
 pub use helpers::{ckey, skey, stable_json, Site};
 pub use inline::{inline_observed, InlineError};
 pub use jacobian::{
     column_names, extended_bands, forcing_names, jacobian_bands, jacobian_bands_view,
-    jacobian_bands_with_forcing, jacobian_columns, JacEntry, Wrt,
+    jacobian_bands_with_forcing, jacobian_columns, jacobian_structure, jacobian_structure_view,
+    JacEntry, StructureBand, StructureEntry, Wrt,
 };
 pub use products::{
     hvp_document, jvp_document, vjp_document, HvpForm, HvpIo, IoMap, JvpIo, ProductOptions, VjpIo,

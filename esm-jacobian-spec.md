@@ -61,6 +61,122 @@ them exactly, so region structure appears as entry `rows` boundaries — never
 as `ifelse` guards inside `coef`, and never as branch-union padding in the
 pattern. Only genuinely value-dependent branches (limiters) remain unioned.
 
+### 2.1 Structure-only entries
+
+A producer MAY offer a **structure-only** mode, for a consumer that needs
+only the pattern (a planner's locality and stiffness classes, a sparsity
+prototype) and not the values. A structure-only entry has every field of a
+§4 entry except `coef`, which it does not carry. It is computed as the full
+entries are, with these differences, and no others:
+
+1. **No derivative.** Region clipping (§2, region exactness) and site
+   finding (§3: every distinct site of `col` that occurs structurally in a
+   clipped region body) run as in the full mode. Each (region, site) pair
+   gives one entry, with the `rows`, `row_idx`, `col_idx`, `contracted` and
+   `where` the full mode gives that pair before merging. No derivative is
+   taken, so no entry is dropped for a coefficient that simplifies to zero.
+   A right-hand side the full mode refuses is still refused, with the same
+   error: an op with no §3 rule on the path to a site, or a `max`/`min`
+   reduction over more than one contracted index (§3.5), where the full
+   mode's derivative there is not the literal 0.
+2. **Merging on structure.** Entries are coalesced as in the full mode
+   (adjacent `rows` boxes along one dimension, iterated to a fixed point),
+   but two entries need only agree on `row_idx`, `col_idx`, `contracted` and
+   `where`.
+3. **Pinning.** A free row index over a one-cell range, or a one-value
+   contraction, is pinned to its value in `row_idx`, `col_idx` and `where`
+   exactly as in the full mode.
+
+A name the producer chooses fresh (a one-hot column dimension, §3.5; a
+lifted nested-sum index) avoids the names of the entry's own fields, so it
+can differ from the full mode's choice; it is local to the entry either way.
+
+**Relation to the full mode (normative).** Write `P(E)` for the set of
+(row cell, column cell) points of an entry list `E` (each entry's `rows` box
+and `contracted` values, where `where` holds, through `col_idx`), for one
+system and one axis. Then
+
+    P(full) ⊆ P(structure-only),
+
+with equality whenever no (region, site) pair of the full mode has a
+coefficient that simplifies to the literal 0. Both lists are structural
+(§2), so the inclusion holds at every point. The structure-only list can
+also hold a (`row`, `col`) pair the full list lacks: one whose every
+coefficient simplified to zero. The two lists need not have the same
+number of entries, nor entries in one-to-one correspondence: merging on
+structure alone can coalesce entries that the full mode keeps apart, and
+the full mode can drop an entry the structure-only list keeps.
+
+**Through a recurrence.** On an axis with an active recurrence (§4.5) the
+entries are composed through the transfer, which reads the coefficients. A
+producer MAY then compute the structure-only entries from the full entries:
+without `coef`, merged again on structure (item 2) and pinned (item 3), so
+the two point sets are equal. As in the full mode, only entries of one row
+equation and one column merge: two equations of one state stay apart even
+where one's entries of a column meet the next one's. (The bindings that run recurrences do this.)
+
+On the `parameters` and `forcing` axes the closed-column rule of §4.3
+applies to the structure-only entries too. Since none is dropped, a document
+whose only unclosed column has a coefficient that simplifies to zero is
+refused in this mode and accepted in the full one.
+
+A consumer MAY use structure-only entries wherever it would use only the
+full entries' pattern; it MUST NOT emit them as a `"jacobians"` block (§4),
+which requires `coef`.
+
+### 2.2 Region splitting of a sum
+
+Region exactness (§2) splits an entry's rows at every breakpoint of its
+body. When the body is a SUM whose terms are split along different
+dimensions, the split is the product of theirs. An example is the flux
+divergence of a dimension-split advection scheme: an x, a y and a z flux
+difference, each a region read along its own axis. ReSEACT's PPM transport
+has 7 regions per axis, so its body is split into 7 × 7 × 7 = 343 pieces,
+and every piece carries all three terms. Differentiation is linear in the
+summands, so producers SHOULD instead split each group of summands on its
+own dimensions. That gives 7 + 7 + 7 pieces. The entries of different
+groups then overlap, and their values add where they meet (§4: entries are
+additive).
+
+The reference's rule, which the band goldens pin:
+
+1. **Summands.** The body's summands are found by distributing over a sum:
+   `(a + b) / m` gives `a / m` and `b / m`; `q * (a + b)` gives `q * a` and
+   `q * b`; `-(a + b)` gives `-a` and `-b`; and `a - b` gives `a` and `-b`.
+   This recurses, and `a - b` splits even when `a` and `b` are single
+   terms (`dFx - dFy` gives `dFx` and `-dFy`). A product of two sums is not
+   expanded, and any other node is a single summand.
+2. **Groups.** A summand is *cut along* a row dimension when one of its
+   breakpoints lies strictly inside that dimension's range. Two summands cut
+   along a common dimension belong to the same group (transitively). The
+   summands cut along no dimension form one more group of their own (a
+   pointwise source or chemistry term). Groups are ordered by their first
+   summand.
+3. **Splitting.** With fewer than two groups of cut summands, the body is
+   split as one (§2), exactly as before. Otherwise each group's sum is
+   split on its own breakpoints (the group of uncut summands is one piece),
+   and the band calculus runs on each piece. The pieces are taken group by
+   group.
+
+This applies where the band calculus is linear in the body: an array-level
+`faq` node whose reduction is `"+"` or which has no contracted index, and
+a scalar broadcast over the rows. It does not apply to a `max`, `min` or `*`
+reduction over a contracted index, whose derivative weights the whole
+body (§3.5).
+
+The pattern is unchanged. A group's conditions read only that group's
+dimensions, so they are decided the same way on a group's piece as on every
+smaller product piece inside it. The sites, and hence the structure-only
+entries' points (§2.1), are therefore the same. The full entries' points
+are the same too, except in one case. If the coefficients of two groups at
+a pair simplify to a literal zero only once they are added, the one-piece
+split dropped that pair and the group split keeps it, which can only add
+points. A (row cell, column cell) pair can now be covered by several
+entries whose values add, where before one entry carried their sum.
+A consumer that needs one coefficient per pair adds the entries' values at
+that pair. Every consumer that assembles entries already does this (§4,
+§8).
+
 ## 3. Derivative semantics (per-operator, normative)
 
 `d[e, s]` below is the derivative of expression `e` with respect to a
@@ -94,7 +210,32 @@ Textbook rules, with these bindings-relevant details:
 | `abs` | `ifelse(a < 0, −1, 1) · d[a]` | subgradient −1/+1 at 0 per the tie rule |
 | comparisons, `and`/`or`/`not` | `0` | comparisons return 1.0/0.0 *values*; still 0 even in multiplicative position |
 | `sign`, `floor`, `ceil` | `0` | a.e. |
-| `Pre`, `const`, `enum`, niladic constants | `0` | |
+| `const`, `enum`, niladic constants | `0` | |
+| `Pre(a)` | `d[a]` | the identity, and lowered away before differentiation (below); never `0` |
+
+**`Pre` in a right-hand side.** esm-spec §5.1 defines `Pre(a)` only inside an
+event affect, as the value of `a` immediately before the event fires, and
+says nothing of `Pre` in a continuous right-hand side. This specification
+fixes that reading for the Jacobian: a right-hand side is evaluated at one
+instant with no event, so the value "before the event" is the current value
+and `Pre(a)` there **is** `a`. It is the reading EarthSciAST's interpreters
+implement (the Julia tree-walk and the Rust `simulate_array` pass the operand
+through), and the one under which `jacobian_bands` agrees with forward-mode
+differentiation of the evaluated right-hand side. The derivative of an affect
+with respect to the pre-event state is the same identity. A producer MUST
+lower every `Pre(a)` in a right-hand side (and in every observed definition it
+inlines, §3.5) to `a` before differentiating, so that no band coefficient,
+derived evaluation document (§8) or product document (§9) carries a `Pre`,
+and `Pre(x)` and `x` are one structure to interning, simplification and CSE. The `d[Pre(a)] = d[a]` row is the rule for an
+expression that reaches the scalar calculus unlowered.
+
+A backend that reads `Pre` in a right-hand side differently computes a
+different right-hand side, and these bands are not its Jacobian: EarthSciAST's
+ModelingToolkit lowering maps `Pre` to `ModelingToolkit.Pre`, MTK's
+pre-event operator, which MTK need not resolve to the current state. A document
+that must mean the same on every backend writes the plain variable; `Pre`
+belongs in affects. Should esm-spec settle `Pre` in a right-hand side
+otherwise, this row follows it.
 
 ### 3.3 Rewrite-target operators
 
@@ -119,7 +260,13 @@ are not expressed as rewritten array expressions; they are expressed as
 **bands** (§4). `makearray` overlap follows §4.3.2: later regions overwrite
 earlier ones, so a band from an overwritten sub-region MUST NOT be emitted
 (equivalently: emission may lower a per-cell read of a `makearray` to nested
-region-membership `ifelse`, folded first-region-outward).
+region-membership `ifelse`, folded first-region-outward). An array-valued
+region value fills its region by position: the value's element at its own
+index `origin + p` (a `faq` value's range start; 1 for a `makearray` or an
+array variable) is the region's element at `lo + p`, along every dim the
+value spans. A value spans either every region dim, singleton dims
+included, or only the non-singleton dims; both lowerings (bands and the
+per-cell `ifelse`) MUST read it this way.
 
 **A `faq` node's operand list reads nothing.** A `faq` node's `args` is its
 operand list (esm-spec §4.3.1): a serializer's copy of the arrays its `expr`
@@ -818,7 +965,21 @@ Fixture corpus in `tests/` of this repository:
    constant offset; a regrid-like `reduce: "+"` contraction with `const`
    weights over one record of a second buffer; and a const array parameter
    standing in for an emission field. Its value goldens are at `w = 0.37` and
-   at `w = 0` exactly, with the buffers at the document defaults). A
+   at `w = 0` exactly, with the buffers at the document defaults). Each fixture with a state band golden also carries
+   `<name>.structure.bands.json`, its structure-only entries (§2.1) in the
+   same deterministic JSON, each entry without `coef`; the Julia reference
+   checks that their points include the full entries' points (§2.1).
+   `onehot_clipped.esm` carries that golden alone: a level search used as a
+   subscript under a row-index `ifelse`, so clipping splits one one-hot
+   column into two adjacent regions whose selections differ (two full
+   entries, one structure-only entry, §2.1 item 2), and a state defined by
+   two equations whose same-structure entries meet at a row boundary (never
+   merged, in either mode).
+   The §2.2 fixtures `split_sum_2d.esm` (an x-split and a y-split term over a
+   state divisor) and `split_diff_2d.esm` (their difference over a state
+   divisor, minus an uncut decay term) carry `<name>.bands.json` only,
+   whose overlapping entries the Julia reference checks against
+   ForwardDiff. A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried
@@ -1067,7 +1228,9 @@ needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
 The derived model is named `JacobianEval` and holds:
 
 - every variable of the source, `unknown` or `parameter`, with its `shape`
-  and `default`. A pointwise-lifted state of a flattened system has the
+  and `default`, and for a **data-fed parameter** (one whose `update` has a
+  rule of kind `data`) its `update` reduced to those rules (below). A
+  pointwise-lifted state of a flattened system has the
   `shape` its `flatten` records: the lift's index sets, which EarthSciAST
   0.8 and later names in every binding by the rules of esm-libraries-spec
   §4.7.5, "Pointwise lift: index sets" (an operand declaring a shape and
@@ -1091,8 +1254,12 @@ The derived model is named `JacobianEval` and holds:
 - the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
   (for an array state, a `makearray` of `0.0` over its whole shape), and the
   observed definitions the coefficients do not read, directly or through
-  other observed, dropped with their declarations. The source's other
-  equations, such as a model's `ic` equations, are kept;
+  other observed, dropped with their declarations. An observed a kept
+  `data` rule reads (below: its `expression`, an expression
+  `from.unit_conversion`, or a handler's `read_vars` / `read_params`, a name
+  local to the parameter's component read under its scope) is read and
+  kept. The source's other equations, such as a model's `ic` equations, are
+  kept;
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
   index sets) and their definitions, and the recurrence auxiliaries (§4.5);
 - one band field per entry, in entry order: `J_k`, an `unknown` with default
@@ -1100,6 +1267,36 @@ The derived model is named `JacobianEval` and holds:
   field `shape` above: the row variable's index sets, then one `jcax<n>`
   index set per contracted dimension), whose `D` equation is the entry's
   coefficient over its region and `0.0` elsewhere.
+
+**Data-fed parameters.** A parameter whose `update` has a `data` rule is an
+input that a provider fills from a data source (esm-spec §8.5), not a
+constant: EarthSciAST builds it as a forcing slot of `rhs_program` (its
+API_SPEC §5.8, "Forcing sets"), the same as in the source. So the document
+keeps each such parameter's `data` rules, each as EarthSciAST serializes
+it (`kind`, `source`, `from`), in their order: one rule as the object form,
+two or more as the array form. Its other rules (`schedule`, `condition`,
+`crossing`, `remesh`, `wiener`) are not written: they fire between
+right-hand-side calls, never within one, and their expressions may read
+observed the document drops. A parameter with no `data` rule is written
+with no `update`. The document then has a top-level `data_sources` holding
+every entry those rules name, keys sorted, each as EarthSciAST serializes
+it, and no other; it has no `data_sources` when no rule names one. Because
+the parameter is a forcing slot, its value at each evaluation is the
+forcing the consumer passes (a document evaluated for the source's
+`J(u, p, t; F)` is evaluated with the source's forcing `F`); its `default`,
+when it has one, is only the slot's default. A data-fed parameter is not a
+state, so it is a constant of the state Jacobian (its derivatives are
+columns of the forcing axis, §4.3): the state bands are the same as without
+the rules.
+
+A flattened system does not carry `data_sources` (EarthSciAST's
+`FlattenedSystem` holds the data-fed parameters' rules but not the sources
+they name), so the producer takes them from the caller: the flattened
+document's own. The same holds for any document a producer builds from a
+flattened system's model, such as a `jacobians` document (§4) over it. A producer MUST refuse a data-fed parameter whose source it
+does not have, rather than write the parameter without its rule (a constant
+of the build) or a document that does not validate
+(`data_source_undefined`).
 
 **Flattened systems: the component tree.** A flattened system (a coupled
 document after `flatten`) names its variables by their scoped names, such as
@@ -1190,7 +1387,8 @@ model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
 evaluation document does). Like the evaluation document it carries the
-source's `domain`, and a flattened source is laid out as its component tree
+source's `domain` and its data-fed parameters' `data` rules with the
+`data_sources` they name (§8.1), and a flattened source is laid out as its component tree
 (§8.1), refused on the same grounds, with the product's model (`JvpEval`,
 …) in place of `JacobianEval`. On top of that base:
 

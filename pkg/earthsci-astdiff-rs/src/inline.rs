@@ -3,11 +3,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::free_variables;
 use earthsci_ast::{Expr, ExpressionNode};
 
 use crate::bands::region_bounds;
-use crate::helpers::{map_expr_children, op, skey};
+use crate::helpers::{add, map_expr_children, op, skey};
 
 pub const MAX_INLINE_PASSES: usize = 64;
 
@@ -24,17 +25,21 @@ impl std::error::Error for InlineError {}
 type R = Result<Expr, InlineError>;
 
 pub fn inline_observed(e: &Expr, obs: &HashMap<String, Expr>) -> R {
-    inline_observed_cached(e, obs, &mut None)
+    inline_observed_cached(e, obs, &mut None, &HashMap::new())
 }
 
 /// [`inline_observed`] with a cache of the names `obs`'s definitions use
 /// (`None` until filled): pass one to every call against the same `obs`.
 /// Every substitution is capture-avoiding, and a faq node binding a name an
-/// enclosing faq already binds is renamed apart.
+/// enclosing faq already binds is renamed apart. `shapes` (variable →
+/// declared extents, the band context's) gives the rank of an array
+/// variable used as a `makearray` region value; a variable it does not
+/// name (nor an observed definition) is read at the region's free rank.
 pub fn inline_observed_cached(
     e: &Expr,
     obs: &HashMap<String, Expr>,
     obs_names: &mut Option<HashSet<String>>,
+    shapes: &HashMap<String, Vec<i64>>,
 ) -> R {
     if obs.is_empty() && !needs_inline(e, &HashSet::new()) {
         return Ok(e.clone());
@@ -45,6 +50,7 @@ pub fn inline_observed_cached(
         obs,
         obs_names,
         taken: None,
+        shapes,
     };
     let scope = HashSet::new();
     for _ in 0..MAX_INLINE_PASSES {
@@ -69,6 +75,7 @@ struct Fresh<'a> {
     obs: &'a HashMap<String, Expr>,
     obs_names: &'a mut Option<HashSet<String>>,
     taken: Option<HashSet<String>>,
+    shapes: &'a HashMap<String, Vec<i64>>,
 }
 
 impl Fresh<'_> {
@@ -334,10 +341,14 @@ fn beta_faq(def: &ExpressionNode, sub: &[Expr], fresh: &mut Fresh, scope: &HashS
     }))
 }
 
-/// Whether a pass could change `e` with no observed to inline: an
-/// `index`-of-array-expression, or a faq node shadowing an enclosing index.
+/// Whether a pass could change `e` with no observed to inline: a `Pre` to
+/// lower, an `index`-of-array-expression, or a faq node shadowing an
+/// enclosing index.
 fn needs_inline(e: &Expr, scope: &HashSet<String>) -> bool {
     let Expr::Operator(n) = e else { return false };
+    if n.op == "Pre" {
+        return true;
+    }
     if n.op == "index" && matches!(n.args.first(), Some(Expr::Operator(_))) {
         return true;
     }
@@ -362,6 +373,45 @@ fn needs_inline(e: &Expr, scope: &HashSet<String>) -> bool {
     found
 }
 
+/// The rank of an array-valued `makearray` region value and, per dim it
+/// spans, the index at which the value starts (its ORIGIN): a faq node's own
+/// range start for each output index, 1 for any other array. `None` when the
+/// rank cannot be read here (an `index` value, a variable of no known
+/// shape): such a value is read at the region's free rank.
+fn value_rank(val: &Expr, fresh: &Fresh, scope: &HashSet<String>) -> Option<(usize, Vec<i64>)> {
+    let ones = |r: usize| Some((r, vec![1; r]));
+    match val {
+        Expr::Operator(vn) if vn.op == "faq" => {
+            let oidx = vn.output_idx.clone().unwrap_or_default();
+            let origins = oidx
+                .iter()
+                .map(|nm| match vn.ranges.as_ref().and_then(|r| r.get(nm)) {
+                    Some(RangeSpec::Interval([lo, _])) => *lo,
+                    Some(RangeSpec::Strided([lo, _, _])) => *lo,
+                    _ => 1,
+                })
+                .collect();
+            Some((oidx.len(), origins))
+        }
+        Expr::Operator(vn) if vn.op == "makearray" => ones(vn.regions.as_ref()?.first()?.len()),
+        Expr::Variable(nm) if !scope.contains(nm) => {
+            if let Some(sh) = fresh.shapes.get(nm) {
+                return ones(sh.len());
+            }
+            match fresh.obs.get(nm) {
+                Some(Expr::Operator(d)) if d.op == "faq" => {
+                    ones(d.output_idx.as_ref().map_or(0, |o| o.len()))
+                }
+                Some(Expr::Operator(d)) if d.op == "makearray" => {
+                    ones(d.regions.as_ref()?.first()?.len())
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn index_makearray(
     ma: &ExpressionNode,
     idx: &[Expr],
@@ -379,38 +429,67 @@ fn index_makearray(
         .ok_or_else(|| InlineError("makearray without values".into()))?;
     let mut result = Expr::Integer(0);
     for (region, val) in regions.iter().zip(values.iter()) {
+        if region.len() != idx.len() {
+            return Err(InlineError(format!(
+                "makearray region rank {} ≠ index arity {}",
+                region.len(),
+                idx.len()
+            )));
+        }
         let mut conds = Vec::new();
-        let mut sub_idx = Vec::new();
+        let mut los = Vec::new();
+        let mut nonsing = Vec::new();
         for (k, r) in region.iter().enumerate() {
             let (lo, hi) = region_bounds(r).map_err(|e| InlineError(e.0))?;
             conds.push(op(">=", vec![idx[k].clone(), Expr::Integer(lo)]));
             conds.push(op("<=", vec![idx[k].clone(), Expr::Integer(hi)]));
+            los.push(lo);
             if hi > lo {
-                sub_idx.push(idx[k].clone());
+                nonsing.push(k);
             }
         }
-        let v = if let Expr::Operator(vn) = val {
-            if vn.op == "faq" {
-                let oidx = vn.output_idx.clone().unwrap_or_default();
-                if oidx.len() != sub_idx.len() {
-                    return Err(InlineError(format!(
-                        "makearray value rank {} ≠ region free rank {}",
-                        oidx.len(),
-                        sub_idx.len()
-                    )));
-                }
-                beta_faq(vn, &sub_idx, fresh, scope)?
-            } else if matches!(vn.op.as_str(), "makearray" | "index") {
-                let mut args = vec![val.clone()];
-                args.extend(sub_idx.iter().cloned());
-                inline_once(&op("index", args), obs, fresh, scope)?
+        let array_value = match val {
+            Expr::Operator(vn) => matches!(vn.op.as_str(), "faq" | "makearray" | "index"),
+            Expr::Variable(_) => true,
+            _ => false,
+        };
+        let v = if array_value {
+            // Two legal value shapes (esm-spec §4.3.2, the pair
+            // `bands_makearray` tells apart with `val_fullrank`): a FULL-RANK
+            // value spans every region dim, singleton dims included (a 3-D
+            // field's boundary face); a REDUCED-RANK one spans only the
+            // non-singleton dims. The value fills the region by position: its
+            // element at index `origin + p` lands on region index `lo + p`,
+            // so a dim it spans is read at `idx − lo + origin`, the shift
+            // `bands_makearray` applies to the value's bands.
+            let (rank, origins) = value_rank(val, fresh, scope)
+                .unwrap_or_else(|| (nonsing.len(), vec![1; nonsing.len()]));
+            let dims: Vec<usize> = if rank == idx.len() {
+                (0..idx.len()).collect()
+            } else if rank == nonsing.len() {
+                nonsing.clone()
             } else {
-                val.clone()
+                return Err(InlineError(format!(
+                    "makearray value rank {} matches neither the region rank {} \
+                     nor the region free rank {}",
+                    rank,
+                    idx.len(),
+                    nonsing.len()
+                )));
+            };
+            let tgt: Vec<Expr> = dims
+                .iter()
+                .zip(&origins)
+                .map(|(&k, o)| add(vec![idx[k].clone(), Expr::Integer(o - los[k])]))
+                .collect();
+            match val {
+                Expr::Operator(vn) if vn.op == "faq" => beta_faq(vn, &tgt, fresh, scope)?,
+                _ => {
+                    let mut args = vec![val.clone()];
+                    args.extend(tgt);
+                    inline_once(&op("index", args), obs, fresh, scope)?
+                }
             }
-        } else if matches!(val, Expr::Variable(_)) {
-            let mut args = vec![val.clone()];
-            args.extend(sub_idx.iter().cloned());
-            inline_once(&op("index", args), obs, fresh, scope)?
         } else {
             val.clone() // scalar broadcast
         };
@@ -441,6 +520,10 @@ fn inline_once(
     let Expr::Operator(n) = e else {
         return Ok(e.clone());
     };
+    if n.op == "Pre" {
+        // `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        return inline_once(&n.args[0], obs, fresh, scope);
+    }
     let args = |fresh: &mut Fresh| -> Result<Vec<Expr>, InlineError> {
         n.args[1..]
             .iter()

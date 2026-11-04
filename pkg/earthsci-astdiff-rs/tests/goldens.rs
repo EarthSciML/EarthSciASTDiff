@@ -5,7 +5,8 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    evaluation_document, jacobian_bands, jacobian_block, parse_jacobian_block, serialize_band,
+    evaluation_document, jacobian_bands, jacobian_block, jacobian_structure,
+    jacobian_structure_view, parse_jacobian_block, serialize_band, serialize_structure_band,
     stable_json, sysview, Wrt,
 };
 use serde_json::Value;
@@ -16,7 +17,7 @@ use common::{load, root};
 
 /// The first eleven are the reference's; the last two are this binding's
 /// (tests/write_goldens.rs: the reference cannot produce them yet).
-const NAMES: [&str; 13] = [
+const NAMES: [&str; 14] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -28,6 +29,7 @@ const NAMES: [&str; 13] = [
     "filtered_scan",
     "semiring_reduce",
     "faq_operand_list",
+    "pre_operator",
     "recurrence_sweep",
     "pbl_rank1",
 ];
@@ -72,6 +74,53 @@ fn band_goldens() {
             golden(&format!("{name}.bands.json")),
             "band golden diverges: {name}"
         );
+    }
+}
+
+/// Structure-only entries (spec §2.1): `<name>.structure.bands.json`, the
+/// state entries without coefficients, for every fixture above, the
+/// flattened coupled document and `onehot_clipped`.
+#[test]
+fn structure_goldens() {
+    let check = |name: &str, so: Vec<earthsci_astdiff::StructureEntry>| {
+        let text = stable_json(&Value::Array(
+            so.iter().map(serialize_structure_band).collect(),
+        ));
+        assert_eq!(
+            text,
+            golden(&format!("{name}.structure.bands.json")),
+            "structure-only golden diverges: {name}"
+        );
+    };
+    for name in NAMES {
+        check(
+            name,
+            jacobian_structure(&load(name), None, Wrt::States).unwrap(),
+        );
+    }
+    // structure-only goldens alone: a one-hot column split by clipping, a
+    // state of two equations (spec §2.1)
+    check(
+        "onehot_clipped",
+        jacobian_structure(&load("onehot_clipped"), None, Wrt::States).unwrap(),
+    );
+    let flat = earthsci_ast::flatten(&load("coupled_chem_advection")).unwrap();
+    let sv = earthsci_astdiff::sysview_flat(&flat).unwrap();
+    check(
+        "coupled_chem_advection",
+        jacobian_structure_view(&sv, Wrt::States, None).unwrap(),
+    );
+}
+
+/// Each summand clipped on its own axes (spec §2.2): the band form the
+/// reference writes for `split_sum_2d.esm` and, through a difference with an
+/// uncut summand, `split_diff_2d.esm`.
+#[test]
+fn split_sum_golden() {
+    for name in ["split_sum_2d", "split_diff_2d"] {
+        let entries = jacobian_bands(&load(name), Some("S"), Wrt::States).unwrap();
+        let text = stable_json(&Value::Array(entries.iter().map(serialize_band).collect()));
+        assert_eq!(text, golden(&format!("{name}.bands.json")), "{name}");
     }
 }
 

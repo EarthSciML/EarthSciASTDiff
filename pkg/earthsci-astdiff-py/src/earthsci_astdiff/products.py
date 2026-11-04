@@ -949,6 +949,7 @@ def jvp_document(
     forcing=None,
     cse: bool = True,
     cse_min_nodes: int = 12,
+    data_sources=None,
 ):
     """The ``J v`` product document of spec §9.2 for one first-order axis.
 
@@ -963,7 +964,7 @@ def jvp_document(
     ``io["jvp"]`` each state to its output. The consumer writes the inputs
     into the evaluator's state slots beside the source states and reads the
     outputs from ``du`` through the evaluator's variable map."""
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, data_sources)
     ext = _first_pass(sv, wrt, forcing)
     if ext.recurrences:
         return _jvp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
@@ -977,6 +978,7 @@ def vjp_document(
     forcing=None,
     cse: bool = True,
     cse_min_nodes: int = 12,
+    data_sources=None,
 ):
     """The ``Jᵀ λ`` product document of spec §9.3 for one first-order axis
     (model ``"VjpEval"``), as :func:`jvp_document`: ``io["lam"]`` maps each
@@ -986,7 +988,7 @@ def vjp_document(
     A ``VjpEval`` document is an equality-filtered ``faq`` scatter: correct
     under any evaluator, linear-time only under one that implements §9.3's
     equality-filter scatter."""
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, data_sources)
     ext = _first_pass(sv, wrt, forcing)
     if ext.recurrences:
         return _vjp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
@@ -1002,6 +1004,7 @@ def hvp_document(
     forcing=None,
     cse: bool = True,
     cse_min_nodes: int = 12,
+    data_sources=None,
 ):
     """The second-order product document of spec §9.4 for the axis pair
     ``wrt`` and ``stages`` stage pairs: its right-hand side leaves
@@ -1015,7 +1018,7 @@ def hvp_document(
     scatters by the first column instead (model ``"HvpEvalSymmetric"``);
     both forms give the same ``g``."""
     a1, a2 = axis_pair(wrt)
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, data_sources)
     memo = _FirstOrder()  # the first pass, shared with the sweeps' (§9.7)
     _, entries = _bands2(sv, a1, a2, forcing, memo)
     return _hvp_document(

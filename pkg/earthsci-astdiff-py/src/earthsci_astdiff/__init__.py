@@ -7,7 +7,7 @@ deterministic-JSON goldens as the Julia reference.
 """
 
 from .bands import Band, BandError, Ctx, bands, merge_bands, normalize_band
-from .clip import clip_regions
+from .clip import clip_regions, clip_summands
 from .cse import cse_templates, expand_templates
 from .emit import (
     column_names,
@@ -90,6 +90,7 @@ __all__ = [
     "canon_lits",
     "ckey",
     "clip_regions",
+    "clip_summands",
     "column_lines",
     "column_names",
     "cse_templates",

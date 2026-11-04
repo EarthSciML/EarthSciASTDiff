@@ -12,6 +12,16 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   - `coupled_chem_advection.esm` — reaction system ⊕ advection through
     `operator_compose` + pointwise lift (differentiates the *flattened*
     system)
+  - `data_fed_flat.esm` — data-fed parameters through a flattened system
+    (spec §8.1): two components read three data-fed array parameters
+    (`Chem.T`, `Chem.E`, `Box.P`, each with a scalar default) from two of
+    the document's three data sources. Its evaluation document
+    (`data_fed_flat.evaldoc.json`) keeps each parameter's `data` rule and
+    carries the two sources they name, not the unread third; every binding
+    checks that EarthSciAST builds the three as inputs (forcing slots of
+    `rhs_program` in Julia and Rust, `loader_fields` in Python) and that the
+    state bands (`data_fed_flat.bands.json`) are those of the same document
+    without the rules
   - `lift_same_size_index_sets.esm` — EarthSciAST's pointwise-lift
     conformance case of that name: a scalar state lifted onto a 3 × 3 grid
     whose index sets `y` and `x` have the same size, named `[x, y]` by the
@@ -58,6 +68,23 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     names whole arrays but reads nothing (spec §3.5): the bands are those of
     the same document with every `args` emptied (a column band contracted
     over `lev`, the diagonal, and the row read by `c`)
+  - `pre_operator.esm` — `Pre` in a right-hand side, which is the identity
+    there, so its derivative is its operand's (spec §3.2), and which is
+    lowered to its operand before differentiation, so no emitted coefficient
+    or product document carries a `Pre`: `Pre` of an indexed array state in
+    a faq body, of a scalar state read by every cell, of one cell read by a
+    scalar equation, a state read both through `Pre` and directly, nonlinear
+    reads (`Pre(b)·a[i]`, `exp(Pre(b))·Pre(a[2])`), a read that equals a
+    plain one only once `Pre` is lowered (`Pre(b)·b − b·b`), and whole-array
+    `Pre` at array level (`D(c) = −k·Pre(c) + 0.3·Pre(a)`). Its bands equal
+    those of the same document with every `Pre` removed
+  - `onehot_clipped.esm` — structure-only merging (spec §2.1), its only
+    golden `onehot_clipped.structure.bands.json`: a level-search subscript
+    under a row-index `ifelse` (`c[kap]` on rows 1..2, `c[6 - kap]` on rows
+    3..5), so clipping splits one one-hot column into two adjacent regions
+    whose selections differ — two full bands, ONE structure-only band — and
+    a state `e` defined by two equations whose same-structure bands on `c`
+    meet at a row boundary and stay apart in both modes
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a
@@ -70,7 +97,9 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
 - `goldens/` — `<fixture>.evaldoc.json`: the derived evaluation document
   (`evaluation_document`, model `JacobianEval`) — the source's observed
   definitions that the coefficients read, every state derivative zeroed (`D(u) = 0`), the
-  `hoist_observed` buffers, and one band-field state `J_k` per entry.
+  `hoist_observed` buffers, and one band-field state `J_k` per entry; a
+  data-fed parameter keeps its `data` rules, with the `data_sources` they
+  name (`forcing_bracket`, `data_fed_flat`).
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
   only where it differs (a fixture with something to hoist). Julia, Rust and
   Python compare byte-exactly. `coupled_chem_advection.evaldoc[-nocse].json`

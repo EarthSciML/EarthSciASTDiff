@@ -83,6 +83,10 @@ function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder
         end
     end
     a2 in (:parameters, :forcing) && foreach(_check_closed_col2, out)
+    # The second derivatives repeat the first-order coefficients' shared
+    # subtrees band after band: intern them as the first-order pass is.
+    t = _Interner()
+    out = JacEntry2[JacEntry2(en.u, en.v, en.w, _intern_band(t, en.band), en.ncol) for en in out]
     return e1, out
 end
 
@@ -91,6 +95,7 @@ end
 function _coef_bands(b::Band, w::String, ctx::Ctx)
     out = Band[]
     outer = String[[r for r in b.ridx if r isa String]; [n for (n, _, _) in b.contracted]]
+    occ = _OccIndex(w)                 # one occurrence index for every region
     for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
         nested = _nested_sums(body, w, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
@@ -99,7 +104,7 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
                 BandError("whole-array reference to `$w` in a band coefficient")
             )
             c2 = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
-            c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s), ctx, outer, taken)
+            c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s, _SiteScan(occ, s)), ctx, outer, taken)
             coef = _simp(d)
             iszero_lit(coef) && continue
             c2, coef, contracted = _one_hot(c2, coef, vcat(b.contracted, extra), b.ridx, w, ctx)

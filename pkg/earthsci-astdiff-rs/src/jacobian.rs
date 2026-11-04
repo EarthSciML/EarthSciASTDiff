@@ -1,18 +1,22 @@
 //! Model-level driver (the reference's jacobian.jl).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use earthsci_ast::free_variables;
-use earthsci_ast::{EsmFile, Expr, ParameterUpdate, VariableType};
+use earthsci_ast::{EsmFile, Expr, VariableType};
 
-use crate::bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
+use crate::bands::{bands_in, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
+use crate::hashcons::Interner;
 use crate::inline::inline_observed_cached;
-use crate::recurrence::{active, lag, materialize, recurrences, transfer_names, ExtendedBands};
+use crate::recurrence::{
+    active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
+};
 use crate::system::{
-    ctx_of, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview, view_states,
-    SysView,
+    ctx_of, data_rules, inlinable_observed, is_derivative, lhs_state, observed_defs, sysview,
+    view_states, SysView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -76,13 +80,7 @@ pub fn forcing_names(sv: &SysView, forcing: Option<&[String]>) -> Result<Vec<Str
             .variables
             .iter()
             .filter(|(_, v)| {
-                v.var_type == VariableType::Parameter
-                    && v.shape.as_ref().is_some_and(|s| !s.is_empty())
-                    && v.update.as_ref().is_some_and(|u| {
-                        u.rules()
-                            .iter()
-                            .any(|r| matches!(r, ParameterUpdate::Data { .. }))
-                    })
+                v.shape.as_ref().is_some_and(|s| !s.is_empty()) && !data_rules(v).is_empty()
             })
             .map(|(n, _)| n.clone())
             .collect(),
@@ -235,6 +233,73 @@ pub fn jacobian_bands_view(
     bands_of_view(sv, &ctx, &obs, wrt, forcing)
 }
 
+/// One block of the structure-only Jacobian (spec §2.1): a [`JacEntry`]
+/// without its coefficient.
+#[derive(Clone, Debug)]
+pub struct StructureEntry {
+    pub u: String,
+    pub v: String,
+    pub band: StructureBand,
+}
+
+/// A [`Band`] without its coefficient: the rows it covers (named by
+/// `ridx`), the column-index expressions, the contracted column dimensions
+/// and the `where` guard, exactly as in a full band.
+#[derive(Clone, Debug)]
+pub struct StructureBand {
+    pub rows: Vec<(i64, i64)>,
+    pub ridx: Vec<RIdx>,
+    pub cidx: Vec<Expr>,
+    pub contracted: Vec<(String, i64, i64)>,
+    pub guard: Option<Expr>,
+}
+
+impl From<JacEntry> for StructureEntry {
+    fn from(en: JacEntry) -> Self {
+        let b = en.band;
+        StructureEntry {
+            u: en.u,
+            v: en.v,
+            band: StructureBand {
+                rows: b.rows,
+                ridx: b.ridx,
+                cidx: b.cidx,
+                contracted: b.contracted,
+                guard: b.guard,
+            },
+        }
+    }
+}
+
+/// The structure-only entries of `wrt` (spec §2.1), the reference's
+/// `jacobian_bands(sv; wrt, forcing, coefficients = false)`. Regions are
+/// clipped and sites found as in [`jacobian_bands_view`], but no derivative
+/// is taken, no coefficient simplified, and bands merge on (`ridx`, `cidx`,
+/// `contracted`, `guard`) alone. Their points include
+/// [`jacobian_bands_view`]'s, and equal them unless a full band's
+/// coefficient simplifies to zero. Through an active recurrence (§4.5) the
+/// pass runs in full and the coefficients are dropped.
+pub fn jacobian_structure_view(
+    sv: &SysView,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+) -> Result<Vec<StructureEntry>, BandError> {
+    let ctx = ctx_of(sv)?;
+    let obs = observed_defs(sv)?;
+    let rows = bands_seeded_in(sv, &ctx, &obs, wrt, forcing, &[], false)?;
+    Ok(rows.into_iter().map(StructureEntry::from).collect())
+}
+
+/// [`jacobian_structure_view`] of a model of `file` (`model_name` may be
+/// `None` when the file has exactly one), its forcing set inferred.
+pub fn jacobian_structure(
+    file: &EsmFile,
+    model_name: Option<&str>,
+    wrt: Wrt,
+) -> Result<Vec<StructureEntry>, BandError> {
+    jacobian_structure_view(&sysview(file, model_name)?, wrt, None)
+}
+
 /// The body of [`jacobian_bands`], for callers that
 /// already hold the view, its context and its observed definitions.
 pub(crate) fn bands_of_view(
@@ -260,11 +325,84 @@ pub(crate) fn jacobian_bands_seeded(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
-    let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
+    bands_seeded_in(sv, ctx, obs, wrt, forcing, seed, true)
+}
+
+/// [`jacobian_bands_seeded`], or with `co = false` the structure-only
+/// entries (spec §2.1), each with a placeholder coefficient. Through an
+/// active recurrence the pass runs in full ([`extended_pass_in`]), so its
+/// entries are then merged again on structure alone (§2.1 item 2: two
+/// entries the full mode kept apart for their coefficients alone coalesce)
+/// and pinned (item 3).
+fn bands_seeded_in(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+    co: bool,
+) -> Result<Vec<JacEntry>, BandError> {
+    let ext = extended_pass_in(sv, ctx, obs, wrt, forcing, seed, co)?;
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
-    materialize(ctx, &ext)
+    if co {
+        return materialized(ctx, Cow::Owned(ext));
+    }
+    // A merge group is one column of one row EQUATION, as without a
+    // recurrence: two equations of one state are never merged, even where
+    // one's run of a column meets the next one's.
+    let (rows, eqs) = materialize_eq(ctx, &ext)?;
+    let mut out = Vec::with_capacity(rows.len());
+    let mut it = rows.into_iter().zip(eqs).peekable();
+    while let Some((first, q)) = it.next() {
+        let (u, v) = (first.u, first.v);
+        let mut group = vec![first.band];
+        while let Some((en, _)) = it.next_if(|(en, q2)| *q2 == q && en.v == v) {
+            group.push(en.band);
+        }
+        for b in group.iter_mut() {
+            b.coef = placeholder();
+        }
+        for b in merge_bands(group) {
+            out.push(JacEntry {
+                u: u.clone(),
+                v: v.clone(),
+                band: normalize_band(&b),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The band list of an extended pass (spec §4.5): its `rows` when no
+/// recurrence is active, else [`materialize`]'s composition, interned like
+/// the pass's own rows. Every caller that turns a pass into entries goes
+/// through here, so none can skip the interning.
+pub(crate) fn materialized(
+    ctx: &Ctx,
+    ext: Cow<'_, ExtendedBands>,
+) -> Result<Vec<JacEntry>, BandError> {
+    if ext.recurrences.is_empty() {
+        return Ok(match ext {
+            Cow::Owned(e) => e.rows,
+            Cow::Borrowed(e) => e.rows.clone(),
+        });
+    }
+    let mut rows = materialize(ctx, &ext)?;
+    intern_entries(rows.iter_mut().map(|en| &mut en.band));
+    Ok(rows)
+}
+
+/// One object per distinct subtree across every band's coefficient, guard
+/// and column indices (`hashcons::Interner`): the entries share copies
+/// instead of each holding its own.
+pub(crate) fn intern_entries<'a>(bands: impl Iterator<Item = &'a mut Band>) {
+    let mut t = Interner::new();
+    for b in bands {
+        t.intern_band(b);
+    }
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state
@@ -306,6 +444,24 @@ pub(crate) fn extended_pass(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<ExtendedBands, BandError> {
+    extended_pass_in(sv, ctx, obs, wrt, forcing, seed, true)
+}
+
+/// [`extended_pass`], or with `co = false` its structure-only bands (spec
+/// §2.1), each with a placeholder coefficient. An axis with an active
+/// recurrence is the exception: its composition through the transfer
+/// (§4.5) reads the coefficients, so that pass runs in full and only the
+/// caller drops them (spec §2.1).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn extended_pass_in(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    wrt: Wrt,
+    forcing: Option<&[String]>,
+    seed: &[String],
+    co: bool,
+) -> Result<ExtendedBands, BandError> {
     let src_obs = obs;
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
@@ -317,6 +473,7 @@ pub(crate) fn extended_pass(
         s.extend(seed.iter().cloned());
         active(&recs, obs, &s)
     };
+    let co = co || !act.is_empty();
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
     // opaque reads. Time is not pruned: it also enters implicitly through
@@ -355,13 +512,31 @@ pub(crate) fn extended_pass(
             }
             continue;
         };
-        row_bands(&mut entries, &u, &eq.rhs, obs, &mut obs_names, &cols, ctx)?;
+        row_bands(
+            &mut entries,
+            &u,
+            &eq.rhs,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
         row_eq.resize(entries.len(), q);
     }
     let mut rec_rows = Vec::new();
     for r in &act {
         let def = &src_obs[&r.name];
-        row_bands(&mut rec_rows, &r.name, def, obs, &mut obs_names, &cols, ctx)?;
+        row_bands(
+            &mut rec_rows,
+            &r.name,
+            def,
+            obs,
+            &mut obs_names,
+            &cols,
+            ctx,
+            co,
+        )?;
     }
     for en in rec_rows.iter().filter(|en| en.u == en.v) {
         // every self band is a lag back along the axis, or refused
@@ -381,6 +556,15 @@ pub(crate) fn extended_pass(
     } else {
         transfer_names(sv, &recs)
     };
+    // Every coefficient of the pass references shared subtrees (one interner
+    // over the state and the recurrence rows): the products and the emitter
+    // read these rows directly.
+    intern_entries(
+        entries
+            .iter_mut()
+            .chain(rec_rows.iter_mut())
+            .map(|en| &mut en.band),
+    );
     Ok(ExtendedBands {
         recurrences: act,
         rows: entries,
@@ -392,7 +576,9 @@ pub(crate) fn extended_pass(
 
 /// The bands of one row variable `u` (a state, or a recurrence over its
 /// own definition) with respect to every column in `cols` its inlined
-/// right-hand side reads, in sorted column order.
+/// right-hand side reads, in sorted column order; structure-only (spec
+/// §2.1) when `co` is false.
+#[allow(clippy::too_many_arguments)]
 fn row_bands(
     out: &mut Vec<JacEntry>,
     u: &str,
@@ -401,9 +587,11 @@ fn row_bands(
     obs_names: &mut Option<HashSet<String>>,
     cols: &HashSet<String>,
     ctx: &Ctx,
+    co: bool,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
-    let rhs = inline_observed_cached(rhs, obs, obs_names).map_err(|e| BandError(e.0))?;
+    let rhs =
+        inline_observed_cached(rhs, obs, obs_names, &ctx.shapes).map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the
     // RHS's free variables with the column set (a per-equation scan of
     // every target is quadratic on scalar-lowered documents). Sorting the
@@ -414,7 +602,17 @@ fn row_bands(
         .collect();
     hits.sort();
     for v in &hits {
-        for b in merge_bands(bands(&rhs, v, ctx, &shape_u)?) {
+        let mut bs = bands_in(&rhs, v, ctx, &shape_u, co)?;
+        if !co {
+            // Structure-only bands merge on structure alone (spec §2.1 item
+            // 2): one-hot lifting has rewritten the placeholder per band
+            // (`ifelse(_oh == κ + d, 1, 0)`), so it is reset before the
+            // merge, as the reference drops it (`coef = nothing`).
+            for b in bs.iter_mut() {
+                b.coef = placeholder();
+            }
+        }
+        for b in merge_bands(bs) {
             out.push(JacEntry {
                 u: u.to_string(),
                 v: v.clone(),
@@ -558,11 +756,7 @@ impl FirstOrder {
             return Ok(e.clone());
         }
         let ext = self.ext(sv, ctx, obs, a1, a2, forcing, seed)?;
-        let e = Rc::new(if ext.recurrences.is_empty() {
-            ext.rows.clone()
-        } else {
-            materialize(ctx, &ext)?
-        });
+        let e = Rc::new(materialized(ctx, Cow::Borrowed(&*ext))?);
         self.bands.insert(key, e.clone());
         Ok(e)
     }
@@ -591,4 +785,80 @@ pub(crate) fn unsupported_derivative(eq: &earthsci_ast::Equation) -> BandError {
                        or the lifted `faq{{D(index(u, i…))}}`)",
         serde_json::to_string(&crate::helpers::ser_expr(&eq.lhs)).expect("expression serializes")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hashcons::{NodeRef, StructIndex};
+
+    fn sv_of(file: &EsmFile) -> SysView<'_> {
+        sysview(file, None).unwrap()
+    }
+
+    fn load(name: &str) -> EsmFile {
+        let p = format!(
+            "{}/../../tests/valid/{name}.esm",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        earthsci_ast::load_path(&p).unwrap()
+    }
+
+    /// Whether the bands hold exactly one object per distinct subtree.
+    fn one_per_subtree<'a>(bands: impl Iterator<Item = &'a Band>) -> bool {
+        let mut seen = HashSet::new();
+        let mut todo: Vec<Expr> = Vec::new();
+        for b in bands {
+            todo.push(b.coef.clone());
+            todo.extend(b.guard.clone());
+            todo.extend(b.cidx.iter().cloned());
+        }
+        let mut nodes = Vec::new();
+        while let Some(e) = todo.pop() {
+            if let Expr::Operator(a) = &e {
+                if seen.insert(NodeRef(a.clone())) {
+                    a.for_each_child(&mut |c: &Expr| todo.push(c.clone()));
+                    nodes.push(e.clone());
+                }
+            }
+        }
+        let mut ix = StructIndex::new();
+        let ids: HashSet<usize> = nodes.iter().map(|n| ix.sid(n)).collect();
+        ids.len() == nodes.len()
+    }
+
+    #[test]
+    fn every_path_interns_its_bands() {
+        // the emitter's memoized pass and the products' extended pass
+        let file = load("minmod_adv");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        let mut memo = FirstOrder::default();
+        let e = memo
+            .bands(&sv, &ctx, &obs, Wrt::States, None, None, &[])
+            .unwrap();
+        assert!(one_per_subtree(e.iter().map(|en| &en.band)));
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        assert!(one_per_subtree(ext.rows.iter().map(|en| &en.band)));
+        // through an active recurrence: the extended rows and the
+        // materialized composition
+        let file = load("recurrence_sweep");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        assert!(!ext.recurrences.is_empty());
+        assert!(one_per_subtree(
+            ext.rows.iter().chain(&ext.rec_rows).map(|en| &en.band)
+        ));
+        let m = materialized(&ctx, Cow::Borrowed(&ext)).unwrap();
+        assert!(one_per_subtree(m.iter().map(|en| &en.band)));
+        // second order
+        let file = load("arrhenius_chem");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        for wrt in [(Wrt::States, Wrt::States), (Wrt::States, Wrt::Parameters)] {
+            let (_, e2) = crate::second_order::bands2_view(&sv, &ctx, &obs, wrt, None).unwrap();
+            assert!(one_per_subtree(e2.iter().map(|en| &en.band)));
+        }
+    }
 }

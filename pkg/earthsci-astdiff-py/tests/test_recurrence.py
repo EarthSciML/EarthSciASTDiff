@@ -281,6 +281,13 @@ def test_rank_one_plan(valid_dir):
         en = b["entries"][t - 1]
         assert en["row"] == en["col"] and len(en["contracted"]) == 1
     assert jacobian_block(file)["structure"] == "general"
+    # structure-only entries carry no coefficient to split: no rank-one term
+    from earthsci_astdiff import column_lines, jacobian_bands
+
+    sv = sysview(file)
+    so = column_lines(jacobian_bands(sv, coefficients=False), sv, "lev")
+    assert so["pattern"] != "diag_plus_rank1"
+    assert not so.get("rank1")
 
 
 def _lifted(u, lo, hi, rhs):
@@ -396,3 +403,46 @@ def test_entries_keep_each_equation_of_a_state_apart():
     # the first equation's `y`, then the second's `x` and its composites on
     # `y` (merging the two would sort the second's `x` first)
     assert cols[0] == "y" and cols[1] == "x" and set(cols[2:]) == {"y"} and len(cols) > 2
+
+
+def _points(entries):
+    return {
+        (en.u, tuple(cell), en.v, tuple(cidx))
+        for en in entries
+        for cell, _, _, cidx in foreach_point(en.band)
+    }
+
+
+def test_structure_only_keeps_each_equation_of_a_state_apart():
+    # two equations of `x` (rows 1..2, then 3..4), each reading `y[i]`, the
+    # second also the recurrence V (a sweep of `y`): the first equation's run
+    # of column `y` ends where the second's begins, and the structure-only
+    # re-merge through the recurrence (spec §2.1) must not join them, as the
+    # full mode and the pass without a recurrence never do
+    lev = {"type": "unknown", "shape": ["lev"], "default": 0.5}
+
+    def faq(lo, hi, body):
+        return {
+            "op": "faq",
+            "args": [],
+            "output_idx": ["i"],
+            "ranges": {"i": [lo, hi]},
+            "expr": body,
+        }
+
+    doc = _model(
+        {"x": lev, "y": lev, "V": {"type": "unknown", "shape": ["lev"]}},
+        [
+            _sweep("V", "y", 0.5),
+            _lifted("x", 1, 2, faq(1, 2, _ix("y", "i"))),
+            _lifted("x", 3, 4, faq(3, 4, _o("+", _ix("y", "i"), _ix("V", "i")))),
+        ],
+    )
+    sv = sysview(ea.load_document(doc))
+    full = jacobian_bands(sv)
+    so = jacobian_bands(sv, coefficients=False)
+    assert all(en.band.coef is None for en in so)
+    assert _points(so) == _points(full)
+    xy = [en.band.rows[0] for en in so if (en.u, en.v) == ("x", "y")]
+    assert (1, 2) in xy
+    assert all(hi <= 2 or lo >= 3 for lo, hi in xy), xy

@@ -1,11 +1,16 @@
 //! Expression constructors, structural keys, and the differentiation site
 //! (mirror of the reference's expr_helpers).
 
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use earthsci_ast::canonical_json;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
+
+use crate::hashcons::WeakRef;
 
 pub fn op(o: &str, args: Vec<Expr>) -> Expr {
     Expr::operator(ExpressionNode {
@@ -247,14 +252,304 @@ pub fn occurs(e: &Expr, s: &Site) -> bool {
         return true;
     }
     let Expr::Operator(n) = e else { return false };
-    let mut found = false;
-    n.map_children(&mut |c: &Expr| {
-        if !found {
-            found = occurs(c, s);
+    n.any_child(&mut |c: &Expr| occurs(c, s))
+}
+
+// ── every site of one variable at once ───────────────────────────────────────
+//
+// The band calculus differentiates a body once per site of `v`, and a faq
+// body is clipped into one body per region first: on ReSEACT's lowered
+// advection operator that is 343 regions × ~16 sites, each body ~4.5×10⁴
+// nodes. `occurs` at every node of a derivative walk costs the subtree's
+// size, so one scan is Θ(size × depth), and `is_site` re-serializes every
+// `index` node it meets. `OccIndex` (the reference's `_OccIndex`) answers
+// both for ALL sites of `v` from one walk: each node gets the set of site
+// keys under it, and each `index` node of `v` its own key, both memoized on
+// node identity. Clipping keeps the subtrees it does not touch
+// (`hashcons::map_children_shared`), so one index serves every region.
+//
+// Exact: a node's key set holds a site's key iff `occurs` would find it, and
+// `SiteScan::is_site` makes `is_site`'s decision with the key read from the
+// memo. The derivative memo is exact because the derivative of a node with
+// respect to a site depends on the two alone and nothing rewrites an
+// expression in place.
+
+/// A set of small integers (site key ids).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct Bits(Vec<u64>);
+
+impl Bits {
+    fn one(i: usize) -> Bits {
+        let mut b = Bits(vec![0; i / 64 + 1]);
+        b.0[i / 64] |= 1 << (i % 64);
+        b
+    }
+    pub(crate) fn contains(&self, i: usize) -> bool {
+        self.0.get(i / 64).is_some_and(|w| w & (1 << (i % 64)) != 0)
+    }
+    fn is_empty(&self) -> bool {
+        self.0.iter().all(|w| *w == 0)
+    }
+    fn is_subset(&self, o: &Bits) -> bool {
+        self.0
+            .iter()
+            .enumerate()
+            .all(|(k, w)| w & !o.0.get(k).copied().unwrap_or(0) == 0)
+    }
+    fn union_with(&mut self, o: &Bits) {
+        if o.0.len() > self.0.len() {
+            self.0.resize(o.0.len(), 0);
         }
-        c.clone()
-    });
-    found
+        for (k, w) in o.0.iter().enumerate() {
+            self.0[k] |= w;
+        }
+    }
+}
+
+/// The variable `e` is a site of, if it is one: `v` itself, or an `index`
+/// read `index(v, ...)`. The one definition of a site's variable, shared by
+/// the derivative scan, the occurrence index and the nested-sum walk.
+pub(crate) fn site_var(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Variable(n) => Some(n),
+        Expr::Operator(n) => index_var(n),
+        _ => None,
+    }
+}
+
+/// The variable an `index` node reads, if `n` is one over a variable.
+fn index_var(n: &ExpressionNode) -> Option<&str> {
+    match n.args.first() {
+        Some(Expr::Variable(t)) if n.op == "index" => Some(t),
+        _ => None,
+    }
+}
+
+type DerivMemo = Rc<RefCell<HashMap<WeakRef, Expr>>>;
+
+/// The total entry count of an index's derivative memos, kept by the scans
+/// that insert into them, so a sweep decision never walks every memo.
+type Count = Rc<Cell<usize>>;
+
+/// Occurrence of every site of variable `v`, memoized on node identity, for
+/// the derivative scans of one band computation. See [`SiteScan`].
+///
+/// Keys are [`WeakRef`]s, so the index does not keep a region body alive
+/// after its iteration; the entries of freed nodes are swept out whenever
+/// the tables have doubled since the last sweep.
+pub(crate) struct OccIndex {
+    v: String,
+    keyid: HashMap<String, usize>,
+    nodekey: HashMap<WeakRef, usize>,
+    /// A site node's derivative-memo key (its `skey`), so a site scanned
+    /// again (once per region of a clipped body) is not re-serialized.
+    sitekey: HashMap<WeakRef, Rc<str>>,
+    bits: HashMap<WeakRef, Rc<Bits>>,
+    none: Rc<Bits>,
+    /// The set of a bare `Variable(v)`, keyed once: one shared `Rc`, so a
+    /// parent already holding it skips the union by `Rc::ptr_eq`.
+    var: Option<Rc<Bits>>,
+    deriv: HashMap<Rc<str>, DerivMemo>,
+    deriv_len: Count,
+    next_sweep: usize,
+}
+
+const MIN_SWEEP: usize = 1 << 12;
+
+impl OccIndex {
+    pub(crate) fn new(v: &str) -> OccIndex {
+        OccIndex {
+            v: v.to_string(),
+            keyid: HashMap::new(),
+            nodekey: HashMap::new(),
+            sitekey: HashMap::new(),
+            bits: HashMap::new(),
+            none: Rc::new(Bits::default()),
+            var: None,
+            deriv: HashMap::new(),
+            deriv_len: Rc::new(Cell::new(0)),
+            next_sweep: MIN_SWEEP,
+        }
+    }
+
+    fn keyid(&mut self, k: &str) -> usize {
+        if let Some(&i) = self.keyid.get(k) {
+            return i;
+        }
+        let i = self.keyid.len();
+        self.keyid.insert(k.to_string(), i);
+        i
+    }
+
+    fn is_v_index(&self, n: &ExpressionNode) -> bool {
+        index_var(n) == Some(self.v.as_str())
+    }
+
+    fn nodekey(&mut self, e: &Expr, a: &Arc<ExpressionNode>) -> usize {
+        let k = WeakRef::of(a);
+        if let Some(&i) = self.nodekey.get(&k) {
+            return i;
+        }
+        let i = self.keyid(&site_key(e));
+        self.nodekey.insert(k, i);
+        i
+    }
+
+    /// O(1): the derivative memos' share is the running count.
+    fn entries(&self) -> usize {
+        self.nodekey.len() + self.sitekey.len() + self.bits.len() + self.deriv_len.get()
+    }
+
+    /// Drop the entries of nodes that have been freed, once the tables have
+    /// doubled since the last sweep (amortized O(1) per entry). Called
+    /// between scans only, so no derivative memo is borrowed.
+    fn maybe_sweep(&mut self) {
+        if self.entries() < self.next_sweep {
+            return;
+        }
+        self.nodekey.retain(|k, _| !k.is_dead());
+        self.sitekey.retain(|k, _| !k.is_dead());
+        self.bits.retain(|k, _| !k.is_dead());
+        let mut n = 0;
+        for m in self.deriv.values() {
+            let mut m = m.borrow_mut();
+            m.retain(|k, _| !k.is_dead());
+            n += m.len();
+        }
+        self.deriv_len.set(n);
+        self.next_sweep = (2 * self.entries()).max(MIN_SWEEP);
+    }
+
+    /// The ids of the site keys of `v` at or under `e`. A stored set is
+    /// never mutated: a node whose sites all come from one child shares
+    /// that child's set.
+    fn site_bits(&mut self, e: &Expr) -> Rc<Bits> {
+        let a = match e {
+            Expr::Variable(n) if *n == self.v => {
+                if let Some(b) = &self.var {
+                    return b.clone();
+                }
+                let b = Rc::new(Bits::one(self.keyid(&site_key(e))));
+                self.var = Some(b.clone());
+                return b;
+            }
+            Expr::Operator(a) => a,
+            _ => return self.none.clone(),
+        };
+        let k = WeakRef::of(a);
+        if let Some(b) = self.bits.get(&k) {
+            return b.clone();
+        }
+        let mut out = if self.is_v_index(a) {
+            Rc::new(Bits::one(self.nodekey(e, a)))
+        } else {
+            self.none.clone()
+        };
+        a.for_each_child(&mut |c: &Expr| {
+            let b = self.site_bits(c);
+            if b.is_empty() || Rc::ptr_eq(&b, &out) {
+                return;
+            }
+            if out.is_empty() {
+                out = b;
+            } else if !b.is_subset(&out) {
+                Rc::make_mut(&mut out).union_with(&b);
+            }
+        });
+        self.bits.insert(k, out.clone());
+        out
+    }
+}
+
+/// The occurrence argument of one derivative scan ([`crate::rules::dscalar`])
+/// for site `s`: answered from the shared [`OccIndex`] when `s` is a site of
+/// its variable (else as [`occurs`] does), with a memo of the derivatives
+/// already taken, so a subtree shared by several parents, or by several
+/// regions of one clipped body, is differentiated once. The memo is keyed
+/// by the site's own expression, so two spellings of one site never share.
+pub(crate) struct SiteScan<'a> {
+    ix: Option<&'a RefCell<OccIndex>>,
+    bit: usize,
+    deriv: DerivMemo,
+    deriv_len: Count,
+}
+
+impl<'a> SiteScan<'a> {
+    /// A scan with no shared index: [`is_site`] and [`occurs`] as they are,
+    /// and a derivative memo private to this scan.
+    pub(crate) fn plain() -> SiteScan<'static> {
+        SiteScan {
+            ix: None,
+            bit: 0,
+            deriv: Rc::new(RefCell::new(HashMap::new())),
+            deriv_len: Rc::new(Cell::new(0)),
+        }
+    }
+
+    pub(crate) fn new(ix: &'a RefCell<OccIndex>, s: &Site) -> SiteScan<'a> {
+        let mut x = ix.borrow_mut();
+        if site_var(&s.expr) != Some(x.v.as_str()) {
+            return SiteScan::plain();
+        }
+        x.maybe_sweep();
+        let bit = x.keyid(&s.key);
+        let sk: Rc<str> = match &s.expr {
+            Expr::Operator(a) => x
+                .sitekey
+                .entry(WeakRef::of(a))
+                .or_insert_with(|| skey(&s.expr).into())
+                .clone(),
+            e => skey(e).into(),
+        };
+        let deriv = x.deriv.entry(sk).or_default().clone();
+        let deriv_len = x.deriv_len.clone();
+        drop(x);
+        SiteScan {
+            ix: Some(ix),
+            bit,
+            deriv,
+            deriv_len,
+        }
+    }
+
+    /// [`is_site`], with an `index` node's key read from the index.
+    pub(crate) fn is_site(&self, e: &Expr, s: &Site) -> bool {
+        let Some(ix) = self.ix else {
+            return is_site(e, s);
+        };
+        match e {
+            Expr::Operator(a) if a.op == "index" => {
+                let mut x = ix.borrow_mut();
+                // A site of `v` has an `index` node of `v` as its key's
+                // only spelling among operator nodes.
+                x.is_v_index(a) && x.nodekey(e, a) == self.bit
+            }
+            Expr::Operator(_) => false,
+            _ => is_site(e, s),
+        }
+    }
+
+    /// [`occurs`], answered from the index.
+    pub(crate) fn occurs(&self, e: &Expr, s: &Site) -> bool {
+        let Some(ix) = self.ix else {
+            return occurs(e, s);
+        };
+        if !matches!(e, Expr::Operator(_)) {
+            return self.is_site(e, s);
+        }
+        let b = ix.borrow_mut().site_bits(e);
+        b.contains(self.bit)
+    }
+
+    pub(crate) fn memo_get(&self, n: &Arc<ExpressionNode>) -> Option<Expr> {
+        self.deriv.borrow().get(&WeakRef::of(n)).cloned()
+    }
+
+    pub(crate) fn memo_put(&self, n: &Arc<ExpressionNode>, d: Expr) {
+        if self.deriv.borrow_mut().insert(WeakRef::of(n), d).is_none() {
+            self.deriv_len.set(self.deriv_len.get() + 1);
+        }
+    }
 }
 
 pub fn occurs_var(e: &Expr, v: &str) -> bool {

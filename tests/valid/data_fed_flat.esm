@@ -1,0 +1,165 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "DataFedFlat",
+    "description": "Data-fed parameters through a flattened system (esm-jacobian-spec.md §8.1): two components read three data-fed array parameters from two of the document's three data sources. Chem.T (a temperature field from MET, refreshed hourly) enters the state Jacobian through the observed rate Chem.r; Chem.E (an emission field from EMIS, read once) is additive, so it enters no band; Box.P (a second MET field) scales Box's decay. The evaluation document keeps each parameter's data rule and carries MET and EMIS, not the unread UNUSED, so EarthSciAST builds the three as forcing slots of rhs_program rather than constants. Each declares a scalar default, broadcast over its shape, which is its value at the default forcing (EarthSciAST 0.8's Rust rhs_program does not make a data-fed parameter with an array default a forcing slot). Each data-fed parameter is a constant of the state Jacobian: the bands are those of the same document without the rules."
+  },
+  "data_sources": {
+    "MET": {
+      "kind": "grid",
+      "source": {
+        "url_template": "file:///met/{date:%Y%m%d}.nc"
+      },
+      "temporal": {
+        "file_period": "P1D",
+        "frequency": "PT1H",
+        "records_per_file": 24
+      }
+    },
+    "EMIS": {
+      "kind": "grid",
+      "source": {
+        "url_template": "file:///emis/static.nc"
+      }
+    },
+    "UNUSED": {
+      "kind": "points",
+      "source": {
+        "url_template": "file:///stations/obs.csv"
+      }
+    }
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Chem": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": ["x"],
+          "default": 1.0
+        },
+        "r": {
+          "type": "unknown",
+          "shape": ["x"]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        },
+        "T": {
+          "type": "parameter",
+          "shape": ["x"],
+          "default": 290.0,
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "T2M"
+            }
+          }
+        },
+        "E": {
+          "type": "parameter",
+          "shape": ["x"],
+          "default": 0.2,
+          "update": {
+            "kind": "data",
+            "source": "EMIS",
+            "from": {
+              "file_variable": "NOX",
+              "unit_conversion": 0.001
+            }
+          }
+        }
+      },
+      "equations": [
+        {
+          "lhs": "r",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": ["i"],
+            "ranges": {"i": {"from": "x"}},
+            "expr": {
+              "op": "*",
+              "args": [
+                "k",
+                {
+                  "op": "exp",
+                  "args": [
+                    {
+                      "op": "/",
+                      "args": [-300, {"op": "index", "args": ["T", "i"]}]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {"op": "D", "args": ["c"], "wrt": "t"},
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": ["i"],
+            "ranges": {"i": {"from": "x"}},
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {"op": "index", "args": ["r", "i"]},
+                    {"op": "index", "args": ["c", "i"]}
+                  ]
+                },
+                {"op": "index", "args": ["E", "i"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Box": {
+      "variables": {
+        "S": {
+          "type": "unknown",
+          "default": 2.0
+        },
+        "P": {
+          "type": "parameter",
+          "shape": ["x"],
+          "default": 1.5,
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "PS"
+            }
+          }
+        }
+      },
+      "equations": [
+        {
+          "lhs": {"op": "D", "args": ["S"], "wrt": "t"},
+          "rhs": {
+            "op": "*",
+            "args": [
+              -1,
+              {"op": "index", "args": ["P", 2]},
+              "S",
+              "S"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

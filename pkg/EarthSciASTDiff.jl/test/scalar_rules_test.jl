@@ -67,6 +67,9 @@ end
             ), 0.7,
         ),
         (Dict("op" => "min", "args" => [Dict("op" => "*", "args" => ["x", "x"]), "x"]), 0.7),
+        # `Pre` is the identity in a right-hand side (spec §3.2)
+        (Dict("op" => "*", "args" => [Dict("op" => "Pre", "args" => ["x"]), "x"]), 0.7),
+        (Dict("op" => "exp", "args" => [Dict("op" => "Pre", "args" => ["x"])]), 0.7),
     ]
     for (d, x) in cases
         expr = ex(d)
@@ -103,6 +106,9 @@ end
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
         OpExpr("fn", ASTExpr[VarExpr("x"), VarExpr("x")]; name = "datetime.julian_day"), s
     )
+    # `Pre(x)` differentiates as `x` (spec §3.2): it is the identity in a
+    # right-hand side, as EarthSciAST evaluates it, not a constant.
+    @test dscalar(ex(Dict("op" => "Pre", "args" => ["x"])), s) == IntExpr(1)
     # Rewrite-target ops must be lowered first.
     @test_throws EarthSciASTDiff.DerivativeRuleError dscalar(
         OpExpr("D", ASTExpr[VarExpr("x")]; wrt = "lon"), s

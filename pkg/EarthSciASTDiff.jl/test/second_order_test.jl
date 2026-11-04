@@ -15,6 +15,7 @@ const SECOND_ORDER = (
     ("minmod_adv", (:states, :states)),
     ("filtered_scan", (:states, :states)),
     ("semiring_reduce", (:states, :states)),
+    ("pre_operator", (:states, :states)),
 )
 _pairtag((a1, a2)) = "$a1-$a2"
 

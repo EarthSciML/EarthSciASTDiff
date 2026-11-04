@@ -12,7 +12,12 @@
 #      contracted names (see `_beta_faq`). Every substitution is
 #      capture-avoiding, and a faq node binding a name an enclosing faq
 #      already binds is renamed apart (`_inline_once`).
-#   2. `index(makearray(…), i, j)` — the form the pointwise lift produces when
+#   2. `Pre(a)` → `a`. esm-spec §5.1 gives `Pre` a meaning of its own only in
+#      an event affect; in a right-hand side it is the value of `a` (spec
+#      §3.2). Lowering it here, before differentiation, keeps it out of every
+#      coefficient, so `Pre(x)` and `x` intern, simplify and share as one
+#      structure and no emitted document asks its evaluator for `Pre`.
+#   3. `index(makearray(…), i, j)` — the form the pointwise lift produces when
 #      an operator's `makearray` is read per cell. Lowered to a nested
 #      region-membership `ifelse`: later regions override earlier ones, which
 #      is exactly the spec's §4.3.2 overwrite semantics, folded from the first
@@ -32,15 +37,19 @@ Base.showerror(io::IO, e::InlineError) = print(io, "InlineError: ", e.msg)
     inline_observed(e, obs::Dict{String,ASTExpr}) -> ASTExpr
 
 Inline every observed-variable read in `e` (`obs` maps observed name →
-defining expression), β-reduce `index`-of-`faq`, and lower
-`index`-of-`makearray` to region `ifelse`. Fixpoint-iterated; throws
+defining expression), lower `Pre(a)` to `a` (spec §3.2), β-reduce
+`index`-of-`faq`, and lower `index`-of-`makearray` to region `ifelse`. Fixpoint-iterated; throws
 [`InlineError`](@ref) on non-convergence (cyclic observed definitions).
 `obs_names` caches the names used by `obs`'s definitions; a caller inlining
 many expressions against one `obs` passes one `Ref` to all of them.
+`shapes` (variable → declared extents, the band context's) gives the rank of
+an array variable used as a `makearray` region value; a variable it does not
+name (nor an observed definition) is read at the region's free rank.
 """
 function inline_observed(
         e::ASTExpr, obs::Dict{String, ASTExpr};
-        obs_names = Ref{Union{Nothing, Set{String}}}(nothing)
+        obs_names = Ref{Union{Nothing, Set{String}}}(nothing),
+        shapes::AbstractDict = Dict{String, Vector{Int}}()
     )::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
     # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
@@ -55,7 +64,7 @@ function inline_observed(
     # ([`sid`](@ref)) re-keys only the subtrees the pass rebuilt, because the
     # index's memo is carried across passes.
     ix = StructIndex()
-    fresh = _Fresh(e, obs, obs_names, nothing)
+    fresh = _Fresh(e, obs, obs_names, nothing, shapes)
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
         e2 === e && return e2
@@ -79,6 +88,7 @@ mutable struct _Fresh
     obs::Dict{String, ASTExpr}
     obs_names::Base.RefValue{Union{Nothing, Set{String}}}
     taken::Union{Set{String}, Nothing}
+    shapes::AbstractDict
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -231,11 +241,12 @@ function _beta_faq(def::OpExpr, sub::Vector{ASTExpr}, fresh::_Fresh, scope)::AST
     )
 end
 
-# Whether a pass could change `e` with no observed to inline: an
-# `index`-of-array-expression to reduce, or a faq node shadowing an index
-# bound around it (renamed apart by `_inline_once`).
+# Whether a pass could change `e` with no observed to inline: a `Pre` to
+# lower, an `index`-of-array-expression to reduce, or a faq node shadowing an
+# index bound around it (renamed apart by `_inline_once`).
 function _needs_inline(e::ASTExpr, scope = Set{String}())::Bool
     e isa OpExpr || return false
+    e.op == "Pre" && return true
     e.op == "index" && e.args[1] isa OpExpr && return true
     if e.op == "faq"
         b = _binders(e)
@@ -252,46 +263,85 @@ end
 
 # index(makearray(regions, values), e…) → nested ifelse on region membership.
 # Fold from the FIRST region outward so later regions override (§4.3.2).
+# Where a faq range starts: an interval's lower bound, 1 for an index-set
+# range.
+_range_origin(r) = r isa AbstractVector ? _region_bound(r[1]) : 1
+
+_ones_rank(n::Int) = (n, ones(Int, n))
+
+# The rank of an array-valued `makearray` region value and, per dim it spans,
+# the index at which the value starts (its ORIGIN): a faq node's own range
+# start for each output index, 1 for any other array. `nothing` when the rank
+# cannot be read here (an `index` value, a variable of no known shape): such a
+# value is read at the region's free rank.
+function _value_rank(val, fresh::_Fresh, scope)
+    if val isa OpExpr && val.op == "faq"
+        vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
+        oidx = [String(x) for x in val.output_idx]
+        return (
+            length(oidx),
+            Int[haskey(vr, n) ? _range_origin(vr[n]) : 1 for n in oidx],
+        )
+    elseif val isa OpExpr && val.op == "makearray"
+        (val.regions === nothing || isempty(val.regions)) && return nothing
+        return _ones_rank(length(val.regions[1]))
+    elseif val isa VarExpr && !(val.name in scope)
+        haskey(fresh.shapes, val.name) && return _ones_rank(length(fresh.shapes[val.name]))
+        d = get(fresh.obs, val.name, nothing)
+        if d isa OpExpr && d.op == "faq"
+            return _ones_rank(length(d.output_idx))
+        elseif d isa OpExpr && d.op == "makearray" && d.regions !== nothing &&
+                !isempty(d.regions)
+            return _ones_rank(length(d.regions[1]))
+        end
+    end
+    return nothing
+end
+
 function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::ASTExpr
     result = lit(0)
     for (region, val) in zip(ma.regions, ma.values)
-        conds = ASTExpr[]; sub_idx = ASTExpr[]
+        length(region) == length(idx) || throw(
+            InlineError(
+                "makearray region rank $(length(region)) ≠ index arity $(length(idx))"
+            )
+        )
+        conds = ASTExpr[]; los = Int[]; nonsing = Int[]
         for (k, r) in enumerate(region)
             lo = r[1] isa ASTExpr ? r[1] : lit(r[1])
             hi = r[2] isa ASTExpr ? r[2] : lit(r[2])
             push!(conds, op(">=", idx[k], lo))
             push!(conds, op("<=", idx[k], hi))
-            _region_bound(r[2]) > _region_bound(r[1]) && push!(sub_idx, idx[k])
+            push!(los, _region_bound(r[1]))
+            _region_bound(r[2]) > los[end] && push!(nonsing, k)
         end
-        v = if val isa OpExpr && val.op == "faq"
-            oidx = [String(x) for x in val.output_idx]
-            # TWO legal value shapes, the same pair `_bands_makearray!`
-            # distinguishes with `val_fullrank` (bands.jl): a FULL-RANK
-            # faq node names every region dim, singleton dims included; a
-            # REDUCED-RANK one names only the non-singleton dims. Bind each
-            # output index to the read index of the dim it actually names. Only
-            # the reduced-rank shape was accepted here, so a full-rank value
-            # over a region with a pinned dim — the shape a 3-D field's
-            # boundary face takes — was rejected outright.
-            #
-            # Inherited, and NOT changed here: the binding assumes the value
-            # faq node's own range for a dim STARTS where the region does, so
-            # no origin shift is applied. `_bands_makearray!` does apply one
-            # (`shift = lo - origins[kk]`). No fixture in this suite exercises
-            # a shifted value range on this path, so the two are consistent
-            # only where the shift is zero.
-            tgt = length(oidx) == length(idx) ? idx :
-                length(oidx) == length(sub_idx) ? sub_idx :
+        v = if val isa VarExpr ||
+                (val isa OpExpr && val.op in ("faq", "makearray", "index"))
+            # TWO legal value shapes, the pair `_bands_makearray!` tells apart
+            # with `val_fullrank` (bands.jl): a FULL-RANK value spans every
+            # region dim, singleton dims included (a 3-D field's boundary
+            # face); a REDUCED-RANK one spans only the non-singleton dims. The
+            # value fills the region by position: its element at index
+            # `origin + p` lands on region index `lo + p`, so a dim it spans
+            # is read at `idx − lo + origin`, the shift `_bands_makearray!`
+            # applies to the value's bands.
+            vr = _value_rank(val, fresh, scope)
+            rank, origins = vr === nothing ? _ones_rank(length(nonsing)) : vr
+            dims = rank == length(idx) ? collect(1:length(idx)) :
+                rank == length(nonsing) ? nonsing :
                 throw(
                     InlineError(
-                        "makearray value rank $(length(oidx)) matches neither the " *
+                        "makearray value rank $rank matches neither the " *
                         "region rank $(length(idx)) nor the region free rank " *
-                        "$(length(sub_idx))"
+                        "$(length(nonsing))"
                     )
                 )
-            _beta_faq(val, tgt, fresh, scope)
-        elseif val isa VarExpr || (val isa OpExpr && val.op in ("makearray", "index"))
-            _inline_once(op("index", val, sub_idx...), obs, fresh, scope)
+            tgt = ASTExpr[add(idx[k], lit(o - los[k])) for (k, o) in zip(dims, origins)]
+            if val isa OpExpr && val.op == "faq"
+                _beta_faq(val, tgt, fresh, scope)
+            else
+                _inline_once(op("index", val, tgt...), obs, fresh, scope)
+            end
         else
             val   # scalar broadcast over the region
         end
@@ -308,6 +358,8 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
         (e.name in scope || !haskey(obs, e.name)) && return e
         return obs[e.name]
     elseif e isa OpExpr
+        # `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        e.op == "Pre" && return _inline_once(e.args[1], obs, fresh, scope)
         args = () -> ASTExpr[_inline_once(x, obs, fresh, scope) for x in e.args[2:end]]
         if e.op == "index" && e.args[1] isa OpExpr && e.args[1].op == "makearray"
             return _index_makearray(e.args[1], args(), obs, fresh, scope)

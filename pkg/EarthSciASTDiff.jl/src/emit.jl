@@ -45,8 +45,9 @@ function serialize_band(en::JacEntry)
         "rows" => Any[Any[lo, hi] for (lo, hi) in b.rows],
         "row_idx" => Any[b.ridx...],
         "col_idx" => Any[_ser_expr(c) for c in b.cidx],
-        "coef" => _ser_expr(b.coef),
     )
+    # a structure-only band (esm-jacobian-spec.md §2.1) carries no `coef`
+    b.coef === nothing || (d["coef"] = _ser_expr(b.coef))
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
     b.guard === nothing || (d["where"] = _ser_expr(b.guard))
@@ -61,7 +62,8 @@ function parse_band(d::AbstractDict)::JacEntry
                 for x in d["row_idx"]
         ],
         ASTExpr[expression_from_json(c) for c in d["col_idx"]],
-        expression_from_json(d["coef"]),
+        # absent on a structure-only entry (esm-jacobian-spec.md §2.1)
+        haskey(d, "coef") ? expression_from_json(d["coef"]) : nothing,
         haskey(d, "contracted") ?
             Tuple{String, Int, Int}[
                 (String(c[1]), Int(c[2]), Int(c[3]))
@@ -78,7 +80,7 @@ end
                       cse = true, cse_min_nodes = 12, column_axis = nothing) -> Dict
     jacobian_document(flat::FlattenedSystem; wrt = :states, forcing = nothing,
                       name = "Flattened", cse = true, cse_min_nodes = 12,
-                      column_axis = nothing) -> Dict
+                      column_axis = nothing, data_sources = nothing) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
 (esm-jacobian-spec.md §4): per model, the differentiation axis, the band
@@ -107,6 +109,12 @@ expands the references back, so the round-trip is exact either way.
 `"column_block"` structure class with its line-by-line factorization plan
 when every coupling stays within one line along that axis
 ([`detect_structure`](@ref), [`column_lines`](@ref)).
+
+The flattened form builds its model from the system, keeping each data-fed
+parameter's `data` rules (esm-jacobian-spec.md §8.1), so it also declares the
+`data_sources` entries they name. A `FlattenedSystem` carries none: pass the
+flattened document's as `data_sources` when its parameters read data; a named
+source that is not found is a `BandError`.
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
@@ -124,14 +132,19 @@ end
 function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
-        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing,
+        data_sources = nothing
     )
-    sv = sysview(flat)
+    sv = sysview(flat; data_sources = data_sources)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
         cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
     )
+    # `_base_document` keeps the data-fed parameters' rules, so the document
+    # declares the sources they name (a `FlattenedSystem` carries none: pass
+    # the flattened document's `data_sources`)
+    _data_sources!(doc, sv)
     # built from scratch, so the version is the content's, not the 1.1.0
     # floor `_attach_jacobians!` raises a source's to
     return _derived_version!(doc)
@@ -343,6 +356,8 @@ function _base_document(sv::SysView, name::String)
         )
         var.shape === nothing || isempty(var.shape) || (d["shape"] = var.shape)
         var.default === nothing || (d["default"] = _inline_value(var.default))
+        rules = _data_rules(var)
+        isempty(rules) || (d["update"] = _ser_rules(rules))
         m["variables"][n] = d
     end
     for eq in sv.equations
@@ -364,6 +379,46 @@ function _base_document(sv::SysView, name::String)
         "index_sets" => isets,
         "models" => OrderedDict{String, Any}(name => m)
     )
+end
+
+# ── data-fed parameters (esm-jacobian-spec.md §8.1) ─────────────────────────
+#
+# A parameter whose `update` has a `data` rule is an input a provider fills:
+# EarthSciAST makes it a forcing slot of `rhs_program`, not a constant of the
+# build. So the derived documents keep those rules, as EarthSciAST serializes
+# them, and the `data_sources` entries they name. The other kinds are left
+# out: they fire between right-hand-side calls, never within one, and their
+# expressions may read observed the derived model drops.
+
+# One rule is the object form, two or more the array form (esm-spec §5.4).
+_ser_rules(rules) = length(rules) == 1 ?
+    EarthSciAST.serialize_parameter_update(rules[1]) :
+    Any[EarthSciAST.serialize_parameter_update(r) for r in rules]
+
+# The `data_sources` entries the data-fed parameters of `sv` name, as
+# EarthSciAST serializes them, keys sorted; absent when none is named. A named
+# source the view does not hold is refused: a `FlattenedSystem` carries no
+# `data_sources`, so its caller passes the flattened document's.
+function _data_sources!(doc, sv::SysView)
+    named = OrderedDict{String, String}()     # source → first parameter naming it
+    for n in sort!(collect(keys(sv.variables))), r in _data_rules(sv.variables[n])
+        haskey(named, r.source) || (named[r.source] = n)
+    end
+    isempty(named) && return doc
+    out = OrderedDict{String, Any}()
+    for k in sort!(collect(keys(named)))
+        src = sv.data_sources === nothing ? nothing : get(sv.data_sources, k, nothing)
+        src === nothing && throw(
+            BandError(
+                "parameter `$(named[k])` reads data source `$k`, which the source " *
+                    "does not declare (a flattened system carries no `data_sources`: " *
+                    "pass the flattened document's)"
+            )
+        )
+        out[k] = EarthSciAST.serialize_data_source(src)
+    end
+    doc["data_sources"] = out
+    return doc
 end
 
 # The `esm` version a finished derived document declares: the lowest that
@@ -436,6 +491,15 @@ function _zero_source_derivatives!(m, sv::SysView, ctx, roots::Vector{ASTExpr})
     end
     live = Set{String}()
     stack = String[v for r in roots for v in free_variables(r)]
+    # the carried `data` rules (`_base_document`) are evaluated too. A
+    # flattened system keeps a rule's names local to its component, so each is
+    # also read under the parameter's scope (`Chem.E` reading `f`: `Chem.f`);
+    # a name that is no observed is skipped below.
+    for (p, var) in sv.variables, r in _data_rules(var), v in _rule_reads(r)
+        push!(stack, v)
+        i = findlast('.', p)
+        i === nothing || push!(stack, string(p[1:prevind(p, i)], '.', v))
+    end
     while !isempty(stack)
         n = pop!(stack)
         (haskey(reads, n) && !(n in live)) || continue
@@ -482,7 +546,7 @@ end
 
 """
     evaluation_document(input; wrt = :states, model_name = nothing, forcing = nothing,
-                        cse = true) -> (doc, fields)
+                        cse = true, data_sources = nothing) -> (doc, fields)
 
 The derived evaluation document of the first-order bands on axis `wrt`
 (esm-jacobian-spec.md §8, model `"JacobianEval"`): the source's observed the
@@ -493,12 +557,20 @@ leaves every band value in `du`; `fields[k]` names entry `k`'s field.
 Placing the values in a matrix is a scatter plan's ([`bind_plan`](@ref)).
 With `cse`, repeated coefficient subtrees are hoisted into observed arrays
 ([`hoist_observed`](@ref)).
+
+A data-fed parameter (one whose `update` has a `data` rule) keeps those
+rules, and the document carries the `data_sources` entries they name, so
+EarthSciAST builds it as a forcing slot of `rhs_program` rather than a
+constant. They come from `data_sources` when given, else from `input`: an
+`EsmFile`'s own. A `FlattenedSystem` carries none, so pass the flattened
+document's `data_sources` when its parameters read data; a named source
+that is not found is a `BandError`.
 """
 function evaluation_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
     )
-    sv, _ = _sv_src(input, model_name)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
 end
@@ -618,11 +690,13 @@ end
 # Finish a derived document whose model is `derived` (the evaluation
 # document, esm-jacobian-spec.md §8.1, and every product document, §9.1):
 # lay a flattened source out as its component tree, carry the source's
-# `domain`, and settle the `esm` version. Every derived document ends here,
-# so the documents of one source agree on its layout and its time origin.
+# `domain` and the `data_sources` its data-fed parameters name, and settle the
+# `esm` version. Every derived document ends here, so the documents of one
+# source agree on its layout, its time origin and its data inputs.
 function _finish_derived!(doc, sv::SysView, derived::String)
     _component_tree!(doc, sv, derived)
     _domain!(doc, sv.domain)
+    _data_sources!(doc, sv)
     return _derived_version!(doc)
 end
 

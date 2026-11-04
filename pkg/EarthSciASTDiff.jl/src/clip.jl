@@ -185,6 +185,11 @@ function clip_regions(body::ASTExpr, ridx, rows)
     isempty(names) && return [(collect(Tuple{Int, Int}, rows), body)]
     bp = Dict{String, Set{Int}}()
     _breakpoints!(bp, body, names)
+    return _clip_cells(body, ridx, rows, bp)
+end
+
+# `clip_regions` on the breakpoints `bp` of `body`, already collected.
+function _clip_cells(body::ASTExpr, ridx, rows, bp::Dict{String, Set{Int}})
     isempty(bp) && return [(collect(Tuple{Int, Int}, rows), body)]
 
     # per-dimension subinterval lists (split only dims that have breakpoints)
@@ -217,6 +222,144 @@ function clip_regions(body::ASTExpr, ridx, rows)
     return out
 end
 
+# ── clipping each summand on its own axes ────────────────────────────────────
+#
+# `clip_regions` cuts the whole body at every breakpoint of every dimension,
+# so a body that is a SUM of terms each split along one dimension (the flux
+# divergence of a dimension-split advection scheme: an x, a y and a z flux
+# difference, each a lowered region read along its own axis) is cut into the
+# PRODUCT of their regions — 7 × 7 × 7 bodies for ReSEACT's PPM transport,
+# each carrying all three terms. The band calculus is linear in the body's
+# summands (the derivative, a `reduce: "+"` window and a value filter all
+# distribute over `+`), so each group of summands can be clipped on its own
+# axes instead — 7 + 7 + 7 bodies — and their bands ADD where they overlap
+# (esm-jacobian-spec.md §2.2).
+
+# The summands of `e`, distributing a scalar factor or divisor over a sum:
+# `(a + b) / m` ↦ `[a / m, b / m]`, `q * (a + b)` ↦ `[q * a, q * b]`,
+# `-(a + b)` ↦ `[-a, -b]`, `a - b` ↦ `[a, -b]`. A product of two sums is not
+# expanded (only one factor of a `*` may be a sum). An `e` with nothing to
+# distribute is its own single summand.
+function _summands(e::ASTExpr)::Vector{ASTExpr}
+    e isa OpExpr || return ASTExpr[e]
+    a = e.args
+    if e.op == "+"
+        out = ASTExpr[]
+        for x in a
+            append!(out, _summands(x))
+        end
+        return out
+    elseif (e.op == "-" || e.op == "neg") && length(a) == 1
+        ts = _summands(a[1])
+        length(ts) == 1 && return ASTExpr[e]
+        return ASTExpr[OpExpr(e.op, ASTExpr[t]) for t in ts]
+    elseif e.op == "-" && length(a) == 2
+        return vcat(_summands(a[1]), ASTExpr[OpExpr("-", ASTExpr[t]) for t in _summands(a[2])])
+    elseif e.op == "*"
+        k = 0; ts = ASTExpr[]
+        for (j, x) in enumerate(a)
+            tx = _summands(x)
+            length(tx) > 1 || continue
+            k == 0 || return ASTExpr[e]          # a product of two sums
+            k = j; ts = tx
+        end
+        k == 0 && return ASTExpr[e]
+        return ASTExpr[OpExpr("*", ASTExpr[j == k ? t : x for (j, x) in enumerate(a)]) for t in ts]
+    elseif e.op == "/" && length(a) == 2
+        ts = _summands(a[1])
+        length(ts) == 1 && return ASTExpr[e]
+        return ASTExpr[OpExpr("/", ASTExpr[t, a[2]]) for t in ts]
+    end
+    return ASTExpr[e]
+end
+
+# What `clip_summands` needs of a body independently of the box it is
+# clipped to, computed once per body: the whole body's breakpoints and, when
+# a split is possible at all (`split`, and at least two dimensions with a
+# breakpoint), its summands and their breakpoints. A faq node clips one body
+# per guard piece; the walks are not repeated per piece.
+struct _SummandPlan
+    body::ASTExpr
+    bp::Dict{String, Set{Int}}             # the whole body's breakpoints
+    ts::Vector{ASTExpr}                    # the summands; empty: no split
+    tbp::Vector{Dict{String, Set{Int}}}    # each summand's breakpoints
+end
+
+function _SummandPlan(body::ASTExpr, ridx; split::Bool = true)
+    names = String[r for r in ridx if r isa String]
+    bp = Dict{String, Set{Int}}()
+    isempty(names) || _breakpoints!(bp, body, names)
+    ts = ASTExpr[]; tbp = Dict{String, Set{Int}}[]
+    if split && length(bp) >= 2
+        ts = _summands(body)
+        if length(ts) < 2
+            empty!(ts)
+        else
+            for x in ts
+                d = Dict{String, Set{Int}}()
+                _breakpoints!(d, x, names)
+                push!(tbp, d)
+            end
+        end
+    end
+    return _SummandPlan(body, bp, ts, tbp)
+end
+
+_cut_inside(cs, (lo, hi)) = any(c -> lo < c <= hi, cs)
+
+"""
+    clip_summands(body, ridx, rows) -> Vector{(rows′, body′)}
+
+[`clip_regions`](@ref), but with each group of `body`'s summands clipped on
+its own axes. The summands (a sum, with scalar factors and divisors
+distributed over it) are grouped so that two summands cut along a common
+dimension of `rows` share a group. With fewer than two such groups this is
+`clip_regions(body, ridx, rows)` exactly. Otherwise the summands cut along
+no dimension form one more group, which no breakpoint splits, and the
+result is the concatenation, group by group in order of their first
+summand, of `clip_regions` of each group's sum: the pieces of different
+groups OVERLAP, and the bands of a body linear in its summands (the band
+calculus with a `reduce: "+"` window or no contraction) are the sum of the
+groups' bands (esm-jacobian-spec.md §2.2).
+"""
+clip_summands(body::ASTExpr, ridx, rows) = clip_summands(_SummandPlan(body, ridx), ridx, rows)
+
+function clip_summands(p::_SummandPlan, ridx, rows)
+    box = Dict{String, Tuple{Int, Int}}(
+        r => rows[k] for (k, r) in enumerate(ridx) if r isa String
+    )
+    whole() = _clip_cells(p.body, ridx, rows, p.bp)
+    isempty(p.ts) && return whole()
+    # two groups need two dimensions cut inside `rows`
+    count(((n, cs),) -> _cut_inside(cs, box[n]), p.bp) < 2 && return whole()
+    # the dimensions each summand is actually cut along inside `rows`
+    cuts = [
+        sort!(String[n for (n, cs) in d if _cut_inside(cs, box[n])]) for d in p.tbp
+    ]
+    # union-find over dimensions: a summand cut along two joins them
+    parent = Dict{String, String}(n => n for n in keys(box))
+    root(n) = (q = parent[n]; q == n ? n : (parent[n] = root(q)))
+    for c in cuts, k in 2:length(c)
+        parent[root(c[k])] = root(c[1])
+    end
+    # group keys by first summand; `nothing` is the group of uncut summands
+    key(c) = isempty(c) ? nothing : root(c[1])
+    order = Union{Nothing, String}[]
+    for c in cuts
+        r = key(c); r in order || push!(order, r)
+    end
+    count(!isnothing, order) < 2 && return whole()
+    groups = [ASTExpr[] for _ in order]
+    for (t, c) in enumerate(cuts)
+        push!(groups[findfirst(isequal(key(c)), order)], p.ts[t])
+    end
+    out = Vector{Tuple{Vector{Tuple{Int, Int}}, ASTExpr}}()
+    for g in groups
+        append!(out, clip_regions(length(g) == 1 ? g[1] : OpExpr("+", g), ridx, rows))
+    end
+    return out
+end
+
 # ── re-merging ───────────────────────────────────────────────────────────────
 #
 # Clipping partitions per BODY, so every site in a composed equation is split
@@ -230,7 +373,8 @@ end
     merge_bands(bs::Vector{Band}) -> Vector{Band}
 
 Coalesce bands that are identical in `ridx`, `cidx`, `coef`, `contracted`
-and `guard` (structural keys) and whose `rows` boxes are adjacent along exactly one dimension.
+and `guard` (structural keys; a structure-only band's `coef` is `nothing`,
+so those merge on structure alone, esm-jacobian-spec.md §2.1) and whose `rows` boxes are adjacent along exactly one dimension.
 Iterated to a fixpoint; band order is preserved (a merge keeps the
 earlier band's position), so emission stays deterministic.
 
@@ -244,23 +388,51 @@ never have merged. Buckets are searched in ascending original index and the
 survivors are read out in original order, so the emitted band order cannot
 see the bucket iteration order.
 
-(The key stays `skey`. It is taken ONCE per band and never compared
-elementwise afterwards, which is the one regime where a whole-subtree
-serialization beats interning it node by node.)
+The buckets are the classes of that key, found without serializing a
+coefficient: a coefficient of a lowered stencil operator is ~10⁴ nodes, and
+`skey` on every band was a third of `jacobian_bands` on ReSEACT. Bands are
+first grouped by a structural hash ([`shash`](@ref), which equal
+expressions always share), and only a group holding different expression
+objects is split by structural id ([`sid`](@ref), equal iff `skey` is).
+The band calculus hands one coefficient object to every band whose
+coefficient it already simplified (`_SimpMemo`), so most groups need no
+split. The classes, and the ascending order within each, are the key's.
 """
 function merge_bands(bs::Vector{Band})::Vector{Band}
     length(bs) < 2 && return bs
-    key(b) = (
-        b.ridx, [skey(c) for c in b.cidx], skey(b.coef), b.contracted,
-        b.guard === nothing ? nothing : skey(b.guard),
+    hx = StructHash()
+    hkey(b) = (
+        b.ridx, UInt[shash(hx, c) for c in b.cidx],
+        b.coef === nothing ? nothing : shash(hx, b.coef), b.contracted,
+        b.guard === nothing ? nothing : shash(hx, b.guard),
     )
-    buckets = Dict{Any, Vector{Int}}()
+    groups = Dict{Any, Vector{Int}}()
     for (i, b) in enumerate(bs)
-        push!(get!(buckets, key(b), Int[]), i)
+        push!(get!(groups, hkey(b), Int[]), i)
+    end
+    ix = StructIndex()
+    exprs(b) = (b.cidx, b.coef, b.guard)
+    same(x, y) = x[2] === y[2] && x[3] === y[3] && length(x[1]) == length(y[1]) &&
+        all(k -> x[1][k] === y[1][k], eachindex(x[1]))
+    ekey(b) = (
+        Int[sid(ix, c) for c in b.cidx], b.coef === nothing ? 0 : sid(ix, b.coef),
+        b.guard === nothing ? 0 : sid(ix, b.guard),
+    )
+    buckets = Vector{Int}[]
+    for idxs in values(groups)
+        if length(idxs) < 2 || all(i -> same(exprs(bs[i]), exprs(bs[idxs[1]])), idxs)
+            push!(buckets, idxs)
+            continue
+        end
+        split = Dict{Any, Vector{Int}}()
+        for i in idxs                  # ascending, so each part is too
+            push!(get!(split, ekey(bs[i]), Int[]), i)
+        end
+        append!(buckets, values(split))
     end
     out = collect(Band, bs)
     alive = trues(length(out))
-    for idxs in values(buckets)
+    for idxs in buckets
         length(idxs) < 2 && continue
         changed = true
         while changed

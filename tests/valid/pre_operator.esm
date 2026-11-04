@@ -1,0 +1,263 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "PreOperator",
+  "description": "`Pre` in a right-hand side (esm-spec \u00a75.1 gives it a meaning of its own only in an event affect): Pre(x) there is x, so its derivative is d[x] (spec \u00a73.2), never 0, and it is lowered to x before differentiation, so no emitted coefficient carries a Pre. Pre of an indexed array state inside a faq body, Pre of a scalar state read by every cell, Pre of one cell read by a scalar equation, a state read both through Pre and directly, nonlinear Pre reads (Pre(b)*a[i], exp(Pre(b))*Pre(a[2])), a read that cancels only once Pre is lowered (Pre(b)*b - b*b), and whole-array Pre at array level (D(c) = -k*Pre(c) + 0.3*Pre(a))."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 3
+  }
+ },
+ "models": {
+  "PreOperator": {
+   "variables": {
+    "a": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.5
+    },
+    "b": {
+     "type": "unknown",
+     "default": 0.2
+    },
+    "k": {
+     "type": "parameter",
+     "default": 0.5
+    },
+    "c": {
+     "type": "unknown",
+     "shape": [
+      "x"
+     ],
+     "default": 0.3
+    }
+   },
+   "equations": [
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "a"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": {
+        "from": "x"
+       }
+      },
+      "expr": {
+       "op": "+",
+       "args": [
+        {
+         "op": "*",
+         "args": [
+          -1,
+          "k",
+          {
+           "op": "Pre",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "a",
+              "i"
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          0.1,
+          {
+           "op": "Pre",
+           "args": [
+            "b"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          0.2,
+          {
+           "op": "Pre",
+           "args": [
+            "b"
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "a",
+            "i"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "b"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "Pre",
+        "args": [
+         {
+          "op": "index",
+          "args": [
+           "a",
+           1
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         -1,
+         "k",
+         {
+          "op": "Pre",
+          "args": [
+           "b"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         -0.5,
+         "b"
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.3,
+         {
+          "op": "exp",
+          "args": [
+           {
+            "op": "Pre",
+            "args": [
+             "b"
+            ]
+           }
+          ]
+         },
+         {
+          "op": "Pre",
+          "args": [
+           {
+            "op": "index",
+            "args": [
+             "a",
+             2
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.25,
+         {
+          "op": "-",
+          "args": [
+           {
+            "op": "*",
+            "args": [
+             {
+              "op": "Pre",
+              "args": [
+               "b"
+              ]
+             },
+             "b"
+            ]
+           },
+           {
+            "op": "*",
+            "args": [
+             "b",
+             "b"
+            ]
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "c"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "+",
+      "args": [
+       {
+        "op": "*",
+        "args": [
+         -1,
+         "k",
+         {
+          "op": "Pre",
+          "args": [
+           "c"
+          ]
+         }
+        ]
+       },
+       {
+        "op": "*",
+        "args": [
+         0.3,
+         {
+          "op": "Pre",
+          "args": [
+           "a"
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

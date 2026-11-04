@@ -409,7 +409,10 @@ fn max_min_reductions() {
         ushape: vec!["x", "z"],
         ..Default::default()
     };
-    assert!(jacobian_bands(&doc(mx2, d2), None, Wrt::States).is_err());
+    let file = doc(mx2, d2);
+    assert!(jacobian_bands(&file, None, Wrt::States).is_err());
+    // the structure-only mode refuses it too (spec §2.1)
+    assert!(earthsci_astdiff::jacobian_structure(&file, None, Wrt::States).is_err());
 }
 
 #[test]

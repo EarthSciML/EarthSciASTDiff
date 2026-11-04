@@ -24,6 +24,7 @@ NAMES = (
     "filtered_scan",
     "semiring_reduce",
     "faq_operand_list",
+    "pre_operator",
     "recurrence_sweep",
     "pbl_rank1",
 )

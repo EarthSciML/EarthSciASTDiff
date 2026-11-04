@@ -9,7 +9,7 @@ from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expr_walk import map_children
 from earthsci_ast.expression import free_variables
 
-from .expr_helpers import op, region_bound, skey
+from .expr_helpers import add, op, region_bound, skey
 
 MAX_INLINE_PASSES = 64
 
@@ -18,16 +18,25 @@ class InlineError(Exception):
     pass
 
 
-def inline_observed(e: Expr, obs: dict[str, Expr], obs_names: list | None = None) -> Expr:
-    """Inline observed reads, β-reduce `index`-of-`faq`, lower
+def inline_observed(
+    e: Expr,
+    obs: dict[str, Expr],
+    obs_names: list | None = None,
+    shapes: dict[str, list[int]] | None = None,
+) -> Expr:
+    """Inline observed reads, lower ``Pre(a)`` to ``a`` (spec §3.2),
+    β-reduce `index`-of-`faq`, lower
     `index`-of-`makearray` to region membership `ifelse`. Fixpoint-iterated.
     Every substitution is capture-avoiding, and a faq node binding a name an
     enclosing faq already binds is renamed apart. ``obs_names`` caches the
     names ``obs``'s definitions use (a one-element list, ``[None]`` until
-    filled); pass one to every call against the same ``obs``."""
+    filled); pass one to every call against the same ``obs``. ``shapes``
+    (variable → declared extents, the band context's) gives the rank of an
+    array variable used as a `makearray` region value; a variable it does not
+    name (nor an observed definition) is read at the region's free rank."""
     if not obs and not _needs_inline(e):
         return e
-    fresh = _Fresh(e, obs, [None] if obs_names is None else obs_names)
+    fresh = _Fresh(e, obs, [None] if obs_names is None else obs_names, shapes or {})
     for _ in range(MAX_INLINE_PASSES):
         e2 = _inline_once(e, obs, fresh, frozenset())
         if skey(e2) == skey(e):
@@ -46,10 +55,17 @@ class _Fresh:
     in (name, avoid), so copies of one sum renamed in the same scope stay
     structurally equal. The taken sets are collected on the first rename."""
 
-    def __init__(self, root: Expr, obs: dict[str, Expr], obs_names: list):
+    def __init__(
+        self,
+        root: Expr,
+        obs: dict[str, Expr],
+        obs_names: list,
+        shapes: dict[str, list[int]] | None = None,
+    ):
         self.root = root
         self.obs = obs
         self.obs_names = obs_names
+        self.shapes = shapes or {}
         self.taken: set[str] | None = None
 
     def __call__(self, name: str, avoid) -> str:
@@ -182,10 +198,13 @@ def _beta_faq(de: ExprNode, sub: list[Expr], fresh: _Fresh, scope) -> Expr:
 
 
 def _needs_inline(e: Expr, scope=frozenset()) -> bool:
-    """Whether a pass could change ``e`` with no observed to inline: an
-    `index`-of-array-expression, or a faq node shadowing an enclosing index."""
+    """Whether a pass could change ``e`` with no observed to inline: a
+    ``Pre`` to lower, an `index`-of-array-expression, or a faq node shadowing
+    an enclosing index."""
     if not isinstance(e, ExprNode):
         return False
+    if e.op == "Pre":
+        return True
     if e.op == "index" and isinstance(e.args[0], ExprNode):
         return True
     if e.op == "faq":
@@ -205,6 +224,40 @@ def _needs_inline(e: Expr, scope=frozenset()) -> bool:
     return found
 
 
+def _range_origin(r) -> int:
+    """Where a faq range starts: an interval's lower bound, 1 for an
+    index-set range."""
+    if isinstance(r, (list, tuple)):
+        return region_bound(r[0])
+    return 1
+
+
+def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None:
+    """The rank of an array-valued `makearray` region value and, per dim it
+    spans, the index at which the value starts (its ORIGIN): a faq node's own
+    range start for each output index, 1 for any other array. ``None`` when
+    the rank cannot be read here (an `index` value, a variable of no known
+    shape): such a value is read at the region's free rank."""
+    if isinstance(val, ExprNode) and val.op == "faq":
+        vr = val.ranges or {}
+        oidx = [str(n) for n in val.output_idx or []]
+        return len(oidx), [_range_origin(vr[n]) if n in vr else 1 for n in oidx]
+    if isinstance(val, ExprNode) and val.op == "makearray":
+        return (len(val.regions[0]), [1] * len(val.regions[0])) if val.regions else None
+    if isinstance(val, str) and val not in scope:
+        if val in fresh.shapes:
+            n = len(fresh.shapes[val])
+            return n, [1] * n
+        d = fresh.obs.get(val)
+        if isinstance(d, ExprNode) and d.op == "faq":
+            n = len(d.output_idx or [])
+            return n, [1] * n
+        if isinstance(d, ExprNode) and d.op == "makearray" and d.regions:
+            n = len(d.regions[0])
+            return n, [1] * n
+    return None
+
+
 def _index_makearray(
     ma: ExprNode, idx: list[Expr], obs: dict[str, Expr], fresh: _Fresh, scope
 ) -> Expr:
@@ -212,24 +265,43 @@ def _index_makearray(
     Fold from the FIRST region outward so later regions override (§4.3.2)."""
     result: Expr = 0
     for region, val in zip(ma.regions, ma.values, strict=True):
+        if len(region) != len(idx):
+            raise InlineError(f"makearray region rank {len(region)} ≠ index arity {len(idx)}")
         conds: list[Expr] = []
-        sub_idx: list[Expr] = []
+        los: list[int] = []
+        nonsing: list[int] = []
         for k, r in enumerate(region):
             conds.append(op(">=", idx[k], r[0]))
             conds.append(op("<=", idx[k], r[1]))
-            if region_bound(r[1]) > region_bound(r[0]):
-                sub_idx.append(idx[k])
-        if isinstance(val, ExprNode) and val.op == "faq":
-            oidx = [str(x) for x in val.output_idx]
-            if len(oidx) != len(sub_idx):
-                raise InlineError(
-                    f"makearray value rank {len(oidx)} ≠ region free rank {len(sub_idx)}"
-                )
-            v = _beta_faq(val, sub_idx, fresh, scope)
-        elif isinstance(val, str) or (
-            isinstance(val, ExprNode) and val.op in ("makearray", "index")
+            los.append(region_bound(r[0]))
+            if region_bound(r[1]) > los[-1]:
+                nonsing.append(k)
+        if isinstance(val, str) or (
+            isinstance(val, ExprNode) and val.op in ("faq", "makearray", "index")
         ):
-            v = _inline_once(op("index", val, *sub_idx), obs, fresh, scope)
+            # Two legal value shapes (esm-spec §4.3.2, the pair
+            # `_bands_makearray` tells apart with `val_fullrank`): a FULL-RANK
+            # value spans every region dim, singleton dims included (a 3-D
+            # field's boundary face); a REDUCED-RANK one spans only the
+            # non-singleton dims. The value fills the region by position: its
+            # element at index `origin + p` lands on region index `lo + p`,
+            # so a dim it spans is read at `idx − lo + origin`, the shift
+            # `_bands_makearray` applies to the value's bands.
+            rank, origins = _value_rank(val, fresh, scope) or (len(nonsing), [1] * len(nonsing))
+            if rank == len(idx):
+                dims = list(range(len(idx)))
+            elif rank == len(nonsing):
+                dims = nonsing
+            else:
+                raise InlineError(
+                    f"makearray value rank {rank} matches neither the region rank "
+                    f"{len(idx)} nor the region free rank {len(nonsing)}"
+                )
+            tgt = [add(idx[k], o - los[k]) for k, o in zip(dims, origins, strict=True)]
+            if isinstance(val, ExprNode) and val.op == "faq":
+                v = _beta_faq(val, tgt, fresh, scope)
+            else:
+                v = _inline_once(op("index", val, *tgt), obs, fresh, scope)
         else:
             v = val  # scalar broadcast over the region
         cond = conds[0] if len(conds) == 1 else op("and", *conds)
@@ -246,6 +318,9 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh, scope: frozenset)
         return obs.get(e, e)
     if not isinstance(e, ExprNode):
         return e
+    if e.op == "Pre":
+        # `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        return _inline_once(e.args[0], obs, fresh, scope)
 
     def args() -> list[Expr]:
         return [_inline_once(x, obs, fresh, scope) for x in e.args[1:]]

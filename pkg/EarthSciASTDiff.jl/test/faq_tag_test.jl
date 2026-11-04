@@ -64,6 +64,7 @@ end
             "adv_interior", "flux_form_adv", "minmod_adv", "contracted_ops",
             "adv_react_2d", "bd_chem", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
             "filtered_scan", "semiring_reduce",
+            "pre_operator",
         )
         file = fixture("$name.esm")
         model = first(keys(file.models))

@@ -38,6 +38,7 @@ end
             "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
             "contracting_observed", "tgrad_photolysis", "forcing_bracket",
             "filtered_scan", "semiring_reduce", "faq_operand_list",
+            "pre_operator",
         )
         file = fixture("$name.esm")
         entries = jacobian_bands(file, first(keys(file.models)))

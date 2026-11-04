@@ -50,6 +50,7 @@ PLAN_LAYOUTS = [
     ("contracting_observed", "csr", Csr()),
     ("filtered_scan", "csr", Csr()),
     ("semiring_reduce", "csr", Csr()),
+    ("pre_operator", "csr", Csr()),
     ("recurrence_sweep", "csr", Csr()),
     ("pbl_rank1", "csr", Csr()),
 ]

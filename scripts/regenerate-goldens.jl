@@ -7,6 +7,7 @@ for name in (
         "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
         "contracting_observed", "tgrad_photolysis", "forcing_bracket",
         "filtered_scan", "semiring_reduce", "faq_operand_list",
+        "pre_operator",
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -43,10 +44,13 @@ for name in (
 end
 # the evaluation document of a flattened system (spec §8.1): a coupled
 # document's scoped names laid out as its component tree. The bands are the
-# flattened system's, through `sysview(flat)`.
-for name in ("coupled_chem_advection", "lift_same_size_index_sets")
-    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
-    sv = sysview(flat)
+# flattened system's, through `sysview(flat)`. A flattened system carries no
+# `data_sources`, so the view takes the document's: `data_fed_flat`'s
+# data-fed parameters keep their `data` rules and the sources they name.
+for name in ("coupled_chem_advection", "lift_same_size_index_sets", "data_fed_flat")
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    flat = EarthSciAST.flatten(file)
+    sv = sysview(flat; data_sources = file.data_sources)
     entries = jacobian_bands(sv)
     doc = stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries)))
     path = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
@@ -61,6 +65,35 @@ for name in ("coupled_chem_advection", "lift_same_size_index_sets")
         write(path0, doc0)
         println("wrote ", path0)
     end
+end
+# the state bands of the flattened data-fed document: each data-fed parameter
+# a constant of the state Jacobian, as without its rule
+let name = "data_fed_flat"
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sysview(flat))]))
+    println("wrote ", path)
+end
+# structure-only entries (spec §2.1): `<name>.structure.bands.json`, the state
+# entries without coefficients, for every model fixture above and the
+# flattened coupled document (the list the tests check, shared with them)
+include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
+for name in STRUCTURE_FIXTURES
+    src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
+        sysview(src, first(keys(src.models)))
+    entries = jacobian_bands(sv; coefficients = false)
+    path = joinpath(root, "tests", "goldens", "$name.structure.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
+# the band goldens of the summand-splitting fixtures (spec §2.2)
+for name in ("split_sum_2d", "split_diff_2d")
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(file, "S")
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
 end
 # the bands of the flattened coupled document on the axes it has bands on:
 # `<name>.bands.json` (states) and `<name>.parameters.bands.json`
@@ -115,6 +148,7 @@ for (name, wrt) in (
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
+        ("pre_operator", (:states, :states)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -135,6 +169,7 @@ for (name, wrt) in (
         ("contracting_observed", :states), ("tgrad_photolysis", :states),
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
+        ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
@@ -159,6 +194,7 @@ for (name, wrt) in (
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
+        ("pre_operator", (:states, :states)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = sysview(file, first(keys(file.models)))
@@ -187,6 +223,7 @@ for (name, tag, layout) in (
         ("contracting_observed", "csr", Csr()),
         ("filtered_scan", "csr", Csr()),
         ("semiring_reduce", "csr", Csr()),
+        ("pre_operator", "csr", Csr()),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     ppath = joinpath(root, "tests", "goldens", "$name.$tag.plan.json")

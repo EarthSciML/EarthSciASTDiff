@@ -1,0 +1,296 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "SplitDiff",
+  "description": "Each summand clipped on its own axes (spec §2.2), through a difference: (x-split term - y-split term) / m - 0.3 q, split 3 + 3 + 1 ways; the uncut decay term is its own group, and the overlapping bands add."
+ },
+ "index_sets": {
+  "x": {
+   "kind": "interval",
+   "size": 6
+  },
+  "y": {
+   "kind": "interval",
+   "size": 5
+  }
+ },
+ "models": {
+  "S": {
+   "variables": {
+    "q": {
+     "type": "unknown",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "default": 0.5
+    },
+    "m": {
+     "type": "unknown",
+     "shape": [
+      "x",
+      "y"
+     ],
+     "default": 1.5
+    }
+   },
+   "equations": [
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "q"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "output_idx": [
+       "i",
+       "j"
+      ],
+      "args": [],
+      "ranges": {
+       "i": {
+        "from": "x"
+       },
+       "j": {
+        "from": "y"
+       }
+      },
+      "expr": {
+       "op": "-",
+       "args": [
+        {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "ifelse",
+             "args": [
+              {
+               "op": "<=",
+               "args": [
+                "i",
+                1
+               ]
+              },
+              {
+               "op": "*",
+               "args": [
+                0.5,
+                {
+                 "op": "index",
+                 "args": [
+                  "q",
+                  "i",
+                  "j"
+                 ]
+                },
+                {
+                 "op": "index",
+                 "args": [
+                  "q",
+                  "i",
+                  "j"
+                 ]
+                }
+               ]
+              },
+              {
+               "op": "ifelse",
+               "args": [
+                {
+                 "op": ">=",
+                 "args": [
+                  "i",
+                  6
+                 ]
+                },
+                {
+                 "op": "index",
+                 "args": [
+                  "m",
+                  "i",
+                  "j"
+                 ]
+                },
+                {
+                 "op": "*",
+                 "args": [
+                  {
+                   "op": "index",
+                   "args": [
+                    "q",
+                    {
+                     "op": "-",
+                     "args": [
+                      "i",
+                      1
+                     ]
+                    },
+                    "j"
+                   ]
+                  },
+                  {
+                   "op": "index",
+                   "args": [
+                    "q",
+                    "i",
+                    "j"
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            },
+            {
+             "op": "ifelse",
+             "args": [
+              {
+               "op": ">=",
+               "args": [
+                "j",
+                5
+               ]
+              },
+              {
+               "op": "index",
+               "args": [
+                "q",
+                "i",
+                "j"
+               ]
+              },
+              {
+               "op": "ifelse",
+               "args": [
+                {
+                 "op": "<=",
+                 "args": [
+                  "j",
+                  1
+                 ]
+                },
+                {
+                 "op": "*",
+                 "args": [
+                  2.0,
+                  {
+                   "op": "index",
+                   "args": [
+                    "m",
+                    "i",
+                    "j"
+                   ]
+                  }
+                 ]
+                },
+                {
+                 "op": "*",
+                 "args": [
+                  {
+                   "op": "index",
+                   "args": [
+                    "q",
+                    "i",
+                    {
+                     "op": "+",
+                     "args": [
+                      "j",
+                      1
+                     ]
+                    }
+                   ]
+                  },
+                  {
+                   "op": "index",
+                   "args": [
+                    "m",
+                    "i",
+                    "j"
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "op": "index",
+           "args": [
+            "m",
+            "i",
+            "j"
+           ]
+          }
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          0.3,
+          {
+           "op": "index",
+           "args": [
+            "q",
+            "i",
+            "j"
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "m"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "output_idx": [
+       "i",
+       "j"
+      ],
+      "args": [],
+      "ranges": {
+       "i": {
+        "from": "x"
+       },
+       "j": {
+        "from": "y"
+       }
+      },
+      "expr": {
+       "op": "*",
+       "args": [
+        -0.1,
+        {
+         "op": "index",
+         "args": [
+          "m",
+          "i",
+          "j"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -5,11 +5,11 @@ in its RHS — or w.r.t. time itself (``wrt="time"``)."""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError, bands, merge_bands, normalize_band
+from .bands import Band, BandError, bands_in, merge_bands, normalize_band
 from .expr_helpers import ser_expr
 from .inline import inline_observed
 from .system import (
@@ -50,6 +50,36 @@ def _is_parameter(var) -> bool:
     return _var_type(var) == "parameter"
 
 
+def _data_rules(var) -> list:
+    """The ``data`` rules of a parameter's ``update``, in their order (none
+    for an unknown). The one test of "data-fed": the inferred forcing axis
+    (:func:`forcing_names`) and the rules the derived documents carry
+    (spec §8.1) agree."""
+    if not _is_parameter(var):
+        return []
+    return [r for r in _updates(var) if getattr(r, "kind", None) == "data"]
+
+
+def _rule_reads(rule) -> list[str]:
+    """The names a kept ``data`` rule reads: its ``expression``, an expression
+    ``from.unit_conversion``, and a handler's ``read_vars`` / ``read_params``.
+    The derived documents keep the observed these name, so a carried rule
+    never references a variable they drop."""
+    names: list[str] = []
+    expr = getattr(rule, "expression", None)
+    if expr is not None:
+        names.extend(free_variables(expr))
+    src = getattr(rule, "from_source", None)
+    conv = getattr(src, "unit_conversion", None) if src is not None else None
+    if conv is not None and not isinstance(conv, (int, float)):
+        names.extend(free_variables(conv))
+    handler = getattr(rule, "handler", None)
+    if handler is not None:
+        names.extend(getattr(handler, "read_vars", None) or [])
+        names.extend(getattr(handler, "read_params", None) or [])
+    return names
+
+
 def forcing_names(sv: SysView, forcing=None) -> list[str]:
     """The forcing set of a system, sorted by name: the parameters whose cells
     are the columns of the ``wrt="forcing"`` axis (esm-jacobian-spec.md §4.3).
@@ -64,9 +94,7 @@ def forcing_names(sv: SysView, forcing=None) -> list[str]:
         return sorted(
             str(n)
             for n, var in sv.variables.items()
-            if _is_parameter(var)
-            and getattr(var, "shape", None)
-            and any(getattr(u, "kind", None) == "data" for u in _updates(var))
+            if getattr(var, "shape", None) and _data_rules(var)
         )
     # One buffer name is the natural call; iterating a str would split it
     # into characters.
@@ -109,7 +137,11 @@ def jacobian_columns(obj, model_name: str | None = None, wrt: str = "parameters"
 
 
 def jacobian_bands(
-    obj, model_name: str | None = None, wrt: str = "states", forcing=None
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    forcing=None,
+    coefficients: bool = True,
 ) -> list[JacEntry]:
     """Differentiate a model's right-hand side into a list of Jacobian bands.
 
@@ -123,6 +155,14 @@ def jacobian_bands(
       (the cells of the forcing buffers, record axis included) or ``"time"``.
     - ``forcing`` — the forcing set; ``None`` infers it (every array
       parameter with a ``data`` update, see :func:`forcing_names`).
+    - ``coefficients`` — ``False`` returns structure-only entries (spec
+      §2.1): regions are clipped and sites found as in the full mode, but no
+      derivative is taken, no coefficient simplified, and bands merge on
+      (``ridx``, ``cidx``, ``contracted``, ``guard``) alone. Every
+      ``band.coef`` is ``None``. Their points include the full mode's, and
+      equal them unless a full band's coefficient simplifies to zero.
+      Through an active recurrence (§4.5) the pass runs in full and the
+      coefficients are dropped.
 
     **Returns**
 
@@ -139,10 +179,15 @@ def jacobian_bands(
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
     sv = sysview(obj, model_name)
-    return _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing)
+    entries = _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, co=coefficients)
+    if coefficients:
+        return entries
+    return [JacEntry(en.u, en.v, replace(en.band, coef=None)) for en in entries]
 
 
-def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()) -> list[JacEntry]:
+def _jacobian_bands(
+    sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True
+) -> list[JacEntry]:
     # The body of `jacobian_bands`, for callers that
     # already hold the view's context and observed definitions. `seed` adds
     # names to the inlining seed without making them targets: the
@@ -152,10 +197,34 @@ def _jacobian_bands(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()
     # Through a recurrence the extended system is materialized (spec §4.5).
     from .recurrence import materialize
 
-    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed)
+    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co)
     if not ext.recurrences:
         return ext.rows
-    return materialize(sv, ctx, ext)
+    if co:
+        return materialize(sv, ctx, ext)
+    eqs: list[int] = []
+    entries = materialize(sv, ctx, ext, eqs)
+    return _structure_only(entries, eqs)
+
+
+def _structure_only(entries: list[JacEntry], eqs: list[int]) -> list[JacEntry]:
+    # Full entries (the pass through an active recurrence runs in full) as
+    # structure-only ones (spec §2.1): without `coef`, merged again on
+    # structure alone (item 2) — two entries the full mode kept apart for
+    # their coefficients alone coalesce — and pinned (item 3). A merge group
+    # is one column of one row EQUATION (`eqs[k]`, the equation of entry
+    # k), as without a recurrence: two equations of one state are never
+    # merged, even where one's run of a column meets the next one's.
+    out: list[JacEntry] = []
+    i = 0
+    while i < len(entries):
+        j = i
+        while j < len(entries) and (eqs[j], entries[j].v) == (eqs[i], entries[i].v):
+            j += 1
+        bs = merge_bands([replace(en.band, coef=None) for en in entries[i:j]])
+        out.extend(JacEntry(entries[i].u, entries[i].v, normalize_band(b)) for b in bs)
+        i = j
+    return out
 
 
 def extended_bands(
@@ -178,7 +247,7 @@ def extended_bands(
     return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed)
 
 
-def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=()):
+def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True):
     # The extended first-order system of one pass (spec §4.5): the bands of
     # every state equation with respect to the axis's targets AND the active
     # recurrences, and the bands of each active recurrence's own definition
@@ -193,6 +262,11 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
     tset = set(targets)
     recs = recurrences(sv, obs, ctx)
     act = active(recs, obs, tset | set(seed)) if recs else []
+    # Structure-only (`co` false, spec §2.1) runs on a placeholder
+    # coefficient, except through an active recurrence: its composition
+    # through the transfer (§4.5) reads the coefficients, so that pass runs
+    # in full and only the caller drops them.
+    co = co or bool(act)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # not pruned: it also enters implicitly through time-varying data.
@@ -214,11 +288,11 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
                     "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                 )
             continue
-        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx)
+        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
         row_eq.extend([q] * (len(entries) - len(row_eq)))
     rec_rows: list[JacEntry] = []
     for r in act:
-        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx)
+        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
     for en in rec_rows:
         if en.u == en.v:
             # every self band is a lag back along the axis, or refused
@@ -232,17 +306,27 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=())
     return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
 
 
-def _row_bands(out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx) -> None:
+def _row_bands(
+    out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx, co: bool = True
+) -> None:
     # The bands of one row variable `u` (a state, or a recurrence over its
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names)
+    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
     for v in hits:
-        for b in merge_bands(bands(rhs, v, ctx, shape_u=shape_u)):
+        bs = bands_in(rhs, v, ctx, shape_u, co)
+        if not co:
+            # Structure-only bands merge on structure alone (spec §2.1 item
+            # 2): the placeholder is gone before the merge, as in the
+            # reference's `bands(...; coefficients = false)` — one-hot
+            # lifting has rewritten it per band (`ifelse(_oh == κ + d, 1,
+            # 0)`), which would otherwise keep such bands apart.
+            bs = [replace(b, coef=None) for b in bs]
+        for b in merge_bands(bs):
             out.append(JacEntry(u, v, normalize_band(b)))
 
 

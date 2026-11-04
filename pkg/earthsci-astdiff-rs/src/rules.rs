@@ -7,7 +7,8 @@ use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
-use crate::helpers::{add, free_vars, is_site, is_zero, mul, neg, occurs, op, Site};
+use crate::hashcons::NodeRef;
+use crate::helpers::{add, free_vars, is_zero, mul, neg, op, Site, SiteScan};
 
 /// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
@@ -37,23 +38,45 @@ const PIECEWISE_CONSTANT_DATETIME: &[&str] = &[
 
 const ZERO_DERIV_OPS: &[&str] = &[
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor", "ceil", "pi", "π", "e",
-    "true", "false", "const", "enum", "Pre",
+    "true", "false", "const", "enum",
 ];
 
 /// The derivative of the scalar expression `e` with respect to the site `s`
 /// (a variable or an indexed read), by the §3 rule table.
+///
+/// A one-shot call scans plainly: occurrence by `occurs`, which stops at the
+/// first hit, and a derivative memo private to the call. Building a shared
+/// occurrence index (a pass over the whole tree with a bit set per node)
+/// pays only when many scans share it, as a band computation's do.
 pub fn dscalar(e: &Expr, s: &Site) -> R {
-    if is_site(e, s) {
+    dscalar_in(e, s, &SiteScan::plain())
+}
+
+/// [`dscalar`] for one scan of a band computation: occurrence answered by
+/// `sc` (one [`OccIndex`] shared by every site and region of the
+/// computation), and a node reached through several parents, or shared by
+/// several regions, differentiated once.
+pub(crate) fn dscalar_in(e: &Expr, s: &Site, sc: &SiteScan) -> R {
+    if sc.is_site(e, s) {
         return Ok(Expr::Integer(1));
     }
     let Expr::Operator(n) = e else {
         return Ok(Expr::Integer(0));
     };
-    if !occurs(e, s) {
+    if !sc.occurs(e, s) {
         return Ok(Expr::Integer(0));
     }
+    if let Some(d) = sc.memo_get(n) {
+        return Ok(d);
+    }
+    let d = dscalar_op(e, n, s, sc)?;
+    sc.memo_put(n, d.clone());
+    Ok(d)
+}
+
+fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let a = &n.args;
-    let d = |x: &Expr| dscalar(x, s);
+    let d = |x: &Expr| dscalar_in(x, s, sc);
     let lit = Expr::Integer;
     match n.op.as_str() {
         "+" => Ok(add(a.iter().map(d).collect::<Result<Vec<_>, _>>()?)),
@@ -65,6 +88,8 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
         }
         "neg" => Ok(neg(d(&a[0])?)),
+        // the identity in a right-hand side (scalar_rules.jl): d[a]
+        "Pre" => d(&a[0]),
         "*" => {
             let mut terms = Vec::new();
             for (i, x) in a.iter().enumerate() {
@@ -235,9 +260,9 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             }
             Ok(dacc)
         }
-        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s),
+        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s, sc),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
-        "fn" => dfn(n, s),
+        "fn" => dfn(n, s, sc),
         "index" => Err(DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent \
              index) has no scalar rule"
@@ -247,6 +272,122 @@ pub fn dscalar(e: &Expr, s: &Site) -> R {
             "no derivative rule for op `{o}` (rewrite-target ops must be \
              lowered before differentiation)"
         ))),
+    }
+}
+
+/// The rule check of [`dscalar_in`] without the derivative, for the
+/// structure-only mode (spec §2.1; scalar_rules.jl `drule_check`): fails with
+/// exactly the [`DerivativeRuleError`] `dscalar_in` would, and is `false`
+/// exactly when `dscalar_in` would return a literal 0, so a check the full
+/// mode skips on a zero derivative (`window_weight`'s) is skipped here too.
+/// It visits the nodes `dscalar_in` visits and builds no derivative; a
+/// closed function (`fn`, a small and rare node) is decided by `dfn`.
+pub(crate) fn drule_check(e: &Expr, s: &Site, sc: &SiteScan) -> Result<bool, DerivativeRuleError> {
+    drule_check_in(e, s, sc, &mut HashMap::new())
+}
+
+fn drule_check_in(
+    e: &Expr,
+    s: &Site,
+    sc: &SiteScan,
+    memo: &mut HashMap<NodeRef, bool>,
+) -> Result<bool, DerivativeRuleError> {
+    if sc.is_site(e, s) {
+        return Ok(true);
+    }
+    let Expr::Operator(n) = e else {
+        return Ok(false);
+    };
+    if !sc.occurs(e, s) {
+        return Ok(false);
+    }
+    let k = NodeRef(n.clone());
+    if let Some(&nz) = memo.get(&k) {
+        return Ok(nz);
+    }
+    let nz = drule_check_op(e, n, s, sc, memo)?;
+    memo.insert(k, nz);
+    Ok(nz)
+}
+
+/// [`dscalar_op`], branch for branch: every child it differentiates is
+/// checked (all of them, never a short-circuit, so no rule error is
+/// missed), and the result follows the literal-zero folding of `add`, `mul`
+/// and `neg` there — an `op(…)` node it builds is never a literal 0.
+fn drule_check_op(
+    e: &Expr,
+    n: &ExpressionNode,
+    s: &Site,
+    sc: &SiteScan,
+    memo: &mut HashMap<NodeRef, bool>,
+) -> Result<bool, DerivativeRuleError> {
+    let a = &n.args;
+    let mut d = |x: &Expr| drule_check_in(x, s, sc, memo);
+    match n.op.as_str() {
+        "+" | "-" | "neg" | "/" => {
+            let mut any = false;
+            for x in a {
+                any |= d(x)?;
+            }
+            Ok(any)
+        }
+        "*" => {
+            let mut any = false;
+            for (i, x) in a.iter().enumerate() {
+                let dx = d(x)?;
+                any |= dx && !a.iter().enumerate().any(|(j, y)| j != i && is_zero(y));
+            }
+            Ok(any)
+        }
+        "^" | "pow" => {
+            let (db, dx) = (d(&a[0])?, d(&a[1])?);
+            Ok((db && !is_zero(&a[1])) || dx)
+        }
+        "exp" | "sin" | "cos" | "tan" | "tanh" | "sinh" | "cosh" | "abs" => d(&a[0]),
+        "log" | "log10" | "sqrt" | "asin" | "acos" | "asinh" | "acosh" | "atanh" | "atan"
+        | "atan2" => {
+            for x in a {
+                d(x)?;
+            }
+            Ok(true)
+        }
+        "ifelse" => {
+            d(&a[1])?;
+            d(&a[2])?;
+            Ok(true)
+        }
+        "max" | "min" => {
+            let mut first = false;
+            for (i, x) in a.iter().enumerate() {
+                let nz = d(x)?;
+                if i == 0 {
+                    first = nz;
+                }
+            }
+            Ok(a.len() > 1 || first)
+        }
+        "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => {
+            let red = crate::reductions::reduce_op(n).map_err(DerivativeRuleError)?;
+            let body = n
+                .expr
+                .as_deref()
+                .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;
+            if !d(body)? {
+                return Ok(false);
+            }
+            let mut names: Vec<String> = n
+                .ranges
+                .as_ref()
+                .map(|r| r.keys().cloned().collect())
+                .unwrap_or_default();
+            names.sort();
+            crate::reductions::check_window(red, &names).map_err(DerivativeRuleError)?;
+            Ok(true)
+        }
+        o if ZERO_DERIV_OPS.contains(&o) => Ok(false),
+        "fn" => Ok(!is_zero(&dfn(n, s, sc)?)),
+        // `index`, and every op without a rule: `dscalar_op` fails.
+        _ => Ok(!is_zero(&dscalar_op(e, n, s, sc)?)),
     }
 }
 
@@ -267,13 +408,13 @@ pub(crate) fn reduction(n: &ExpressionNode) -> String {
 /// turn into contracted column dimensions (bands.rs `lift_nested`), and once
 /// every index is free the filter becomes `ifelse(φ, ·, 0)`. A join or a
 /// value-invention node has no rule (spec §3.5).
-fn dsum(n: &ExpressionNode, s: &Site) -> R {
+fn dsum(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let red = crate::reductions::reduce_op(n).map_err(DerivativeRuleError)?;
     let body = n
         .expr
         .as_deref()
         .ok_or_else(|| DerivativeRuleError("faq without body".into()))?;
-    let db = dscalar(body, s)?;
+    let db = dscalar_in(body, s, sc)?;
     if is_zero(&db) {
         return Ok(Expr::Integer(0));
     }
@@ -405,7 +546,7 @@ fn bilinear_partial(t: &[Vec<f64>], xv: &[f64], yv: &[f64], xe: &Expr, ye: &Expr
     )
 }
 
-fn dfn(n: &ExpressionNode, s: &Site) -> R {
+fn dfn(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     let a = &n.args;
     let name = n
         .name
@@ -422,7 +563,7 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
                 a.len()
             )));
         }
-        let dx = dscalar(&a[0], s)?;
+        let dx = dscalar_in(&a[0], s, sc)?;
         if is_zero(&dx) {
             return Ok(Expr::Integer(0));
         }
@@ -430,7 +571,7 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     }
     if name == "interp.linear" {
         let (table, axis, x) = (&a[0], &a[1], &a[2]);
-        let dx = dscalar(x, s)?;
+        let dx = dscalar_in(x, s, sc)?;
         if is_zero(&dx) {
             return Ok(Expr::Integer(0));
         }
@@ -472,8 +613,8 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
     }
     if name == "interp.bilinear" {
         let (table, ax, ay, x, y) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
-        let dx = dscalar(x, s)?;
-        let dy = dscalar(y, s)?;
+        let dx = dscalar_in(x, s, sc)?;
+        let dy = dscalar_in(y, s, sc)?;
         if is_zero(&dx) && is_zero(&dy) {
             return Ok(Expr::Integer(0));
         }
@@ -511,7 +652,8 @@ fn dfn(n: &ExpressionNode, s: &Site) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::is_zero;
+    use crate::helpers::{is_zero, OccIndex};
+    use std::cell::RefCell;
 
     fn ex(v: serde_json::Value) -> Expr {
         serde_json::from_value(v).unwrap()
@@ -541,5 +683,171 @@ mod tests {
                                         "args": ["x", "x"]}),
         );
         assert!(dscalar(&bad, &s).is_err());
+    }
+
+    #[test]
+    fn pre_is_the_identity() {
+        // `Pre(x)` differentiates as `x` (spec §3.2): the identity in a
+        // right-hand side, as EarthSciAST evaluates it, not a constant
+        let s = Site::of(&Expr::Variable("x".into()));
+        let pre = ex(serde_json::json!({"op": "Pre", "args": ["x"]}));
+        assert_eq!(dscalar(&pre, &s).unwrap(), Expr::Integer(1));
+    }
+
+    /// `Pre` composed with the product, chain, power and extremum rules,
+    /// against central differences. The expression and its derivative are
+    /// evaluated after `inline_observed` lowers `Pre(a)` to `a` (the step
+    /// before differentiation in the band calculus), but the derivative is
+    /// taken of the UNLOWERED expression, so the rule is what is tested.
+    #[test]
+    fn pre_rule_vs_fd() {
+        use crate::inline::inline_observed;
+        use std::collections::HashMap;
+        let s = Site::of(&Expr::Variable("x".into()));
+        let pre = |a: serde_json::Value| serde_json::json!({"op": "Pre", "args": [a]});
+        let at = |e: &Expr, x: f64| {
+            let vars = HashMap::from([("x".to_string(), x)]);
+            earthsci_ast::evaluate(e, &vars).unwrap()
+        };
+        let cases = [
+            (
+                serde_json::json!({"op": "*", "args": [pre("x".into()), "x"]}),
+                0.7,
+            ),
+            (
+                serde_json::json!({"op": "exp", "args": [pre("x".into())]}),
+                0.7,
+            ),
+            (
+                serde_json::json!({"op": "^", "args": [pre("x".into()), 3]}),
+                1.3,
+            ),
+            (
+                serde_json::json!({"op": "*", "args": [{"op": "sin", "args": [pre("x".into())]}, "x"]}),
+                0.9,
+            ),
+            (
+                serde_json::json!({"op": "max", "args": [{"op": "*", "args": [2.0, pre("x".into())]},
+                                                       {"op": "*", "args": ["x", "x"]}]}),
+                0.6,
+            ),
+            (
+                serde_json::json!({"op": "max", "args": [{"op": "*", "args": [2.0, pre("x".into())]},
+                                                       {"op": "*", "args": ["x", "x"]}]}),
+                2.5,
+            ),
+            (
+                serde_json::json!({"op": "/", "args": [pre(pre("x".into())),
+                                                     {"op": "+", "args": ["x", 2.0]}]}),
+                0.6,
+            ),
+        ];
+        let none = HashMap::new();
+        for (data, x) in cases {
+            let e = ex(data);
+            let lowered = inline_observed(&e, &none).unwrap();
+            assert!(!serde_json::to_string(&lowered).unwrap().contains("\"Pre\""));
+            let d = inline_observed(&dscalar(&e, &s).unwrap(), &none).unwrap();
+            let h = 1e-6;
+            let fd = (at(&lowered, x + h) - at(&lowered, x - h)) / (2.0 * h);
+            let sym = at(&d, x);
+            assert!((sym - fd).abs() < 1e-6, "{e:?} at {x}: {sym} vs {fd}");
+        }
+    }
+
+    /// `drule_check` fails where `dscalar` fails, and is false exactly where
+    /// `dscalar` returns a literal 0 (scalar_rules.jl `drule_check`).
+    #[test]
+    fn drule_check_agrees_with_dscalar() {
+        use serde_json::json;
+        let x = Expr::Variable("x".into());
+        let s = Site::of(&x);
+        let ix = RefCell::new(OccIndex::new("x"));
+        let chk = |e: &Expr| drule_check(e, &s, &SiteScan::new(&ix, &s));
+        let tab = json!({"op": "const", "args": [], "value": [0.0, 1.0, 4.0]});
+        let ax = json!({"op": "const", "args": [], "value": [0.0, 1.0, 2.0]});
+        let o = |op: &str, a: Vec<serde_json::Value>| json!({"op": op, "args": a});
+        let sign = o("sign", vec![json!("x")]);
+        for v in [
+            json!("x"),
+            json!("y"),
+            json!(0),
+            o("+", vec![json!("x"), json!("y")]),
+            o("-", vec![json!("x")]),
+            o("-", vec![json!("y"), json!("x")]),
+            o("neg", vec![json!("y")]),
+            o("*", vec![json!("x"), json!("y")]),
+            o("*", vec![json!(0), json!("x")]),
+            o("*", vec![sign.clone(), json!("y")]),
+            o("/", vec![json!("y"), json!("x")]),
+            o("/", vec![o("floor", vec![json!("x")]), json!("y")]),
+            o("^", vec![json!("x"), json!(0)]),
+            o("^", vec![json!("x"), json!(2)]),
+            o("^", vec![json!(2), json!("x")]),
+            o("^", vec![sign.clone(), json!("y")]),
+            o("exp", vec![json!("x")]),
+            o("log", vec![sign.clone()]),
+            o("sqrt", vec![json!("x")]),
+            o("cos", vec![o("ceil", vec![json!("x")])]),
+            o("atan", vec![json!("y"), json!("x")]),
+            o("abs", vec![json!("x")]),
+            o(
+                "ifelse",
+                vec![o("<", vec![json!("x"), json!("y")]), json!("y"), json!(1)],
+            ),
+            o("max", vec![json!("x"), json!("y")]),
+            o("min", vec![sign.clone()]),
+            o("<", vec![json!("x"), json!("y")]),
+            json!({"op": "fn", "name": "interp.searchsorted", "args": ["x", tab, ax]}),
+            json!({"op": "fn", "name": "interp.linear", "args": [tab, ax, "x"]}),
+            json!({"op": "fn", "name": "datetime.julian_day",
+                   "args": [{"op": "*", "args": [3, "x"]}]}),
+            json!({"op": "faq", "args": [], "output_idx": [], "reduce": "max",
+                   "ranges": {"k": [1, 3]}, "expr": {"op": "*", "args": ["x", "k"]}}),
+        ] {
+            let e = ex(v.clone());
+            let d = dscalar_in(&e, &s, &SiteScan::new(&ix, &s)).unwrap();
+            assert_eq!(chk(&e).unwrap(), !is_zero(&d), "{v}");
+        }
+        // a max over two bound names fails in both, unless the term is zero
+        let m2 = |body: serde_json::Value| {
+            ex(
+                json!({"op": "faq", "args": [], "output_idx": [], "reduce": "max",
+                      "ranges": {"j": [1, 3], "k": [1, 3]}, "expr": body}),
+            )
+        };
+        assert!(dscalar(&m2(json!("x")), &s).is_err());
+        assert!(chk(&m2(json!("x"))).is_err());
+        assert!(!chk(&m2(sign.clone())).unwrap());
+        assert!(is_zero(&dscalar(&m2(sign), &s).unwrap()));
+    }
+
+    /// The structure-only mode refuses an op without a rule, as the full
+    /// mode does (spec §2.1).
+    #[test]
+    fn structure_only_refuses_what_the_full_mode_refuses() {
+        use crate::bands::{bands_in, Ctx};
+        use serde_json::json;
+        let ctx = Ctx {
+            index_sets: [("i".to_string(), 4)].into(),
+            shapes: [("x".to_string(), vec![4])].into(),
+            params: Default::default(),
+        };
+        let xi = json!({"op": "index", "args": ["x", "i"]});
+        let week = json!({"op": "fn", "name": "datetime.week", "args": [xi]});
+        for body in [
+            json!({"op": "D", "args": [xi], "wrt": "lon"}),
+            week.clone(),
+            json!({"op": "*", "args": [2, week]}),
+        ] {
+            let rhs = ex(json!({"op": "faq", "args": [], "output_idx": ["i"],
+                                "ranges": {"i": [1, 4]}, "expr": body}));
+            for co in [true, false] {
+                assert!(
+                    bands_in(&rhs, "x", &ctx, &[4], co).is_err(),
+                    "{body} co={co}"
+                );
+            }
+        }
     }
 }

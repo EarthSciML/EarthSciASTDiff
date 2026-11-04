@@ -540,18 +540,18 @@ equality-filter scatter.
 """
 function jvp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
     )
-    sv, _ = _sv_src(input, model_name)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     return _jvp_document(sv, entries, wrt, forcing; cse = cse, cse_min_nodes = cse_min_nodes)
 end
 
 @doc (@doc jvp_document) function vjp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
     )
-    sv, _ = _sv_src(input, model_name)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     return _vjp_document(sv, entries, wrt, forcing; cse = cse, cse_min_nodes = cse_min_nodes)
 end
@@ -572,10 +572,11 @@ first column instead (model `"HvpEvalSymmetric"`); both forms give the same
 """
 function hvp_document(
         input; stages::Int, wrt = (:states, :states), form::Symbol = :contract,
-        model_name = nothing, forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12
+        model_name = nothing, forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12,
+        data_sources = nothing
     )
     a1, a2 = _axis_pair(wrt)
-    sv, _ = _sv_src(input, model_name)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands2(sv; wrt = (a1, a2), forcing = forcing)
     return _hvp_document(
         sv, entries, (a1, a2), forcing, stages;

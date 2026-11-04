@@ -5,6 +5,8 @@
 # (`F[i]`, `F[i+1]`), the `index(makearray…)` lowering path.
 
 using EarthSciASTDiff: clip_regions, merge_bands, skey
+using EarthSciASTDiff: _OccIndex, _SiteScan, _SimpMemo, _scope!, _end_region!, _simp,
+    sorted_sites
 
 @testset "clip_regions" begin
     x = VarExpr("x"); i = VarExpr("i")
@@ -38,6 +40,41 @@ using EarthSciASTDiff: clip_regions, merge_bands, skey
 
     # no free names → identity
     @test length(clip_regions(body, Union{String, Int}[3], [(3, 3)])) == 1
+end
+
+@testset "the occurrence index keeps one region at a time" begin
+    # `_end_region!` evicts what a clipped region's rebuilt nodes left in the
+    # shared index and the coefficient memo; the unclipped body's entries,
+    # and the derivatives of its nodes, are kept for the next region.
+    xi = OpExpr("index", ASTExpr[VarExpr("x"), VarExpr("i")])
+    i = VarExpr("i")
+    shared = OpExpr("exp", ASTExpr[OpExpr("*", ASTExpr[xi, xi])])
+    cond = OpExpr("<=", ASTExpr[i, IntExpr(2)])
+    body = OpExpr(
+        "+", ASTExpr[
+            shared,
+            OpExpr("ifelse", ASTExpr[cond, OpExpr("sin", ASTExpr[xi]), OpExpr("cos", ASTExpr[xi])]),
+        ]
+    )
+    regions = clip_regions(body, ["i"], [(1, 4)])
+    @test length(regions) == 2
+    occ = _scope!(_OccIndex("x"), body)
+    sm = _SimpMemo()
+    for (_, b) in regions
+        for s in sorted_sites(b, "x")
+            _simp(dscalar(b, s, _SiteScan(occ, s)), sm)
+        end
+        _end_region!(occ, b, sm)
+        @test all(k -> haskey(occ.orig, k), keys(occ.bits))
+        @test all(k -> haskey(occ.orig, k), keys(occ.nodekey))
+        @test all(d -> all(k -> haskey(occ.orig, k), keys(d)), values(occ.deriv))
+        @test isempty(sm.pending)
+        # the shared subtree's derivative is still memoized, and kept
+        @test any(d -> haskey(d, shared) && haskey(occ.keep, d[shared]), values(occ.deriv))
+    end
+    # the region-local wrappers' ids are gone: only kept nodes and what they
+    # hold are interned
+    @test length(sm.ix.memo) < length(occ.orig) + 64
 end
 
 @testset "merge_bands" begin
@@ -82,4 +119,80 @@ end
     rp = jacobian_pattern(file; wrt = :parameters)
     col = findfirst(==("uin"), rp.colnames)
     @test findall(Vector(rp.pattern[:, col])) == [1]
+end
+
+# Each summand clipped on its own axes (clip.jl `clip_summands`,
+# esm-jacobian-spec.md §2.2): a sum of an x-split and a y-split term divided
+# by a state is split 3 + 3 ways instead of 3 × 3, and the bands of the
+# overlapping pieces add to the ForwardDiff Jacobian. Fixture
+# split_sum_2d.esm; its band golden pins the form for every binding.
+
+@testset "clip_summands: each summand on its own axes" begin
+    file = fixture("split_sum_2d.esm")
+    sv = sysview(file, "S")
+    gold = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "split_sum_2d")
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sv)]) ==
+        read("$gold.bands.json", String)
+    eq = first(sv.equations)
+    body = eq.rhs.expr_body
+    @test length(EarthSciASTDiff.clip_regions(body, ["i", "j"], [(1, 6), (1, 5)])) == 9
+    parts = EarthSciASTDiff.clip_summands(body, ["i", "j"], [(1, 6), (1, 5)])
+    # the x group, the y group, and the uncut `-q / m` (from `y-term - q`)
+    @test [p[1] for p in parts] == [
+        [(1, 1), (1, 5)], [(2, 5), (1, 5)], [(6, 6), (1, 5)],
+        [(1, 6), (1, 1)], [(1, 6), (2, 4)], [(1, 6), (5, 5)],
+        [(1, 6), (1, 5)],
+    ]
+    # one summand group: exactly clip_regions
+    xonly = body.args[1].args[1]
+    @test [p[1] for p in EarthSciASTDiff.clip_summands(xonly, ["i", "j"], [(1, 6), (1, 5)])] ==
+        [p[1] for p in EarthSciASTDiff.clip_regions(xonly, ["i", "j"], [(1, 6), (1, 5)])]
+    # values: the overlapping bands add up to ForwardDiff's Jacobian
+    f!, u0, p, _, _ = build_evaluator(file)
+    for _ in 1:2
+        u = 0.5 .+ rand(length(u0))
+        res = doc_jacobian(file; u = u, p = p)
+        Jad = ad_jacobian(f!, u, p, 0.0)
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-12
+        @test all((Jad .!= 0) .<= res.pattern)
+    end
+    # structure-only points equal the full points
+    full = jacobian_bands(sv); so = jacobian_bands(sv; coefficients = false)
+    @test Set(EarthSciASTDiff._scatter_pairs(sv, full)) ==
+        Set(EarthSciASTDiff._scatter_pairs(sv, so))
+end
+
+# `a - b` splits into `a` and `-b` (spec §2.2 rule 1) even when both sides
+# are single terms, and a summand cut along no dimension is a group of its
+# own once there are two cut groups: `(x-term - y-term) / m - 0.3 q` is split
+# 3 + 3 + 1 ways, and the decay term is differentiated once, not per piece.
+@testset "clip_summands: a difference, and an uncut summand" begin
+    file = fixture("split_diff_2d.esm")
+    sv = sysview(file, "S")
+    gold = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "split_diff_2d")
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sv)]) ==
+        read("$gold.bands.json", String)
+    body = first(sv.equations).rhs.expr_body
+    box = [(1, 6), (1, 5)]
+    @test length(EarthSciASTDiff._summands(body)) == 3
+    @test length(EarthSciASTDiff.clip_regions(body, ["i", "j"], box)) == 9
+    @test [p[1] for p in EarthSciASTDiff.clip_summands(body, ["i", "j"], box)] == [
+        [(1, 1), (1, 5)], [(2, 5), (1, 5)], [(6, 6), (1, 5)],
+        [(1, 6), (1, 1)], [(1, 6), (2, 4)], [(1, 6), (5, 5)],
+        [(1, 6), (1, 5)],
+    ]
+    # a box cutting only one dimension: one group, exactly clip_regions
+    @test [p[1] for p in EarthSciASTDiff.clip_summands(body, ["i", "j"], [(1, 6), (2, 4)])] ==
+        [p[1] for p in EarthSciASTDiff.clip_regions(body, ["i", "j"], [(1, 6), (2, 4)])]
+    f!, u0, p, _, _ = build_evaluator(file)
+    for _ in 1:2
+        u = 0.5 .+ rand(length(u0))
+        res = doc_jacobian(file; u = u, p = p)
+        Jad = ad_jacobian(f!, u, p, 0.0)
+        @test maximum(abs.(Matrix(res.J) .- Matrix(Jad))) ≤ 1.0e-12
+        @test all((Jad .!= 0) .<= res.pattern)
+    end
+    full = jacobian_bands(sv); so = jacobian_bands(sv; coefficients = false)
+    @test Set(EarthSciASTDiff._scatter_pairs(sv, full)) ==
+        Set(EarthSciASTDiff._scatter_pairs(sv, so))
 end
