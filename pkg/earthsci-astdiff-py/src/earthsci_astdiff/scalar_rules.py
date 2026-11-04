@@ -12,7 +12,7 @@ from dataclasses import replace
 from earthsci_ast.esm_types import Expr, ExprNode
 from earthsci_ast.expression import free_variables
 
-from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, op
+from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, occurs_memo, op
 from .reductions import check_window, reduce_op, window_weight
 
 # The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
@@ -172,21 +172,24 @@ def drule_check(e: Expr, s: Site) -> bool:
     mode skips on a zero derivative (``window_weight``'s) is skipped here
     too. It visits the nodes ``dscalar`` visits and builds no derivative; a
     closed function (``fn``, a small and rare node) is decided by ``dfn``."""
-    return _drule_check(e, s, {})
+    return _drule_check(e, s, {}, {})
 
 
-def _drule_check(e: Expr, s: Site, memo: dict) -> bool:
+def _drule_check(e: Expr, s: Site, memo: dict, occ: dict) -> bool:
+    # `occ` memoizes the occurrence short-circuit for the whole scan (as the
+    # Julia reference's `_SiteScan` does), so asking it at every node on the
+    # way down costs Θ(n) per site, not Θ(n·depth).
     if is_site(e, s):
         return True
-    if not isinstance(e, ExprNode) or not occurs(e, s):
+    if not isinstance(e, ExprNode) or not occurs_memo(e, s, occ):
         return False
     k = id(e)
     if k not in memo:
-        memo[k] = (_drule_check_op(e, s, memo), e)  # keep e alive: ids stay unique
+        memo[k] = (_drule_check_op(e, s, memo, occ), e)  # keep e alive: ids stay unique
     return memo[k][0]
 
 
-def _drule_check_op(e: ExprNode, s: Site, memo: dict) -> bool:
+def _drule_check_op(e: ExprNode, s: Site, memo: dict, occ: dict) -> bool:
     # ``dscalar``, branch for branch: every child it differentiates is checked
     # (a list, never a short-circuit, so no rule error is missed), and the
     # result follows the literal-zero folding of ``add``, ``mul`` and ``neg``
@@ -194,7 +197,7 @@ def _drule_check_op(e: ExprNode, s: Site, memo: dict) -> bool:
     o, a = e.op, e.args
 
     def d(x: Expr) -> bool:
-        return _drule_check(x, s, memo)
+        return _drule_check(x, s, memo, occ)
 
     if o in ("+", "-", "neg", "/"):
         return any([d(x) for x in a])
