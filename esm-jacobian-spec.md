@@ -122,6 +122,16 @@ earlier ones, so a band from an overwritten sub-region MUST NOT be emitted
 (equivalently: emission may lower a per-cell read of a `makearray` to nested
 region-membership `ifelse`, folded first-region-outward).
 
+**A `faq` node's operand list reads nothing.** A `faq` node's `args` is its
+operand list (esm-spec §4.3.1): a serializer's copy of the arrays its `expr`
+reads, which carries no read of its own. Its sites are those of its `expr`
+and `filter` only, wherever the node sits (an equation's right-hand side, an
+observed definition inlined into a body, a nested scalar sum), so a whole
+array named in `args` is not a whole-array reference and does not change the
+bands: a document's bands MUST equal those of the same document with every
+`faq` operand list emptied. A whole-array reference in a scalar position of
+`expr` itself (a bare array name, not under `index`) remains an error.
+
 Contracted (reduced) `faq` indices with `reduce: "+"` (explicit or
 the default) differentiate per site of the faq body: a site whose
 column indices are independent of every contracted name yields an ordinary

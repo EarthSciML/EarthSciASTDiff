@@ -6,7 +6,8 @@ root = normpath(joinpath(@__DIR__, ".."))
 for name in (
         "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
         "contracting_observed", "tgrad_photolysis", "forcing_bracket",
-        "filtered_scan", "semiring_reduce", "pre_operator",
+        "filtered_scan", "semiring_reduce", "faq_operand_list",
+        "pre_operator",
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))

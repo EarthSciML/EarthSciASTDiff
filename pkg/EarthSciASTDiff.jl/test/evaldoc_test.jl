@@ -10,7 +10,8 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
     for name in (
             "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
             "contracting_observed", "tgrad_photolysis", "forcing_bracket",
-            "filtered_scan", "semiring_reduce", "pre_operator",
+            "filtered_scan", "semiring_reduce", "faq_operand_list",
+            "pre_operator",
         )
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))
@@ -28,7 +29,8 @@ end
     for name in (
             "bd_chem", "adv_interior", "adv_react_2d", "contracted_ops",
             "flux_form_adv", "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
-            "filtered_scan", "semiring_reduce", "pre_operator",
+            "filtered_scan", "semiring_reduce", "faq_operand_list",
+            "pre_operator",
         )
         file = fixture("$name.esm")
         sv = sysview(file, first(keys(file.models)))

@@ -16,7 +16,7 @@ use common::{load, root};
 
 /// The first eleven are the reference's; the last two are this binding's
 /// (tests/write_goldens.rs: the reference cannot produce them yet).
-const NAMES: [&str; 13] = [
+const NAMES: [&str; 14] = [
     "bd_chem",
     "adv_interior",
     "contracted_ops",
@@ -27,6 +27,7 @@ const NAMES: [&str; 13] = [
     "forcing_bracket",
     "filtered_scan",
     "semiring_reduce",
+    "faq_operand_list",
     "pre_operator",
     "recurrence_sweep",
     "pbl_rank1",

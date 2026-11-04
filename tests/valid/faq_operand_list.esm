@@ -1,0 +1,228 @@
+{
+ "esm": "1.1.0",
+ "metadata": {
+  "name": "FaqOperandList",
+  "description": "faq nodes that carry their operand list `args` (esm-spec \u00a74.3.1), the way reseact's PBL-mixing observed are written: a column sum colsum[i] = \u03a3_k dp[k]\u00b7q[i,k] with args [\"q\"], its broadcast mean[i,k] = colsum[i]/W with args [\"colsum\"], a scalar observed c = \u03a3_k q[1,k] with args [\"q\"] read bare, and a tendency (mean - q)/tau + 0.01\u00b7c with args [\"mean\", \"q\", \"c\"]. The operand list names whole arrays but reads nothing (spec \u00a73.5): the bands are those of the same document with every args list empty."
+ },
+ "index_sets": {
+  "col": {
+   "kind": "interval",
+   "size": 2
+  },
+  "lev": {
+   "kind": "interval",
+   "size": 4
+  }
+ },
+ "models": {
+  "FaqOperandList": {
+   "variables": {
+    "q": {
+     "type": "unknown",
+     "shape": [
+      "col",
+      "lev"
+     ],
+     "default": 0.5
+    },
+    "colsum": {
+     "type": "unknown",
+     "shape": [
+      "col"
+     ]
+    },
+    "mean": {
+     "type": "unknown",
+     "shape": [
+      "col",
+      "lev"
+     ]
+    },
+    "c": {
+     "type": "unknown"
+    },
+    "tau": {
+     "type": "parameter",
+     "default": 900.0
+    }
+   },
+   "equations": [
+    {
+     "lhs": "colsum",
+     "rhs": {
+      "op": "faq",
+      "args": [
+       "q"
+      ],
+      "output_idx": [
+       "i"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "reduce": "+",
+      "expr": {
+       "op": "*",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          {
+           "op": "const",
+           "args": [],
+           "value": [
+            0.4,
+            0.3,
+            0.2,
+            0.1
+           ]
+          },
+          "k"
+         ]
+        },
+        {
+         "op": "index",
+         "args": [
+          "q",
+          "i",
+          "k"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "mean",
+     "rhs": {
+      "op": "faq",
+      "args": [
+       "colsum"
+      ],
+      "output_idx": [
+       "i",
+       "k"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "/",
+       "args": [
+        {
+         "op": "index",
+         "args": [
+          "colsum",
+          "i"
+         ]
+        },
+        1.0
+       ]
+      }
+     }
+    },
+    {
+     "lhs": "c",
+     "rhs": {
+      "op": "faq",
+      "args": [
+       "q"
+      ],
+      "output_idx": [],
+      "ranges": {
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "index",
+       "args": [
+        "q",
+        1,
+        "k"
+       ]
+      }
+     }
+    },
+    {
+     "lhs": {
+      "op": "D",
+      "args": [
+       "q"
+      ],
+      "wrt": "t"
+     },
+     "rhs": {
+      "op": "faq",
+      "args": [
+       "mean",
+       "q",
+       "c"
+      ],
+      "output_idx": [
+       "i",
+       "k"
+      ],
+      "ranges": {
+       "i": {
+        "from": "col"
+       },
+       "k": {
+        "from": "lev"
+       }
+      },
+      "expr": {
+       "op": "+",
+       "args": [
+        {
+         "op": "/",
+         "args": [
+          {
+           "op": "-",
+           "args": [
+            {
+             "op": "index",
+             "args": [
+              "mean",
+              "i",
+              "k"
+             ]
+            },
+            {
+             "op": "index",
+             "args": [
+              "q",
+              "i",
+              "k"
+             ]
+            }
+           ]
+          },
+          "tau"
+         ]
+        },
+        {
+         "op": "*",
+         "args": [
+          0.01,
+          "c"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}
