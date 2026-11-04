@@ -34,6 +34,7 @@ end
     include("faq_tag_test.jl")
     include("scalar_rules_test.jl")
     include("cse_test.jl")
+    include("hashcons_test.jl")
     include("clip_test.jl")
     include("inline_test.jl")
     include("eval_cse_test.jl")

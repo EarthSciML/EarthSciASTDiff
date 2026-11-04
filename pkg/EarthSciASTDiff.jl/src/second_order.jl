@@ -83,6 +83,10 @@ function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder
         end
     end
     a2 in (:parameters, :forcing) && foreach(_check_closed_col2, out)
+    # The second derivatives repeat the first-order coefficients' shared
+    # subtrees band after band: intern them as the first-order pass is.
+    t = _Interner()
+    out = JacEntry2[JacEntry2(en.u, en.v, en.w, _intern_band(t, en.band), en.ncol) for en in out]
     return e1, out
 end
 

@@ -164,6 +164,9 @@ pub(crate) fn bands2_memo(
             check_closed_col2(en)?;
         }
     }
+    // The second derivatives repeat the first-order coefficients' shared
+    // subtrees band after band: intern them as the first-order pass is.
+    crate::jacobian::intern_entries(out.iter_mut().map(|en| &mut en.band));
     Ok((e1, out))
 }
 
