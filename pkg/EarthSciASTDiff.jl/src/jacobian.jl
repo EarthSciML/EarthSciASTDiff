@@ -30,9 +30,8 @@ function forcing_names(sv::SysView, forcing = nothing)::Vector{String}
         return sort!(
             String[
                 String(n) for (n, var) in sv.variables
-                    if var.type == EarthSciAST.ParameterVariable &&
-                    var.shape !== nothing && !isempty(var.shape) &&
-                    any(u -> u.kind == "data", something(var.update, ()))
+                    if var.shape !== nothing && !isempty(var.shape) &&
+                    !isempty(_data_rules(var))
             ]
         )
     end

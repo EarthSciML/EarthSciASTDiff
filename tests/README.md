@@ -12,6 +12,16 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   - `coupled_chem_advection.esm` — reaction system ⊕ advection through
     `operator_compose` + pointwise lift (differentiates the *flattened*
     system)
+  - `data_fed_flat.esm` — data-fed parameters through a flattened system
+    (spec §8.1): two components read three data-fed array parameters
+    (`Chem.T`, `Chem.E`, `Box.P`, each with a scalar default) from two of
+    the document's three data sources. Its evaluation document
+    (`data_fed_flat.evaldoc.json`) keeps each parameter's `data` rule and
+    carries the two sources they name, not the unread third; every binding
+    checks that EarthSciAST builds the three as inputs (forcing slots of
+    `rhs_program` in Julia and Rust, `loader_fields` in Python) and that the
+    state bands (`data_fed_flat.bands.json`) are those of the same document
+    without the rules
   - `lift_same_size_index_sets.esm` — EarthSciAST's pointwise-lift
     conformance case of that name: a scalar state lifted onto a 3 × 3 grid
     whose index sets `y` and `x` have the same size, named `[x, y]` by the
@@ -80,7 +90,9 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
 - `goldens/` — `<fixture>.evaldoc.json`: the derived evaluation document
   (`evaluation_document`, model `JacobianEval`) — the source's observed
   definitions that the coefficients read, every state derivative zeroed (`D(u) = 0`), the
-  `hoist_observed` buffers, and one band-field state `J_k` per entry.
+  `hoist_observed` buffers, and one band-field state `J_k` per entry; a
+  data-fed parameter keeps its `data` rules, with the `data_sources` they
+  name (`forcing_bracket`, `data_fed_flat`).
   `<fixture>.evaldoc-nocse.json` is the same with `eval_cse = false`, present
   only where it differs (a fixture with something to hoist). Julia, Rust and
   Python compare byte-exactly. `coupled_chem_advection.evaldoc[-nocse].json`

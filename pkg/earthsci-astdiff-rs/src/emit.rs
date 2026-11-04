@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use earthsci_ast::{free_variables, Expr, ExpressionNode, VariableType};
+use earthsci_ast::{free_variables, Expr, ExpressionNode, ParameterUpdate, VariableType};
 use serde_json::{json, Map, Value};
 
 use crate::bands::{Band, Ctx};
@@ -15,7 +15,7 @@ use crate::helpers::{map_expr_children, ser_expr, stable_json};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, Wrt};
 use crate::second_order::JacEntry2;
-use crate::system::{defined_name, is_derivative, lhs_state, SysView};
+use crate::system::{data_rules, defined_name, is_derivative, lhs_state, rule_reads, SysView};
 
 /// One entry of the `jacobians` block, as JSON (spec §4).
 pub fn serialize_band(en: &JacEntry) -> Value {
@@ -1415,6 +1415,18 @@ pub(crate) fn base_document(sv: &SysView, name: &str) -> (Map<String, Value>, Ma
                 serde_json::to_value(def).expect("default serializes"),
             );
         }
+        let rules = data_rules(var);
+        if !rules.is_empty() {
+            let ser = |r: &ParameterUpdate| serde_json::to_value(r).expect("update serializes");
+            d.insert(
+                "update".into(),
+                if rules.len() == 1 {
+                    ser(rules[0])
+                } else {
+                    Value::Array(rules.into_iter().map(ser).collect())
+                },
+            );
+        }
         vars.insert(n.clone(), Value::Object(d));
     }
     let eqs: Vec<Value> = sv
@@ -1478,6 +1490,21 @@ pub(crate) fn zero_source_derivatives(
     }
     let mut live: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = roots.iter().flat_map(|r| free_variables(r)).collect();
+    // the carried `data` rules (`base_document`) are evaluated too. A
+    // flattened system keeps a rule's names local to its component, so each is
+    // also read under the parameter's scope (`Chem.E` reading `f`: `Chem.f`);
+    // a name that is no observed is skipped below.
+    for (p, var) in &sv.variables {
+        let scope = p.rsplit_once('.').map(|(s, _)| s);
+        for r in data_rules(var) {
+            for v in rule_reads(r) {
+                if let Some(s) = scope {
+                    stack.push(format!("{s}.{v}"));
+                }
+                stack.push(v);
+            }
+        }
+    }
     while let Some(n) = stack.pop() {
         let Some(rs) = reads.get(n.as_str()) else {
             continue;
@@ -1752,8 +1779,57 @@ pub(crate) fn finish_derived(
     if let Some(d) = sv.domain.and_then(domain_field) {
         doc.insert("domain".into(), d);
     }
+    if let Some(d) = data_sources_field(sv)? {
+        doc.insert("data_sources".into(), d);
+    }
     derived_version(doc);
     Ok(())
+}
+
+// ── data-fed parameters (spec §8.1) ─────────────────────────────────────────
+//
+// A parameter whose `update` has a `data` rule is an input a provider fills:
+// EarthSciAST makes it a forcing slot of `rhs_program`, not a constant of the
+// build. So the derived documents keep those rules, as EarthSciAST serializes
+// them, and the `data_sources` entries they name. The other kinds are left
+// out: they fire between right-hand-side calls, never within one, and their
+// expressions may read observed the derived model drops.
+
+/// The `data_sources` entries the data-fed parameters of `sv` name, as
+/// EarthSciAST serializes them, keys sorted; `None` when none is named. A
+/// named source the view does not hold is refused: a flattened system carries
+/// no `data_sources`, so its caller sets the flattened document's
+/// ([`SysView::with_data_sources`]).
+fn data_sources_field(sv: &SysView) -> Result<Option<Value>, crate::bands::BandError> {
+    let mut names: Vec<&String> = sv.variables.keys().collect();
+    names.sort();
+    // source → the first parameter naming it
+    let mut named: BTreeMap<&str, &str> = BTreeMap::new();
+    for n in names {
+        for r in data_rules(&sv.variables[n]) {
+            if let ParameterUpdate::Data { source, .. } = r {
+                named.entry(source.as_str()).or_insert(n.as_str());
+            }
+        }
+    }
+    if named.is_empty() {
+        return Ok(None);
+    }
+    let mut out = Map::new();
+    for (k, n) in named {
+        let src = sv.data_sources.and_then(|d| d.get(k)).ok_or_else(|| {
+            crate::bands::BandError(format!(
+                "parameter `{n}` reads data source `{k}`, which the source does not \
+                 declare (a flattened system carries no `data_sources`: pass the \
+                 flattened document's)"
+            ))
+        })?;
+        out.insert(
+            k.to_string(),
+            serde_json::to_value(src).expect("data source serializes"),
+        );
+    }
+    Ok(Some(Value::Object(out)))
 }
 
 /// The source's `domain`, as far as it bears on evaluation (spec §8.1): its

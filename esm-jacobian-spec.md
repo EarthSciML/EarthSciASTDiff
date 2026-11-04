@@ -1092,7 +1092,9 @@ needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
 The derived model is named `JacobianEval` and holds:
 
 - every variable of the source, `unknown` or `parameter`, with its `shape`
-  and `default`. A pointwise-lifted state of a flattened system has the
+  and `default`, and for a **data-fed parameter** (one whose `update` has a
+  rule of kind `data`) its `update` reduced to those rules (below). A
+  pointwise-lifted state of a flattened system has the
   `shape` its `flatten` records: the lift's index sets, which EarthSciAST
   0.8 and later names in every binding by the rules of esm-libraries-spec
   §4.7.5, "Pointwise lift: index sets" (an operand declaring a shape and
@@ -1116,8 +1118,12 @@ The derived model is named `JacobianEval` and holds:
 - the source's equations, with every `D(u)` equation replaced by `D(u) = 0`
   (for an array state, a `makearray` of `0.0` over its whole shape), and the
   observed definitions the coefficients do not read, directly or through
-  other observed, dropped with their declarations. The source's other
-  equations, such as a model's `ic` equations, are kept;
+  other observed, dropped with their declarations. An observed a kept
+  `data` rule reads (below: its `expression`, an expression
+  `from.unit_conversion`, or a handler's `read_vars` / `read_params`, a name
+  local to the parameter's component read under its scope) is read and
+  kept. The source's other equations, such as a model's `ic` equations, are
+  kept;
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
   index sets) and their definitions, and the recurrence auxiliaries (§4.5);
 - one band field per entry, in entry order: `J_k`, an `unknown` with default
@@ -1125,6 +1131,36 @@ The derived model is named `JacobianEval` and holds:
   field `shape` above: the row variable's index sets, then one `jcax<n>`
   index set per contracted dimension), whose `D` equation is the entry's
   coefficient over its region and `0.0` elsewhere.
+
+**Data-fed parameters.** A parameter whose `update` has a `data` rule is an
+input that a provider fills from a data source (esm-spec §8.5), not a
+constant: EarthSciAST builds it as a forcing slot of `rhs_program` (its
+API_SPEC §5.8, "Forcing sets"), the same as in the source. So the document
+keeps each such parameter's `data` rules, each as EarthSciAST serializes
+it (`kind`, `source`, `from`), in their order: one rule as the object form,
+two or more as the array form. Its other rules (`schedule`, `condition`,
+`crossing`, `remesh`, `wiener`) are not written: they fire between
+right-hand-side calls, never within one, and their expressions may read
+observed the document drops. A parameter with no `data` rule is written
+with no `update`. The document then has a top-level `data_sources` holding
+every entry those rules name, keys sorted, each as EarthSciAST serializes
+it, and no other; it has no `data_sources` when no rule names one. Because
+the parameter is a forcing slot, its value at each evaluation is the
+forcing the consumer passes (a document evaluated for the source's
+`J(u, p, t; F)` is evaluated with the source's forcing `F`); its `default`,
+when it has one, is only the slot's default. A data-fed parameter is not a
+state, so it is a constant of the state Jacobian (its derivatives are
+columns of the forcing axis, §4.3): the state bands are the same as without
+the rules.
+
+A flattened system does not carry `data_sources` (EarthSciAST's
+`FlattenedSystem` holds the data-fed parameters' rules but not the sources
+they name), so the producer takes them from the caller: the flattened
+document's own. The same holds for any document a producer builds from a
+flattened system's model, such as a `jacobians` document (§4) over it. A producer MUST refuse a data-fed parameter whose source it
+does not have, rather than write the parameter without its rule (a constant
+of the build) or a document that does not validate
+(`data_source_undefined`).
 
 **Flattened systems: the component tree.** A flattened system (a coupled
 document after `flatten`) names its variables by their scoped names, such as
@@ -1215,7 +1251,8 @@ model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
 evaluation document does). Like the evaluation document it carries the
-source's `domain`, and a flattened source is laid out as its component tree
+source's `domain` and its data-fed parameters' `data` rules with the
+`data_sources` they name (§8.1), and a flattened source is laid out as its component tree
 (§8.1), refused on the same grounds, with the product's model (`JvpEval`,
 …) in place of `JacobianEval`. On top of that base:
 

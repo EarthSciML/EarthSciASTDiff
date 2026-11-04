@@ -7,17 +7,22 @@
     SysView
 
 Uniform system view: `variables` (name → `ModelVariable`), `equations`, the
-document's `index_sets`, and its `domain` (`nothing` when it has none; the
-evaluation document carries its time origin, esm-jacobian-spec.md §8.1).
-Construct with [`sysview`](@ref).
+document's `index_sets`, its `domain` (`nothing` when it has none; the
+evaluation document carries its time origin, esm-jacobian-spec.md §8.1) and
+its `data_sources` (`nothing` when unknown: a `FlattenedSystem` does not
+carry them; the derived documents copy the entries a data-fed parameter
+names, §8.1). Construct with [`sysview`](@ref).
 """
 struct SysView
     variables::Dict{String, Any}
     equations::Vector
     index_sets::Dict{String, Any}
     domain::Any
+    data_sources::Any
 end
 SysView(variables, equations, index_sets) = SysView(variables, equations, index_sets, nothing)
+SysView(variables, equations, index_sets, domain) =
+    SysView(variables, equations, index_sets, domain, nothing)
 
 # `expanded_model` is EarthSciAST's public template-expansion seam
 # (EarthSciAST ≥ 0.9.1): the typed model with Option-B
@@ -39,20 +44,26 @@ SysView(variables, equations, index_sets) = SysView(variables, equations, index_
 import EarthSciAST: expanded_model, expand_flattened_refs
 
 """
-    sysview(file::EsmFile, model_name) -> SysView
-    sysview(flat::FlattenedSystem)     -> SysView
+    sysview(file::EsmFile, model_name; data_sources = file.data_sources) -> SysView
+    sysview(flat::FlattenedSystem; data_sources = nothing)              -> SysView
+
+`data_sources` (a document's `data_sources`, name → `DataSource`) is what
+the derived documents copy for each data-fed parameter (esm-jacobian-spec.md
+§8.1). A `FlattenedSystem` does not carry them, so pass the flattened
+document's own when its parameters read data.
 """
-function sysview(file::EarthSciAST.EsmFile, model_name)
+function sysview(file::EarthSciAST.EsmFile, model_name; data_sources = file.data_sources)
     model = expanded_model(file, model_name === nothing ? nothing : String(model_name))
     return SysView(
         Dict{String, Any}(String(k) => v for (k, v) in model.variables),
         model.equations,
         Dict{String, Any}(String(k) => v for (k, v) in file.index_sets),
-        file.domain
+        file.domain,
+        data_sources
     )
 end
 
-function sysview(flat::EarthSciAST.FlattenedSystem)
+function sysview(flat::EarthSciAST.FlattenedSystem; data_sources = nothing)
     # Expand FIRST, for the same reason the `EsmFile` method does. `flatten`
     # ALWAYS hands its consumers reference-preserving expressions, so without
     # this the two methods disagree: an `EsmFile` reaches the band calculus
@@ -85,7 +96,7 @@ function sysview(flat::EarthSciAST.FlattenedSystem)
         var === nothing && continue
         _check_lifted_shape(String(name), var.shape, extents, isets)
     end
-    return SysView(vars, flat.equations, isets, flat.domain)
+    return SysView(vars, flat.equations, isets, flat.domain, data_sources)
 end
 
 # Check the shape `flatten` recorded on lifted state `name` against its
@@ -434,4 +445,30 @@ function inlinable_observed(
         union!(keep, added)
     end
     return Dict{String, ASTExpr}(n => obs[n] for n in keep)
+end
+
+# ── data-fed parameters (esm-jacobian-spec.md §4.3, §8.1) ───────────────────
+
+# The `data` rules of a parameter's `update`, in their order (none for an
+# unknown). The one test of "data-fed": the inferred forcing axis
+# ([`forcing_names`](@ref)) and the rules the derived documents carry agree.
+_data_rules(var) = var.type == EarthSciAST.ParameterVariable ?
+    [r for r in something(var.update, ()) if r.kind == "data"] : Any[]
+
+# The names a kept `data` rule reads: its `expression`, an expression
+# `from.unit_conversion`, and a handler's `read_vars` / `read_params`. The
+# derived documents keep the observed these name, so a carried rule never
+# references a variable they drop.
+function _rule_reads(r)
+    names = String[]
+    r.expression === nothing || append!(names, free_variables(r.expression))
+    f = r.from
+    f !== nothing && f.unit_conversion isa ASTExpr &&
+        append!(names, free_variables(f.unit_conversion))
+    h = r.handler
+    if h !== nothing
+        append!(names, something(h.read_vars, String[]))
+        append!(names, something(h.read_params, String[]))
+    end
+    return names
 end

@@ -7,13 +7,15 @@ byte-identical to the Julia reference's goldens."""
 
 from __future__ import annotations
 
+import functools
+
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
 from earthsci_ast.serialize import _serialize_domain
 
 from .bands import Band, BandError
 from .expr_helpers import ser_expr
-from .jacobian import JacEntry, jacobian_bands, jacobian_columns
+from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
 from .structure import column_lines
 from .system import sysview
@@ -433,6 +435,10 @@ def _base_document(sv, name: str) -> dict:
         default = getattr(var, "default", None)
         if default is not None:
             d["default"] = _inline_value(default)
+        rules = _data_rules(var)
+        if rules:
+            ser_rule, _ = _data_serializers()
+            d["update"] = ser_rule(rules[0]) if len(rules) == 1 else [ser_rule(r) for r in rules]
         variables[str(n)] = d
     equations = [{"lhs": ser_expr(eq.lhs), "rhs": ser_expr(eq.rhs)} for eq in sv.equations]
     isets = {}
@@ -448,6 +454,65 @@ def _base_document(sv, name: str) -> dict:
         "index_sets": isets,
         "models": {name: {"variables": variables, "equations": equations}},
     }
+
+
+# ── data-fed parameters (spec §8.1) ──────────────────────────────────────────
+#
+# A parameter whose ``update`` has a ``data`` rule is an input a provider
+# fills: EarthSciAST makes it a forcing slot of ``rhs_program``, not a
+# constant of the build. So the derived documents keep those rules, as
+# EarthSciAST serializes them, and the ``data_sources`` entries they name. The
+# other kinds are left out: they fire between right-hand-side calls, never
+# within one, and their expressions may read observed the derived model drops.
+
+
+@functools.cache
+def _data_serializers():
+    """EarthSciAST's serializers for a parameter's update rule and a data
+    source. They are private to ``earthsci_ast.serialize`` (no public form
+    exists in the supported range), so they are imported here, only when a
+    document has a data-fed parameter: a release that moves them breaks those
+    documents with a clear error, never ``import earthsci_astdiff``."""
+    try:
+        from earthsci_ast.serialize import (
+            _serialize_data_source,
+            _serialize_parameter_update,
+        )
+    except ImportError as e:  # pragma: no cover - depends on earthsci-ast
+        raise BandError(
+            "this earthsci-ast does not provide the update-rule and data-source "
+            "serializers a derived document with data-fed parameters needs "
+            f"({e})"
+        ) from e
+    return _serialize_parameter_update, _serialize_data_source
+
+
+def _data_sources(doc: dict, sv) -> dict:
+    """The ``data_sources`` entries the data-fed parameters of ``sv`` name, as
+    EarthSciAST serializes them, keys sorted; absent when none is named. A
+    named source the view does not hold is refused: a flattened system
+    carries no ``data_sources``, so its caller passes the flattened
+    document's."""
+    named: dict[str, str] = {}  # source -> the first parameter naming it
+    for n in sorted(sv.variables):
+        for r in _data_rules(sv.variables[n]):
+            named.setdefault(r.source, str(n))
+    if not named:
+        return doc
+    held = sv.data_sources or {}
+    _, ser_source = _data_serializers()
+    out: dict = {}
+    for k in sorted(named):
+        src = held.get(k)
+        if src is None:
+            raise BandError(
+                f"parameter `{named[k]}` reads data source `{k}`, which the source "
+                "does not declare (a flattened system carries no `data_sources`: "
+                "pass the flattened document's)"
+            )
+        out[k] = ser_source(src)
+    doc["data_sources"] = out
+    return doc
 
 
 def _derived_version(doc: dict) -> dict:
@@ -521,6 +586,17 @@ def _zero_source_derivatives(m: dict, sv, ctx, roots: list) -> dict:
             reads.setdefault(n, []).append(eq.rhs)
     live: set[str] = set()
     stack = [v for r in roots for v in free_variables(r)]
+    # the carried ``data`` rules (``_base_document``) are evaluated too. A
+    # flattened system keeps a rule's names local to its component, so each is
+    # also read under the parameter's scope (``Chem.E`` reading ``f``:
+    # ``Chem.f``); a name that is no observed is skipped below.
+    for p, var in sv.variables.items():
+        scope = str(p).rpartition(".")[0]
+        for r in _data_rules(var):
+            for v in _rule_reads(r):
+                stack.append(v)
+                if scope:
+                    stack.append(f"{scope}.{v}")
     while stack:
         n = stack.pop()
         if n not in reads or n in live:
@@ -601,6 +677,7 @@ def evaluation_document(
     forcing=None,
     cse: bool = True,
     cse_min_nodes: int = 12,
+    data_sources=None,
 ):
     """The derived evaluation document of the first-order bands on axis
     ``wrt`` (spec §8, model ``"JacobianEval"``): the source's observed the
@@ -611,8 +688,16 @@ def evaluation_document(
 
     Returns ``(doc, fields)``, ``fields[k]`` naming entry ``k``'s field. With
     ``cse``, repeated coefficient subtrees are hoisted into observed arrays
-    (:func:`~earthsci_astdiff.eval_cse.hoist_observed`)."""
-    sv = sysview(obj, model_name)
+    (:func:`~earthsci_astdiff.eval_cse.hoist_observed`).
+
+    A data-fed parameter (one whose ``update`` has a ``data`` rule) keeps those
+    rules, and the document carries the ``data_sources`` entries they name, so
+    EarthSciAST builds it as an externally fed input rather than a constant.
+    They come from ``data_sources`` when given, else from ``obj``: an
+    ``EsmFile``'s own. A flattened system carries none, so pass the flattened
+    document's ``data_sources`` when its parameters read data; a named source
+    that is not found raises :class:`BandError`."""
+    sv = sysview(obj, model_name, data_sources)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes)
 
@@ -691,11 +776,13 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
 def _finish_derived(doc: dict, sv, derived: str) -> dict:
     """Finish a derived document whose model is ``derived`` (the evaluation
     document, spec §8.1, and every product document, §9.1): lay a flattened
-    source out as its component tree, carry the source's ``domain``, and
-    settle the ``esm`` version. Every derived document ends here, so the
-    documents of one source agree on its layout and its time origin."""
+    source out as its component tree, carry the source's ``domain`` and the
+    ``data_sources`` its data-fed parameters name, and settle the ``esm``
+    version. Every derived document ends here, so the documents of one source
+    agree on its layout, its time origin and its data inputs."""
     _component_tree(doc, sv, derived)
     _domain(doc, sv.domain)
+    _data_sources(doc, sv)
     return _derived_version(doc)
 
 

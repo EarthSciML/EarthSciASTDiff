@@ -265,9 +265,16 @@ _axis_columns(sv::SysView, wrt::Symbol, forcing) =
     wrt in (:parameters, :forcing) ? jacobian_columns(sv; wrt = wrt, forcing = forcing) :
     nothing
 
-_sv_src(file::EarthSciAST.EsmFile, model_name) =
-    (sysview(file, model_name === nothing ? _only_model(file) : model_name), file)
-_sv_src(flat::EarthSciAST.FlattenedSystem, ::Any) = (sysview(flat), flat)
+# `data_sources = nothing` is the input's own: the document's for an `EsmFile`,
+# none for a `FlattenedSystem`, which does not carry them.
+_sv_src(file::EarthSciAST.EsmFile, model_name; data_sources = nothing) = (
+    sysview(
+        file, model_name === nothing ? _only_model(file) : model_name;
+        data_sources = data_sources === nothing ? file.data_sources : data_sources
+    ), file,
+)
+_sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing) =
+    (sysview(flat; data_sources = data_sources), flat)
 
 # Build the ordinary RHS evaluator for the SAME model `_sv_src` selected: an
 # `EsmFile` threads `model_name` through `build_evaluator`'s own selection
