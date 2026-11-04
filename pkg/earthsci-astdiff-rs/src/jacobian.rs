@@ -1,5 +1,6 @@
 //! Model-level driver (the reference's jacobian.jl).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -290,11 +291,7 @@ pub fn jacobian_structure_view(
     let ctx = ctx_of(sv)?;
     let obs = observed_defs(sv)?;
     let ext = extended_pass_in(sv, &ctx, &obs, wrt, forcing, &[], false)?;
-    let rows = if ext.recurrences.is_empty() {
-        ext.rows
-    } else {
-        materialize(&ctx, &ext)?
-    };
+    let rows = materialized(&ctx, Cow::Owned(ext))?;
     Ok(rows.into_iter().map(StructureEntry::from).collect())
 }
 
@@ -333,22 +330,39 @@ pub(crate) fn jacobian_bands_seeded(
     forcing: Option<&[String]>,
     seed: &[String],
 ) -> Result<Vec<JacEntry>, BandError> {
-    let ext = extended_pass(sv, ctx, obs, wrt, forcing, seed)?;
-    let mut rows = if ext.recurrences.is_empty() {
-        ext.rows
-    } else {
-        materialize(ctx, &ext)?
-    };
-    // One object per distinct subtree across every coefficient
-    // (`hashcons::Interner`): the entries share copies, not hold their own.
-    let mut t = Interner::new();
-    for en in &mut rows {
-        en.band.coef = t.intern(&en.band.coef);
-        if let Some(g) = &en.band.guard {
-            en.band.guard = Some(t.intern(g));
-        }
+    materialized(
+        ctx,
+        Cow::Owned(extended_pass(sv, ctx, obs, wrt, forcing, seed)?),
+    )
+}
+
+/// The band list of an extended pass (spec §4.5): its `rows` when no
+/// recurrence is active, else [`materialize`]'s composition, interned like
+/// the pass's own rows. Every caller that turns a pass into entries goes
+/// through here, so none can skip the interning.
+pub(crate) fn materialized(
+    ctx: &Ctx,
+    ext: Cow<'_, ExtendedBands>,
+) -> Result<Vec<JacEntry>, BandError> {
+    if ext.recurrences.is_empty() {
+        return Ok(match ext {
+            Cow::Owned(e) => e.rows,
+            Cow::Borrowed(e) => e.rows.clone(),
+        });
     }
+    let mut rows = materialize(ctx, &ext)?;
+    intern_entries(rows.iter_mut().map(|en| &mut en.band));
     Ok(rows)
+}
+
+/// One object per distinct subtree across every band's coefficient, guard
+/// and column indices (`hashcons::Interner`): the entries share copies
+/// instead of each holding its own.
+pub(crate) fn intern_entries<'a>(bands: impl Iterator<Item = &'a mut Band>) {
+    let mut t = Interner::new();
+    for b in bands {
+        t.intern_band(b);
+    }
 }
 
 /// The extended first-order system of axis `wrt` (spec §4.5): every state
@@ -502,6 +516,15 @@ pub(crate) fn extended_pass_in(
     } else {
         transfer_names(sv, &recs)
     };
+    // Every coefficient of the pass references shared subtrees (one interner
+    // over the state and the recurrence rows): the products and the emitter
+    // read these rows directly.
+    intern_entries(
+        entries
+            .iter_mut()
+            .chain(rec_rows.iter_mut())
+            .map(|en| &mut en.band),
+    );
     Ok(ExtendedBands {
         recurrences: act,
         rows: entries,
@@ -682,11 +705,7 @@ impl FirstOrder {
             return Ok(e.clone());
         }
         let ext = self.ext(sv, ctx, obs, a1, a2, forcing, seed)?;
-        let e = Rc::new(if ext.recurrences.is_empty() {
-            ext.rows.clone()
-        } else {
-            materialize(ctx, &ext)?
-        });
+        let e = Rc::new(materialized(ctx, Cow::Borrowed(&*ext))?);
         self.bands.insert(key, e.clone());
         Ok(e)
     }
@@ -715,4 +734,80 @@ pub(crate) fn unsupported_derivative(eq: &earthsci_ast::Equation) -> BandError {
                        or the lifted `faq{{D(index(u, i…))}}`)",
         serde_json::to_string(&crate::helpers::ser_expr(&eq.lhs)).expect("expression serializes")
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hashcons::{NodeRef, StructIndex};
+
+    fn sv_of(file: &EsmFile) -> SysView<'_> {
+        sysview(file, None).unwrap()
+    }
+
+    fn load(name: &str) -> EsmFile {
+        let p = format!(
+            "{}/../../tests/valid/{name}.esm",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        earthsci_ast::load_path(&p).unwrap()
+    }
+
+    /// Whether the bands hold exactly one object per distinct subtree.
+    fn one_per_subtree<'a>(bands: impl Iterator<Item = &'a Band>) -> bool {
+        let mut seen = HashSet::new();
+        let mut todo: Vec<Expr> = Vec::new();
+        for b in bands {
+            todo.push(b.coef.clone());
+            todo.extend(b.guard.clone());
+            todo.extend(b.cidx.iter().cloned());
+        }
+        let mut nodes = Vec::new();
+        while let Some(e) = todo.pop() {
+            if let Expr::Operator(a) = &e {
+                if seen.insert(NodeRef(a.clone())) {
+                    a.for_each_child(&mut |c: &Expr| todo.push(c.clone()));
+                    nodes.push(e.clone());
+                }
+            }
+        }
+        let mut ix = StructIndex::new();
+        let ids: HashSet<usize> = nodes.iter().map(|n| ix.sid(n)).collect();
+        ids.len() == nodes.len()
+    }
+
+    #[test]
+    fn every_path_interns_its_bands() {
+        // the emitter's memoized pass and the products' extended pass
+        let file = load("minmod_adv");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        let mut memo = FirstOrder::default();
+        let e = memo
+            .bands(&sv, &ctx, &obs, Wrt::States, None, None, &[])
+            .unwrap();
+        assert!(one_per_subtree(e.iter().map(|en| &en.band)));
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        assert!(one_per_subtree(ext.rows.iter().map(|en| &en.band)));
+        // through an active recurrence: the extended rows and the
+        // materialized composition
+        let file = load("recurrence_sweep");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        assert!(!ext.recurrences.is_empty());
+        assert!(one_per_subtree(
+            ext.rows.iter().chain(&ext.rec_rows).map(|en| &en.band)
+        ));
+        let m = materialized(&ctx, Cow::Borrowed(&ext)).unwrap();
+        assert!(one_per_subtree(m.iter().map(|en| &en.band)));
+        // second order
+        let file = load("arrhenius_chem");
+        let sv = sv_of(&file);
+        let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
+        for wrt in [(Wrt::States, Wrt::States), (Wrt::States, Wrt::Parameters)] {
+            let (_, e2) = crate::second_order::bands2_view(&sv, &ctx, &obs, wrt, None).unwrap();
+            assert!(one_per_subtree(e2.iter().map(|en| &en.band)));
+        }
+    }
 }

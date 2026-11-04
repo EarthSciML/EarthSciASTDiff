@@ -223,16 +223,16 @@ function _jacobian_bands(
     # `_Interner`): the entries reference shared copies, not their own.
     coefficients || return entries
     t = _Interner()
-    return JacEntry[
-        JacEntry(
-            en.u, en.v,
-            _rebuild(
-                en.band; coef = _intern(t, en.band.coef),
-                guard = en.band.guard === nothing ? nothing : _intern(t, en.band.guard)
-            )
-        ) for en in entries
-    ]
+    return JacEntry[JacEntry(en.u, en.v, _intern_band(t, en.band)) for en in entries]
 end
+
+# `b` with its coefficient, guard and column indices interned.
+_intern_band(t::_Interner, b::Band) = _rebuild(
+    b;
+    cidx = ASTExpr[_intern(t, c) for c in b.cidx],
+    coef = b.coef === nothing ? nothing : _intern(t, b.coef),
+    guard = b.guard === nothing ? nothing : _intern(t, b.guard),
+)
 
 # A column of the parameters / forcing axes is a cell of a buffer, so it must
 # be placeable at build time: after inlining, its index expressions may read

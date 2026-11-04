@@ -90,12 +90,29 @@ impl StructIndex {
         *self.ids.entry(k).or_insert(n)
     }
 
+    /// The id of a leaf: its own `skey`, behind a prefix no shell key (which
+    /// always starts with `{`) can share.
+    fn leaf_id(&mut self, e: &Expr) -> usize {
+        self.intern_key(format!("L{}", skey(e)))
+    }
+
+    /// The id of operator node `a` whose children have ids `kids`: the key
+    /// of its SHELL, every child position holding a placeholder that carries
+    /// the child's id (so a placeholder can never be confused with a real
+    /// variable of the same name). O(node fields), not O(subtree).
+    fn shell_id(&mut self, a: &ExpressionNode, kids: &[usize]) -> usize {
+        let mut i = 0usize;
+        let shell = a.map_children(&mut |_c: &Expr| {
+            i += 1;
+            Expr::Variable(format!("__sid⟦{}⟧", kids[i - 1]))
+        });
+        self.intern_key(skey(&Expr::Operator(Arc::new(shell))))
+    }
+
     /// The structural id of `e`.
     pub(crate) fn sid(&mut self, e: &Expr) -> usize {
         let Expr::Operator(a) = e else {
-            // A leaf's key is its own `skey`, behind a prefix no shell key
-            // (which always starts with `{`) can share.
-            return self.intern_key(format!("L{}", skey(e)));
+            return self.leaf_id(e);
         };
         let k = NodeRef(a.clone());
         if let Some(&id) = self.memo.get(&k) {
@@ -103,14 +120,7 @@ impl StructIndex {
         }
         let mut kids = Vec::new();
         a.for_each_child(&mut |c: &Expr| kids.push(self.sid(c)));
-        let mut i = 0usize;
-        // Every child position holds a placeholder, so a placeholder can
-        // never be confused with a real variable of the same name.
-        let shell = a.map_children(&mut |_c: &Expr| {
-            i += 1;
-            Expr::Variable(format!("__sid⟦{}⟧", kids[i - 1]))
-        });
-        let id = self.intern_key(skey(&Expr::Operator(Arc::new(shell))));
+        let id = self.shell_id(a, &kids);
         self.memo.insert(k, id);
         id
     }
@@ -122,11 +132,19 @@ impl StructIndex {
 /// subtree to one representative per structural id, so the coefficients
 /// share it. Structure (and serialization) is unchanged; only `Arc` identity
 /// is.
+///
+/// One bottom-up pass: a node's id is keyed on its shell over its children's
+/// ids (as [`StructIndex::sid`] keys it), and its representative is built
+/// from the children's representatives, so every node is visited and
+/// shell-serialized once. The walk is iterative: the deep `ifelse` chains
+/// of `index(makearray…)` lowering would otherwise cost a stack frame per
+/// level.
 #[derive(Default)]
 pub(crate) struct Interner {
     ix: StructIndex,
     canon: HashMap<usize, Expr>,
-    memo: HashMap<NodeRef, Expr>,
+    // node identity → (representative, structural id)
+    memo: HashMap<NodeRef, (Expr, usize)>,
 }
 
 impl Interner {
@@ -135,24 +153,63 @@ impl Interner {
     }
 
     pub(crate) fn intern(&mut self, e: &Expr) -> Expr {
-        let Expr::Operator(a) = e else {
+        let Expr::Operator(root) = e else {
             return e.clone();
         };
-        let k = NodeRef(a.clone());
-        if let Some(r) = self.memo.get(&k) {
-            return r.clone();
-        }
-        let id = self.ix.sid(e);
-        let c = match self.canon.get(&id) {
-            Some(c) => c.clone(),
-            None => {
-                let c = map_children_shared(e, &mut |x| self.intern(x));
-                self.canon.insert(id, c.clone());
-                c
+        let mut stack: Vec<(Arc<ExpressionNode>, bool)> = vec![(root.clone(), false)];
+        while let Some((n, expanded)) = stack.pop() {
+            let k = NodeRef(n.clone());
+            if self.memo.contains_key(&k) {
+                continue;
             }
-        };
-        self.memo.insert(k, c.clone());
-        c
+            if !expanded {
+                // revisit after every operator child is memoized
+                stack.push((n.clone(), true));
+                let memo = &self.memo;
+                n.for_each_child(&mut |c: &Expr| {
+                    if let Expr::Operator(ca) = c {
+                        if !memo.contains_key(&NodeRef(ca.clone())) {
+                            stack.push((ca.clone(), false));
+                        }
+                    }
+                });
+                continue;
+            }
+            let mut kids: Vec<(Expr, usize)> = Vec::new();
+            n.for_each_child(&mut |c: &Expr| {
+                kids.push(match c {
+                    Expr::Operator(ca) => self.memo[&NodeRef(ca.clone())].clone(),
+                    _ => (c.clone(), self.ix.leaf_id(c)),
+                })
+            });
+            let ids: Vec<usize> = kids.iter().map(|(_, id)| *id).collect();
+            let id = self.ix.shell_id(&n, &ids);
+            let c = match self.canon.get(&id) {
+                Some(c) => c.clone(),
+                None => {
+                    let mut i = 0usize;
+                    let c = map_children_shared(&Expr::Operator(n.clone()), &mut |_x| {
+                        i += 1;
+                        kids[i - 1].0.clone()
+                    });
+                    self.canon.insert(id, c.clone());
+                    c
+                }
+            };
+            self.memo.insert(k, (c, id));
+        }
+        self.memo[&NodeRef(root.clone())].0.clone()
+    }
+
+    /// `b` with its coefficient, guard and column indices interned.
+    pub(crate) fn intern_band(&mut self, b: &mut crate::bands::Band) {
+        b.coef = self.intern(&b.coef);
+        if let Some(g) = &b.guard {
+            b.guard = Some(self.intern(g));
+        }
+        for c in &mut b.cidx {
+            *c = self.intern(c);
+        }
     }
 }
 
@@ -220,6 +277,49 @@ mod tests {
             panic!()
         };
         assert!(same_expr(&na.args[0], &nb.args[0]));
+    }
+
+    #[test]
+    fn interning_keeps_a_canonical_tree_and_reuses_it() {
+        let a = ex(json!({"op": "+", "args": [{"op": "*", "args": [2, "x"]}, 1]}));
+        let mut t = Interner::new();
+        let a1 = t.intern(&a);
+        // the first occurrence of a subtree is its own representative
+        assert!(same_expr(&a1, &a));
+        // a structurally equal copy maps onto it, root and all
+        let copy = ex(serde_json::to_value(&a).unwrap());
+        assert!(!same_expr(&copy, &a));
+        assert!(same_expr(&t.intern(&copy), &a));
+    }
+
+    #[test]
+    fn interning_a_deep_chain_needs_no_stack_per_level() {
+        // an `ifelse` chain as deep as index(makearray…) lowering builds,
+        // interned on a thread whose stack a recursive walk would overflow
+        let depth = 50_000;
+        // one shared read, so every level is already canonical and the
+        // representative of the chain is the chain itself
+        let read = ex(json!({"op": "index", "args": ["u", "i"]}));
+        let mut e = Expr::Variable("x".into());
+        for k in 0..depth {
+            e = Expr::operator(earthsci_ast::ExpressionNode {
+                op: "ifelse".into(),
+                args: vec![ex(json!({"op": "<", "args": ["i", k]})), read.clone(), e],
+                ..Default::default()
+            });
+        }
+        let h = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut t = Interner::new();
+                let r = t.intern(&e);
+                let ok = same_expr(&r, &e);
+                // dropping a deep tree recurses; keep it off this thread
+                std::mem::forget((e, r, t));
+                ok
+            })
+            .unwrap();
+        assert!(h.join().unwrap());
     }
 
     #[test]

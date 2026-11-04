@@ -54,9 +54,7 @@ function sid(ix::StructIndex, e::ASTExpr)::Int
         cached == 0 || return cached
         kids = Int[]
         map_children(c -> (push!(kids, sid(ix, c)); c), e)
-        i = Ref(0)
-        shell = map_children(_ -> (i[] += 1; _sid_placeholder(kids[i[]])), e)
-        id = _intern_key!(ix, stable_json(EarthSciAST.serialize_expression(shell)))
+        id = _shell_id!(ix, e, kids)
         ix.memo[e] = id
         return id
     end
@@ -75,6 +73,14 @@ end
 
 _intern_key!(ix::StructIndex, k::String)::Int =
     get!(ix.ids, k, length(ix.ids) + 1)
+
+# The id of operator node `e` whose children have ids `kids`: the key of its
+# SHELL, every child replaced by a placeholder carrying that child's id.
+function _shell_id!(ix::StructIndex, e::OpExpr, kids::Vector{Int})::Int
+    i = Ref(0)
+    shell = map_children(_ -> (i[] += 1; _sid_placeholder(kids[i[]])), e)
+    return _intern_key!(ix, stable_json(EarthSciAST.serialize_expression(shell)))
+end
 
 # ── the cheap half: a structural hash used as a NEGATIVE filter ──────────────
 #
@@ -137,23 +143,36 @@ end
 # unchanged structurally (same `skey`, same serialization); only identity
 # changes, which nothing downstream may observe (no pass mutates a node).
 
+#
+# One bottom-up pass: a node's id is keyed on its shell over its children's
+# ids (exactly as `sid` keys it), and its representative is rebuilt from the
+# children's representatives, so each node is visited and shell-serialized
+# once.
+
 struct _Interner
     ix::StructIndex
-    canon::Dict{Int, OpExpr}          # structural id → representative
-    memo::IdDict{OpExpr, OpExpr}      # node identity → representative
+    canon::Dict{Int, OpExpr}                  # structural id → representative
+    memo::IdDict{OpExpr, Tuple{OpExpr, Int}}  # node identity → (representative, id)
 end
-_Interner() = _Interner(StructIndex(), Dict{Int, OpExpr}(), IdDict{OpExpr, OpExpr}())
+_Interner() = _Interner(StructIndex(), Dict{Int, OpExpr}(), IdDict{OpExpr, Tuple{OpExpr, Int}}())
 
-function _intern(t::_Interner, e::ASTExpr)::ASTExpr
-    e isa OpExpr || return e
+_intern(t::_Interner, e::ASTExpr)::ASTExpr = first(_intern_id(t, e))
+
+# (representative, structural id) of `e`. A leaf is its own representative.
+function _intern_id(t::_Interner, e::ASTExpr)::Tuple{ASTExpr, Int}
+    e isa OpExpr || return (e, sid(t.ix, e))
     r = get(t.memo, e, nothing)
     r === nothing || return r
-    id = sid(t.ix, e)
+    kids = Tuple{ASTExpr, Int}[]
+    map_children(c -> (push!(kids, _intern_id(t, c)); c), e)
+    id = _shell_id!(t.ix, e, Int[k[2] for k in kids])
     c = get(t.canon, id, nothing)
     if c === nothing
-        c = map_children(x -> _intern(t, x), e)
+        i = Ref(0)
+        c = map_children(_ -> (i[] += 1; kids[i[]][1]), e)
         t.canon[id] = c
     end
-    t.memo[e] = c
-    return c
+    t.memo[e] = (c, id)
+    return (c, id)
 end
+
