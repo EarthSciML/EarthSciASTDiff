@@ -313,6 +313,9 @@ pub(crate) struct OccIndex {
     nodekey: HashMap<NodeRef, usize>,
     bits: HashMap<NodeRef, Rc<Bits>>,
     none: Rc<Bits>,
+    /// The set of a bare `Variable(v)`, keyed once: one shared `Rc`, so a
+    /// parent already holding it skips the union by `Rc::ptr_eq`.
+    var: Option<Rc<Bits>>,
     deriv: HashMap<String, Rc<RefCell<HashMap<NodeRef, Expr>>>>,
 }
 
@@ -324,6 +327,7 @@ impl OccIndex {
             nodekey: HashMap::new(),
             bits: HashMap::new(),
             none: Rc::new(Bits::default()),
+            var: None,
             deriv: HashMap::new(),
         }
     }
@@ -356,8 +360,12 @@ impl OccIndex {
     fn site_bits(&mut self, e: &Expr) -> Rc<Bits> {
         let a = match e {
             Expr::Variable(n) if *n == self.v => {
-                let i = self.keyid(&site_key(e));
-                return Rc::new(Bits::one(i));
+                if let Some(b) = &self.var {
+                    return b.clone();
+                }
+                let b = Rc::new(Bits::one(self.keyid(&site_key(e))));
+                self.var = Some(b.clone());
+                return b;
             }
             Expr::Operator(a) => a,
             _ => return self.none.clone(),
