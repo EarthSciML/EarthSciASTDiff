@@ -92,6 +92,7 @@ for (name, wrt, t) in (
         ("minmod_adv", (:states, :states), 0.7),
         ("filtered_scan", (:states, :states), 0.7),
         ("semiring_reduce", (:states, :states), 0.7),
+        ("pre_operator", (:states, :states), 0.7),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()

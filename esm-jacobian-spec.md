@@ -95,7 +95,31 @@ Textbook rules, with these bindings-relevant details:
 | comparisons, `and`/`or`/`not` | `0` | comparisons return 1.0/0.0 *values*; still 0 even in multiplicative position |
 | `sign`, `floor`, `ceil` | `0` | a.e. |
 | `const`, `enum`, niladic constants | `0` | |
-| `Pre(a)` | `d[a]` | the identity: esm-spec §5.1 gives `Pre` a meaning of its own only in an event affect (the value of `a` before the event fires); in a right-hand side `Pre(a)` evaluates to `a` (EarthSciAST's tree-walk passes it through), so its derivative is `d[a]`, never `0` |
+| `Pre(a)` | `d[a]` | the identity, and lowered away before differentiation (below); never `0` |
+
+**`Pre` in a right-hand side.** esm-spec §5.1 defines `Pre(a)` only inside an
+event affect, as the value of `a` immediately before the event fires, and
+says nothing of `Pre` in a continuous right-hand side. This specification
+fixes that reading for the Jacobian: a right-hand side is evaluated at one
+instant with no event, so the value "before the event" is the current value
+and `Pre(a)` there **is** `a`. It is the reading EarthSciAST's interpreters
+implement (the Julia tree-walk and the Rust `simulate_array` pass the operand
+through), and the one under which `jacobian_bands` agrees with forward-mode
+differentiation of the evaluated right-hand side. The derivative of an affect
+with respect to the pre-event state is the same identity. A producer MUST
+lower every `Pre(a)` in a right-hand side (and in every observed definition it
+inlines, §3.5) to `a` before differentiating, so that no band coefficient,
+derived evaluation document (§8) or product document (§9) carries a `Pre`,
+and `Pre(x)` and `x` are one structure to interning, simplification and CSE. The `d[Pre(a)] = d[a]` row is the rule for an
+expression that reaches the scalar calculus unlowered.
+
+A backend that reads `Pre` in a right-hand side differently computes a
+different right-hand side, and these bands are not its Jacobian: EarthSciAST's
+ModelingToolkit lowering maps `Pre` to `ModelingToolkit.Pre`, MTK's
+pre-event operator, which MTK need not resolve to the current state. A document
+that must mean the same on every backend writes the plain variable; `Pre`
+belongs in affects. Should esm-spec settle `Pre` in a right-hand side
+otherwise, this row follows it.
 
 ### 3.3 Rewrite-target operators
 

@@ -552,9 +552,66 @@ mod tests {
         let s = Site::of(&Expr::Variable("x".into()));
         let pre = ex(serde_json::json!({"op": "Pre", "args": ["x"]}));
         assert_eq!(dscalar(&pre, &s).unwrap(), Expr::Integer(1));
-        let pre3 = ex(serde_json::json!({"op": "*", "args": [{"op": "Pre", "args": ["x"]}, 3.0]}));
-        let d = dscalar(&pre3, &s).unwrap();
-        let v = earthsci_ast::evaluate(&d, &std::collections::HashMap::new()).unwrap();
-        assert!((v - 3.0).abs() < 1e-15, "{v}");
+    }
+
+    /// `Pre` composed with the product, chain, power and extremum rules,
+    /// against central differences. The expression and its derivative are
+    /// evaluated after `inline_observed` lowers `Pre(a)` to `a` (the step
+    /// before differentiation in the band calculus), but the derivative is
+    /// taken of the UNLOWERED expression, so the rule is what is tested.
+    #[test]
+    fn pre_rule_vs_fd() {
+        use crate::inline::inline_observed;
+        use std::collections::HashMap;
+        let s = Site::of(&Expr::Variable("x".into()));
+        let pre = |a: serde_json::Value| serde_json::json!({"op": "Pre", "args": [a]});
+        let at = |e: &Expr, x: f64| {
+            let vars = HashMap::from([("x".to_string(), x)]);
+            earthsci_ast::evaluate(e, &vars).unwrap()
+        };
+        let cases = [
+            (
+                serde_json::json!({"op": "*", "args": [pre("x".into()), "x"]}),
+                0.7,
+            ),
+            (
+                serde_json::json!({"op": "exp", "args": [pre("x".into())]}),
+                0.7,
+            ),
+            (
+                serde_json::json!({"op": "^", "args": [pre("x".into()), 3]}),
+                1.3,
+            ),
+            (
+                serde_json::json!({"op": "*", "args": [{"op": "sin", "args": [pre("x".into())]}, "x"]}),
+                0.9,
+            ),
+            (
+                serde_json::json!({"op": "max", "args": [{"op": "*", "args": [2.0, pre("x".into())]},
+                                                       {"op": "*", "args": ["x", "x"]}]}),
+                0.6,
+            ),
+            (
+                serde_json::json!({"op": "max", "args": [{"op": "*", "args": [2.0, pre("x".into())]},
+                                                       {"op": "*", "args": ["x", "x"]}]}),
+                2.5,
+            ),
+            (
+                serde_json::json!({"op": "/", "args": [pre(pre("x".into())),
+                                                     {"op": "+", "args": ["x", 2.0]}]}),
+                0.6,
+            ),
+        ];
+        let none = HashMap::new();
+        for (data, x) in cases {
+            let e = ex(data);
+            let lowered = inline_observed(&e, &none).unwrap();
+            assert!(!serde_json::to_string(&lowered).unwrap().contains("\"Pre\""));
+            let d = inline_observed(&dscalar(&e, &s).unwrap(), &none).unwrap();
+            let h = 1e-6;
+            let fd = (at(&lowered, x + h) - at(&lowered, x - h)) / (2.0 * h);
+            let sym = at(&d, x);
+            assert!((sym - fd).abs() < 1e-6, "{e:?} at {x}: {sym} vs {fd}");
+        }
     }
 }

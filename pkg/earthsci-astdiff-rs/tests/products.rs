@@ -23,7 +23,7 @@ use common::{load, root};
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
 
 /// Every axis with a value golden (spec §9.6).
-const PRODUCT_AXES: [(&str, Wrt); 16] = [
+const PRODUCT_AXES: [(&str, Wrt); 17] = [
     ("bd_chem", Wrt::States),
     ("adv_interior", Wrt::States),
     ("contracted_ops", Wrt::States),
@@ -34,6 +34,7 @@ const PRODUCT_AXES: [(&str, Wrt); 16] = [
     ("forcing_bracket", Wrt::States),
     ("filtered_scan", Wrt::States),
     ("semiring_reduce", Wrt::States),
+    ("pre_operator", Wrt::States),
     ("tgrad_photolysis", Wrt::Time),
     ("forcing_bracket", Wrt::Forcing),
     ("forcing_bracket", Wrt::Parameters),
@@ -42,7 +43,7 @@ const PRODUCT_AXES: [(&str, Wrt); 16] = [
     ("pbl_rank1", Wrt::States),
 ];
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 10] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 11] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
@@ -51,6 +52,7 @@ const SECOND_ORDER: [(&str, (Wrt, Wrt)); 10] = [
     ("minmod_adv", SS),
     ("filtered_scan", SS),
     ("semiring_reduce", SS),
+    ("pre_operator", SS),
     ("recurrence_sweep", SS),
     ("recurrence_sweep", (Wrt::States, Wrt::Parameters)),
 ];

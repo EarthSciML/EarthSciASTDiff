@@ -116,6 +116,7 @@ for (name, wrt) in (
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
+        ("pre_operator", (:states, :states)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -136,6 +137,7 @@ for (name, wrt) in (
         ("contracting_observed", :states), ("tgrad_photolysis", :states),
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
+        ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
@@ -160,6 +162,7 @@ for (name, wrt) in (
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
+        ("pre_operator", (:states, :states)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = sysview(file, first(keys(file.models)))
@@ -188,6 +191,7 @@ for (name, tag, layout) in (
         ("contracting_observed", "csr", Csr()),
         ("filtered_scan", "csr", Csr()),
         ("semiring_reduce", "csr", Csr()),
+        ("pre_operator", "csr", Csr()),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     ppath = joinpath(root, "tests", "goldens", "$name.$tag.plan.json")

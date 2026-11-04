@@ -41,6 +41,7 @@ end
     for name in (
             "bd_chem", "adv_interior", "flux_form_adv", "minmod_adv",
             "contracted_ops", "contracting_observed", "filtered_scan", "semiring_reduce",
+            "pre_operator",
         )
         file = fixture("$name.esm")
         @test isempty(jacobian_bands(file, first(keys(file.models)); wrt = :time))

@@ -46,6 +46,7 @@ PRODUCT_AXES = (
     ("forcing_bracket", "states"),
     ("filtered_scan", "states"),
     ("semiring_reduce", "states"),
+    ("pre_operator", "states"),
     ("tgrad_photolysis", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),

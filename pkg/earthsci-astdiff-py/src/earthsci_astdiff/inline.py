@@ -19,7 +19,8 @@ class InlineError(Exception):
 
 
 def inline_observed(e: Expr, obs: dict[str, Expr], obs_names: list | None = None) -> Expr:
-    """Inline observed reads, β-reduce `index`-of-`faq`, lower
+    """Inline observed reads, lower ``Pre(a)`` to ``a`` (spec §3.2),
+    β-reduce `index`-of-`faq`, lower
     `index`-of-`makearray` to region membership `ifelse`. Fixpoint-iterated.
     Every substitution is capture-avoiding, and a faq node binding a name an
     enclosing faq already binds is renamed apart. ``obs_names`` caches the
@@ -182,10 +183,13 @@ def _beta_faq(de: ExprNode, sub: list[Expr], fresh: _Fresh, scope) -> Expr:
 
 
 def _needs_inline(e: Expr, scope=frozenset()) -> bool:
-    """Whether a pass could change ``e`` with no observed to inline: an
-    `index`-of-array-expression, or a faq node shadowing an enclosing index."""
+    """Whether a pass could change ``e`` with no observed to inline: a
+    ``Pre`` to lower, an `index`-of-array-expression, or a faq node shadowing
+    an enclosing index."""
     if not isinstance(e, ExprNode):
         return False
+    if e.op == "Pre":
+        return True
     if e.op == "index" and isinstance(e.args[0], ExprNode):
         return True
     if e.op == "faq":
@@ -246,6 +250,9 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh, scope: frozenset)
         return obs.get(e, e)
     if not isinstance(e, ExprNode):
         return e
+    if e.op == "Pre":
+        # `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        return _inline_once(e.args[0], obs, fresh, scope)
 
     def args() -> list[Expr]:
         return [_inline_once(x, obs, fresh, scope) for x in e.args[1:]]

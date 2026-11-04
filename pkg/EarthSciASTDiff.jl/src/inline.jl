@@ -12,7 +12,12 @@
 #      contracted names (see `_beta_faq`). Every substitution is
 #      capture-avoiding, and a faq node binding a name an enclosing faq
 #      already binds is renamed apart (`_inline_once`).
-#   2. `index(makearray(…), i, j)` — the form the pointwise lift produces when
+#   2. `Pre(a)` → `a`. esm-spec §5.1 gives `Pre` a meaning of its own only in
+#      an event affect; in a right-hand side it is the value of `a` (spec
+#      §3.2). Lowering it here, before differentiation, keeps it out of every
+#      coefficient, so `Pre(x)` and `x` intern, simplify and share as one
+#      structure and no emitted document asks its evaluator for `Pre`.
+#   3. `index(makearray(…), i, j)` — the form the pointwise lift produces when
 #      an operator's `makearray` is read per cell. Lowered to a nested
 #      region-membership `ifelse`: later regions override earlier ones, which
 #      is exactly the spec's §4.3.2 overwrite semantics, folded from the first
@@ -32,8 +37,8 @@ Base.showerror(io::IO, e::InlineError) = print(io, "InlineError: ", e.msg)
     inline_observed(e, obs::Dict{String,ASTExpr}) -> ASTExpr
 
 Inline every observed-variable read in `e` (`obs` maps observed name →
-defining expression), β-reduce `index`-of-`faq`, and lower
-`index`-of-`makearray` to region `ifelse`. Fixpoint-iterated; throws
+defining expression), lower `Pre(a)` to `a` (spec §3.2), β-reduce
+`index`-of-`faq`, and lower `index`-of-`makearray` to region `ifelse`. Fixpoint-iterated; throws
 [`InlineError`](@ref) on non-convergence (cyclic observed definitions).
 `obs_names` caches the names used by `obs`'s definitions; a caller inlining
 many expressions against one `obs` passes one `Ref` to all of them.
@@ -231,11 +236,12 @@ function _beta_faq(def::OpExpr, sub::Vector{ASTExpr}, fresh::_Fresh, scope)::AST
     )
 end
 
-# Whether a pass could change `e` with no observed to inline: an
-# `index`-of-array-expression to reduce, or a faq node shadowing an index
-# bound around it (renamed apart by `_inline_once`).
+# Whether a pass could change `e` with no observed to inline: a `Pre` to
+# lower, an `index`-of-array-expression to reduce, or a faq node shadowing an
+# index bound around it (renamed apart by `_inline_once`).
 function _needs_inline(e::ASTExpr, scope = Set{String}())::Bool
     e isa OpExpr || return false
+    e.op == "Pre" && return true
     e.op == "index" && e.args[1] isa OpExpr && return true
     if e.op == "faq"
         b = _binders(e)
@@ -308,6 +314,8 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
         (e.name in scope || !haskey(obs, e.name)) && return e
         return obs[e.name]
     elseif e isa OpExpr
+        # `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        e.op == "Pre" && return _inline_once(e.args[1], obs, fresh, scope)
         args = () -> ASTExpr[_inline_once(x, obs, fresh, scope) for x in e.args[2:end]]
         if e.op == "index" && e.args[1] isa OpExpr && e.args[1].op == "makearray"
             return _index_makearray(e.args[1], args(), obs, fresh, scope)

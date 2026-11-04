@@ -22,6 +22,7 @@ const PLAN_LAYOUTS = [
     ("contracting_observed", "csr", Csr()),
     ("filtered_scan", "csr", Csr()),
     ("semiring_reduce", "csr", Csr()),
+    ("pre_operator", "csr", Csr()),
 ]
 
 @testset "scatter plans: goldens" begin

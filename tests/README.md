@@ -58,13 +58,16 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     names whole arrays but reads nothing (spec §3.5): the bands are those of
     the same document with every `args` emptied (a column band contracted
     over `lev`, the diagonal, and the row read by `c`)
-  - `pre_operator.esm` — `Pre` in a right-hand side, which EarthSciAST
-    evaluates as the identity, so its derivative is its operand's (spec
-    §3.2): `Pre` of an indexed array state in a faq body, of a scalar state
-    read by every cell, of one cell read by a scalar equation, and a state
-    read both through `Pre` and directly. Linear in every `Pre` read, so no
-    coefficient carries a `Pre` (earthsci-ast for Python does not evaluate
-    one)
+  - `pre_operator.esm` — `Pre` in a right-hand side, which is the identity
+    there, so its derivative is its operand's (spec §3.2), and which is
+    lowered to its operand before differentiation, so no emitted coefficient
+    or product document carries a `Pre`: `Pre` of an indexed array state in
+    a faq body, of a scalar state read by every cell, of one cell read by a
+    scalar equation, a state read both through `Pre` and directly, nonlinear
+    reads (`Pre(b)·a[i]`, `exp(Pre(b))·Pre(a[2])`), a read that equals a
+    plain one only once `Pre` is lowered (`Pre(b)·b − b·b`), and whole-array
+    `Pre` at array level (`D(c) = −k·Pre(c) + 0.3·Pre(a)`). Its bands equal
+    those of the same document with every `Pre` removed
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
     observed, `interp.linear` of `t` through a scalar observed, a

@@ -334,10 +334,14 @@ fn beta_faq(def: &ExpressionNode, sub: &[Expr], fresh: &mut Fresh, scope: &HashS
     }))
 }
 
-/// Whether a pass could change `e` with no observed to inline: an
-/// `index`-of-array-expression, or a faq node shadowing an enclosing index.
+/// Whether a pass could change `e` with no observed to inline: a `Pre` to
+/// lower, an `index`-of-array-expression, or a faq node shadowing an
+/// enclosing index.
 fn needs_inline(e: &Expr, scope: &HashSet<String>) -> bool {
     let Expr::Operator(n) = e else { return false };
+    if n.op == "Pre" {
+        return true;
+    }
     if n.op == "index" && matches!(n.args.first(), Some(Expr::Operator(_))) {
         return true;
     }
@@ -441,6 +445,10 @@ fn inline_once(
     let Expr::Operator(n) = e else {
         return Ok(e.clone());
     };
+    if n.op == "Pre" {
+        // `Pre(a)` in a right-hand side is `a` (spec §3.2)
+        return inline_once(&n.args[0], obs, fresh, scope);
+    }
     let args = |fresh: &mut Fresh| -> Result<Vec<Expr>, InlineError> {
         n.args[1..]
             .iter()

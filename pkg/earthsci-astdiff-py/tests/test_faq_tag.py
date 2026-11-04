@@ -43,6 +43,7 @@ def test_lifted_lhs_is_an_array_state_equation():
         "forcing_bracket",
         "filtered_scan",
         "semiring_reduce",
+        "pre_operator",
         "recurrence_sweep",
         "pbl_rank1",
     ],

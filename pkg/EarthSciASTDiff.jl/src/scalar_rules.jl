@@ -16,8 +16,10 @@
 #   * comparisons, logicals, `sign`/`floor`/`ceil` → 0. Comparisons return
 #     1.0/0.0 VALUES and may appear multiplicatively; still 0.
 #   * `Pre(a)`               → `d[a]`: in a right-hand side `Pre` is the
-#                              identity (EarthSciAST's tree-walk passes it
-#                              through), so its derivative is its operand's.
+#                              identity, so its derivative is its operand's.
+#                              `inline_observed` lowers it away before
+#                              differentiation; this rule covers an
+#                              expression that reaches `dscalar` unlowered.
 #   * `interp.linear`        → slope of the active segment (0 outside the
 #                              axis — extrapolate-flat), emitted as a segment
 #                              `ifelse` over slopes precomputed from the

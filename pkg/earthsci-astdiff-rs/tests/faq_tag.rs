@@ -60,6 +60,7 @@ fn array_models_differentiate_to_a_non_empty_band_set() {
         "forcing_bracket",
         "filtered_scan",
         "semiring_reduce",
+        "pre_operator",
     ] {
         let file = fixture(name);
         let sv = sysview(&file, None).unwrap();

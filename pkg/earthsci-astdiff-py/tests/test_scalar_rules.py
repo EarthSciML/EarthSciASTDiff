@@ -4,7 +4,7 @@ package's own evaluator (mirrors the Julia scalar_rules_test.jl)."""
 import pytest
 from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as ex
-from earthsci_astdiff import DerivativeRuleError, Site, dscalar
+from earthsci_astdiff import DerivativeRuleError, Site, dscalar, inline_observed
 from earthsci_astdiff.expr_helpers import op
 
 H = 1e-6
@@ -67,6 +67,47 @@ CASES = [
 def test_rule_vs_fd(data, x):
     e = ex(data)
     assert symderiv(e, x) == pytest.approx(numderiv(e, x), abs=1e-6)
+
+
+def _pre(a):
+    return {"op": "Pre", "args": [a]}
+
+
+# `Pre` composed with the product, chain, power and extremum rules (spec §3.2).
+# earthsci-ast's evaluator has no rule for `Pre`, so the expression and its
+# derivative are evaluated after `inline_observed` lowers `Pre(a)` to `a`, the
+# step that precedes differentiation in the band calculus; the derivative
+# itself is taken of the UNLOWERED expression, so the rule is what is tested.
+PRE_CASES = [
+    ({"op": "*", "args": [_pre("x"), "x"]}, 0.7),
+    ({"op": "exp", "args": [_pre("x")]}, 0.7),
+    ({"op": "^", "args": [_pre("x"), 3]}, 1.3),
+    ({"op": "*", "args": [{"op": "sin", "args": [_pre("x")]}, "x"]}, 0.9),
+    (
+        {
+            "op": "max",
+            "args": [{"op": "*", "args": [2.0, _pre("x")]}, {"op": "*", "args": ["x", "x"]}],
+        },
+        0.6,
+    ),
+    (
+        {
+            "op": "max",
+            "args": [{"op": "*", "args": [2.0, _pre("x")]}, {"op": "*", "args": ["x", "x"]}],
+        },
+        2.5,
+    ),
+    ({"op": "/", "args": [_pre(_pre("x")), {"op": "+", "args": ["x", 2.0]}]}, 0.6),
+]
+
+
+@pytest.mark.parametrize("data,x", PRE_CASES)
+def test_pre_rule_vs_fd(data, x):
+    e = ex(data)
+    lowered = inline_observed(e, {})
+    assert "Pre" not in repr(lowered)
+    d = inline_observed(dscalar(e, Site.of("x")), {})
+    assert evaluate(d, {"x": x}) == pytest.approx(numderiv(lowered, x), abs=1e-6)
 
 
 def test_structural_zero_and_policies():
