@@ -11,7 +11,7 @@ use crate::branches::{canon_lits, simp, SimpMemo};
 use crate::clip::{clip_summands, clip_summands_plan, RIdx, SummandPlan};
 use crate::hashcons::StructIndex;
 use crate::helpers::{
-    add, free_vars, is_zero, map_expr_children, mul, op, skey, OccIndex, Site, SiteScan,
+    add, free_vars, is_zero, map_expr_children, mul, op, site_var, skey, OccIndex, Site, SiteScan,
 };
 use crate::inline::{all_names, binders};
 use crate::reductions::{
@@ -184,14 +184,7 @@ fn nested_walk(
     fstack: &mut FilterStack,
     acc: &mut Nested,
 ) {
-    let is_site = match e {
-        Expr::Variable(nm) => nm == v,
-        Expr::Operator(n) => {
-            n.op == "index" && matches!(n.args.first(), Some(Expr::Variable(t)) if t == v)
-        }
-        _ => false,
-    };
-    if is_site {
+    if site_var(e) == Some(v) {
         if stack.is_empty() {
             return;
         }
@@ -410,6 +403,7 @@ pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool
         let nested = nested_sums(rhs, v, &[]);
         let mut taken = None;
         let occ = RefCell::new(OccIndex::new(v));
+        let mut sm = SimpMemo::default();
         for s in sorted_sites(rhs, v) {
             let (cidx, d, extra, g) = lift_nested(
                 &nested,
@@ -421,7 +415,7 @@ pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool
                 &[],
                 &mut taken,
             )?;
-            let coef = if co { simp(&d) } else { d };
+            let coef = if co { sm.simp(&d) } else { d };
             if is_zero(&coef) {
                 continue;
             }
@@ -943,10 +937,20 @@ fn bands_makearray(
             .collect();
         if is_array_expr(val, ctx) {
             let mut sub = Vec::new();
-            let val_fullrank = matches!(val, Expr::Operator(vn)
-                if vn.op == "faq"
-                   && vn.output_idx.as_ref().map(|o| o.len()).unwrap_or(0)
-                      == rows.len());
+            // A FULL-RANK value spans every region dim, singleton dims
+            // included; a reduced-rank one only the non-singleton dims. The
+            // rank is a faq node's output arity, a makearray's region arity,
+            // or an array variable's declared rank (the inliner's
+            // `value_rank` reads it the same way).
+            let val_rank = match val {
+                Expr::Operator(vn) if vn.op == "faq" => vn.output_idx.as_ref().map(|o| o.len()),
+                Expr::Operator(vn) if vn.op == "makearray" => {
+                    vn.regions.as_ref().and_then(|r| r.first()).map(|r| r.len())
+                }
+                Expr::Variable(nm) => ctx.shapes.get(nm).map(|s| s.len()),
+                _ => None,
+            };
+            let val_fullrank = val_rank == Some(rows.len());
             let sub_shape: Vec<i64> = if val_fullrank {
                 rows.iter().map(|(lo, hi)| hi - lo + 1).collect()
             } else {
@@ -966,10 +970,10 @@ fn bands_makearray(
                     }
                     o
                 } else {
-                    vec![1; nonsing.len()]
+                    vec![1; sub_shape.len()]
                 }
             } else {
-                vec![1; nonsing.len()]
+                vec![1; sub_shape.len()]
             };
             for b in sub {
                 let mut ridx = Vec::new();
@@ -1113,10 +1117,11 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         return bs;
     }
     // Two bands can merge only when this key agrees. Structural ids agree
-    // exactly when the `skey`s do, without serializing a coefficient of a
-    // lowered stencil operator (~10⁴ nodes) once per band; the coefficient
-    // memo hands one object to every band whose coefficient repeats, so most
-    // ids are an identity lookup.
+    // exactly when the structures do (as `skey`s do, except that a
+    // non-finite literal is told apart by its bits), without serializing a
+    // coefficient of a lowered stencil operator (~10⁴ nodes) once per band;
+    // the coefficient memo hands one object to every band whose coefficient
+    // repeats, so most ids are an identity lookup.
     let mut ix = StructIndex::new();
     let ks: Vec<_> = bs
         .iter()
@@ -1148,39 +1153,15 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         while changed {
             changed = false;
             for (p, &a) in idxs.iter().enumerate() {
-                if !alive[a] {
-                    continue;
-                }
                 for &b in &idxs[p + 1..] {
-                    if !alive[b] {
+                    if !alive[a] || !alive[b] {
                         continue;
                     }
-                    let (ra, rb) = (out[a].rows.clone(), out[b].rows.clone());
-                    if ra.len() != rb.len() {
-                        continue;
+                    if let Some((k, r)) = adjacent(&out[a].rows, &out[b].rows) {
+                        out[a].rows[k] = r;
+                        alive[b] = false;
+                        changed = true;
                     }
-                    let mut d: isize = -1;
-                    let mut ok = true;
-                    for k in 0..ra.len() {
-                        if ra[k] == rb[k] {
-                            continue;
-                        }
-                        if d < 0 && (ra[k].1 + 1 == rb[k].0 || rb[k].1 + 1 == ra[k].0) {
-                            d = k as isize;
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if !ok || d < 0 {
-                        continue;
-                    }
-                    let du = d as usize;
-                    let lo = ra[du].0.min(rb[du].0);
-                    let hi = ra[du].1.max(rb[du].1);
-                    out[a].rows[du] = (lo, hi);
-                    alive[b] = false;
-                    changed = true;
                 }
             }
         }
@@ -1190,4 +1171,25 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         .filter(|(_, a)| *a)
         .map(|(b, _)| b)
         .collect()
+}
+
+/// Where two row boxes abut: the one dimension `k` in which they are
+/// adjacent ranges, with every other dimension equal, and the union of the
+/// two ranges there. `None` when the boxes differ in rank, in no dimension,
+/// or in more than one.
+fn adjacent(ra: &[(i64, i64)], rb: &[(i64, i64)]) -> Option<(usize, (i64, i64))> {
+    if ra.len() != rb.len() {
+        return None;
+    }
+    let mut d = None;
+    for (k, (x, y)) in ra.iter().zip(rb).enumerate() {
+        if x == y {
+            continue;
+        }
+        if d.is_some() || !(x.1 + 1 == y.0 || y.1 + 1 == x.0) {
+            return None;
+        }
+        d = Some((k, (x.0.min(y.0), x.1.max(y.1))));
+    }
+    d
 }

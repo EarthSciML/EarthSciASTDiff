@@ -1,7 +1,6 @@
 //! Scalar derivative rules — one rule per evaluable-core operator, matching
 //! esm-jacobian-spec.md §3 row-for-row (goldens pin the table).
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
@@ -9,7 +8,7 @@ use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::Value;
 
 use crate::hashcons::NodeRef;
-use crate::helpers::{add, free_vars, is_zero, mul, neg, op, OccIndex, Site, SiteScan};
+use crate::helpers::{add, free_vars, is_zero, mul, neg, op, Site, SiteScan};
 
 /// A scalar operator has no derivative rule (spec §3).
 #[derive(Debug)]
@@ -44,22 +43,13 @@ const ZERO_DERIV_OPS: &[&str] = &[
 
 /// The derivative of the scalar expression `e` with respect to the site `s`
 /// (a variable or an indexed read), by the §3 rule table.
+///
+/// A one-shot call scans plainly: occurrence by `occurs`, which stops at the
+/// first hit, and a derivative memo private to the call. Building a shared
+/// occurrence index (a pass over the whole tree with a bit set per node)
+/// pays only when many scans share it, as a band computation's do.
 pub fn dscalar(e: &Expr, s: &Site) -> R {
-    let v = match &s.expr {
-        Expr::Variable(n) => Some(n.clone()),
-        Expr::Operator(n) => match n.args.first() {
-            Some(Expr::Variable(t)) if n.op == "index" => Some(t.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
-    match v {
-        Some(v) => {
-            let ix = RefCell::new(OccIndex::new(&v));
-            dscalar_in(e, s, &SiteScan::new(&ix, s))
-        }
-        None => dscalar_in(e, s, &SiteScan::plain()),
-    }
+    dscalar_in(e, s, &SiteScan::plain())
 }
 
 /// [`dscalar`] for one scan of a band computation: occurrence answered by
@@ -76,12 +66,11 @@ pub(crate) fn dscalar_in(e: &Expr, s: &Site, sc: &SiteScan) -> R {
     if !sc.occurs(e, s) {
         return Ok(Expr::Integer(0));
     }
-    let k = NodeRef(n.clone());
-    if let Some(d) = sc.memo_get(&k) {
+    if let Some(d) = sc.memo_get(n) {
         return Ok(d);
     }
     let d = dscalar_op(e, n, s, sc)?;
-    sc.memo_put(k, d.clone());
+    sc.memo_put(n, d.clone());
     Ok(d)
 }
 
@@ -663,7 +652,8 @@ fn dfn(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::is_zero;
+    use crate::helpers::{is_zero, OccIndex};
+    use std::cell::RefCell;
 
     fn ex(v: serde_json::Value) -> Expr {
         serde_json::from_value(v).unwrap()

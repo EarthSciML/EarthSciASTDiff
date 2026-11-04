@@ -98,3 +98,35 @@ impl SimpMemo {
         self.out.entry(id).or_insert_with(|| simp(e)).clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use earthsci_ast::ExpressionNode;
+
+    fn times(x: f64) -> Expr {
+        Expr::operator(ExpressionNode {
+            op: "*".into(),
+            args: vec![Expr::Variable("x".into()), Expr::Number(x)],
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn memo_tells_non_finite_literals_apart() {
+        // `skey` writes Inf, -Inf and NaN alike (JSON null), so a memo keyed
+        // on it handed `x*-Inf` the cached `simp(x*Inf)`. `Debug` shows the
+        // three apart.
+        let mut sm = SimpMemo::default();
+        let mut seen = Vec::new();
+        for x in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+            let e = times(x);
+            let (got, want) = (format!("{:?}", sm.simp(&e)), format!("{:?}", simp(&e)));
+            assert_eq!(got, want, "simp(x*{x})");
+            seen.push(got);
+        }
+        assert_ne!(seen[0], seen[1]);
+        assert_ne!(seen[0], seen[2]);
+        assert_ne!(seen[1], seen[2]);
+    }
+}
