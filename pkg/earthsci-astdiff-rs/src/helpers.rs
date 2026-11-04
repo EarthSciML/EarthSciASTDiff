@@ -1,7 +1,7 @@
 //! Expression constructors, structural keys, and the differentiation site
 //! (mirror of the reference's expr_helpers).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -327,6 +327,10 @@ fn index_var(n: &ExpressionNode) -> Option<&str> {
 
 type DerivMemo = Rc<RefCell<HashMap<WeakRef, Expr>>>;
 
+/// The total entry count of an index's derivative memos, kept by the scans
+/// that insert into them, so a sweep decision never walks every memo.
+type Count = Rc<Cell<usize>>;
+
 /// Occurrence of every site of variable `v`, memoized on node identity, for
 /// the derivative scans of one band computation. See [`SiteScan`].
 ///
@@ -337,9 +341,13 @@ pub(crate) struct OccIndex {
     v: String,
     keyid: HashMap<String, usize>,
     nodekey: HashMap<WeakRef, usize>,
+    /// A site node's derivative-memo key (its `skey`), so a site scanned
+    /// again (once per region of a clipped body) is not re-serialized.
+    sitekey: HashMap<WeakRef, Rc<str>>,
     bits: HashMap<WeakRef, Rc<Bits>>,
     none: Rc<Bits>,
-    deriv: HashMap<String, DerivMemo>,
+    deriv: HashMap<Rc<str>, DerivMemo>,
+    deriv_len: Count,
     next_sweep: usize,
 }
 
@@ -351,9 +359,11 @@ impl OccIndex {
             v: v.to_string(),
             keyid: HashMap::new(),
             nodekey: HashMap::new(),
+            sitekey: HashMap::new(),
             bits: HashMap::new(),
             none: Rc::new(Bits::default()),
             deriv: HashMap::new(),
+            deriv_len: Rc::new(Cell::new(0)),
             next_sweep: MIN_SWEEP,
         }
     }
@@ -381,10 +391,9 @@ impl OccIndex {
         i
     }
 
+    /// O(1): the derivative memos' share is the running count.
     fn entries(&self) -> usize {
-        self.nodekey.len()
-            + self.bits.len()
-            + self.deriv.values().map(|m| m.borrow().len()).sum::<usize>()
+        self.nodekey.len() + self.sitekey.len() + self.bits.len() + self.deriv_len.get()
     }
 
     /// Drop the entries of nodes that have been freed, once the tables have
@@ -395,10 +404,15 @@ impl OccIndex {
             return;
         }
         self.nodekey.retain(|k, _| !k.is_dead());
+        self.sitekey.retain(|k, _| !k.is_dead());
         self.bits.retain(|k, _| !k.is_dead());
+        let mut n = 0;
         for m in self.deriv.values() {
-            m.borrow_mut().retain(|k, _| !k.is_dead());
+            let mut m = m.borrow_mut();
+            m.retain(|k, _| !k.is_dead());
+            n += m.len();
         }
+        self.deriv_len.set(n);
         self.next_sweep = (2 * self.entries()).max(MIN_SWEEP);
     }
 
@@ -449,6 +463,7 @@ pub(crate) struct SiteScan<'a> {
     ix: Option<&'a RefCell<OccIndex>>,
     bit: usize,
     deriv: DerivMemo,
+    deriv_len: Count,
 }
 
 impl<'a> SiteScan<'a> {
@@ -459,6 +474,7 @@ impl<'a> SiteScan<'a> {
             ix: None,
             bit: 0,
             deriv: Rc::new(RefCell::new(HashMap::new())),
+            deriv_len: Rc::new(Cell::new(0)),
         }
     }
 
@@ -469,12 +485,22 @@ impl<'a> SiteScan<'a> {
         }
         x.maybe_sweep();
         let bit = x.keyid(&s.key);
-        let deriv = x.deriv.entry(skey(&s.expr)).or_default().clone();
+        let sk: Rc<str> = match &s.expr {
+            Expr::Operator(a) => x
+                .sitekey
+                .entry(WeakRef::of(a))
+                .or_insert_with(|| skey(&s.expr).into())
+                .clone(),
+            e => skey(e).into(),
+        };
+        let deriv = x.deriv.entry(sk).or_default().clone();
+        let deriv_len = x.deriv_len.clone();
         drop(x);
         SiteScan {
             ix: Some(ix),
             bit,
             deriv,
+            deriv_len,
         }
     }
 
@@ -512,7 +538,9 @@ impl<'a> SiteScan<'a> {
     }
 
     pub(crate) fn memo_put(&self, n: &Arc<ExpressionNode>, d: Expr) {
-        self.deriv.borrow_mut().insert(WeakRef::of(n), d);
+        if self.deriv.borrow_mut().insert(WeakRef::of(n), d).is_none() {
+            self.deriv_len.set(self.deriv_len.get() + 1);
+        }
     }
 }
 

@@ -1037,10 +1037,11 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
         return bs;
     }
     // Two bands can merge only when this key agrees. Structural ids agree
-    // exactly when the `skey`s do, without serializing a coefficient of a
-    // lowered stencil operator (~10⁴ nodes) once per band; the coefficient
-    // memo hands one object to every band whose coefficient repeats, so most
-    // ids are an identity lookup.
+    // exactly when the structures do (as `skey`s do, except that a
+    // non-finite literal is told apart by its bits), without serializing a
+    // coefficient of a lowered stencil operator (~10⁴ nodes) once per band;
+    // the coefficient memo hands one object to every band whose coefficient
+    // repeats, so most ids are an identity lookup.
     let mut ix = StructIndex::new();
     let ks: Vec<_> = bs
         .iter()
