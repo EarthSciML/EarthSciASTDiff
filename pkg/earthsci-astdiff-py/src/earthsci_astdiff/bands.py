@@ -10,7 +10,7 @@ from earthsci_ast.expr_walk import map_children
 from earthsci_ast.expression import free_variables
 from earthsci_ast.substitute import substitute
 
-from .clip import clip_regions, clip_summands
+from .clip import _SummandPlan, clip_summands
 from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
 from .inline import all_names
 from .inline import subst_free as _subst_free
@@ -408,11 +408,12 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
         ]
     vfilt = conj_list(gval)
     body = e.expr
+    # Each summand group clips on its own axes (`clip_summands`) when the
+    # bands are linear in the body: a `+` window, or no contraction. The plan
+    # (breakpoints, summands) is the body's, shared by every piece.
+    plan = _SummandPlan(body, oidx, split=red == "+" or not cnames)
     for rows_p, crange, guard in pieces:
-        # Each summand group clips on its own axes (`clip_summands`) when the
-        # bands are linear in the body: a `+` window, or no contraction.
-        clip = clip_summands if red == "+" or not cnames else clip_regions
-        for rows2, body2 in clip(body, oidx, rows_p):
+        for rows2, body2 in clip_summands(plan, oidx, rows_p):
             nested = _nested_sums(body2, v, outer)
             taken: list = [None]
             for s in sorted_sites(body2, v):

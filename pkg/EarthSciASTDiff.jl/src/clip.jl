@@ -185,6 +185,11 @@ function clip_regions(body::ASTExpr, ridx, rows)
     isempty(names) && return [(collect(Tuple{Int, Int}, rows), body)]
     bp = Dict{String, Set{Int}}()
     _breakpoints!(bp, body, names)
+    return _clip_cells(body, ridx, rows, bp)
+end
+
+# `clip_regions` on the breakpoints `bp` of `body`, already collected.
+function _clip_cells(body::ASTExpr, ridx, rows, bp::Dict{String, Set{Int}})
     isempty(bp) && return [(collect(Tuple{Int, Int}, rows), body)]
 
     # per-dimension subinterval lists (split only dims that have breakpoints)
@@ -249,9 +254,7 @@ function _summands(e::ASTExpr)::Vector{ASTExpr}
         length(ts) == 1 && return ASTExpr[e]
         return ASTExpr[OpExpr(e.op, ASTExpr[t]) for t in ts]
     elseif e.op == "-" && length(a) == 2
-        ta = _summands(a[1]); tb = _summands(a[2])
-        length(ta) + length(tb) == 2 && return ASTExpr[e]
-        return vcat(ta, ASTExpr[OpExpr("-", ASTExpr[t]) for t in tb])
+        return vcat(_summands(a[1]), ASTExpr[OpExpr("-", ASTExpr[t]) for t in _summands(a[2])])
     elseif e.op == "*"
         k = 0; ts = ASTExpr[]
         for (j, x) in enumerate(a)
@@ -270,52 +273,85 @@ function _summands(e::ASTExpr)::Vector{ASTExpr}
     return ASTExpr[e]
 end
 
+# What `clip_summands` needs of a body independently of the box it is
+# clipped to, computed once per body: the whole body's breakpoints and, when
+# a split is possible at all (`split`, and at least two dimensions with a
+# breakpoint), its summands and their breakpoints. A faq node clips one body
+# per guard piece; the walks are not repeated per piece.
+struct _SummandPlan
+    body::ASTExpr
+    bp::Dict{String, Set{Int}}             # the whole body's breakpoints
+    ts::Vector{ASTExpr}                    # the summands; empty: no split
+    tbp::Vector{Dict{String, Set{Int}}}    # each summand's breakpoints
+end
+
+function _SummandPlan(body::ASTExpr, ridx; split::Bool = true)
+    names = String[r for r in ridx if r isa String]
+    bp = Dict{String, Set{Int}}()
+    isempty(names) || _breakpoints!(bp, body, names)
+    ts = ASTExpr[]; tbp = Dict{String, Set{Int}}[]
+    if split && length(bp) >= 2
+        ts = _summands(body)
+        if length(ts) < 2
+            empty!(ts)
+        else
+            for x in ts
+                d = Dict{String, Set{Int}}()
+                _breakpoints!(d, x, names)
+                push!(tbp, d)
+            end
+        end
+    end
+    return _SummandPlan(body, bp, ts, tbp)
+end
+
+_cut_inside(cs, (lo, hi)) = any(c -> lo < c <= hi, cs)
+
 """
     clip_summands(body, ridx, rows) -> Vector{(rows′, body′)}
 
 [`clip_regions`](@ref), but with each group of `body`'s summands clipped on
 its own axes. The summands (a sum, with scalar factors and divisors
 distributed over it) are grouped so that two summands cut along a common
-dimension of `rows` share a group; a summand cut along none joins the first
-group. With fewer than two groups this is `clip_regions(body, ridx, rows)`
-exactly. Otherwise it is the concatenation, group by group in order of
-their first summand, of `clip_regions` of each group's sum: the pieces of
-different groups OVERLAP, and the bands of a body linear in its summands
-(the band calculus with a `reduce: "+"` window or no contraction) are the
-sum of the groups' bands.
+dimension of `rows` share a group. With fewer than two such groups this is
+`clip_regions(body, ridx, rows)` exactly. Otherwise the summands cut along
+no dimension form one more group, which no breakpoint splits, and the
+result is the concatenation, group by group in order of their first
+summand, of `clip_regions` of each group's sum: the pieces of different
+groups OVERLAP, and the bands of a body linear in its summands (the band
+calculus with a `reduce: "+"` window or no contraction) are the sum of the
+groups' bands (esm-jacobian-spec.md §2.2).
 """
-function clip_summands(body::ASTExpr, ridx, rows)
-    names = String[r for r in ridx if r isa String]
-    isempty(names) && return clip_regions(body, ridx, rows)
-    ts = _summands(body)
-    length(ts) < 2 && return clip_regions(body, ridx, rows)
+clip_summands(body::ASTExpr, ridx, rows) = clip_summands(_SummandPlan(body, ridx), ridx, rows)
+
+function clip_summands(p::_SummandPlan, ridx, rows)
     box = Dict{String, Tuple{Int, Int}}(
         r => rows[k] for (k, r) in enumerate(ridx) if r isa String
     )
+    whole() = _clip_cells(p.body, ridx, rows, p.bp)
+    isempty(p.ts) && return whole()
+    # two groups need two dimensions cut inside `rows`
+    count(((n, cs),) -> _cut_inside(cs, box[n]), p.bp) < 2 && return whole()
     # the dimensions each summand is actually cut along inside `rows`
-    cuts = Vector{Vector{String}}(undef, length(ts))
-    for (t, x) in enumerate(ts)
-        bp = Dict{String, Set{Int}}()
-        _breakpoints!(bp, x, names)
-        cuts[t] = sort!(
-            String[n for (n, cs) in bp if any(c -> box[n][1] < c <= box[n][2], cs)]
-        )
-    end
+    cuts = [
+        sort!(String[n for (n, cs) in d if _cut_inside(cs, box[n])]) for d in p.tbp
+    ]
     # union-find over dimensions: a summand cut along two joins them
-    parent = Dict{String, String}(n => n for n in names)
-    root(n) = (p = parent[n]; p == n ? n : (parent[n] = root(p)))
+    parent = Dict{String, String}(n => n for n in keys(box))
+    root(n) = (q = parent[n]; q == n ? n : (parent[n] = root(q)))
     for c in cuts, k in 2:length(c)
         parent[root(c[k])] = root(c[1])
     end
-    order = String[]                      # group roots, by first summand
+    # group keys by first summand; `nothing` is the group of uncut summands
+    key(c) = isempty(c) ? nothing : root(c[1])
+    order = Union{Nothing, String}[]
     for c in cuts
-        isempty(c) && continue
-        r = root(c[1]); r in order || push!(order, r)
+        r = key(c); r in order || push!(order, r)
     end
-    length(order) < 2 && return clip_regions(body, ridx, rows)
+    count(!isnothing, order) < 2 && return whole()
     groups = [ASTExpr[] for _ in order]
     for (t, c) in enumerate(cuts)
-        push!(groups[isempty(c) ? 1 : findfirst(==(root(c[1])), order)], ts[t])
+        push!(groups[findfirst(isequal(key(c)), order)], p.ts[t])
     end
     out = Vector{Tuple{Vector{Tuple{Int, Int}}, ASTExpr}}()
     for g in groups

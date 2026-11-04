@@ -137,17 +137,20 @@ The reference's rule, which the band goldens pin:
 1. **Summands.** The body's summands are found by distributing over a sum:
    `(a + b) / m` gives `a / m` and `b / m`; `q * (a + b)` gives `q * a` and
    `q * b`; `-(a + b)` gives `-a` and `-b`; and `a - b` gives `a` and `-b`.
-   This recurses. A product of two sums is not expanded, and any other node
-   is a single summand.
+   This recurses, and `a - b` splits even when `a` and `b` are single
+   terms (`dFx - dFy` gives `dFx` and `-dFy`). A product of two sums is not
+   expanded, and any other node is a single summand.
 2. **Groups.** A summand is *cut along* a row dimension when one of its
    breakpoints lies strictly inside that dimension's range. Two summands cut
-   along a common dimension belong to the same group (transitively). A
-   summand cut along no dimension joins the first group. Groups are ordered
-   by their first summand.
-3. **Splitting.** With fewer than two groups, the body is split as one
-   (§2), exactly as before. Otherwise each group's sum is split on its own
-   breakpoints, and the band calculus runs on each piece. The pieces are
-   taken group by group.
+   along a common dimension belong to the same group (transitively). The
+   summands cut along no dimension form one more group of their own (a
+   pointwise source or chemistry term). Groups are ordered by their first
+   summand.
+3. **Splitting.** With fewer than two groups of cut summands, the body is
+   split as one (§2), exactly as before. Otherwise each group's sum is
+   split on its own breakpoints (the group of uncut summands is one piece),
+   and the band calculus runs on each piece. The pieces are taken group by
+   group.
 
 This applies where the band calculus is linear in the body: an array-level
 `faq` node whose reduction is `"+"` or which has no contracted index, and
@@ -919,9 +922,11 @@ Fixture corpus in `tests/` of this repository:
    `<name>.structure.bands.json`, its structure-only entries (§2.1) in the
    same deterministic JSON, each entry without `coef`; the Julia reference
    checks that their points include the full entries' points (§2.1). The
-   §2.2 fixture `split_sum_2d.esm` (an x-split and a y-split term over a
-   state divisor) carries `<name>.bands.json` only, whose overlapping entries
-   the Julia reference checks against ForwardDiff. A
+   §2.2 fixtures `split_sum_2d.esm` (an x-split and a y-split term over a
+   state divisor) and `split_diff_2d.esm` (their difference over a state
+   divisor, minus an uncut decay term) carry `<name>.bands.json` only,
+   whose overlapping entries the Julia reference checks against
+   ForwardDiff. A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried

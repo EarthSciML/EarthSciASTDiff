@@ -490,8 +490,9 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
     sm = _SimpMemo()
     # Each summand group clips on its own axes (`clip_summands`) when the
     # bands are linear in the body: a `+` window, or no contraction.
-    clip = red == "+" || isempty(cnames) ? clip_summands : clip_regions
-    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip(body, oidx, rows_p)
+    # The plan (breakpoints, summands) is the body's, shared by every piece.
+    plan = _SummandPlan(body, oidx; split = red == "+" || isempty(cnames))
+    for (rows_p, crange, guard) in pieces, (rows2, body2) in clip_summands(plan, oidx, rows_p)
         nested = _nested_sums(body2, v, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body2, v)

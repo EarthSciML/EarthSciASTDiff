@@ -233,6 +233,12 @@ def clip_regions(body: Expr, ridx, rows):
         return [(list(rows), body)]
     bp: dict[str, set[int]] = {}
     _breakpoints(bp, body, names)
+    return _clip_cells(body, ridx, rows, bp)
+
+
+def _clip_cells(body: Expr, ridx, rows, bp: dict[str, set[int]]):
+    """:func:`clip_regions` on the breakpoints ``bp`` of ``body``, already
+    collected (clip.jl ``_clip_cells``)."""
     if not bp:
         return [(list(rows), body)]
 
@@ -281,11 +287,7 @@ def _summands(e: Expr) -> list:
         ts = _summands(a[0])
         return [e] if len(ts) == 1 else [op(e.op, t) for t in ts]
     if e.op == "-" and len(a) == 2:
-        ta = _summands(a[0])
-        tb = _summands(a[1])
-        if len(ta) + len(tb) == 2:
-            return [e]
-        return ta + [op("-", t) for t in tb]
+        return _summands(a[0]) + [op("-", t) for t in _summands(a[1])]
     if e.op == "*":
         k = None
         ts: list = []
@@ -305,30 +307,54 @@ def _summands(e: Expr) -> list:
     return [e]
 
 
-def clip_summands(body: Expr, ridx, rows):
+class _SummandPlan:
+    """What :func:`clip_summands` needs of a body independently of the box it
+    is clipped to, computed once per body (clip.jl ``_SummandPlan``): the
+    whole body's breakpoints and, when a split is possible at all (``split``,
+    and at least two dimensions with a breakpoint), its summands and their
+    breakpoints."""
+
+    __slots__ = ("body", "bp", "tbp", "ts")
+
+    def __init__(self, body: Expr, ridx, split: bool = True):
+        names = [r for r in ridx if isinstance(r, str)]
+        self.body = body
+        self.bp: dict[str, set[int]] = {}
+        if names:
+            _breakpoints(self.bp, body, names)
+        self.ts: list = []
+        self.tbp: list[dict[str, set[int]]] = []
+        if split and len(self.bp) >= 2:
+            ts = _summands(body)
+            if len(ts) >= 2:
+                self.ts = ts
+                for x in ts:
+                    d: dict[str, set[int]] = {}
+                    _breakpoints(d, x, names)
+                    self.tbp.append(d)
+
+
+def _cut_inside(cs, lohi) -> bool:
+    lo, hi = lohi
+    return any(lo < c <= hi for c in cs)
+
+
+def clip_summands(body, ridx, rows):
     """:func:`clip_regions`, but with each group of ``body``'s summands
     clipped on its own axes (clip.jl ``clip_summands``). Two summands cut
-    along a common dimension of ``rows`` share a group, and a summand cut
-    along none joins the first. With fewer than two groups this is
-    ``clip_regions(body, ridx, rows)`` exactly; otherwise the concatenation,
-    group by group in order of their first summand, of ``clip_regions`` of
-    each group's sum. The pieces of different groups overlap, and their bands
-    add (spec §2.2)."""
-    names = [r for r in ridx if isinstance(r, str)]
-    if not names:
-        return clip_regions(body, ridx, rows)
-    ts = _summands(body)
-    if len(ts) < 2:
-        return clip_regions(body, ridx, rows)
+    along a common dimension of ``rows`` share a group. With fewer than two
+    such groups this is ``clip_regions(body, ridx, rows)`` exactly; otherwise
+    the summands cut along no dimension form one more group, and the result
+    is the concatenation, group by group in order of their first summand, of
+    ``clip_regions`` of each group's sum. The pieces of different groups
+    overlap, and their bands add (spec §2.2). ``body`` may be a
+    :class:`_SummandPlan` built once for clipping it to many boxes."""
+    p = body if isinstance(body, _SummandPlan) else _SummandPlan(body, ridx)
     box = {r: rows[k] for k, r in enumerate(ridx) if isinstance(r, str)}
-    cuts = []
-    for t in ts:
-        bp: dict[str, set[int]] = {}
-        _breakpoints(bp, t, names)
-        cuts.append(
-            sorted(n for n, cs in bp.items() if any(box[n][0] < c <= box[n][1] for c in cs))
-        )
-    parent = {n: n for n in names}
+    if not p.ts or sum(1 for n, cs in p.bp.items() if _cut_inside(cs, box[n])) < 2:
+        return _clip_cells(p.body, ridx, rows, p.bp)
+    cuts = [sorted(n for n, cs in d.items() if _cut_inside(cs, box[n])) for d in p.tbp]
+    parent = {n: n for n in box}
 
     def root(n):
         while parent[n] != n:
@@ -339,15 +365,17 @@ def clip_summands(body: Expr, ridx, rows):
     for c in cuts:
         for k in range(1, len(c)):
             parent[root(c[k])] = root(c[0])
-    order: list[str] = []
-    for c in cuts:
-        if c and root(c[0]) not in order:
-            order.append(root(c[0]))
-    if len(order) < 2:
-        return clip_regions(body, ridx, rows)
+    # group keys by first summand; None is the group of uncut summands
+    keys = [root(c[0]) if c else None for c in cuts]
+    order: list = []
+    for r in keys:
+        if r not in order:
+            order.append(r)
+    if sum(1 for r in order if r is not None) < 2:
+        return _clip_cells(p.body, ridx, rows, p.bp)
     groups: list[list] = [[] for _ in order]
-    for t, c in zip(ts, cuts, strict=True):
-        groups[order.index(root(c[0])) if c else 0].append(t)
+    for t, r in zip(p.ts, keys, strict=True):
+        groups[order.index(r)].append(t)
     out = []
     for g in groups:
         out.extend(clip_regions(g[0] if len(g) == 1 else op("+", *g), ridx, rows))

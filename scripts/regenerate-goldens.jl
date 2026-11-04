@@ -78,8 +78,8 @@ for name in (
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
-# the band golden of the summand-splitting fixture (spec §2.2)
-let name = "split_sum_2d"
+# the band goldens of the summand-splitting fixtures (spec §2.2)
+for name in ("split_sum_2d", "split_diff_2d")
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     entries = jacobian_bands(file, "S")
     path = joinpath(root, "tests", "goldens", "$name.bands.json")
