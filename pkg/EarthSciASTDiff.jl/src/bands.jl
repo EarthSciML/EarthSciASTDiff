@@ -355,7 +355,7 @@ function _scalar_bands!(out, e::ASTExpr, v::String, ctx::Ctx, rows, ridx, scale,
     outer = String[r for r in ridx if r isa String]
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
-    regions = clip_regions(e, ridx, rows)
+    regions = clip_summands(e, ridx, rows)
     length(regions) > 1 && _scope!(occ, e)
     # Each region is released once done (`_end_region!`, and popped so the
     # list does not keep every rebuilt body alive).
@@ -517,8 +517,12 @@ function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bo
     occ = _OccIndex(v)                 # one occurrence index for every region
     sm = _SimpMemo()
     scoped = false
+    # Each summand group clips on its own axes (`clip_summands`) when the
+    # bands are linear in the body: a `+` window, or no contraction.
+    # The plan (breakpoints, summands) is the body's, shared by every piece.
+    plan = _SummandPlan(body, oidx; split = red == "+" || isempty(cnames))
     for (rows_p, crange, guard) in pieces
-        regions = clip_regions(body, oidx, rows_p)
+        regions = clip_summands(plan, oidx, rows_p)
         # Each region is released once done (`_end_region!`, and popped so
         # the list does not keep every rebuilt body alive).
         if !scoped && (length(regions) > 1 || length(pieces) > 1)

@@ -87,6 +87,14 @@ for name in STRUCTURE_FIXTURES
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
+# the band goldens of the summand-splitting fixtures (spec §2.2)
+for name in ("split_sum_2d", "split_diff_2d")
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(file, "S")
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the bands of the flattened coupled document on the axes it has bands on:
 # `<name>.bands.json` (states) and `<name>.parameters.bands.json`
 let name = "coupled_chem_advection"

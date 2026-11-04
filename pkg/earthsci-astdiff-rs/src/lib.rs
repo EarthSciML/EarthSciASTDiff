@@ -24,7 +24,7 @@ pub mod system;
 
 pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};
 pub use branches::{canon_lits, simp, simplify_branches};
-pub use clip::{clip_regions, RIdx};
+pub use clip::{clip_regions, clip_summands, RIdx};
 pub use emit::{
     block_diagonal_lu, block_diagonal_plan, column_block_plan, column_lines, cse_templates,
     detect_structure, detect_structure_along, evaluation_document, jacobian_block,

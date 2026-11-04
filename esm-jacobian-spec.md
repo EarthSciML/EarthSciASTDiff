@@ -124,6 +124,59 @@ A consumer MAY use structure-only entries wherever it would use only the
 full entries' pattern; it MUST NOT emit them as a `"jacobians"` block (§4),
 which requires `coef`.
 
+### 2.2 Region splitting of a sum
+
+Region exactness (§2) splits an entry's rows at every breakpoint of its
+body. When the body is a SUM whose terms are split along different
+dimensions, the split is the product of theirs. An example is the flux
+divergence of a dimension-split advection scheme: an x, a y and a z flux
+difference, each a region read along its own axis. ReSEACT's PPM transport
+has 7 regions per axis, so its body is split into 7 × 7 × 7 = 343 pieces,
+and every piece carries all three terms. Differentiation is linear in the
+summands, so producers SHOULD instead split each group of summands on its
+own dimensions. That gives 7 + 7 + 7 pieces. The entries of different
+groups then overlap, and their values add where they meet (§4: entries are
+additive).
+
+The reference's rule, which the band goldens pin:
+
+1. **Summands.** The body's summands are found by distributing over a sum:
+   `(a + b) / m` gives `a / m` and `b / m`; `q * (a + b)` gives `q * a` and
+   `q * b`; `-(a + b)` gives `-a` and `-b`; and `a - b` gives `a` and `-b`.
+   This recurses, and `a - b` splits even when `a` and `b` are single
+   terms (`dFx - dFy` gives `dFx` and `-dFy`). A product of two sums is not
+   expanded, and any other node is a single summand.
+2. **Groups.** A summand is *cut along* a row dimension when one of its
+   breakpoints lies strictly inside that dimension's range. Two summands cut
+   along a common dimension belong to the same group (transitively). The
+   summands cut along no dimension form one more group of their own (a
+   pointwise source or chemistry term). Groups are ordered by their first
+   summand.
+3. **Splitting.** With fewer than two groups of cut summands, the body is
+   split as one (§2), exactly as before. Otherwise each group's sum is
+   split on its own breakpoints (the group of uncut summands is one piece),
+   and the band calculus runs on each piece. The pieces are taken group by
+   group.
+
+This applies where the band calculus is linear in the body: an array-level
+`faq` node whose reduction is `"+"` or which has no contracted index, and
+a scalar broadcast over the rows. It does not apply to a `max`, `min` or `*`
+reduction over a contracted index, whose derivative weights the whole
+body (§3.5).
+
+The pattern is unchanged. A group's conditions read only that group's
+dimensions, so they are decided the same way on a group's piece as on every
+smaller product piece inside it. The sites, and hence the structure-only
+entries' points (§2.1), are therefore the same. The full entries' points
+are the same too, except in one case. If the coefficients of two groups at
+a pair simplify to a literal zero only once they are added, the one-piece
+split dropped that pair and the group split keeps it, which can only add
+points. A (row cell, column cell) pair can now be covered by several
+entries whose values add, where before one entry carried their sum.
+A consumer that needs one coefficient per pair adds the entries' values at
+that pair. Every consumer that assembles entries already does this (§4,
+§8).
+
 ## 3. Derivative semantics (per-operator, normative)
 
 `d[e, s]` below is the derivative of expression `e` with respect to a
@@ -915,7 +968,12 @@ Fixture corpus in `tests/` of this repository:
    column into two adjacent regions whose selections differ (two full
    entries, one structure-only entry, §2.1 item 2), and a state defined by
    two equations whose same-structure entries meet at a row boundary (never
-   merged, in either mode). A
+   merged, in either mode).
+   The §2.2 fixtures `split_sum_2d.esm` (an x-split and a y-split term over a
+   state divisor) and `split_diff_2d.esm` (their difference over a state
+   divisor, minus an uncut decay term) carry `<name>.bands.json` only,
+   whose overlapping entries the Julia reference checks against
+   ForwardDiff. A
    second-order pair carries `<name>.<a1>-<a2>.bands.json` and `.block.json`
    (§4.4) and a value golden `<name>.<a1>-<a2>.hvals.json`: the contracted
    `g` at a pinned point and two pinned stage pairs `(μᵢ, wᵢ)`, all carried
