@@ -575,6 +575,34 @@ function evaluation_document(
     return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
 end
 
+"""
+    evaluation_document(input, entries::AbstractVector{JacEntry}; model_name = nothing,
+                        cse = true, data_sources = nothing) -> (doc, fields)
+
+The same document from bands the caller already has: `entries` must be
+[`jacobian_bands`](@ref) of the same system (any axis), in its order, and
+are used as given instead of being computed again — the Rust binding's
+`evaluation_document(sv, entries, cse, cse_min_nodes)`. `input` is an
+`EsmFile`, a `FlattenedSystem` or the `SysView` the bands were computed
+from (`model_name` and `data_sources` as in the form above; a `SysView`
+already carries its `data_sources`). `fields[k]` names `entries[k]`'s field.
+"""
+function evaluation_document(
+        input, entries::AbstractVector{JacEntry}; model_name = nothing,
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+    )
+    any(en -> en.band.coef === nothing, entries) && throw(
+        ArgumentError(
+            "evaluation_document needs coefficients; these are structure-only " *
+                "bands (`jacobian_bands(...; coefficients = false)`)"
+        )
+    )
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    return _evaluation_document(
+        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes
+    )
+end
+
 # With `cse`, repeated coefficient subtrees are hoisted into observed
 # variables of the derived model `m` ([`hoist_observed`](@ref)) so the
 # tree-walk's factored array-observed buffers evaluate them once per cell per
