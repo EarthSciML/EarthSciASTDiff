@@ -18,12 +18,11 @@
 # that child's id — which is O(node fields), not O(subtree); a node with no
 # field but `op` and `args` (most of them) is keyed by its operator and
 # children's ids directly, with no serialization at all. Keying a whole
-# tree is therefore Θ(n) and one comparison is O(1). This is the same trick
-# `_Intern` (cse.jl) uses; that one keeps occurrence counts and
-# representatives because CSE needs them, this is the equality-only version
-# and it additionally memoizes on node IDENTITY, so a structurally shared
-# subtree (`map_children` is identity-preserving, so rewrites keep sharing)
-# is keyed once no matter how many parents reach it.
+# tree is therefore Θ(n) and one comparison is O(1). `_CSEIndex` (cse.jl)
+# builds on it, keeping representatives and child ids because CSE needs
+# them; this is the equality-only version. It memoizes on node IDENTITY, so
+# a structurally shared subtree (`map_children` is identity-preserving, so
+# rewrites keep sharing) is keyed once no matter how many parents reach it.
 #
 # SCOPE OF AN INDEX. Ids are meaningful only within one `StructIndex`; two
 # indices assign unrelated numbers. Create one per pass and thread it — never
@@ -52,8 +51,8 @@ StructIndex() = StructIndex(
     Dict{Tuple{String, Vector{Int}}, Int}(), Ref(0), IdDict{OpExpr, Int}()
 )
 
-# Distinct from cse.jl's `__cse⟦…⟧` so a tree that already carries CSE
-# placeholders interns without collision.
+# Distinct from the `__cse⟦…⟧` placeholders of the Rust and Python CSE
+# shells, so a tree that already carries one interns without collision.
 _sid_placeholder(id::Int) = VarExpr("__sid⟦$id⟧")
 
 """

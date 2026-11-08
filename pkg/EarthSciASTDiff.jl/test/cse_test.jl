@@ -114,6 +114,41 @@ end
     @test_throws ArgumentError expand_templates(bad, Dict{String, ASTExpr}())
 end
 
+@testset "cse_templates: the extraction rule (spec §4.1)" begin
+    x = VarExpr("x"); y = VarExpr("y"); z = VarExpr("z")
+    ref(n) = OpExpr("apply_expression_template", ASTExpr[]; name = n)
+    B = OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, y])])
+    C = OpExpr("log", ASTExpr[OpExpr("*", ASTExpr[x, NumExpr(2.0)])])
+    A = OpExpr("+", ASTExpr[OpExpr("*", ASTExpr[B, B]), C])
+    e1 = OpExpr("-", ASTExpr[A, VarExpr("a")])
+    e2 = OpExpr("/", ASTExpr[A, VarExpr("b")])
+    tmpl, rw = cse_templates(ASTExpr[e1, e2]; min_nodes = 4)
+    # A occurs twice; B occurs twice in A's body, which is kept once, so it
+    # still counts 2; C occurs once in A's body, so it counts 1 and stays.
+    @test collect(keys(tmpl)) == ["jt1", "jt2"]
+    @test skey(tmpl["jt1"]) == skey(OpExpr("+", ASTExpr[OpExpr("*", ASTExpr[ref("jt2"), ref("jt2")]), C]))
+    @test skey(tmpl["jt2"]) == skey(B)
+    @test skey(rw[1]) == skey(OpExpr("-", ASTExpr[ref("jt1"), VarExpr("a")]))
+    @test skey(rw[2]) == skey(OpExpr("/", ASTExpr[ref("jt1"), VarExpr("b")]))
+    # in memory, the same: the walk is by identity, the rule by structure
+    A2 = OpExpr("+", ASTExpr[OpExpr("*", ASTExpr[B, deepcopy(B)]), deepcopy(C)])
+    tmpl2, rw2 = cse_templates(ASTExpr[e1, OpExpr("/", ASTExpr[A2, VarExpr("b")])]; min_nodes = 4)
+    @test [skey(v) for v in values(tmpl2)] == [skey(v) for v in values(tmpl)]
+    @test skey.(rw2) == skey.(rw)
+    # equal sizes: named in first-encounter post-order
+    D = OpExpr("sin", ASTExpr[OpExpr("+", ASTExpr[x, z])])
+    E = OpExpr("cos", ASTExpr[OpExpr("+", ASTExpr[y, z])])
+    t3, _ = cse_templates(
+        ASTExpr[OpExpr("*", ASTExpr[E, D]), OpExpr("-", ASTExpr[D, E])]; min_nodes = 4
+    )
+    @test [skey(t3["jt1"]), skey(t3["jt2"])] == [skey(E), skey(D)]
+    # an integer leaf is not a float leaf
+    P = OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, IntExpr(1)])])
+    Q = OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, NumExpr(1.0)])])
+    t4, _ = cse_templates(ASTExpr[OpExpr("*", ASTExpr[P, Q])]; min_nodes = 4)
+    @test isempty(t4)
+end
+
 @testset "minmod limiter: oracle + swell control" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))

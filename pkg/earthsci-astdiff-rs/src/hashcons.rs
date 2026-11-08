@@ -124,7 +124,7 @@ pub(crate) fn map_children_shared(e: &Expr, f: &mut impl FnMut(&Expr) -> Expr) -
 /// order) for the child `c` that `map_children` is visiting. The walks agree
 /// on order except inside a hash-map field, so the entry after the last one
 /// matched is tried first.
-fn slot_of<T>(slots: &[(*const Expr, T)], next: &mut usize, c: &Expr) -> usize {
+pub(crate) fn slot_of<T>(slots: &[(*const Expr, T)], next: &mut usize, c: &Expr) -> usize {
     let at = c as *const Expr;
     let k = if slots.get(*next).is_some_and(|x| x.0 == at) {
         *next
@@ -225,7 +225,7 @@ fn id_in<K: std::hash::Hash + Eq>(table: &mut HashMap<K, usize>, n: &mut usize, 
 
 /// Whether `a` has no field but `op` and `args` set, i.e. serializes as
 /// `{"op", "args"}` alone (every other field is skipped when unset).
-fn plain_node(a: &ExpressionNode) -> bool {
+pub(crate) fn plain_node(a: &ExpressionNode) -> bool {
     let mut rest = a.clone();
     rest.op.clear();
     rest.args.clear();

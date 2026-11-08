@@ -3,6 +3,7 @@
 //! reference byte-for-byte.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use earthsci_ast::{free_variables, Expr, ExpressionNode, ParameterUpdate, VariableType};
 use serde_json::{json, Map, Value};
@@ -99,140 +100,244 @@ fn ser_fields(
 
 // ── template CSE (cse.jl) ────────────────────────────────────────────────────
 
-struct Intern {
-    ids: HashMap<String, usize>,
-    reps: Vec<Expr>,
-    nnodes: Vec<usize>,
-    counts: Vec<usize>,
+/// A leaf by value, as the reference keys it (`isequal`): an integer and a
+/// float are different leaves (`1` is not `1.0`), `0.0` is not `-0.0`, and
+/// every NaN is one leaf.
+#[derive(PartialEq, Eq, Hash)]
+enum CseLeaf {
+    Int(i64),
+    Float(u64),
+    Var(String),
 }
 
-impl Intern {
+fn cse_leaf(e: &Expr) -> CseLeaf {
+    match e {
+        Expr::Integer(i) => CseLeaf::Int(*i),
+        Expr::Number(x) if x.is_nan() => CseLeaf::Float(f64::NAN.to_bits()),
+        Expr::Number(x) => CseLeaf::Float(x.to_bits()),
+        Expr::Variable(v) => CseLeaf::Var(v.clone()),
+        Expr::Operator(_) => unreachable!("an operator is not a leaf"),
+    }
+}
+
+/// Every structurally distinct subtree of the inputs with an integer id
+/// (1-based), in first-encounter post-order (children in `for_each_child`
+/// order), so a child's id is smaller than its parent's. A node with no field
+/// but `op` and `args` is keyed by its operator and its children's ids; any
+/// other by the stable JSON of its shell (each child a placeholder carrying
+/// its id). Nodes are also memoized by identity: a subtree the inputs share
+/// in memory is walked once.
+struct CseIndex {
+    leaves: HashMap<CseLeaf, usize>,
+    plain: HashMap<(String, Vec<usize>), usize>,
+    shells: HashMap<String, usize>,
+    // node address → id; the inputs outlive the index, so addresses are stable
+    memo: HashMap<*const ExpressionNode, usize>,
+    reps: Vec<Expr>,
+    kids: Vec<Vec<usize>>,
+    nnodes: Vec<usize>,
+}
+
+impl CseIndex {
     fn new() -> Self {
-        Intern {
-            ids: HashMap::new(),
+        CseIndex {
+            leaves: HashMap::new(),
+            plain: HashMap::new(),
+            shells: HashMap::new(),
+            memo: HashMap::new(),
             reps: vec![],
+            kids: vec![],
             nnodes: vec![],
-            counts: vec![],
         }
     }
 
-    fn intern(&mut self, e: &Expr) -> usize {
-        let mut childids = Vec::new();
-        if let Expr::Operator(n) = e {
-            n.map_children(&mut |c: &Expr| {
-                childids.push(self.intern(c));
-                c.clone()
-            });
-        }
-        let (key, nn) = self.shell_key(e, &childids);
-        if let Some(&id) = self.ids.get(&key) {
-            self.counts[id - 1] += 1;
+    fn fresh(&mut self, e: &Expr, kids: Vec<usize>) -> usize {
+        let nn = 1 + kids.iter().map(|&k| self.nnodes[k - 1]).sum::<usize>();
+        self.reps.push(e.clone());
+        self.kids.push(kids);
+        self.nnodes.push(nn);
+        self.reps.len()
+    }
+
+    fn leaf_id(&mut self, e: &Expr) -> usize {
+        let k = cse_leaf(e);
+        if let Some(&id) = self.leaves.get(&k) {
             return id;
         }
-        self.reps.push(e.clone());
-        self.nnodes.push(nn);
-        self.counts.push(1);
-        let id = self.reps.len();
-        self.ids.insert(key, id);
+        let id = self.fresh(e, vec![]);
+        self.leaves.insert(k, id);
         id
     }
 
-    fn shell_key(&self, e: &Expr, childids: &[usize]) -> (String, usize) {
-        if let Expr::Operator(n) = e {
-            let mut i = 0usize;
-            let shell = n.map_children(&mut |_c: &Expr| {
-                i += 1;
-                Expr::Variable(format!("__cse⟦{}⟧", childids[i - 1]))
-            });
-            let nn = 1 + childids.iter().map(|&c| self.nnodes[c - 1]).sum::<usize>();
-            (stable_json(&ser_expr(&Expr::operator(shell))), nn)
+    fn op_id(&mut self, e: &Expr, a: &ExpressionNode, kids: Vec<(*const Expr, usize)>) -> usize {
+        let ids: Vec<usize> = kids.iter().map(|k| k.1).collect();
+        let shell = if crate::hashcons::plain_node(a) {
+            None
         } else {
-            (stable_json(&ser_expr(e)), 1)
+            let mut next = 0usize;
+            let shell = a.map_children(&mut |c: &Expr| {
+                let k = crate::hashcons::slot_of(&kids, &mut next, c);
+                Expr::Variable(format!("__cse⟦{}⟧", kids[k].1))
+            });
+            let v = ser_expr(&Expr::operator(shell));
+            if v.as_object()
+                .is_some_and(|m| m.len() == 2 && m.contains_key("op") && m.contains_key("args"))
+            {
+                None
+            } else {
+                Some(stable_json(&v))
+            }
+        };
+        match shell {
+            None => {
+                let key = (a.op.clone(), ids);
+                if let Some(&id) = self.plain.get(&key) {
+                    return id;
+                }
+                let id = self.fresh(e, key.1.clone());
+                self.plain.insert(key, id);
+                id
+            }
+            Some(key) => {
+                if let Some(&id) = self.shells.get(&key) {
+                    return id;
+                }
+                let id = self.fresh(e, ids);
+                self.shells.insert(key, id);
+                id
+            }
         }
     }
+
+    /// The id of `e`, interning every subtree not seen before. Iterative:
+    /// a deep `ifelse` chain costs no stack.
+    fn intern(&mut self, e: &Expr) -> usize {
+        let Expr::Operator(root) = e else {
+            return self.leaf_id(e);
+        };
+        let mut stack: Vec<(&Expr, bool)> = vec![(e, false)];
+        while let Some((x, expanded)) = stack.pop() {
+            let Expr::Operator(a) = x else { unreachable!() };
+            let addr = Arc::as_ptr(a);
+            if self.memo.contains_key(&addr) {
+                continue;
+            }
+            if !expanded {
+                stack.push((x, true));
+                // children pushed in reverse so they are visited in order
+                let mut cs: Vec<&Expr> = Vec::new();
+                a.for_each_child(&mut |c: &Expr| cs.push(c));
+                for c in cs.into_iter().rev() {
+                    if let Expr::Operator(ca) = c {
+                        if !self.memo.contains_key(&Arc::as_ptr(ca)) {
+                            stack.push((c, false));
+                        }
+                    }
+                }
+                continue;
+            }
+            let mut kids: Vec<(*const Expr, usize)> = Vec::new();
+            let mut cs: Vec<&Expr> = Vec::new();
+            a.for_each_child(&mut |c: &Expr| cs.push(c));
+            for c in cs {
+                let id = match c {
+                    Expr::Operator(ca) => self.memo[&Arc::as_ptr(ca)],
+                    _ => self.leaf_id(c),
+                };
+                kids.push((c as *const Expr, id));
+            }
+            let id = self.op_id(x, a, kids);
+            self.memo.insert(addr, id);
+        }
+        self.memo[&Arc::as_ptr(root)]
+    }
 }
 
-fn replace_id(e: &Expr, it: &Intern, target: usize, repl: &Expr) -> (Expr, usize) {
-    let mut childids = Vec::new();
-    let mut newchildren = Vec::new();
-    if let Expr::Operator(n) = e {
-        n.map_children(&mut |c: &Expr| {
-            let (nc, cid) = replace_id(c, it, target, repl);
-            childids.push(cid);
-            newchildren.push(nc);
-            c.clone()
-        });
-    }
-    let (key, _) = it.shell_key(e, &childids);
-    let eid = it.ids[&key];
-    if eid == target {
-        return (repl.clone(), eid);
-    }
-    let out = if !newchildren.is_empty() {
-        let mut i = 0usize;
-        map_expr_children(e, &mut |_c| {
-            i += 1;
-            newchildren[i - 1].clone()
-        })
-    } else {
-        e.clone()
-    };
-    (out, eid)
-}
-
-/// Greedy largest-first extraction; deterministic (first-encounter order,
-/// first-max tie-break) to match the reference byte-for-byte.
+/// Extract repeated subtrees of `exprs` by the rule of esm-jacobian-spec
+/// §4.1: every distinct subtree is visited once, largest first (ties in
+/// first-encounter order); its count is its number of occurrences left once
+/// every larger extracted subtree is a reference whose body is kept once;
+/// one of at least `min_nodes` nodes that still counts at least 2 is
+/// extracted and named `<prefix><k>` in visiting order. Byte-identical to the
+/// reference.
 pub fn cse_templates(
     exprs: &[Expr],
     min_nodes: usize,
     prefix: &str,
 ) -> (Vec<(String, Expr)>, Vec<Expr>) {
-    let mut work: Vec<Expr> = exprs.to_vec();
-    let nin = work.len();
-    let mut names: Vec<String> = Vec::new();
-    loop {
-        let mut it = Intern::new();
-        for e in &work {
-            it.intern(e);
-        }
-        let mut best = 0usize;
-        for id in 1..=it.reps.len() {
-            if it.counts[id - 1] < 2 || it.nnodes[id - 1] < min_nodes {
-                continue;
-            }
-            let Expr::Operator(n) = &it.reps[id - 1] else {
-                continue;
-            };
-            if n.op == "apply_expression_template" {
-                continue;
-            }
-            if best == 0 || it.nnodes[id - 1] > it.nnodes[best - 1] {
-                best = id;
-            }
-        }
-        if best == 0 {
+    let mut t = CseIndex::new();
+    let roots: Vec<usize> = exprs.iter().map(|e| t.intern(e)).collect();
+    let n = t.reps.len();
+    // ids (0-based here) largest first; the sort is stable, so ties keep id
+    // order. Equal sizes cannot contain one another: the tie order only
+    // decides names.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| t.nnodes[b].cmp(&t.nnodes[a]));
+    let mut uses = vec![0usize; n];
+    for &r in &roots {
+        uses[r - 1] += 1;
+    }
+    let mut name: Vec<Option<String>> = vec![None; n];
+    let mut names: Vec<usize> = Vec::new();
+    for &id in &order {
+        if t.nnodes[id] == 1 {
             break;
         }
-        let name = format!("{prefix}{}", names.len() + 1);
-        names.push(name.clone());
-        let repl = Expr::operator(ExpressionNode {
-            op: "apply_expression_template".into(),
-            name: Some(name),
-            ..Default::default()
+        let candidate = uses[id] >= 2
+            && t.nnodes[id] >= min_nodes
+            && matches!(&t.reps[id], Expr::Operator(a) if a.op != "apply_expression_template");
+        if candidate {
+            names.push(id);
+            name[id] = Some(format!("{prefix}{}", names.len()));
+        }
+        let w = if candidate { 1 } else { uses[id] };
+        for &k in &t.kids[id] {
+            uses[k - 1] += w;
+        }
+    }
+    if names.is_empty() {
+        return (vec![], exprs.to_vec());
+    }
+    // Rewrite bottom-up in id order (children first).
+    let mut body: Vec<Expr> = Vec::with_capacity(n);
+    let mut out: Vec<Expr> = Vec::with_capacity(n);
+    for id in 0..n {
+        let r = &t.reps[id];
+        let b = match r {
+            Expr::Operator(a) if !t.kids[id].is_empty() => {
+                let mut slots: Vec<(*const Expr, usize)> = Vec::new();
+                let mut j = 0usize;
+                let ks = &t.kids[id];
+                a.for_each_child(&mut |c: &Expr| {
+                    slots.push((c as *const Expr, ks[j]));
+                    j += 1;
+                });
+                let mut next = 0usize;
+                Expr::operator(a.map_children(&mut |c: &Expr| {
+                    let k = crate::hashcons::slot_of(&slots, &mut next, c);
+                    out[slots[k].1 - 1].clone()
+                }))
+            }
+            _ => r.clone(),
+        };
+        out.push(match &name[id] {
+            Some(nm) => Expr::operator(ExpressionNode {
+                op: "apply_expression_template".into(),
+                name: Some(nm.clone()),
+                ..Default::default()
+            }),
+            None => b.clone(),
         });
-        let body = it.reps[best - 1].clone();
-        work = work
-            .iter()
-            .map(|e| replace_id(e, &it, best, &repl).0)
-            .collect();
-        work.push(body);
+        body.push(b);
     }
     let templates = names
         .iter()
-        .enumerate()
-        .map(|(k, n)| (n.clone(), work[nin + k].clone()))
+        .map(|&id| (name[id].clone().unwrap(), body[id].clone()))
         .collect();
-    (templates, work[..nin].to_vec())
+    (
+        templates,
+        roots.iter().map(|&r| out[r - 1].clone()).collect(),
+    )
 }
 
 // ── structure classification (structure.jl) ─────────────────────────────────

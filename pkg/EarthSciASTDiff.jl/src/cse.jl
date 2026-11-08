@@ -17,69 +17,46 @@
 # reference site after expansion — deliberate capture, since extraction is
 # exact subtree factoring, not hygienic abstraction.
 
-# ── hash-consing ─────────────────────────────────────────────────────────────
+# ── interning ────────────────────────────────────────────────────────────────
 #
-# Bottom-up interning: each structurally distinct subtree gets an integer id.
-# A node's key is its serialized form with every child replaced by a
-# placeholder carrying the child's id — O(node) per node instead of the
-# quadratic full-subtree serialization.
+# One bottom-up pass gives every structurally distinct subtree an integer id
+# (the structural ids of hashcons.jl: a node is keyed by its operator and its
+# children's ids, or by its shell when it has fields beyond `op`/`args`), in
+# first-encounter post-order over the inputs, children in `map_children`
+# order. So a child's id is always smaller than its parent's. Nodes are also
+# memoized by identity: a subtree the inputs share in memory (band
+# coefficients are interned, hashcons.jl) is walked once, however many
+# parents reach it.
 
-struct _Intern
-    ids::Dict{String, Int}    # shell key → id
-    reps::Vector{ASTExpr}    # representative subtree per id
-    nnodes::Vector{Int}      # full subtree node count per id
-    counts::Vector{Int}      # total occurrences over everything interned
+struct _CSEIndex
+    ix::StructIndex
+    reps::Vector{ASTExpr}           # representative subtree per id
+    kids::Vector{Vector{Int}}       # child ids per id, in `map_children` order
+    nnodes::Vector{Int}             # full subtree node count per id
+    memo::IdDict{OpExpr, Int}       # node identity → id
 end
-_Intern() = _Intern(Dict{String, Int}(), ASTExpr[], Int[], Int[])
+_CSEIndex() = _CSEIndex(StructIndex(), ASTExpr[], Vector{Int}[], Int[], IdDict{OpExpr, Int}())
 
-_placeholder(id::Int) = VarExpr("__cse⟦$id⟧")
-
-# (shell key, node count) of `e` given already-interned children.
-function _shell_key(e::ASTExpr, childids::Vector{Int}, it::_Intern)
+function _cse_id!(t::_CSEIndex, e::ASTExpr)::Int
     if e isa OpExpr
-        i = Ref(0)
-        shell = map_children(_ -> (i[] += 1; _placeholder(childids[i[]])), e)
-        nn = 1
-        for cid in childids
-            nn += it.nnodes[cid]
+        cached = get(t.memo, e, 0)
+        cached == 0 || return cached
+        kids = Int[]
+        map_children(c -> (push!(kids, _cse_id!(t, c)); c), e)
+        id = _shell_id!(t.ix, e, kids)
+        if id > length(t.reps)
+            nn = 1
+            for k in kids
+                nn += t.nnodes[k]
+            end
+            push!(t.reps, e); push!(t.kids, kids); push!(t.nnodes, nn)
         end
-        return stable_json(EarthSciAST.serialize_expression(shell)), nn
+        t.memo[e] = id
+        return id
     end
-    return stable_json(EarthSciAST.serialize_expression(e)), 1
-end
-
-function _intern!(it::_Intern, e::ASTExpr)::Int
-    childids = Int[]
-    e isa OpExpr && map_children(c -> (push!(childids, _intern!(it, c)); c), e)
-    key, nn = _shell_key(e, childids, it)
-    id = get!(it.ids, key) do
-        push!(it.reps, e); push!(it.nnodes, nn); push!(it.counts, 0)
-        length(it.reps)
-    end
-    it.counts[id] += 1
+    id = sid(t.ix, e)
+    id > length(t.reps) && (push!(t.reps, e); push!(t.kids, Int[]); push!(t.nnodes, 1))
     return id
-end
-
-# Rewrite: replace every subtree whose id is `target` by `repl`, recomputing
-# original ids bottom-up against the SAME (read-only) table. Returns
-# (rewritten node, ORIGINAL id of `e`).
-function _replace_id(e::ASTExpr, it::_Intern, target::Int, repl::ASTExpr)
-    childids = Int[]; newchildren = ASTExpr[]
-    if e isa OpExpr
-        map_children(e) do c
-            nc, cid = _replace_id(c, it, target, repl)
-            push!(childids, cid); push!(newchildren, nc)
-            c
-        end
-    end
-    key, _ = _shell_key(e, childids, it)
-    id = it.ids[key]
-    id == target && return (repl, id)
-    if e isa OpExpr && !isempty(newchildren)
-        i = Ref(0)
-        e = map_children(_ -> (i[] += 1; newchildren[i[]]), e)
-    end
-    return (e, id)
 end
 
 # ── extraction ───────────────────────────────────────────────────────────────
@@ -88,49 +65,74 @@ end
     cse_templates(exprs; min_nodes = 12, prefix = "jt")
         -> (templates::OrderedDict{String,ASTExpr}, rewritten::Vector{ASTExpr})
 
-Greedy largest-first extraction of repeated subtrees over `exprs`. Each
-round interns the whole working set (input expressions plus the bodies of
-templates already extracted), picks the largest subtree that occurs at least
-twice and spans at least `min_nodes` AST nodes, names it `"\$(prefix)\$k"`,
-and replaces every occurrence — in the inputs AND in earlier template
-bodies — with an `apply_expression_template` reference. Terminates when no
-candidate remains; the result is a reference DAG (acyclic by strict
-containment). Deterministic: ties between equally-sized candidates break by
-interning (first-encounter) order over the given expression order.
+Extract repeated subtrees of `exprs` by the rule of esm-jacobian-spec §4.1.
+Every structurally distinct subtree is visited once, largest first (ties in
+first-encounter post-order over the inputs). Its count is its number of
+occurrences that remain once every larger extracted subtree is replaced by a
+reference and kept once as a template body. A subtree that spans at least
+`min_nodes` AST nodes and still counts at least 2 is extracted, named
+`"\$(prefix)\$k"` in visiting order, and every occurrence (in the inputs and
+in larger template bodies) is replaced by an `apply_expression_template`
+reference. The result is a reference DAG, acyclic by strict containment, and
+a body only references templates named after it. Θ(distinct subtrees ·
+log) after one walk of the inputs (a subtree shared in memory is walked
+once).
 """
 function cse_templates(
         exprs::Vector{ASTExpr}; min_nodes::Int = 12,
         prefix::String = "jt"
     )
-    work = ASTExpr[exprs...]
-    nin = length(work)
-    names = String[]
-    while true
-        it = _Intern()
-        for e in work
-            _intern!(it, e)
-        end
-        best = 0
-        for id in 1:length(it.reps)
-            it.counts[id] >= 2 || continue
-            it.nnodes[id] >= min_nodes || continue
-            r = it.reps[id]
-            r isa OpExpr || continue
-            r.op == "apply_expression_template" && continue
-            (best == 0 || it.nnodes[id] > it.nnodes[best]) && (best = id)
-        end
-        best == 0 && break
-        name = "$(prefix)$(length(names) + 1)"
-        push!(names, name)
-        repl = OpExpr("apply_expression_template", ASTExpr[]; name = name)
-        body = it.reps[best]
-        work = ASTExpr[_replace_id(e, it, best, repl)[1] for e in work]
-        push!(work, body)   # the body joins the pool: later rounds may factor it
+    t = _CSEIndex()
+    roots = Int[_cse_id!(t, e) for e in exprs]
+    n = length(t.reps)
+    # Largest first; equal sizes cannot contain one another, so the tie order
+    # only decides names, and first encounter (id order) settles it.
+    order = sortperm(t.nnodes; rev = true, alg = Base.Sort.DEFAULT_STABLE)
+    uses = zeros(Int, n)
+    for r in roots
+        uses[r] += 1
     end
-    templates = OrderedDict{String, ASTExpr}(
-        n => work[nin + k] for (k, n) in enumerate(names)
-    )
-    return templates, work[1:nin]
+    name = Vector{String}(undef, n)
+    extracted = falses(n)
+    names = String[]
+    for id in order
+        t.nnodes[id] == 1 && break            # leaves from here on
+        r = t.reps[id]
+        if uses[id] >= 2 && t.nnodes[id] >= min_nodes &&
+                r isa OpExpr && r.op != "apply_expression_template"
+            extracted[id] = true
+            push!(names, "$(prefix)$(length(names) + 1)")
+            name[id] = names[end]
+        end
+        # An extracted subtree's body is kept once; any other is inlined
+        # wherever it occurs.
+        w = extracted[id] ? 1 : uses[id]
+        for k in t.kids[id]
+            uses[k] += w
+        end
+    end
+    isempty(names) && return OrderedDict{String, ASTExpr}(), ASTExpr[exprs...]
+    # Rewrite bottom-up in id order (children first): `body[id]` is the
+    # subtree with its children rewritten, `out[id]` what a parent holds.
+    body = Vector{ASTExpr}(undef, n)
+    out = Vector{ASTExpr}(undef, n)
+    for id in 1:n
+        r = t.reps[id]
+        b = if isempty(t.kids[id])
+            r
+        else
+            ks = t.kids[id]; i = Ref(0)
+            map_children(_ -> (i[] += 1; out[ks[i[]]]), r)
+        end
+        body[id] = b
+        out[id] = extracted[id] ?
+            OpExpr("apply_expression_template", ASTExpr[]; name = name[id]) : b
+    end
+    templates = OrderedDict{String, ASTExpr}()
+    for id in order
+        extracted[id] && (templates[name[id]] = body[id])
+    end
+    return templates, ASTExpr[out[r] for r in roots]
 end
 
 """

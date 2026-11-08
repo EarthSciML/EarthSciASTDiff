@@ -95,20 +95,15 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
 
     # Which entries evaluate each template, transitively through the
     # reference DAG (a template read inside another template's body runs
-    # wherever the outer one does).
+    # wherever the outer one does). A body only reads templates named after
+    # it (cse_templates), so one pass in name order closes the sets.
     refs_body = Dict{String, Set{String}}(n => _template_refs(templates[n]) for n in tnames)
-    uses = Dict{String, Set{Int}}(n => Set{Int}() for n in tnames)
+    uses = Dict{String, BitSet}(n => BitSet() for n in tnames)
     for (k, e) in enumerate(rewritten), n in _template_refs(e)
         push!(uses[n], k)
     end
-    changed = true
-    while changed
-        changed = false
-        for n in tnames, n2 in refs_body[n]
-            before = length(uses[n2])
-            union!(uses[n2], uses[n])
-            length(uses[n2]) != before && (changed = true)
-        end
+    for n in tnames, n2 in refs_body[n]
+        union!(uses[n2], uses[n])
     end
     live = [n for n in tnames if !isempty(uses[n])]
 
@@ -134,11 +129,10 @@ function hoist_observed(entries::Vector{JacEntry}, sv::SysView; min_nodes::Int =
     # Use boxes (deduplicated, ascending entry order) and per-axis extents.
     boxes = Dict{String, Vector{Vector{Tuple{Int, Int}}}}()
     for n in live
-        bs = Vector{Vector{Tuple{Int, Int}}}(); seen = Set{String}()
-        for k in sort!(collect(uses[n]))
+        bs = Vector{Vector{Tuple{Int, Int}}}(); seen = Set{Vector{Tuple{Int, Int}}}()
+        for k in uses[n]                       # ascending entry order
             box = [boxof[k][x] for x in S[n]]
-            key = string(box)
-            key in seen || (push!(seen, key); push!(bs, box))
+            box in seen || (push!(seen, box); push!(bs, box))
         end
         boxes[n] = bs
     end

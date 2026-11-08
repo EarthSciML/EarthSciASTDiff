@@ -122,15 +122,11 @@ def hoist_observed(entries: list[JacEntry], sv: SysView, min_nodes: int = 12) ->
     for k, e in enumerate(rewritten):
         for n in _template_refs(e):
             uses[n].add(k)
-    changed = True
-    while changed:
-        changed = False
-        for n in tnames:
-            for n2 in refs_body[n]:
-                before = len(uses[n2])
-                uses[n2] |= uses[n]
-                if len(uses[n2]) != before:
-                    changed = True
+    # a body only reads templates named after it (cse_templates), so one
+    # pass in name order closes the sets
+    for n in tnames:
+        for n2 in refs_body[n]:
+            uses[n2] |= uses[n]
     live = [n for n in tnames if uses[n]]
 
     # Free row-index names per template (transitive; sorted = the axis order).
@@ -159,9 +155,11 @@ def hoist_observed(entries: list[JacEntry], sv: SysView, min_nodes: int = 12) ->
     boxes: dict[str, list[list[tuple[int, int]]]] = {}
     for n in live:
         bs: list[list[tuple[int, int]]] = []
+        seen: set[tuple[tuple[int, int], ...]] = set()
         for k in sorted(uses[n]):
             box = [boxof[k][x] for x in S[n]]
-            if box not in bs:
+            if tuple(box) not in seen:
+                seen.add(tuple(box))
                 bs.append(box)
         boxes[n] = bs
 
