@@ -19,6 +19,7 @@ use std::sync::{Arc, Weak};
 
 use earthsci_ast::{Expr, ExpressionNode};
 
+#[cfg(test)]
 use crate::helpers::skey;
 
 /// An operator node compared and hashed by identity, NOT keeping it alive:
@@ -147,8 +148,20 @@ fn slot_of<T>(slots: &[(*const Expr, T)], next: &mut usize, c: &Expr) -> usize {
 /// keyed tree alive; the keys of freed nodes are swept out whenever the memo
 /// has doubled since the last sweep.
 pub(crate) struct StructIndex {
-    ids: HashMap<String, usize>,
-    memo: HashMap<WeakRef, usize>,
+    /// ids handed out so far; every table below draws from this one count
+    n: usize,
+    // leaves, by value (floats by bits)
+    ints: HashMap<i64, usize>,
+    floats: HashMap<u64, usize>,
+    nonfinite: HashMap<u64, usize>,
+    vars: HashMap<String, usize>,
+    /// operator nodes with no field but `op` and `args`, by operator and
+    /// argument ids — the bulk of a coefficient, keyed without serializing
+    plain: HashMap<(String, Vec<usize>), usize>,
+    /// every other operator node, by the `skey` of its shell
+    shells: HashMap<String, usize>,
+    // node address → (the `Weak` pinning that address, id)
+    memo: HashMap<usize, (Weak<ExpressionNode>, usize)>,
     next_sweep: usize,
 }
 
@@ -157,11 +170,73 @@ const MIN_SWEEP: usize = 1 << 12;
 impl Default for StructIndex {
     fn default() -> Self {
         StructIndex {
-            ids: HashMap::new(),
+            n: 0,
+            ints: HashMap::new(),
+            floats: HashMap::new(),
+            nonfinite: HashMap::new(),
+            vars: HashMap::new(),
+            plain: HashMap::new(),
+            shells: HashMap::new(),
             memo: HashMap::new(),
             next_sweep: MIN_SWEEP,
         }
     }
+}
+
+/// A leaf by what its `skey` writes, without writing it. A float is
+/// written as its serialized number: EarthSciAST writes an integral float as
+/// an integer token (`1.0` and `-0.0` as `1` and `0`, which `skey` then
+/// cannot tell from the integer leaves), any other finite one by its
+/// shortest round-trip digits (so by its bits). A non-finite float, which
+/// `skey` writes as `null`, keeps its bits.
+pub(crate) enum LeafKey<'a> {
+    Int(i64),
+    Float(u64),
+    NonFinite(u64),
+    Var(&'a str),
+}
+
+impl<'a> LeafKey<'a> {
+    pub(crate) fn of(e: &'a Expr) -> LeafKey<'a> {
+        match e {
+            Expr::Integer(i) => LeafKey::Int(*i),
+            Expr::Number(x) if !x.is_finite() => LeafKey::NonFinite(x.to_bits()),
+            // a non-integral finite float is written by its shortest
+            // round-trip digits, i.e. by its bits, by every EarthSciAST
+            // release: only an integral one needs the writer's answer
+            Expr::Number(x) if x.fract() != 0.0 => LeafKey::Float(x.to_bits()),
+            Expr::Number(x) => match crate::helpers::ser_expr(e) {
+                serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+                    (Some(i), _) => LeafKey::Int(i),
+                    (None, Some(f)) => LeafKey::Float(f.to_bits()),
+                    _ => LeafKey::Float(x.to_bits()),
+                },
+                _ => LeafKey::Float(x.to_bits()),
+            },
+            Expr::Variable(v) => LeafKey::Var(v),
+            Expr::Operator(_) => unreachable!("an operator is not a leaf"),
+        }
+    }
+}
+
+/// The id `k` has in `table`, or the next one.
+fn id_in<K: std::hash::Hash + Eq>(table: &mut HashMap<K, usize>, n: &mut usize, k: K) -> usize {
+    *table.entry(k).or_insert_with(|| {
+        *n += 1;
+        *n
+    })
+}
+
+/// Whether `a` has no field but `op` and `args` set, i.e. serializes as
+/// `{"op", "args"}` alone (every other field is skipped when unset). The
+/// comparison against `Default` (not a field list) keeps it right when
+/// EarthSciAST adds a field; the clone it costs is one `Arc` count per
+/// argument, paid once per distinct node.
+pub(crate) fn plain_node(a: &ExpressionNode) -> bool {
+    let mut rest = a.clone();
+    rest.op.clear();
+    rest.args.clear();
+    rest == ExpressionNode::default()
 }
 
 impl StructIndex {
@@ -176,46 +251,57 @@ impl StructIndex {
         if self.memo.len() < self.next_sweep {
             return;
         }
-        self.memo.retain(|k, _| !k.is_dead());
+        self.memo.retain(|_, (w, _)| w.strong_count() > 0);
         self.next_sweep = (2 * self.memo.len()).max(MIN_SWEEP);
     }
 
-    fn intern_key(&mut self, k: String) -> usize {
-        let n = self.ids.len() + 1;
-        *self.ids.entry(k).or_insert(n)
-    }
-
-    /// The id of a leaf: its own `skey`, behind a prefix no shell key (which
-    /// always starts with `{`) can share.
-    /// A leaf's id: its own `skey`, behind a prefix no shell key (which
-    /// always starts with `{`) can share. `skey` writes every non-finite
-    /// float as `null`, so `x*Inf`, `x*-Inf` and `x*NaN` would share an id
-    /// (and a memoized simplification); such a leaf is keyed by its bits.
+    /// A leaf's id: two leaves share one iff `skey` writes them alike
+    /// ([`LeafKey`]), except that the non-finite floats `skey` writes alike
+    /// (`null`) are told apart by their bits — `x*Inf`, `x*-Inf` and `x*NaN`
+    /// must not share an id (or a memoized simplification).
     fn leaf_id(&mut self, e: &Expr) -> usize {
-        if let Expr::Number(x) = e {
-            if !x.is_finite() {
-                return self.intern_key(format!("F{:016x}", x.to_bits()));
-            }
+        match LeafKey::of(e) {
+            LeafKey::Int(i) => id_in(&mut self.ints, &mut self.n, i),
+            LeafKey::Float(b) => id_in(&mut self.floats, &mut self.n, b),
+            LeafKey::NonFinite(b) => id_in(&mut self.nonfinite, &mut self.n, b),
+            LeafKey::Var(v) => match self.vars.get(v) {
+                Some(&id) => id,
+                None => id_in(&mut self.vars, &mut self.n, v.to_string()),
+            },
         }
-        self.intern_key(format!("L{}", skey(e)))
     }
 
-    /// The id of operator node `a` whose children have ids `kids`: the key
-    /// of its SHELL, every child position holding a placeholder that carries
-    /// the child's id (so a placeholder can never be confused with a real
-    /// variable of the same name). O(node fields), not O(subtree).
-    /// A node's id from its shell: every child slot holds a placeholder
-    /// carrying the child's id (`kids`, in `for_each_child` order, with each
-    /// child's slot address). A child is matched to its id by that address,
-    /// as in [`map_children_shared`]: the two walks order hash-map children
-    /// (`axes`, `bindings`) differently.
+    /// The id of operator node `a` whose children have ids `kids` (in
+    /// `for_each_child` order, with each child's slot address). A node with
+    /// only `op` and `args` is keyed by its operator and argument ids. Any
+    /// other is keyed by the `skey` of its SHELL, every child slot holding a
+    /// placeholder carrying the child's id, matched to the child by slot
+    /// address as in [`map_children_shared`] (the two walks order the
+    /// hash-map children, `axes` and `bindings`, differently); a shell that
+    /// serializes as `{"op", "args"}` alone (a set field that is never
+    /// written) joins the plain table, so the two tables split nodes exactly
+    /// where `skey` does. O(node fields), not O(subtree).
     fn shell_id(&mut self, a: &ExpressionNode, kids: &[(*const Expr, usize)]) -> usize {
+        let plain_key = || (a.op.clone(), kids.iter().map(|k| k.1).collect::<Vec<_>>());
+        if plain_node(a) {
+            return id_in(&mut self.plain, &mut self.n, plain_key());
+        }
         let mut next = 0usize;
         let shell = a.map_children(&mut |c: &Expr| {
             let k = slot_of(kids, &mut next, c);
             Expr::Variable(format!("__sid⟦{}⟧", kids[k].1))
         });
-        self.intern_key(skey(&Expr::Operator(Arc::new(shell))))
+        let v = crate::helpers::ser_expr(&Expr::Operator(Arc::new(shell)));
+        if v.as_object()
+            .is_some_and(|m| m.len() == 2 && m.contains_key("op") && m.contains_key("args"))
+        {
+            return id_in(&mut self.plain, &mut self.n, plain_key());
+        }
+        id_in(
+            &mut self.shells,
+            &mut self.n,
+            crate::helpers::stable_json(&v),
+        )
     }
 
     /// The structural id of `e`.
@@ -223,16 +309,89 @@ impl StructIndex {
         let Expr::Operator(a) = e else {
             return self.leaf_id(e);
         };
-        self.maybe_sweep();
-        let k = WeakRef::of(a);
-        if let Some(&id) = self.memo.get(&k) {
+        // Looked up by address alone; the `Weak` stored with the id is what
+        // keeps that address from being reused while the entry exists.
+        let k = Arc::as_ptr(a) as usize;
+        if let Some(&(_, id)) = self.memo.get(&k) {
             return id;
         }
         let mut kids: Vec<(*const Expr, usize)> = Vec::new();
         a.for_each_child(&mut |c: &Expr| kids.push((c as *const Expr, self.sid(c))));
         let id = self.shell_id(a, &kids);
-        self.memo.insert(k, id);
+        self.maybe_sweep();
+        self.memo.insert(k, (Arc::downgrade(a), id));
         id
+    }
+}
+
+/// A structural hash used as a NEGATIVE filter (hashcons.jl `StructHash`):
+/// equal structures always share it, so a mismatch proves two subtrees
+/// differ in one `u64` compare, and only a match pays for the exact answer
+/// from [`StructIndex::sid`]. It covers the operator and the children only,
+/// not a node's other fields, so unequal trees may collide: a match proves
+/// nothing, and it is never an identity.
+///
+/// Memoized on node identity (the memo's `Weak` pins each keyed address, as
+/// in [`StructIndex`]); a leaf hashes its [`LeafKey`], as `sid` keys it.
+pub(crate) struct StructHash {
+    memo: HashMap<usize, (Weak<ExpressionNode>, u64)>,
+    next_sweep: usize,
+}
+
+impl Default for StructHash {
+    fn default() -> Self {
+        StructHash {
+            memo: HashMap::new(),
+            next_sweep: MIN_SWEEP,
+        }
+    }
+}
+
+/// One round of a 64-bit mix (splitmix64's finalizer over `h ^ x`).
+fn mix(h: u64, x: u64) -> u64 {
+    let mut z = (h ^ x).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+fn str_hash(seed: u64, s: &str) -> u64 {
+    let mut h = seed;
+    for c in s.as_bytes().chunks(8) {
+        let mut w = [0u8; 8];
+        w[..c.len()].copy_from_slice(c);
+        h = mix(h, u64::from_le_bytes(w));
+    }
+    mix(h, s.len() as u64)
+}
+
+impl StructHash {
+    /// The hash of `e`'s operator/child structure: `sid(a) == sid(b)`
+    /// implies `shash(a) == shash(b)`, not the converse.
+    pub(crate) fn shash(&mut self, e: &Expr) -> u64 {
+        match e {
+            // leaves hash their `LeafKey`, which `sid` equality implies
+            Expr::Integer(_) | Expr::Number(_) | Expr::Variable(_) => match LeafKey::of(e) {
+                LeafKey::Int(i) => mix(0xc2b2_ae3d_27d4_eb4f, i as u64),
+                LeafKey::Float(b) => mix(0x1656_67b1_9e37_79f9, b),
+                LeafKey::NonFinite(b) => mix(0x85eb_ca6b_c2b2_ae35, b),
+                LeafKey::Var(v) => str_hash(0x27d4_eb2f_1656_67c5, v),
+            },
+            Expr::Operator(a) => {
+                let k = Arc::as_ptr(a) as usize;
+                if let Some(&(_, h)) = self.memo.get(&k) {
+                    return h;
+                }
+                let mut h = str_hash(0x9e37_79b9_7f4a_7c11, &a.op);
+                a.for_each_child(&mut |c: &Expr| h = mix(h, self.shash(c)));
+                if self.memo.len() >= self.next_sweep {
+                    self.memo.retain(|_, (w, _)| w.strong_count() > 0);
+                    self.next_sweep = (2 * self.memo.len()).max(MIN_SWEEP);
+                }
+                self.memo.insert(k, (Arc::downgrade(a), h));
+                h
+            }
+        }
     }
 }
 
@@ -332,6 +491,38 @@ mod tests {
 
     fn ex(v: serde_json::Value) -> Expr {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn float_leaf_key_matches_the_writer() {
+        // the non-integral fast path must agree with what `ser_expr` writes
+        for x in [
+            0.5,
+            -1.25,
+            1e-300,
+            0.1 + 0.2,
+            1.0,
+            -0.0,
+            1e300,
+            9_223_372_036_854_775_808.0,
+            -3.0,
+        ] {
+            let e = Expr::Number(x);
+            let slow = match crate::helpers::ser_expr(&e) {
+                serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+                    (Some(i), _) => format!("i{i}"),
+                    (None, Some(f)) => format!("f{}", f.to_bits()),
+                    _ => format!("f{}", x.to_bits()),
+                },
+                _ => format!("f{}", x.to_bits()),
+            };
+            let fast = match LeafKey::of(&e) {
+                LeafKey::Int(i) => format!("i{i}"),
+                LeafKey::Float(b) => format!("f{b}"),
+                _ => unreachable!(),
+            };
+            assert_eq!(fast, slow, "{x}");
+        }
     }
 
     #[test]
