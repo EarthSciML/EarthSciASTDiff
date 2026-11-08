@@ -969,8 +969,11 @@ Fixture corpus in `tests/` of this repository:
    `d.f…e<exp>`, always with at least one fraction digit — `0.0`, `1.0`,
    `100.0`, `1.0e6`, `2.4405875e6`, `7.27220521664304e-5`. This is the float
    layout of EarthSciAST CONFORMANCE_SPEC §5.5.3.1 rule 2, but an integral
-   float stays a float: `1.0` is never written `1`), byte-compared across
-   bindings. Each fixture
+   float stays a float: `1.0` is never written `1` — except inside a `const`
+   node's `value`, written in canonical-number form at any depth (rule 1:
+   `[0.5, 1.0, 2.0]` is written `[0.5,1,2]`), as EarthSciAST ≥ 0.10 writes
+   it, so the bytes do not depend on the EarthSciAST release), byte-compared
+   across bindings. Each fixture
    `<name>` carries `<name>.bands.json`, `<name>.block.json` (§4 block),
    `<name>.evaldoc.json` (§8.1 evaluation document; `-nocse` when it differs
    without hoisting; like every derived document of §8 and §9 it declares
