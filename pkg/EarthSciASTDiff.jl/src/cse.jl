@@ -17,69 +17,123 @@
 # reference site after expansion — deliberate capture, since extraction is
 # exact subtree factoring, not hygienic abstraction.
 
-# ── hash-consing ─────────────────────────────────────────────────────────────
+# ── interning ────────────────────────────────────────────────────────────────
 #
-# Bottom-up interning: each structurally distinct subtree gets an integer id.
-# A node's key is its serialized form with every child replaced by a
-# placeholder carrying the child's id — O(node) per node instead of the
-# quadratic full-subtree serialization.
+# Every structurally distinct subtree gets a dense CSE id (1, 2, …) in
+# first-encounter post-order over the inputs, a node's CHILD SLOTS in the
+# order esm-jacobian-spec §4.1 fixes (`_cse_children`), so a child's id is
+# always smaller than its parent's and every binding numbers alike. Equality
+# is the structural id of hashcons.jl ([`sid`](@ref), whose identity memo
+# also means a subtree the inputs share in memory is keyed once); the CSE id
+# is a dense renumbering of the structural ids in that walk order. A subtree
+# already numbered is not walked again, so the walk visits each distinct
+# subtree once.
 
-struct _Intern
-    ids::Dict{String, Int}    # shell key → id
-    reps::Vector{ASTExpr}    # representative subtree per id
-    nnodes::Vector{Int}      # full subtree node count per id
-    counts::Vector{Int}      # total occurrences over everything interned
+struct _CSEIndex
+    ix::StructIndex
+    dense::Vector{Int}              # structural id → CSE id (0: not yet)
+    reps::Vector{ASTExpr}           # representative subtree per CSE id
+    kids::Vector{Vector{Int}}       # child CSE ids per CSE id, in slot order
+    nnodes::Vector{Int}             # full subtree node count per CSE id
 end
-_Intern() = _Intern(Dict{String, Int}(), ASTExpr[], Int[], Int[])
+_CSEIndex() = _CSEIndex(StructIndex(), Int[], ASTExpr[], Vector{Int}[], Int[])
 
-_placeholder(id::Int) = VarExpr("__cse⟦$id⟧")
+# The field `s` of `e`, or `nothing` when this EarthSciAST's `OpExpr` has no
+# such field (`hasfield` on the type folds to a constant).
+_cse_field(e::OpExpr, s::Symbol) = hasfield(OpExpr, s) ? getfield(e, s) : nothing
 
-# (shell key, node count) of `e` given already-interned children.
-function _shell_key(e::ASTExpr, childids::Vector{Int}, it::_Intern)
-    if e isa OpExpr
-        i = Ref(0)
-        shell = map_children(_ -> (i[] += 1; _placeholder(childids[i[]])), e)
-        nn = 1
-        for cid in childids
-            nn += it.nnodes[cid]
+"""
+    _cse_children(e::OpExpr) -> Vector{ASTExpr}
+
+The child slots of `e` in the order of esm-jacobian-spec §4.1: `args`,
+`lower`, `upper`, `expr`, `filter`, `values`, `axes` by ascending key, `key`,
+`bindings` by ascending key. Expressions inside `ranges` are part of the node,
+not slots. Throws if `map_children` reaches a child this list misses (a field
+a newer EarthSciAST added), rather than silently numbering it differently
+from the other bindings.
+"""
+function _cse_children(e::OpExpr)::Vector{ASTExpr}
+    cs = Vector{ASTExpr}(e.args)
+    for f in (:lower, :upper, :expr_body, :filter)
+        c = _cse_field(e, f)
+        c === nothing || push!(cs, c)
+    end
+    v = _cse_field(e, :values)
+    v === nothing || append!(cs, v)
+    ax = _cse_field(e, :table_axes)
+    if ax !== nothing
+        for name in sort!(collect(keys(ax)))
+            push!(cs, ax[name])
         end
-        return stable_json(EarthSciAST.serialize_expression(shell)), nn
     end
-    return stable_json(EarthSciAST.serialize_expression(e)), 1
+    kx = _cse_field(e, :key)
+    kx === nothing || push!(cs, kx)
+    b = _cse_field(e, :bindings)
+    if b !== nothing
+        for name in sort!(collect(keys(b)))
+            push!(cs, b[name])
+        end
+    end
+    nnative = length(_native_children(e))
+    rg = _cse_field(e, :ranges)
+    nrange = 0
+    if rg !== nothing
+        for r in values(rg)
+            r isa AbstractVector && (nrange += count(x -> x isa ASTExpr, r))
+        end
+    end
+    nnative == length(cs) + nrange || throw(
+        ArgumentError(
+            "cse_templates: `$(e.op)` node has an expression child outside the " *
+                "child slots of esm-jacobian-spec §4.1"
+        )
+    )
+    return cs
 end
 
-function _intern!(it::_Intern, e::ASTExpr)::Int
-    childids = Int[]
-    e isa OpExpr && map_children(c -> (push!(childids, _intern!(it, c)); c), e)
-    key, nn = _shell_key(e, childids, it)
-    id = get!(it.ids, key) do
-        push!(it.reps, e); push!(it.nnodes, nn); push!(it.counts, 0)
-        length(it.reps)
+function _cse_fresh!(t::_CSEIndex, s::Int, e::ASTExpr, kids::Vector{Int})::Int
+    nn = 1
+    for k in kids
+        nn += t.nnodes[k]
     end
-    it.counts[id] += 1
+    push!(t.reps, e); push!(t.kids, kids); push!(t.nnodes, nn)
+    length(t.dense) < s && append!(t.dense, zeros(Int, s - length(t.dense)))
+    t.dense[s] = length(t.reps)
+    return length(t.reps)
+end
+
+_cse_dense(t::_CSEIndex, s::Int) = s <= length(t.dense) ? t.dense[s] : 0
+
+# CSE id of `e`, numbering every subtree not seen before. Iterative: a deep
+# chain costs no stack.
+function _cse_id!(t::_CSEIndex, e::ASTExpr)::Int
+    s = sid(t.ix, e)                        # keys the whole tree (iterative)
+    d = _cse_dense(t, s)
+    d == 0 || return d
+    e isa OpExpr || return _cse_fresh!(t, s, e, Int[])
+    # frame: (node, its structural id, child slots, child CSE ids so far)
+    stack = Tuple{OpExpr, Int, Vector{ASTExpr}, Vector{Int}}[(e, s, _cse_children(e), Int[])]
+    id = 0
+    while !isempty(stack)
+        n, sn, cs, kids = stack[end]
+        if length(kids) < length(cs)
+            c = cs[length(kids) + 1]
+            sc = sid(t.ix, c)               # memo hit / leaf lookup
+            dc = _cse_dense(t, sc)
+            if dc != 0
+                push!(kids, dc)
+            elseif c isa OpExpr
+                push!(stack, (c, sc, _cse_children(c), Int[]))
+            else
+                push!(kids, _cse_fresh!(t, sc, c, Int[]))
+            end
+            continue
+        end
+        pop!(stack)
+        id = _cse_fresh!(t, sn, n, kids)
+        isempty(stack) || push!(stack[end][4], id)
+    end
     return id
-end
-
-# Rewrite: replace every subtree whose id is `target` by `repl`, recomputing
-# original ids bottom-up against the SAME (read-only) table. Returns
-# (rewritten node, ORIGINAL id of `e`).
-function _replace_id(e::ASTExpr, it::_Intern, target::Int, repl::ASTExpr)
-    childids = Int[]; newchildren = ASTExpr[]
-    if e isa OpExpr
-        map_children(e) do c
-            nc, cid = _replace_id(c, it, target, repl)
-            push!(childids, cid); push!(newchildren, nc)
-            c
-        end
-    end
-    key, _ = _shell_key(e, childids, it)
-    id = it.ids[key]
-    id == target && return (repl, id)
-    if e isa OpExpr && !isempty(newchildren)
-        i = Ref(0)
-        e = map_children(_ -> (i[] += 1; newchildren[i[]]), e)
-    end
-    return (e, id)
 end
 
 # ── extraction ───────────────────────────────────────────────────────────────
@@ -88,49 +142,84 @@ end
     cse_templates(exprs; min_nodes = 12, prefix = "jt")
         -> (templates::OrderedDict{String,ASTExpr}, rewritten::Vector{ASTExpr})
 
-Greedy largest-first extraction of repeated subtrees over `exprs`. Each
-round interns the whole working set (input expressions plus the bodies of
-templates already extracted), picks the largest subtree that occurs at least
-twice and spans at least `min_nodes` AST nodes, names it `"\$(prefix)\$k"`,
-and replaces every occurrence — in the inputs AND in earlier template
-bodies — with an `apply_expression_template` reference. Terminates when no
-candidate remains; the result is a reference DAG (acyclic by strict
-containment). Deterministic: ties between equally-sized candidates break by
-interning (first-encounter) order over the given expression order.
+Extract repeated subtrees of `exprs` by the rule of esm-jacobian-spec §4.1.
+Every structurally distinct subtree is visited once, largest first (ties in
+first-encounter post-order over the inputs). Its count is its number of
+occurrences that remain once every larger extracted subtree is replaced by a
+reference and kept once as a template body. A subtree that spans at least
+`min_nodes` AST nodes and still counts at least 2 is extracted, named
+`"\$(prefix)\$k"` in visiting order, and every occurrence (in the inputs and
+in larger template bodies) is replaced by an `apply_expression_template`
+reference. The result is a reference DAG, acyclic by strict containment, and
+a body only references templates named after it. Θ(distinct subtrees ·
+log) after one walk of the inputs (a subtree shared in memory is walked
+once).
 """
 function cse_templates(
         exprs::Vector{ASTExpr}; min_nodes::Int = 12,
         prefix::String = "jt"
     )
-    work = ASTExpr[exprs...]
-    nin = length(work)
-    names = String[]
-    while true
-        it = _Intern()
-        for e in work
-            _intern!(it, e)
-        end
-        best = 0
-        for id in 1:length(it.reps)
-            it.counts[id] >= 2 || continue
-            it.nnodes[id] >= min_nodes || continue
-            r = it.reps[id]
-            r isa OpExpr || continue
-            r.op == "apply_expression_template" && continue
-            (best == 0 || it.nnodes[id] > it.nnodes[best]) && (best = id)
-        end
-        best == 0 && break
-        name = "$(prefix)$(length(names) + 1)"
-        push!(names, name)
-        repl = OpExpr("apply_expression_template", ASTExpr[]; name = name)
-        body = it.reps[best]
-        work = ASTExpr[_replace_id(e, it, best, repl)[1] for e in work]
-        push!(work, body)   # the body joins the pool: later rounds may factor it
+    t = _CSEIndex()
+    roots = Int[_cse_id!(t, e) for e in exprs]
+    n = length(t.reps)
+    # Largest first; equal sizes cannot contain one another, so the tie order
+    # only decides names, and first encounter (id order) settles it.
+    order = sortperm(t.nnodes; rev = true, alg = Base.Sort.DEFAULT_STABLE)
+    uses = zeros(Int, n)
+    for r in roots
+        uses[r] += 1
     end
-    templates = OrderedDict{String, ASTExpr}(
-        n => work[nin + k] for (k, n) in enumerate(names)
-    )
-    return templates, work[1:nin]
+    name = Vector{String}(undef, n)
+    extracted = falses(n)
+    names = String[]
+    for id in order
+        # Nothing from here on is large enough to extract, and a count only
+        # decides extraction, so the rest need no counts.
+        t.nnodes[id] < min_nodes && break
+        r = t.reps[id]
+        if uses[id] >= 2 && t.nnodes[id] >= min_nodes &&
+                r isa OpExpr && r.op != "apply_expression_template"
+            extracted[id] = true
+            push!(names, "$(prefix)$(length(names) + 1)")
+            name[id] = names[end]
+        end
+        # An extracted subtree's body is kept once; any other is inlined
+        # wherever it occurs.
+        w = extracted[id] ? 1 : uses[id]
+        for k in t.kids[id]
+            uses[k] += w
+        end
+    end
+    isempty(names) && return OrderedDict{String, ASTExpr}(), ASTExpr[exprs...]
+    # Rewrite bottom-up in id order (children first): `body[id]` is the
+    # subtree with its children rewritten, `out[id]` what a parent holds.
+    body = Vector{ASTExpr}(undef, n)
+    out = Vector{ASTExpr}(undef, n)
+    for id in 1:n
+        r = t.reps[id]
+        b = isempty(t.kids[id]) ? r : _cse_rebuild(r, t.kids[id], out)
+        body[id] = b
+        out[id] = extracted[id] ?
+            OpExpr("apply_expression_template", ASTExpr[]; name = name[id]) : b
+    end
+    templates = OrderedDict{String, ASTExpr}()
+    for id in order
+        extracted[id] && (templates[name[id]] = body[id])
+    end
+    return templates, ASTExpr[out[r] for r in roots]
+end
+
+# `r` with each child slot replaced by `out` of its CSE id. `map_children`
+# visits fields in its own order, so a child is matched to its slot by
+# identity; a child that is no slot (inside `ranges`) is kept. Identity-
+# preserving: an unchanged node is returned as is.
+function _cse_rebuild(r::OpExpr, ks::Vector{Int}, out::Vector{ASTExpr})::ASTExpr
+    cs = _cse_children(r)
+    slot = IdDict{Any, Int}()
+    for (j, c) in enumerate(cs)
+        get!(slot, c, j)
+    end
+    return map_children(c -> (j = get(slot, c, 0); j == 0 ? c : out[ks[j]]), r)
 end
 
 """

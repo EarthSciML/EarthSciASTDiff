@@ -110,29 +110,39 @@ pub(crate) fn hoist_observed_bands(
     let allnames: HashSet<String> = boxof.iter().flat_map(|b| b.keys().cloned()).collect();
 
     // Which entries evaluate each template, transitively through the
-    // reference DAG.
+    // reference DAG. A body only reads templates named after it
+    // (`cse_templates`), so one pass in name order closes the sets; each set
+    // is a bit set over entries, iterated in ascending entry order.
     let refs_body: HashMap<&str, HashSet<String>> =
         tnames.iter().map(|n| (*n, refs_of(body[n]))).collect();
-    let mut uses: HashMap<&str, HashSet<usize>> =
-        tnames.iter().map(|n| (*n, HashSet::new())).collect();
+    let words = bands.len().div_ceil(64);
+    let mut uses: HashMap<&str, Vec<u64>> =
+        tnames.iter().map(|n| (*n, vec![0u64; words])).collect();
     for (k, e) in rewritten.iter().enumerate() {
         for n in refs_of(e) {
-            uses.get_mut(n.as_str()).unwrap().insert(k);
+            uses.get_mut(n.as_str()).unwrap()[k / 64] |= 1u64 << (k % 64);
         }
     }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for n in &tnames {
-            for n2 in &refs_body[n] {
-                let add: Vec<usize> = uses[n].iter().copied().collect();
-                let tgt = uses.get_mut(n2.as_str()).unwrap();
-                let before = tgt.len();
-                tgt.extend(add);
-                changed |= tgt.len() != before;
+    for n in &tnames {
+        let src = uses[n].clone();
+        for n2 in &refs_body[n] {
+            for (w, x) in uses.get_mut(n2.as_str()).unwrap().iter_mut().zip(&src) {
+                *w |= x;
             }
         }
     }
+    let members = |set: &[u64]| -> Vec<usize> {
+        let mut out = Vec::new();
+        for (wi, &w) in set.iter().enumerate() {
+            let mut w = w;
+            while w != 0 {
+                out.push(wi * 64 + w.trailing_zeros() as usize);
+                w &= w - 1;
+            }
+        }
+        out
+    };
+    let uses: HashMap<&str, Vec<usize>> = tnames.iter().map(|n| (*n, members(&uses[n]))).collect();
     let live: Vec<&str> = tnames
         .iter()
         .copied()
@@ -179,12 +189,11 @@ pub(crate) fn hoist_observed_bands(
     // Use boxes (deduplicated, ascending entry order).
     let mut boxes: HashMap<&str, Vec<Vec<(i64, i64)>>> = HashMap::new();
     for n in &live {
-        let mut ks: Vec<usize> = uses[n].iter().copied().collect();
-        ks.sort();
         let mut bs: Vec<Vec<(i64, i64)>> = Vec::new();
-        for k in ks {
+        let mut seen: HashSet<Vec<(i64, i64)>> = HashSet::new();
+        for &k in &uses[n] {
             let b: Vec<(i64, i64)> = s[n].iter().map(|x| boxof[k][x]).collect();
-            if !bs.contains(&b) {
+            if seen.insert(b.clone()) {
                 bs.push(b);
             }
         }

@@ -549,9 +549,55 @@ factoring, not hygienic abstraction.
   error.
 - The field is an emission-size optimization only: a block with templates
   and its fully-expanded form denote the same Jacobian, and producers MAY
-  emit either. Deterministic producers SHOULD extract greedily
-  largest-first with deterministic naming (`jt1`, `jt2`, … in extraction
-  order) so byte-comparison goldens are stable.
+  emit either. Deterministic producers SHOULD extract by the rule below, so
+  byte-comparison goldens are stable; the bindings of this repository MUST.
+
+**Extraction rule.** The same rule picks a block's templates and the
+hoisted observed of an evaluation or product document (§8.1, §9.1). Its
+inputs are the coefficients, in entry order, and a threshold `min_nodes`
+(the producer option `cse_min_nodes`, default 12).
+
+1. *Distinct subtrees.* Two subtrees are the same when they serialize to
+   the same stable JSON (§5 item 2), except that an integer leaf is never
+   the same as a float leaf (`1` and `1.0` differ), `0.0` and `-0.0`
+   differ, and every NaN is the same. A node's *child slots* are, in this
+   order: the elements of `args`; `lower`; `upper`; `expr`; `filter`; the
+   elements of `values`; the entries of `axes` by ascending key; `key`; the
+   entries of `bindings` by ascending key (absent fields contribute none).
+   Expressions in any other field (for example inside `ranges`) are part of
+   the node itself, not child slots. The size `|s|` of a distinct subtree
+   `s` is its number of AST nodes, leaves included, counted through child
+   slots.
+2. *Visiting order.* Number the distinct subtrees in first-encounter
+   post-order over the coefficients in entry order: a node's child slots in
+   the order of item 1, every node after its children. This order is fixed
+   by the format, not by any binding's traversal, so the numbering is the
+   same in every binding. Visit the distinct subtrees once each, by
+   decreasing size, equal sizes by that number.
+3. *Remaining count.* The count of `s` is the number of coefficients that
+   are `s`, plus, for every distinct subtree `p` with `s` in a child slot,
+   once per such slot: `1` when `p` was extracted, else the count of `p`.
+   Every such `p` is larger than `s`, so it was visited, and its count and
+   decision are final. This is the number of occurrences of `s` left once
+   every larger extracted subtree has been replaced by a reference and its
+   body kept once.
+4. *Extraction.* `s` is extracted when it is an operator node other than
+   `apply_expression_template` (including an operator node with no child
+   slots), `|s| ≥ min_nodes`, and its count is at least 2. The `k`-th extracted subtree in visiting order is named
+   `<prefix><k>`: `jt<k>` in a block, `Jcse<k>` in a derived document (with
+   `x` appended to `Jcse` until no variable of the source has a name that
+   starts with the prefix).
+5. *Rewriting.* Every occurrence of an extracted subtree in a child slot
+   of a coefficient or of the body of a larger extracted subtree (or that is
+   a whole coefficient) becomes a reference to it;
+   its own body is the subtree with its children rewritten. A body
+   therefore references only subtrees named after it, and the reference
+   graph is acyclic. Templates are listed in name order.
+
+Equal sizes cannot contain one another, so the order among them decides
+only the names, not what is extracted. The rule is the fixed point of
+greedily extracting the largest repeated subtree round by round, computed
+in one pass over the distinct subtrees.
 
 ### 4.2 Time-derivative bands (`wrt: "time"`)
 
@@ -1261,7 +1307,26 @@ The derived model is named `JacobianEval` and holds:
   kept. The source's other equations, such as a model's `ic` equations, are
   kept;
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
-  index sets) and their definitions, and the recurrence auxiliaries (§4.5);
+  index sets) and their definitions, and the recurrence auxiliaries (§4.5).
+  Hoisting extracts the coefficients' repeated subtrees by §4.1's rule
+  (prefix `Jcse`) and declares each, in name order, as an observed. Its
+  axes are the free index names of its body (through the bodies it
+  references) that some entry binds as a row index or a `contracted`
+  dimension, sorted by code point. With none it is a scalar observed,
+  `{"type": "unknown"}`, defined by its body. Otherwise it is declared
+  `{"type": "unknown", "shape": [...]}` and defined by a `makearray`: first
+  the region `[1, eₐ]` per axis `a` with value `0.0`, then one region per
+  distinct use box with value a `faq` (`output_idx` the axes, `ranges` the
+  box, `expr` the body). The use boxes are the boxes of the entries that
+  read it, directly or through another body, in ascending entry order with
+  repeats dropped; `eₐ` is the largest upper bound on axis `a` over them.
+  Each reference becomes `index(Jcse<n>, <axes>…)`, or the bare name for a
+  scalar. The index set of an axis of extent `m` is `jcax<m>`, with `x`
+  appended while the source has an index set of that name and another size;
+  an existing one of that name and size is reused, and a new one is added
+  in order of first need, in name order. If an entry reading a hoisted
+  observed does not bind all of its axes, the document is emitted without
+  hoisting;
 - one band field per entry, in entry order: `J_k`, an `unknown` with default
   `0.0` (and, for an array row or an entry with `contracted` dimensions, the
   field `shape` above: the row variable's index sets, then one `jcax<n>`

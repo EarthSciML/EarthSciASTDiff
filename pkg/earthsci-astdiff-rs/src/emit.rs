@@ -3,6 +3,7 @@
 //! reference byte-for-byte.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use earthsci_ast::{free_variables, Expr, ExpressionNode, ParameterUpdate, VariableType};
 use serde_json::{json, Map, Value};
@@ -11,7 +12,8 @@ use crate::bands::{Band, Ctx};
 use crate::branches::canon_lits;
 use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed_bands;
-use crate::helpers::{map_expr_children, ser_expr, stable_json};
+use crate::hashcons::{map_children_shared, StructIndex};
+use crate::helpers::{map_expr_children, ser_expr};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, StructureEntry, Wrt};
 use crate::second_order::JacEntry2;
@@ -99,140 +101,193 @@ fn ser_fields(
 
 // ── template CSE (cse.jl) ────────────────────────────────────────────────────
 
-struct Intern {
-    ids: HashMap<String, usize>,
+/// Every structurally distinct subtree of the inputs with an integer id
+/// (1-based), in first-encounter post-order over the child slots of
+/// esm-jacobian-spec §4.1 — `for_each_child`'s contract order, which is the
+/// spec's — so a child's id is smaller than its parent's. Keying is
+/// [`StructIndex`] with exact leaves (`1` is not `1.0`, as in the
+/// reference); since every key is made in this walk, its ids are the CSE ids.
+/// Nodes are also memoized by identity: a subtree the inputs share in memory
+/// is walked once.
+struct CseIndex {
+    ix: StructIndex,
     reps: Vec<Expr>,
+    kids: Vec<Vec<usize>>,
     nnodes: Vec<usize>,
-    counts: Vec<usize>,
 }
 
-impl Intern {
+/// A node being interned: its children (collected once) and their ids so far.
+struct Frame<'a> {
+    x: &'a Expr,
+    a: &'a Arc<ExpressionNode>,
+    cs: Vec<&'a Expr>,
+    ids: Vec<(*const Expr, usize)>,
+}
+
+impl<'a> Frame<'a> {
+    fn new(x: &'a Expr, a: &'a Arc<ExpressionNode>) -> Self {
+        let mut cs: Vec<&'a Expr> = Vec::new();
+        a.for_each_child(&mut |c: &'a Expr| cs.push(c));
+        Frame {
+            x,
+            a,
+            ids: Vec::with_capacity(cs.len()),
+            cs,
+        }
+    }
+}
+
+impl CseIndex {
     fn new() -> Self {
-        Intern {
-            ids: HashMap::new(),
+        CseIndex {
+            ix: StructIndex::exact(),
             reps: vec![],
+            kids: vec![],
             nnodes: vec![],
-            counts: vec![],
         }
     }
 
-    fn intern(&mut self, e: &Expr) -> usize {
-        let mut childids = Vec::new();
-        if let Expr::Operator(n) = e {
-            n.map_children(&mut |c: &Expr| {
-                childids.push(self.intern(c));
-                c.clone()
-            });
+    /// Record `e` as the representative of `id` when `id` is new.
+    fn note(&mut self, id: usize, e: &Expr, kids: impl FnOnce() -> Vec<usize>) -> usize {
+        if id > self.reps.len() {
+            debug_assert_eq!(id, self.reps.len() + 1, "ids are handed out in walk order");
+            let kids = kids();
+            let nn = 1 + kids.iter().map(|&k| self.nnodes[k - 1]).sum::<usize>();
+            self.reps.push(e.clone());
+            self.kids.push(kids);
+            self.nnodes.push(nn);
         }
-        let (key, nn) = self.shell_key(e, &childids);
-        if let Some(&id) = self.ids.get(&key) {
-            self.counts[id - 1] += 1;
-            return id;
-        }
-        self.reps.push(e.clone());
-        self.nnodes.push(nn);
-        self.counts.push(1);
-        let id = self.reps.len();
-        self.ids.insert(key, id);
         id
     }
 
-    fn shell_key(&self, e: &Expr, childids: &[usize]) -> (String, usize) {
-        if let Expr::Operator(n) = e {
-            let mut i = 0usize;
-            let shell = n.map_children(&mut |_c: &Expr| {
-                i += 1;
-                Expr::Variable(format!("__cse⟦{}⟧", childids[i - 1]))
-            });
-            let nn = 1 + childids.iter().map(|&c| self.nnodes[c - 1]).sum::<usize>();
-            (stable_json(&ser_expr(&Expr::operator(shell))), nn)
-        } else {
-            (stable_json(&ser_expr(e)), 1)
+    fn leaf_id(&mut self, e: &Expr) -> usize {
+        let id = self.ix.leaf_id(e);
+        self.note(id, e, Vec::new)
+    }
+
+    /// The id of `e`, interning every subtree not seen before. Iterative:
+    /// a deep `ifelse` chain costs no stack.
+    fn intern(&mut self, e: &Expr) -> usize {
+        let Expr::Operator(root) = e else {
+            return self.leaf_id(e);
+        };
+        if let Some(id) = self.ix.cached(root) {
+            return id;
+        }
+        let mut stack: Vec<Frame> = vec![Frame::new(e, root)];
+        loop {
+            let top = stack.len() - 1;
+            let f = &stack[top];
+            if f.ids.len() < f.cs.len() {
+                let c = f.cs[f.ids.len()];
+                let id = match c {
+                    Expr::Operator(ca) => match self.ix.cached(ca) {
+                        Some(id) => id,
+                        None => {
+                            stack.push(Frame::new(c, ca));
+                            continue;
+                        }
+                    },
+                    _ => self.leaf_id(c),
+                };
+                stack[top].ids.push((c as *const Expr, id));
+                continue;
+            }
+            let f = stack.pop().expect("a frame");
+            let id = self.ix.shell_id(f.a, &f.ids);
+            self.ix.remember(f.a, id);
+            self.note(id, f.x, || f.ids.iter().map(|k| k.1).collect());
+            match stack.last_mut() {
+                Some(p) => p.ids.push((f.x as *const Expr, id)),
+                None => return id,
+            }
         }
     }
 }
 
-fn replace_id(e: &Expr, it: &Intern, target: usize, repl: &Expr) -> (Expr, usize) {
-    let mut childids = Vec::new();
-    let mut newchildren = Vec::new();
-    if let Expr::Operator(n) = e {
-        n.map_children(&mut |c: &Expr| {
-            let (nc, cid) = replace_id(c, it, target, repl);
-            childids.push(cid);
-            newchildren.push(nc);
-            c.clone()
-        });
-    }
-    let (key, _) = it.shell_key(e, &childids);
-    let eid = it.ids[&key];
-    if eid == target {
-        return (repl.clone(), eid);
-    }
-    let out = if !newchildren.is_empty() {
-        let mut i = 0usize;
-        map_expr_children(e, &mut |_c| {
-            i += 1;
-            newchildren[i - 1].clone()
-        })
-    } else {
-        e.clone()
-    };
-    (out, eid)
-}
-
-/// Greedy largest-first extraction; deterministic (first-encounter order,
-/// first-max tie-break) to match the reference byte-for-byte.
+/// Extract repeated subtrees of `exprs` by the rule of esm-jacobian-spec
+/// §4.1: every distinct subtree is visited once, largest first (ties in
+/// first-encounter order); its count is its number of occurrences left once
+/// every larger extracted subtree is a reference whose body is kept once;
+/// one of at least `min_nodes` nodes that still counts at least 2 is
+/// extracted and named `<prefix><k>` in visiting order. Byte-identical to the
+/// reference.
 pub fn cse_templates(
     exprs: &[Expr],
     min_nodes: usize,
     prefix: &str,
 ) -> (Vec<(String, Expr)>, Vec<Expr>) {
-    let mut work: Vec<Expr> = exprs.to_vec();
-    let nin = work.len();
-    let mut names: Vec<String> = Vec::new();
-    loop {
-        let mut it = Intern::new();
-        for e in &work {
-            it.intern(e);
-        }
-        let mut best = 0usize;
-        for id in 1..=it.reps.len() {
-            if it.counts[id - 1] < 2 || it.nnodes[id - 1] < min_nodes {
-                continue;
-            }
-            let Expr::Operator(n) = &it.reps[id - 1] else {
-                continue;
-            };
-            if n.op == "apply_expression_template" {
-                continue;
-            }
-            if best == 0 || it.nnodes[id - 1] > it.nnodes[best - 1] {
-                best = id;
-            }
-        }
-        if best == 0 {
+    let mut t = CseIndex::new();
+    let roots: Vec<usize> = exprs.iter().map(|e| t.intern(e)).collect();
+    let n = t.reps.len();
+    // ids (0-based here) largest first; the sort is stable, so ties keep id
+    // order. Equal sizes cannot contain one another: the tie order only
+    // decides names.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| t.nnodes[b].cmp(&t.nnodes[a]));
+    let mut uses = vec![0usize; n];
+    for &r in &roots {
+        uses[r - 1] += 1;
+    }
+    let mut name: Vec<Option<String>> = vec![None; n];
+    let mut names: Vec<usize> = Vec::new();
+    for &id in &order {
+        // Nothing from here on is large enough to extract, and a count only
+        // decides extraction, so the rest need no counts.
+        if t.nnodes[id] < min_nodes {
             break;
         }
-        let name = format!("{prefix}{}", names.len() + 1);
-        names.push(name.clone());
-        let repl = Expr::operator(ExpressionNode {
-            op: "apply_expression_template".into(),
-            name: Some(name),
-            ..Default::default()
+        let candidate = uses[id] >= 2
+            && t.nnodes[id] >= min_nodes
+            && matches!(&t.reps[id], Expr::Operator(a) if a.op != "apply_expression_template");
+        if candidate {
+            names.push(id);
+            name[id] = Some(format!("{prefix}{}", names.len()));
+        }
+        let w = if candidate { 1 } else { uses[id] };
+        for &k in &t.kids[id] {
+            uses[k - 1] += w;
+        }
+    }
+    if names.is_empty() {
+        return (vec![], exprs.to_vec());
+    }
+    // Rewrite bottom-up in id order (children first).
+    let mut body: Vec<Expr> = Vec::with_capacity(n);
+    let mut out: Vec<Expr> = Vec::with_capacity(n);
+    for id in 0..n {
+        let r = &t.reps[id];
+        // `map_children_shared` calls back in `for_each_child` order (the
+        // order of `kids`) and keeps the node itself when no child changed,
+        // so a subtree with nothing extracted below it is not copied.
+        let b = if t.kids[id].is_empty() {
+            r.clone()
+        } else {
+            let ks = &t.kids[id];
+            let mut j = 0usize;
+            map_children_shared(r, &mut |_c: &Expr| {
+                j += 1;
+                out[ks[j - 1] - 1].clone()
+            })
+        };
+        out.push(match &name[id] {
+            Some(nm) => Expr::operator(ExpressionNode {
+                op: "apply_expression_template".into(),
+                name: Some(nm.clone()),
+                ..Default::default()
+            }),
+            None => b.clone(),
         });
-        let body = it.reps[best - 1].clone();
-        work = work
-            .iter()
-            .map(|e| replace_id(e, &it, best, &repl).0)
-            .collect();
-        work.push(body);
+        body.push(b);
     }
     let templates = names
         .iter()
-        .enumerate()
-        .map(|(k, n)| (n.clone(), work[nin + k].clone()))
+        .map(|&id| (name[id].clone().unwrap(), body[id].clone()))
         .collect();
-    (templates, work[..nin].to_vec())
+    (
+        templates,
+        roots.iter().map(|&r| out[r - 1].clone()).collect(),
+    )
 }
 
 // ── structure classification (structure.jl) ─────────────────────────────────
