@@ -1,23 +1,52 @@
 //! Branch-aware simplification + wire-canonical literals (the reference's
 //! simplify_branches.jl). `simp` is THE coefficient simplifier.
 
+use std::collections::HashMap;
+
 use earthsci_ast::Expr;
 
-use crate::helpers::{is_zero, map_expr_children, op, skey};
+use crate::hashcons::{map_children_shared, same_expr, StructHash, StructIndex};
+use crate::helpers::{is_zero, op};
 use crate::simplify_port::simplify_jl;
 
 /// `ifelse`-aware simplification, the swell control for coefficients of
 /// limiter-heavy schemes: equal branches collapse and same-condition tests
 /// are pruned.
+///
+/// Conditions and branches are compared by structure at every `ifelse` the
+/// pass meets, so the comparison must not cost the subtree's size (a
+/// limiter nests its tests, and each level would re-serialize everything
+/// below it). As in the reference (simplify_branches.jl): a structural hash
+/// ([`StructHash`]) settles the common unequal case in one compare, a match
+/// is confirmed by structural id ([`StructIndex`]), the rewrites keep every
+/// unchanged node ([`map_children_shared`]) so the identity memos of both
+/// see each node once, and a census of the conditions already built skips
+/// the same-condition descent when there is nothing to prune.
 pub fn simplify_branches(e: &Expr) -> Expr {
-    sbr(e)
+    sbr(e, &mut SbrCtx::default())
 }
 
-fn sbr(e: &Expr) -> Expr {
-    let Expr::Operator(_) = e else {
+#[derive(Default)]
+struct SbrCtx {
+    ix: StructIndex,
+    hx: StructHash,
+    /// condition hash → `ifelse` nodes on it the pass has already built
+    seen: HashMap<u64, usize>,
+}
+
+impl SbrCtx {
+    /// Structural equality: identity, then the hash filter, then the ids.
+    fn same(&mut self, x: &Expr, y: &Expr) -> bool {
+        same_expr(x, y)
+            || (self.hx.shash(x) == self.hx.shash(y) && self.ix.sid(x) == self.ix.sid(y))
+    }
+}
+
+fn sbr(e: &Expr, cx: &mut SbrCtx) -> Expr {
+    if !matches!(e, Expr::Operator(_)) {
         return e.clone();
-    };
-    let e2 = map_expr_children(e, &mut |c| sbr(c));
+    }
+    let e2 = map_children_shared(e, &mut |c| sbr(c, cx));
     let Expr::Operator(n2) = &e2 else {
         unreachable!()
     };
@@ -28,23 +57,53 @@ fn sbr(e: &Expr) -> Expr {
     if matches!(c, Expr::Integer(_) | Expr::Number(_)) {
         return if is_zero(c) { b.clone() } else { a.clone() };
     }
-    let ck = skey(c);
-    let a2 = assume(a, &ck, true);
-    let b2 = assume(b, &ck, false);
-    if skey(&a2) == skey(&b2) {
+    let hck = cx.hx.shash(c);
+    // The pass is bottom-up, so every `ifelse` that survived into either
+    // branch has been built and counted: a condition with no count has no
+    // nested twin to collapse, and `assume` would return both branches
+    // unchanged. Counting by hash keeps the census O(1); a collision only
+    // takes the descent that would always have been taken.
+    let (a2, b2) = if cx.seen.get(&hck).copied().unwrap_or(0) == 0 {
+        (a.clone(), b.clone())
+    } else {
+        let ck = cx.ix.sid(c);
+        (assume(a, hck, ck, true, cx), assume(b, hck, ck, false, cx))
+    };
+    if cx.same(&a2, &b2) {
         return a2;
+    }
+    *cx.seen.entry(hck).or_insert(0) += 1;
+    if same_expr(&a2, a) && same_expr(&b2, b) && is_plain(n2) {
+        return e2;
     }
     op("ifelse", vec![c.clone(), a2, b2])
 }
 
-fn assume(e: &Expr, ck: &str, val: bool) -> Expr {
+/// Whether the node is what `op(n.op, n.args)` builds: no field besides its
+/// operator and arguments. Such a node can be kept as is where the pass
+/// would rebuild it.
+fn is_plain(n: &earthsci_ast::ExpressionNode) -> bool {
+    let mut shell = n.clone();
+    shell.op.clear();
+    shell.args.clear();
+    shell == earthsci_ast::ExpressionNode::default()
+}
+
+/// `e` under the assumption that the condition identified by (`hck`, `ck`)
+/// has the truth value `val`: every `ifelse` on that same condition
+/// collapses to the corresponding branch. `hck` filters, `ck` decides.
+fn assume(e: &Expr, hck: u64, ck: usize, val: bool, cx: &mut SbrCtx) -> Expr {
     let Expr::Operator(n) = e else {
         return e.clone();
     };
-    if n.op == "ifelse" && n.args.len() == 3 && skey(&n.args[0]) == ck {
-        return assume(&n.args[if val { 1 } else { 2 }], ck, val);
+    if n.op == "ifelse"
+        && n.args.len() == 3
+        && cx.hx.shash(&n.args[0]) == hck
+        && cx.ix.sid(&n.args[0]) == ck
+    {
+        return assume(&n.args[if val { 1 } else { 2 }], hck, ck, val, cx);
     }
-    map_expr_children(e, &mut |x| assume(x, ck, val))
+    map_children_shared(e, &mut |x| assume(x, hck, ck, val, cx))
 }
 
 const INT64_MAXF: f64 = 9_223_372_036_854_775_807.0;
@@ -66,7 +125,7 @@ pub fn canon_lit(e: &Expr) -> Expr {
 
 pub fn canon_lits(e: &Expr) -> Expr {
     match e {
-        Expr::Operator(_) => map_expr_children(e, &mut |c| canon_lits(c)),
+        Expr::Operator(_) => map_children_shared(e, &mut canon_lits),
         _ => canon_lit(e),
     }
 }

@@ -15,7 +15,9 @@
 # WHAT IT DOES. Bottom-up interning: each structurally distinct subtree gets
 # an integer id, so equality is an `Int` compare. A node's table key is its
 # own SHELL — the node with every child replaced by a placeholder carrying
-# that child's id — which is O(node fields), not O(subtree). Keying a whole
+# that child's id — which is O(node fields), not O(subtree); a node with no
+# field but `op` and `args` (most of them) is keyed by its operator and
+# children's ids directly, with no serialization at all. Keying a whole
 # tree is therefore Θ(n) and one comparison is O(1). This is the same trick
 # `_Intern` (cse.jl) uses; that one keeps occurrence counts and
 # representatives because CSE needs them, this is the equality-only version
@@ -34,9 +36,21 @@ Interning table for structural expression equality. See [`sid`](@ref).
 """
 struct StructIndex
     ids::Dict{String, Int}        # shell key → id
+    # leaves, by value (`Dict` keys compare by `isequal`: `0.0` and `-0.0`
+    # differ, every `NaN` is one key, exactly as their `string`s do)
+    vars::Dict{String, Int}
+    ints::Dict{Int64, Int}
+    floats::Dict{Float64, Int}
+    # an operator node with no field but `op` and `args`, by operator and
+    # argument ids: the bulk of a coefficient, keyed without serializing
+    plain::Dict{Tuple{String, Vector{Int}}, Int}
+    n::Base.RefValue{Int}         # ids handed out; both tables draw from it
     memo::IdDict{OpExpr, Int}     # node identity → id (0 is "absent")
 end
-StructIndex() = StructIndex(Dict{String, Int}(), IdDict{OpExpr, Int}())
+StructIndex() = StructIndex(
+    Dict{String, Int}(), Dict{String, Int}(), Dict{Int64, Int}(), Dict{Float64, Int}(),
+    Dict{Tuple{String, Vector{Int}}, Int}(), Ref(0), IdDict{OpExpr, Int}()
+)
 
 # Distinct from cse.jl's `__cse⟦…⟧` so a tree that already carries CSE
 # placeholders interns without collision.
@@ -60,32 +74,49 @@ function sid(ix::StructIndex, e::ASTExpr)::Int
     end
     # Leaves are immutable, so `===` identity is not a reliable memo key for
     # them (types.jl) and every occurrence is re-keyed. Roughly half the nodes
-    # of a lowered RHS are leaves, so they get a direct key instead of a
-    # serialize + JSON round trip. Any INJECTIVE encoding will do — ids are
-    # private to one index — and the `{` an `OpExpr` shell key always starts
-    # with keeps the two spaces apart. `IntExpr(1)` and `NumExpr(1.0)` are
-    # different values (types.jl) and get different keys, as they must.
-    e isa VarExpr && return _intern_key!(ix, "v" * e.name)
-    e isa IntExpr && return _intern_key!(ix, "i" * string(e.value))
-    e isa NumExpr && return _intern_key!(ix, "n" * string(e.value))
+    # of a lowered RHS are leaves, so they are keyed by value, in a table per
+    # kind, instead of by a serialize + JSON round trip (or a key string built
+    # per occurrence). `IntExpr(1)` and `NumExpr(1.0)` are different values
+    # (types.jl) and land in different tables, as they must.
+    e isa VarExpr && return _id_in!(ix.vars, ix.n, e.name)
+    e isa IntExpr && return _id_in!(ix.ints, ix.n, e.value)
+    e isa NumExpr && return _id_in!(ix.floats, ix.n, e.value)
     return _intern_key!(ix, stable_json(EarthSciAST.serialize_expression(e)))
 end
 
-_intern_key!(ix::StructIndex, k::String)::Int =
-    get!(ix.ids, k, length(ix.ids) + 1)
+_intern_key!(ix::StructIndex, k::String)::Int = _id_in!(ix.ids, ix.n, k)
+_id_in!(d::Dict{K, Int}, n::Base.RefValue{Int}, k::K) where {K} =
+    get!(() -> (n[] += 1), d, k)
 
-# The id of operator node `e` whose children have ids `kids`: the key of its
-# SHELL, every child replaced by a placeholder carrying that child's id.
+# Whether `e` has no field but `op` and `args` set: it then serializes as
+# `{"op", "args"}` alone, since `serialize_expression` writes a field only
+# when it is not `nothing`.
+@generated function _plain_node(e::OpExpr)
+    fs = [f for f in fieldnames(OpExpr) if f !== :op && f !== :args]
+    isempty(fs) && return true
+    return Expr(:&&, (:(getfield(e, $(QuoteNode(f))) === nothing) for f in fs)...)
+end
+
+# The id of operator node `e` whose children have ids `kids`. A node with
+# only `op` and `args` is keyed by its operator and argument ids, with no
+# serialization. Any other is keyed by its SHELL, every child replaced by a
+# placeholder carrying that child's id; a shell that serializes as
+# `{"op", "args"}` alone (a set field that is never written) joins the plain
+# table, so the two tables split nodes exactly where `skey` does.
 function _shell_id!(ix::StructIndex, e::OpExpr, kids::Vector{Int})::Int
+    _plain_node(e) && return _id_in!(ix.plain, ix.n, (e.op, kids))
     i = Ref(0)
     shell = map_children(_ -> (i[] += 1; _sid_placeholder(kids[i[]])), e)
-    return _intern_key!(ix, stable_json(EarthSciAST.serialize_expression(shell)))
+    d = EarthSciAST.serialize_expression(shell)
+    length(d) == 2 && haskey(d, "op") && haskey(d, "args") &&
+        return _id_in!(ix.plain, ix.n, (e.op, kids))
+    return _intern_key!(ix, stable_json(d))
 end
 
 # ── the cheap half: a structural hash used as a NEGATIVE filter ──────────────
 #
-# `sid` is exact, but it still pays a (shallow) serialization per distinct
-# node, and the band calculus asks "are these two subtrees equal?" once per
+# `sid` is exact, but it still pays a table insert per distinct node (and a
+# shallow serialization for a node with fields beyond `op`/`args`), and the band calculus asks "are these two subtrees equal?" once per
 # node — where the answer is almost always NO. A hash that equal trees are
 # GUARANTEED to share turns that common case into one `UInt` compare and
 # leaves `sid` to adjudicate the rare match. Measured by sampling the ReSEACT

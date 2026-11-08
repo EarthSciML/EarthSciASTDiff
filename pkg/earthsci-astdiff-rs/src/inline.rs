@@ -8,7 +8,8 @@ use earthsci_ast::free_variables;
 use earthsci_ast::{Expr, ExpressionNode};
 
 use crate::bands::region_bounds;
-use crate::helpers::{add, map_expr_children, op, skey};
+use crate::hashcons::{same_expr, StructIndex};
+use crate::helpers::{add, map_expr_children, op};
 
 pub const MAX_INLINE_PASSES: usize = 64;
 
@@ -53,9 +54,14 @@ pub fn inline_observed_cached(
         shapes,
     };
     let scope = HashSet::new();
+    // The fixpoint test compares the post-inlining right-hand side, the
+    // largest tree of the calculus, once per pass: by identity, else by
+    // structural id (inline.jl), whose memo carries over between passes, not
+    // by serializing both trees.
+    let mut ix = StructIndex::new();
     for _ in 0..MAX_INLINE_PASSES {
         let e2 = inline_once(&cur, obs, &mut fresh, &scope)?;
-        if skey(&e2) == skey(&cur) {
+        if same_expr(&e2, &cur) || ix.sid(&e2) == ix.sid(&cur) {
             return Ok(e2);
         }
         cur = e2;

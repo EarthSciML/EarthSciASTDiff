@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use earthsci_ast::evaluate;
 use earthsci_ast::{Expr, ExpressionNode};
 
-use crate::helpers::map_expr_children;
+use crate::hashcons::map_children_shared;
 
 const TWO63: f64 = 9_223_372_036_854_775_808.0; // 2^63
 
@@ -32,7 +32,10 @@ pub fn simplify_jl(e: &Expr) -> Expr {
     let Expr::Operator(_) = e else {
         return e.clone();
     };
-    let node_e = map_expr_children(e, &mut |c| simplify_jl(c));
+    // unchanged nodes are kept (`map_children_shared`), not copied: the
+    // pass runs twice over every coefficient, and identity memos downstream
+    // see a kept node once
+    let node_e = map_children_shared(e, &mut simplify_jl);
     let Expr::Operator(node) = &node_e else {
         unreachable!()
     };
@@ -74,6 +77,7 @@ pub fn simplify_jl(e: &Expr) -> Expr {
             match nz.len() {
                 0 => Expr::Number(0.0),
                 1 => nz.into_iter().next().unwrap(),
+                n if n == args.len() => node_e.clone(),
                 _ => rebuild(nz),
             }
         }
@@ -89,6 +93,7 @@ pub fn simplify_jl(e: &Expr) -> Expr {
             match no.len() {
                 0 => Expr::Number(1.0),
                 1 => no.into_iter().next().unwrap(),
+                n if n == args.len() => node_e.clone(),
                 _ => rebuild(no),
             }
         }
