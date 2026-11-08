@@ -147,6 +147,27 @@ end
     Q = OpExpr("exp", ASTExpr[OpExpr("+", ASTExpr[x, NumExpr(1.0)])])
     t4, _ = cse_templates(ASTExpr[OpExpr("*", ASTExpr[P, Q])]; min_nodes = 4)
     @test isempty(t4)
+    # map-valued slots go by ascending key, whatever the Dict's order: the
+    # "a" axis (E) is numbered before the "b" axis (D)
+    tl = OpExpr(
+        "table_lookup", ASTExpr[]; table = "t",
+        table_axes = Dict{String, ASTExpr}("b" => D, "a" => E)
+    )
+    t5, _ = cse_templates(ASTExpr[tl, OpExpr("*", ASTExpr[D, E])]; min_nodes = 4)
+    @test [skey(t5["jt1"]), skey(t5["jt2"])] == [skey(E), skey(D)]
+    # an operator with no children is extracted like any other
+    Z = OpExpr("zarg", ASTExpr[])
+    t6, rw6 = cse_templates(ASTExpr[OpExpr("*", ASTExpr[Z, Z])]; min_nodes = 1)
+    @test collect(keys(t6)) == ["jt1"] && skey(t6["jt1"]) == skey(Z)
+    @test skey(rw6[1]) == skey(OpExpr("*", ASTExpr[ref("jt1"), ref("jt1")]))
+    # a deep chain needs no stack per level (sid and the CSE walk iterate)
+    ch = x
+    for _ in 1:200_000
+        ch = OpExpr("+", ASTExpr[ch, IntExpr(1)])
+    end
+    t7, rw7 = cse_templates(ASTExpr[ch, ch]; min_nodes = 12)
+    @test collect(keys(t7)) == ["jt1"] && t7["jt1"] === ch
+    @test rw7[1].op == "apply_expression_template"
 end
 
 @testset "minmod limiter: oracle + swell control" begin

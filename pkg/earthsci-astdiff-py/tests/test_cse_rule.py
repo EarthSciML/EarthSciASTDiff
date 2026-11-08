@@ -44,3 +44,31 @@ def test_an_integer_leaf_is_not_a_float_leaf():
     Q = N("exp", N("+", "x", 1.0))
     tmpl, _ = cse_templates([N("*", P, Q)], min_nodes=4)
     assert tmpl == {}
+
+
+def test_map_slots_are_visited_by_ascending_key():
+    # `axes` written "b" then "a": the spec numbers the "a" entry first
+    # (child slots, §4.1), so equal-size E (under "a") is jt1.
+    D = N("sin", N("+", "x", "z"))
+    E = N("cos", N("+", "y", "z"))
+    tl = ExprNode(op="table_lookup", args=[], table="t", table_axes={"b": D, "a": E})
+    tmpl, _ = cse_templates([tl, N("*", D, E)], min_nodes=4)
+    assert [skey(tmpl["jt1"]), skey(tmpl["jt2"])] == [skey(E), skey(D)]
+
+
+def test_an_operator_with_no_children_is_extracted():
+    Z = N("zarg")
+    tmpl, rw = cse_templates([N("*", Z, Z)], min_nodes=1)
+    assert list(tmpl) == ["jt1"]
+    assert skey(tmpl["jt1"]) == skey(Z)
+    assert skey(rw[0]) == skey(N("*", ref("jt1"), ref("jt1")))
+
+
+def test_a_deep_chain_needs_no_stack_per_level():
+    e = "x"
+    for _ in range(5000):
+        e = N("+", e, 1)
+    tmpl, rw = cse_templates([e, e], min_nodes=12)
+    assert list(tmpl) == ["jt1"]
+    assert tmpl["jt1"] is e  # nothing below it changed: the node itself
+    assert rw[0].op == "apply_expression_template"

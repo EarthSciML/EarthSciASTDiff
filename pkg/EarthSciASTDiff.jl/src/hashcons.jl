@@ -19,8 +19,8 @@
 # field but `op` and `args` (most of them) is keyed by its operator and
 # children's ids directly, with no serialization at all. Keying a whole
 # tree is therefore Θ(n) and one comparison is O(1). `_CSEIndex` (cse.jl)
-# builds on it, keeping representatives and child ids because CSE needs
-# them; this is the equality-only version. It memoizes on node IDENTITY, so
+# builds on it, adding representatives, child ids and sizes because CSE
+# needs them; this is the equality-only version. It memoizes on node IDENTITY, so
 # a structurally shared subtree (`map_children` is identity-preserving, so
 # rewrites keep sharing) is keyed once no matter how many parents reach it.
 #
@@ -62,15 +62,47 @@ Structural id of `e` in `ix`: `sid(ix, a) == sid(ix, b)` iff `skey(a) ==
 skey(b)`. Θ(nodes) to key a tree, O(1) per repeated query.
 """
 function sid(ix::StructIndex, e::ASTExpr)::Int
-    if e isa OpExpr
-        cached = get(ix.memo, e, 0)
-        cached == 0 || return cached
-        kids = Int[]
-        map_children(c -> (push!(kids, sid(ix, c)); c), e)
-        id = _shell_id!(ix, e, kids)
-        ix.memo[e] = id
-        return id
+    e isa OpExpr || return _leaf_sid(ix, e)
+    cached = get(ix.memo, e, 0)
+    cached == 0 || return cached
+    # Iterative post-order: the deep `ifelse`/`+` chains of a document
+    # flattened over a grid would otherwise cost a stack frame per level.
+    # A frame is (node, its children in `map_children` order, their ids).
+    stack = Tuple{OpExpr, Vector{ASTExpr}, Vector{Int}}[(e, _native_children(e), Int[])]
+    id = 0
+    while !isempty(stack)
+        n, cs, kids = stack[end]
+        if length(kids) < length(cs)
+            c = cs[length(kids) + 1]
+            if c isa OpExpr
+                k = get(ix.memo, c, 0)
+                if k == 0
+                    push!(stack, (c, _native_children(c), Int[]))
+                else
+                    push!(kids, k)
+                end
+            else
+                push!(kids, _leaf_sid(ix, c))
+            end
+            continue
+        end
+        pop!(stack)
+        id = _shell_id!(ix, n, kids)
+        ix.memo[n] = id
+        isempty(stack) || push!(stack[end][3], id)
     end
+    return id
+end
+
+# `e`'s children in `map_children` order (the order `_shell_id!` pairs them
+# with their ids).
+function _native_children(e::OpExpr)::Vector{ASTExpr}
+    cs = ASTExpr[]
+    map_children(c -> (push!(cs, c); c), e)
+    return cs
+end
+
+function _leaf_sid(ix::StructIndex, e::ASTExpr)::Int
     # Leaves are immutable, so `===` identity is not a reliable memo key for
     # them (types.jl) and every occurrence is re-keyed. Roughly half the nodes
     # of a lowered RHS are leaves, so they are keyed by value, in a table per

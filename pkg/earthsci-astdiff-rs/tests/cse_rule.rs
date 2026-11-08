@@ -70,3 +70,46 @@ fn an_integer_leaf_is_not_a_float_leaf() {
     let (tmpl, _) = cse_templates(&[node("*", vec![p, q])], 4, "jt");
     assert!(tmpl.is_empty());
 }
+
+#[test]
+fn map_slots_are_visited_by_ascending_key() {
+    // `axes` written "b" then "a": the spec numbers the "a" entry first
+    // (child slots, §4.1), so equal-size E (under "a") is jt1.
+    let d = json!({"op": "sin", "args": [{"op": "+", "args": ["x", "z"]}]});
+    let e = json!({"op": "cos", "args": [{"op": "+", "args": ["y", "z"]}]});
+    let tl = json!({"op": "table_lookup", "args": [], "table": "t",
+                    "axes": {"b": d, "a": e}});
+    let (tmpl, _) = cse_templates(&[ex(tl), ex(json!({"op": "*", "args": [d, e]}))], 4, "jt");
+    assert_eq!(tmpl.len(), 2);
+    assert_eq!(skey(&tmpl[0].1), skey(&ex(e)));
+    assert_eq!(skey(&tmpl[1].1), skey(&ex(d)));
+}
+
+#[test]
+fn an_operator_with_no_children_is_extracted() {
+    let z = json!({"op": "zarg", "args": []});
+    let (tmpl, rw) = cse_templates(&[ex(json!({"op": "*", "args": [z, z]}))], 1, "jt");
+    assert_eq!(tmpl.len(), 1);
+    assert_eq!(skey(&tmpl[0].1), skey(&ex(z)));
+    assert_eq!(
+        skey(&rw[0]),
+        skey(&ex(json!({"op": "*", "args": [rf("jt1"), rf("jt1")]})))
+    );
+}
+
+#[test]
+fn a_deep_chain_needs_no_stack_per_level() {
+    let mut e = Expr::Variable("x".into());
+    for _ in 0..200_000 {
+        e = node("+", vec![e, Expr::Integer(1)]);
+    }
+    let (tmpl, rw) = cse_templates(&[e.clone(), e.clone()], 12, "jt");
+    assert_eq!(tmpl.len(), 1);
+    assert!(matches!(&rw[0], Expr::Operator(a) if a.op == "apply_expression_template"));
+    // the body is the chain itself, not a copy
+    assert!(
+        matches!((&tmpl[0].1, &e), (Expr::Operator(a), Expr::Operator(b)) if std::sync::Arc::ptr_eq(a, b))
+    );
+    // dropping a 200k-deep chain recursively would overflow; leak it
+    std::mem::forget((tmpl, rw, e));
+}

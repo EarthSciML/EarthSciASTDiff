@@ -12,7 +12,8 @@ use crate::bands::{Band, Ctx};
 use crate::branches::canon_lits;
 use crate::clip::RIdx;
 use crate::eval_cse::hoist_observed_bands;
-use crate::helpers::{map_expr_children, ser_expr, stable_json};
+use crate::hashcons::{map_children_shared, StructIndex};
+use crate::helpers::{map_expr_children, ser_expr};
 use crate::jacobian::unsupported_derivative;
 use crate::jacobian::{FirstOrder, JacEntry, StructureEntry, Wrt};
 use crate::second_order::JacEntry2;
@@ -100,113 +101,68 @@ fn ser_fields(
 
 // ── template CSE (cse.jl) ────────────────────────────────────────────────────
 
-/// A leaf by value, as the reference keys it (`isequal`): an integer and a
-/// float are different leaves (`1` is not `1.0`), `0.0` is not `-0.0`, and
-/// every NaN is one leaf.
-#[derive(PartialEq, Eq, Hash)]
-enum CseLeaf {
-    Int(i64),
-    Float(u64),
-    Var(String),
-}
-
-fn cse_leaf(e: &Expr) -> CseLeaf {
-    match e {
-        Expr::Integer(i) => CseLeaf::Int(*i),
-        Expr::Number(x) if x.is_nan() => CseLeaf::Float(f64::NAN.to_bits()),
-        Expr::Number(x) => CseLeaf::Float(x.to_bits()),
-        Expr::Variable(v) => CseLeaf::Var(v.clone()),
-        Expr::Operator(_) => unreachable!("an operator is not a leaf"),
-    }
-}
-
 /// Every structurally distinct subtree of the inputs with an integer id
-/// (1-based), in first-encounter post-order (children in `for_each_child`
-/// order), so a child's id is smaller than its parent's. A node with no field
-/// but `op` and `args` is keyed by its operator and its children's ids; any
-/// other by the stable JSON of its shell (each child a placeholder carrying
-/// its id). Nodes are also memoized by identity: a subtree the inputs share
-/// in memory is walked once.
+/// (1-based), in first-encounter post-order over the child slots of
+/// esm-jacobian-spec §4.1 — `for_each_child`'s contract order, which is the
+/// spec's — so a child's id is smaller than its parent's. Keying is
+/// [`StructIndex`] with exact leaves (`1` is not `1.0`, as in the
+/// reference); since every key is made in this walk, its ids are the CSE ids.
+/// Nodes are also memoized by identity: a subtree the inputs share in memory
+/// is walked once.
 struct CseIndex {
-    leaves: HashMap<CseLeaf, usize>,
-    plain: HashMap<(String, Vec<usize>), usize>,
-    shells: HashMap<String, usize>,
-    // node address → id; the inputs outlive the index, so addresses are stable
-    memo: HashMap<*const ExpressionNode, usize>,
+    ix: StructIndex,
     reps: Vec<Expr>,
     kids: Vec<Vec<usize>>,
     nnodes: Vec<usize>,
 }
 
+/// A node being interned: its children (collected once) and their ids so far.
+struct Frame<'a> {
+    x: &'a Expr,
+    a: &'a Arc<ExpressionNode>,
+    cs: Vec<&'a Expr>,
+    ids: Vec<(*const Expr, usize)>,
+}
+
+impl<'a> Frame<'a> {
+    fn new(x: &'a Expr, a: &'a Arc<ExpressionNode>) -> Self {
+        let mut cs: Vec<&'a Expr> = Vec::new();
+        a.for_each_child(&mut |c: &'a Expr| cs.push(c));
+        Frame {
+            x,
+            a,
+            ids: Vec::with_capacity(cs.len()),
+            cs,
+        }
+    }
+}
+
 impl CseIndex {
     fn new() -> Self {
         CseIndex {
-            leaves: HashMap::new(),
-            plain: HashMap::new(),
-            shells: HashMap::new(),
-            memo: HashMap::new(),
+            ix: StructIndex::exact(),
             reps: vec![],
             kids: vec![],
             nnodes: vec![],
         }
     }
 
-    fn fresh(&mut self, e: &Expr, kids: Vec<usize>) -> usize {
-        let nn = 1 + kids.iter().map(|&k| self.nnodes[k - 1]).sum::<usize>();
-        self.reps.push(e.clone());
-        self.kids.push(kids);
-        self.nnodes.push(nn);
-        self.reps.len()
-    }
-
-    fn leaf_id(&mut self, e: &Expr) -> usize {
-        let k = cse_leaf(e);
-        if let Some(&id) = self.leaves.get(&k) {
-            return id;
+    /// Record `e` as the representative of `id` when `id` is new.
+    fn note(&mut self, id: usize, e: &Expr, kids: impl FnOnce() -> Vec<usize>) -> usize {
+        if id > self.reps.len() {
+            debug_assert_eq!(id, self.reps.len() + 1, "ids are handed out in walk order");
+            let kids = kids();
+            let nn = 1 + kids.iter().map(|&k| self.nnodes[k - 1]).sum::<usize>();
+            self.reps.push(e.clone());
+            self.kids.push(kids);
+            self.nnodes.push(nn);
         }
-        let id = self.fresh(e, vec![]);
-        self.leaves.insert(k, id);
         id
     }
 
-    fn op_id(&mut self, e: &Expr, a: &ExpressionNode, kids: Vec<(*const Expr, usize)>) -> usize {
-        let ids: Vec<usize> = kids.iter().map(|k| k.1).collect();
-        let shell = if crate::hashcons::plain_node(a) {
-            None
-        } else {
-            let mut next = 0usize;
-            let shell = a.map_children(&mut |c: &Expr| {
-                let k = crate::hashcons::slot_of(&kids, &mut next, c);
-                Expr::Variable(format!("__cse⟦{}⟧", kids[k].1))
-            });
-            let v = ser_expr(&Expr::operator(shell));
-            if v.as_object()
-                .is_some_and(|m| m.len() == 2 && m.contains_key("op") && m.contains_key("args"))
-            {
-                None
-            } else {
-                Some(stable_json(&v))
-            }
-        };
-        match shell {
-            None => {
-                let key = (a.op.clone(), ids);
-                if let Some(&id) = self.plain.get(&key) {
-                    return id;
-                }
-                let id = self.fresh(e, key.1.clone());
-                self.plain.insert(key, id);
-                id
-            }
-            Some(key) => {
-                if let Some(&id) = self.shells.get(&key) {
-                    return id;
-                }
-                let id = self.fresh(e, ids);
-                self.shells.insert(key, id);
-                id
-            }
-        }
+    fn leaf_id(&mut self, e: &Expr) -> usize {
+        let id = self.ix.leaf_id(e);
+        self.note(id, e, Vec::new)
     }
 
     /// The id of `e`, interning every subtree not seen before. Iterative:
@@ -215,41 +171,37 @@ impl CseIndex {
         let Expr::Operator(root) = e else {
             return self.leaf_id(e);
         };
-        let mut stack: Vec<(&Expr, bool)> = vec![(e, false)];
-        while let Some((x, expanded)) = stack.pop() {
-            let Expr::Operator(a) = x else { unreachable!() };
-            let addr = Arc::as_ptr(a);
-            if self.memo.contains_key(&addr) {
-                continue;
-            }
-            if !expanded {
-                stack.push((x, true));
-                // children pushed in reverse so they are visited in order
-                let mut cs: Vec<&Expr> = Vec::new();
-                a.for_each_child(&mut |c: &Expr| cs.push(c));
-                for c in cs.into_iter().rev() {
-                    if let Expr::Operator(ca) = c {
-                        if !self.memo.contains_key(&Arc::as_ptr(ca)) {
-                            stack.push((c, false));
-                        }
-                    }
-                }
-                continue;
-            }
-            let mut kids: Vec<(*const Expr, usize)> = Vec::new();
-            let mut cs: Vec<&Expr> = Vec::new();
-            a.for_each_child(&mut |c: &Expr| cs.push(c));
-            for c in cs {
+        if let Some(id) = self.ix.cached(root) {
+            return id;
+        }
+        let mut stack: Vec<Frame> = vec![Frame::new(e, root)];
+        loop {
+            let top = stack.len() - 1;
+            let f = &stack[top];
+            if f.ids.len() < f.cs.len() {
+                let c = f.cs[f.ids.len()];
                 let id = match c {
-                    Expr::Operator(ca) => self.memo[&Arc::as_ptr(ca)],
+                    Expr::Operator(ca) => match self.ix.cached(ca) {
+                        Some(id) => id,
+                        None => {
+                            stack.push(Frame::new(c, ca));
+                            continue;
+                        }
+                    },
                     _ => self.leaf_id(c),
                 };
-                kids.push((c as *const Expr, id));
+                stack[top].ids.push((c as *const Expr, id));
+                continue;
             }
-            let id = self.op_id(x, a, kids);
-            self.memo.insert(addr, id);
+            let f = stack.pop().expect("a frame");
+            let id = self.ix.shell_id(f.a, &f.ids);
+            self.ix.remember(f.a, id);
+            self.note(id, f.x, || f.ids.iter().map(|k| k.1).collect());
+            match stack.last_mut() {
+                Some(p) => p.ids.push((f.x as *const Expr, id)),
+                None => return id,
+            }
         }
-        self.memo[&Arc::as_ptr(root)]
     }
 }
 
@@ -280,7 +232,9 @@ pub fn cse_templates(
     let mut name: Vec<Option<String>> = vec![None; n];
     let mut names: Vec<usize> = Vec::new();
     for &id in &order {
-        if t.nnodes[id] == 1 {
+        // Nothing from here on is large enough to extract, and a count only
+        // decides extraction, so the rest need no counts.
+        if t.nnodes[id] < min_nodes {
             break;
         }
         let candidate = uses[id] >= 2
@@ -303,22 +257,18 @@ pub fn cse_templates(
     let mut out: Vec<Expr> = Vec::with_capacity(n);
     for id in 0..n {
         let r = &t.reps[id];
-        let b = match r {
-            Expr::Operator(a) if !t.kids[id].is_empty() => {
-                let mut slots: Vec<(*const Expr, usize)> = Vec::new();
-                let mut j = 0usize;
-                let ks = &t.kids[id];
-                a.for_each_child(&mut |c: &Expr| {
-                    slots.push((c as *const Expr, ks[j]));
-                    j += 1;
-                });
-                let mut next = 0usize;
-                Expr::operator(a.map_children(&mut |c: &Expr| {
-                    let k = crate::hashcons::slot_of(&slots, &mut next, c);
-                    out[slots[k].1 - 1].clone()
-                }))
-            }
-            _ => r.clone(),
+        // `map_children_shared` calls back in `for_each_child` order (the
+        // order of `kids`) and keeps the node itself when no child changed,
+        // so a subtree with nothing extracted below it is not copied.
+        let b = if t.kids[id].is_empty() {
+            r.clone()
+        } else {
+            let ks = &t.kids[id];
+            let mut j = 0usize;
+            map_children_shared(r, &mut |_c: &Expr| {
+                j += 1;
+                out[ks[j - 1] - 1].clone()
+            })
         };
         out.push(match &name[id] {
             Some(nm) => Expr::operator(ExpressionNode {

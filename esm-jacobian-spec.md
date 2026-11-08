@@ -560,15 +560,20 @@ inputs are the coefficients, in entry order, and a threshold `min_nodes`
 1. *Distinct subtrees.* Two subtrees are the same when they serialize to
    the same stable JSON (§5 item 2), except that an integer leaf is never
    the same as a float leaf (`1` and `1.0` differ), `0.0` and `-0.0`
-   differ, and every NaN is the same. The size `|s|` of a distinct subtree
-   `s` is its number of AST nodes, leaves included, counting the
-   expressions in every expression-valued field of a node, not only `args`.
+   differ, and every NaN is the same. A node's *child slots* are, in this
+   order: the elements of `args`; `lower`; `upper`; `expr`; `filter`; the
+   elements of `values`; the entries of `axes` by ascending key; `key`; the
+   entries of `bindings` by ascending key (absent fields contribute none).
+   Expressions in any other field (for example inside `ranges`) are part of
+   the node itself, not child slots. The size `|s|` of a distinct subtree
+   `s` is its number of AST nodes, leaves included, counted through child
+   slots.
 2. *Visiting order.* Number the distinct subtrees in first-encounter
-   post-order over the coefficients in entry order: a node's child
-   expressions in the order of its fields (the order a binding's
-   `map_children` visits them), every node after its children. Visit the
-   distinct subtrees once each, by decreasing size, equal sizes by that
-   number.
+   post-order over the coefficients in entry order: a node's child slots in
+   the order of item 1, every node after its children. This order is fixed
+   by the format, not by any binding's traversal, so the numbering is the
+   same in every binding. Visit the distinct subtrees once each, by
+   decreasing size, equal sizes by that number.
 3. *Remaining count.* The count of `s` is the number of coefficients that
    are `s`, plus, for every distinct subtree `p` with `s` in a child slot,
    once per such slot: `1` when `p` was extracted, else the count of `p`.
@@ -577,13 +582,14 @@ inputs are the coefficients, in entry order, and a threshold `min_nodes`
    every larger extracted subtree has been replaced by a reference and its
    body kept once.
 4. *Extraction.* `s` is extracted when it is an operator node other than
-   `apply_expression_template`, `|s| ≥ min_nodes`, and its count is at
-   least 2. The `k`-th extracted subtree in visiting order is named
+   `apply_expression_template` (including an operator node with no child
+   slots), `|s| ≥ min_nodes`, and its count is at least 2. The `k`-th extracted subtree in visiting order is named
    `<prefix><k>`: `jt<k>` in a block, `Jcse<k>` in a derived document (with
    `x` appended to `Jcse` until no variable of the source has a name that
    starts with the prefix).
-5. *Rewriting.* Every occurrence of an extracted subtree, in a coefficient
-   or in the body of a larger extracted subtree, becomes a reference to it;
+5. *Rewriting.* Every occurrence of an extracted subtree in a child slot
+   of a coefficient or of the body of a larger extracted subtree (or that is
+   a whole coefficient) becomes a reference to it;
    its own body is the subtree with its children rewritten. A body
    therefore references only subtrees named after it, and the reference
    graph is acyclic. Templates are listed in name order.

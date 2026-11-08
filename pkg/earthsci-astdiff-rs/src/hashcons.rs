@@ -144,12 +144,20 @@ pub(crate) fn slot_of<T>(slots: &[(*const Expr, T)], next: &mut usize, c: &Expr)
 /// every `Inf`, `-Inf` and `NaN`) is told apart by its bits. Ids are
 /// meaningful only within one index.
 ///
+/// [`StructIndex::exact`] instead keys leaves as the reference does
+/// (`isequal`): an integer is never a float (`1` is not `1.0`), `0.0` is not
+/// `-0.0`, and every NaN is one leaf. Subtree sharing (esm-jacobian-spec
+/// §4.1) and the band interner use it, so neither merges what the reference
+/// keeps apart.
+///
 /// The identity memo is keyed by [`WeakRef`], so the index does not keep a
 /// keyed tree alive; the keys of freed nodes are swept out whenever the memo
 /// has doubled since the last sweep.
 pub(crate) struct StructIndex {
     /// ids handed out so far; every table below draws from this one count
     n: usize,
+    /// leaves by value as the reference keys them, not as `skey` writes them
+    exact: bool,
     // leaves, by value (floats by bits)
     ints: HashMap<i64, usize>,
     floats: HashMap<u64, usize>,
@@ -171,6 +179,7 @@ impl Default for StructIndex {
     fn default() -> Self {
         StructIndex {
             n: 0,
+            exact: false,
             ints: HashMap::new(),
             floats: HashMap::new(),
             nonfinite: HashMap::new(),
@@ -237,6 +246,27 @@ impl StructIndex {
         Self::default()
     }
 
+    /// An index whose leaves are keyed as the reference keys them (see the
+    /// type's docs).
+    pub(crate) fn exact() -> Self {
+        StructIndex {
+            exact: true,
+            ..Self::default()
+        }
+    }
+
+    /// The id the identity memo holds for operator node `a`, if keyed.
+    pub(crate) fn cached(&self, a: &Arc<ExpressionNode>) -> Option<usize> {
+        self.memo.get(&(Arc::as_ptr(a) as usize)).map(|m| m.1)
+    }
+
+    /// Record `id` for operator node `a` in the identity memo.
+    pub(crate) fn remember(&mut self, a: &Arc<ExpressionNode>, id: usize) {
+        self.maybe_sweep();
+        self.memo
+            .insert(Arc::as_ptr(a) as usize, (Arc::downgrade(a), id));
+    }
+
     /// Drop the memo keys of freed nodes once the memo has doubled since the
     /// last sweep (amortized O(1) per key). A freed node's key can never be
     /// looked up again: its address stays pinned by the `Weak` until then.
@@ -252,7 +282,21 @@ impl StructIndex {
     /// ([`LeafKey`]), except that the non-finite floats `skey` writes alike
     /// (`null`) are told apart by their bits — `x*Inf`, `x*-Inf` and `x*NaN`
     /// must not share an id (or a memoized simplification).
-    fn leaf_id(&mut self, e: &Expr) -> usize {
+    pub(crate) fn leaf_id(&mut self, e: &Expr) -> usize {
+        if self.exact {
+            return match e {
+                Expr::Integer(i) => id_in(&mut self.ints, &mut self.n, *i),
+                Expr::Number(x) if x.is_nan() => {
+                    id_in(&mut self.nonfinite, &mut self.n, f64::NAN.to_bits())
+                }
+                Expr::Number(x) => id_in(&mut self.floats, &mut self.n, x.to_bits()),
+                Expr::Variable(v) => match self.vars.get(v.as_str()) {
+                    Some(&id) => id,
+                    None => id_in(&mut self.vars, &mut self.n, v.clone()),
+                },
+                Expr::Operator(_) => unreachable!("an operator is not a leaf"),
+            };
+        }
         match LeafKey::of(e) {
             LeafKey::Int(i) => id_in(&mut self.ints, &mut self.n, i),
             LeafKey::Float(b) => id_in(&mut self.floats, &mut self.n, b),
@@ -274,7 +318,7 @@ impl StructIndex {
     /// serializes as `{"op", "args"}` alone (a set field that is never
     /// written) joins the plain table, so the two tables split nodes exactly
     /// where `skey` does. O(node fields), not O(subtree).
-    fn shell_id(&mut self, a: &ExpressionNode, kids: &[(*const Expr, usize)]) -> usize {
+    pub(crate) fn shell_id(&mut self, a: &ExpressionNode, kids: &[(*const Expr, usize)]) -> usize {
         let plain_key = || (a.op.clone(), kids.iter().map(|k| k.1).collect::<Vec<_>>());
         if plain_node(a) {
             return id_in(&mut self.plain, &mut self.n, plain_key());
@@ -311,8 +355,7 @@ impl StructIndex {
         let mut kids: Vec<(*const Expr, usize)> = Vec::new();
         a.for_each_child(&mut |c: &Expr| kids.push((c as *const Expr, self.sid(c))));
         let id = self.shell_id(a, &kids);
-        self.maybe_sweep();
-        self.memo.insert(k, (Arc::downgrade(a), id));
+        self.remember(a, id);
         id
     }
 }
@@ -401,7 +444,6 @@ impl StructHash {
 /// shell-serialized once. The walk is iterative: the deep `ifelse` chains
 /// of `index(makearray…)` lowering would otherwise cost a stack frame per
 /// level.
-#[derive(Default)]
 pub(crate) struct Interner {
     ix: StructIndex,
     canon: HashMap<usize, Expr>,
@@ -410,8 +452,16 @@ pub(crate) struct Interner {
 }
 
 impl Interner {
+    /// Leaves keyed exactly ([`StructIndex::exact`]): a representative never
+    /// trades an integer leaf for a float one (or `-0.0` for `0.0`), so the
+    /// subtree sharing that runs on the interned coefficients counts them as
+    /// the reference does.
     pub(crate) fn new() -> Self {
-        Self::default()
+        Interner {
+            ix: StructIndex::exact(),
+            canon: HashMap::new(),
+            memo: HashMap::new(),
+        }
     }
 
     pub(crate) fn intern(&mut self, e: &Expr) -> Expr {
@@ -484,6 +534,35 @@ mod tests {
 
     fn ex(v: serde_json::Value) -> Expr {
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn interner_keeps_integer_and_float_leaves_apart() {
+        // Subtree sharing runs on the interned coefficients and must count
+        // `x + 1` and `x + 1.0` as different subtrees, as the reference does;
+        // so the interner must not make one the representative of the other.
+        let node = |op: &str, args: Vec<Expr>| {
+            Expr::operator(ExpressionNode {
+                op: op.into(),
+                args,
+                ..Default::default()
+            })
+        };
+        let x = || Expr::Variable("x".into());
+        let mut t = Interner::new();
+        let a = t.intern(&node("exp", vec![node("+", vec![x(), Expr::Integer(1)])]));
+        let b = t.intern(&node("exp", vec![node("+", vec![x(), Expr::Number(1.0)])]));
+        assert!(!same_expr(&a, &b));
+        let leaf = |e: &Expr| match e {
+            Expr::Operator(n) => match &n.args[0] {
+                Expr::Operator(m) => m.args[1].clone(),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        assert!(matches!(leaf(&b), Expr::Number(_)));
+        let c = t.intern(&node("exp", vec![node("+", vec![x(), Expr::Integer(1)])]));
+        assert!(same_expr(&a, &c));
     }
 
     #[test]
