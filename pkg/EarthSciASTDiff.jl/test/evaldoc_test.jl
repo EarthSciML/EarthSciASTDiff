@@ -49,6 +49,10 @@ end
     file = fixture("bd_chem.esm")
     sv = sysview(file, first(keys(file.models)))
     @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv); data_sources = Dict())
+    @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv); model_name = "x")
+    # only the form taking bands accepts a `SysView`; the others build their own
+    @test_throws MethodError evaluation_document(sv)
+    @test_throws MethodError jacobian_pattern(sv)
     @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv; coefficients = false))
 end
 

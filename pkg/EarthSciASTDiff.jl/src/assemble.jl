@@ -280,12 +280,6 @@ _sv_src(file::EarthSciAST.EsmFile, model_name; data_sources = nothing) = (
 )
 _sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing) =
     (sysview(flat; data_sources = data_sources), flat)
-function _sv_src(sv::SysView, ::Any; data_sources = nothing)
-    data_sources === nothing || throw(
-        ArgumentError("a SysView carries its own data_sources; pass them to `sysview`")
-    )
-    return (sv, sv)
-end
 
 # Build the ordinary RHS evaluator for the SAME model `_sv_src` selected: an
 # `EsmFile` threads `model_name` through `build_evaluator`'s own selection
