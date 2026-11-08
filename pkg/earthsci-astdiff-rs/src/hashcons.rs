@@ -210,6 +210,10 @@ impl<'a> LeafKey<'a> {
         match e {
             Expr::Integer(i) => LeafKey::Int(*i),
             Expr::Number(x) if !x.is_finite() => LeafKey::NonFinite(x.to_bits()),
+            // a non-integral finite float is written by its shortest
+            // round-trip digits, i.e. by its bits, by every EarthSciAST
+            // release: only an integral one needs the writer's answer
+            Expr::Number(x) if x.fract() != 0.0 => LeafKey::Float(x.to_bits()),
             Expr::Number(x) => match crate::helpers::ser_expr(e) {
                 serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
                     (Some(i), _) => LeafKey::Int(i),
@@ -233,7 +237,10 @@ fn id_in<K: std::hash::Hash + Eq>(table: &mut HashMap<K, usize>, n: &mut usize, 
 }
 
 /// Whether `a` has no field but `op` and `args` set, i.e. serializes as
-/// `{"op", "args"}` alone (every other field is skipped when unset).
+/// `{"op", "args"}` alone (every other field is skipped when unset). The
+/// comparison against `Default` (not a field list) keeps it right when
+/// EarthSciAST adds a field; the clone it costs is one `Arc` count per
+/// argument, paid once per distinct node.
 pub(crate) fn plain_node(a: &ExpressionNode) -> bool {
     let mut rest = a.clone();
     rest.op.clear();
@@ -563,6 +570,38 @@ mod tests {
         assert!(matches!(leaf(&b), Expr::Number(_)));
         let c = t.intern(&node("exp", vec![node("+", vec![x(), Expr::Integer(1)])]));
         assert!(same_expr(&a, &c));
+    }
+
+    #[test]
+    fn float_leaf_key_matches_the_writer() {
+        // the non-integral fast path must agree with what `ser_expr` writes
+        for x in [
+            0.5,
+            -1.25,
+            1e-300,
+            0.1 + 0.2,
+            1.0,
+            -0.0,
+            1e300,
+            9_223_372_036_854_775_808.0,
+            -3.0,
+        ] {
+            let e = Expr::Number(x);
+            let slow = match crate::helpers::ser_expr(&e) {
+                serde_json::Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+                    (Some(i), _) => format!("i{i}"),
+                    (None, Some(f)) => format!("f{}", f.to_bits()),
+                    _ => format!("f{}", x.to_bits()),
+                },
+                _ => format!("f{}", x.to_bits()),
+            };
+            let fast = match LeafKey::of(&e) {
+                LeafKey::Int(i) => format!("i{i}"),
+                LeafKey::Float(b) => format!("f{b}"),
+                _ => unreachable!(),
+            };
+            assert_eq!(fast, slow, "{x}");
+        }
     }
 
     #[test]

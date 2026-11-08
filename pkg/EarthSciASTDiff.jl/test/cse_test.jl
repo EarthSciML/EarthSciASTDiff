@@ -31,6 +31,14 @@ using EarthSciASTDiff: skey, _simp
     # pruning can expose an equal-branch collapse
     e = ife(c, ife(c, x, y), x)
     @test simplify_branches(e) === x
+    # a test whose condition `_assume` rewrites (it held a test of the
+    # pruned condition) still prunes under an enclosing test of the NEW
+    # condition: inside `q`'s true side, `ifelse(q, x, y) < y` is `x < y`
+    q = OpExpr(">", ASTExpr[VarExpr("z"), IntExpr(0)])
+    cq = OpExpr("<", ASTExpr[ife(q, x, y), y])
+    a, b, d, f = VarExpr("a"), VarExpr("b"), VarExpr("d"), VarExpr("f")
+    e = ife(c, ife(q, ife(cq, a, b), d), f)
+    @test skey(simplify_branches(e)) == skey(ife(c, ife(q, a, d), f))
 
     # non-ifelse trees pass through untouched (same structure)
     plain = OpExpr("*", ASTExpr[x, OpExpr("+", ASTExpr[y, NumExpr(2.0)])])

@@ -147,10 +147,11 @@ end
 # ── the cheap half: a structural hash used as a NEGATIVE filter ──────────────
 #
 # `sid` is exact, but it still pays a table insert per distinct node (and a
-# shallow serialization for a node with fields beyond `op`/`args`), and the band calculus asks "are these two subtrees equal?" once per
-# node — where the answer is almost always NO. A hash that equal trees are
-# GUARANTEED to share turns that common case into one `UInt` compare and
-# leaves `sid` to adjudicate the rare match. Measured by sampling the ReSEACT
+# shallow serialization for a node with fields beyond `op`/`args`), and the
+# band calculus asks "are these two subtrees equal?" once per node — where
+# the answer is almost always NO. A hash that equal trees are GUARANTEED to
+# share turns that common case into one `UInt` compare and leaves `sid` to
+# adjudicate the rare match. Measured by sampling the ReSEACT
 # whole system, interning inside `simplify_branches` was 36% of
 # `jacobian_bands` once the Θ(n·depth) passes were fixed; nearly all of it is
 # this negative case.

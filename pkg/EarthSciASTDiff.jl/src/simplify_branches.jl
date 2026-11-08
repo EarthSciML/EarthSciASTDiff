@@ -83,11 +83,12 @@ function _sbr(e::ASTExpr, cx::_SbrCtx)::ASTExpr
     # Θ(n·k) — and `index(makearray…)` lowering (inline.jl) builds exactly that
     # chain, one level per `makearray` REGION (a stencil scheme's interior plus
     # each boundary face), with the product rule replicating it. `cx.seen` says
-    # when the descent cannot find anything: the pass
-    # is bottom-up, so every `ifelse` surviving into either branch has already
-    # been built and counted here, and a condition with no count has no nested
-    # twin to collapse — `_assume` would have returned the branch unchanged
-    # (its rewrite goes through the identity-preserving `map_children`).
+    # when the descent cannot find anything: the pass is bottom-up, so every
+    # `ifelse` surviving into either branch has already been built and counted
+    # here (or, given a new condition by `_assume`, counted there), and a
+    # condition with no count has no nested twin to collapse — `_assume` would
+    # have returned the branch unchanged (its rewrite goes through the
+    # identity-preserving `map_children`).
     # Counting by `shash` rather than by id keeps the census O(1) per node; a
     # collision can only put us back on the walk we would always have taken.
     if get(cx.seen, hck, 0) == 0
@@ -111,7 +112,14 @@ function _assume(e::ASTExpr, hck::UInt, ck::Int, val::Bool, cx::_SbrCtx)::ASTExp
             shash(cx.hx, e.args[1]) == hck && _skc(e.args[1], cx) == ck
         return _assume(e.args[val ? 2 : 3], hck, ck, val, cx)
     end
-    return map_children(x -> _assume(x, hck, ck, val, cx), e)
+    r = map_children(x -> _assume(x, hck, ck, val, cx), e)
+    # An `ifelse` whose condition held a test of this one now has a new
+    # condition, which no count covers: count it, or an enclosing test of
+    # that new condition would skip a descent that has something to prune.
+    if r !== e && r.op == "ifelse" && length(r.args) == 3 && r.args[1] !== e.args[1]
+        _note!(cx, shash(cx.hx, r.args[1]))
+    end
+    return r
 end
 
 # Wire-canonical literal normalization. On parse, EarthSciAST turns an

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use earthsci_ast::Expr;
 
-use crate::hashcons::{map_children_shared, same_expr, StructHash, StructIndex};
+use crate::hashcons::{map_children_shared, plain_node, same_expr, StructHash, StructIndex};
 use crate::helpers::{is_zero, op};
 use crate::simplify_port::simplify_jl;
 
@@ -73,20 +73,11 @@ fn sbr(e: &Expr, cx: &mut SbrCtx) -> Expr {
         return a2;
     }
     *cx.seen.entry(hck).or_insert(0) += 1;
-    if same_expr(&a2, a) && same_expr(&b2, b) && is_plain(n2) {
+    // a node with no field but `op` and `args` is what `op` would build
+    if same_expr(&a2, a) && same_expr(&b2, b) && plain_node(n2) {
         return e2;
     }
     op("ifelse", vec![c.clone(), a2, b2])
-}
-
-/// Whether the node is what `op(n.op, n.args)` builds: no field besides its
-/// operator and arguments. Such a node can be kept as is where the pass
-/// would rebuild it.
-fn is_plain(n: &earthsci_ast::ExpressionNode) -> bool {
-    let mut shell = n.clone();
-    shell.op.clear();
-    shell.args.clear();
-    shell == earthsci_ast::ExpressionNode::default()
 }
 
 /// `e` under the assumption that the condition identified by (`hck`, `ck`)
@@ -103,7 +94,17 @@ fn assume(e: &Expr, hck: u64, ck: usize, val: bool, cx: &mut SbrCtx) -> Expr {
     {
         return assume(&n.args[if val { 1 } else { 2 }], hck, ck, val, cx);
     }
-    map_children_shared(e, &mut |x| assume(x, hck, ck, val, cx))
+    let r = map_children_shared(e, &mut |x| assume(x, hck, ck, val, cx));
+    // An `ifelse` whose condition held a test of this one now has a new
+    // condition, which no count covers: count it, or an enclosing test of
+    // that new condition would skip a descent that has something to prune.
+    if let (Expr::Operator(r2), Expr::Operator(n)) = (&r, e) {
+        if r2.op == "ifelse" && r2.args.len() == 3 && !same_expr(&r2.args[0], &n.args[0]) {
+            let h = cx.hx.shash(&r2.args[0]);
+            *cx.seen.entry(h).or_insert(0) += 1;
+        }
+    }
+    r
 }
 
 const INT64_MAXF: f64 = 9_223_372_036_854_775_807.0;
@@ -161,6 +162,7 @@ impl SimpMemo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::skey;
     use earthsci_ast::ExpressionNode;
 
     fn times(x: f64) -> Expr {
@@ -187,5 +189,30 @@ mod tests {
         assert_ne!(seen[0], seen[1]);
         assert_ne!(seen[0], seen[2]);
         assert_ne!(seen[1], seen[2]);
+    }
+
+    fn v(s: &str) -> Expr {
+        Expr::Variable(s.into())
+    }
+
+    fn ife(c: Expr, a: Expr, b: Expr) -> Expr {
+        op("ifelse", vec![c, a, b])
+    }
+
+    #[test]
+    fn prunes_a_condition_that_assume_rewrote() {
+        // `assume` rewrites `ifelse(q, x, y) < y` to `x < y` inside `q`'s
+        // true side; the rebuilt test must be counted so the enclosing test
+        // of `x < y` still prunes it (simplify_branches.jl, cse_test.jl).
+        let c = op("<", vec![v("x"), v("y")]);
+        let q = op(">", vec![v("z"), Expr::Integer(0)]);
+        let cq = op("<", vec![ife(q.clone(), v("x"), v("y")), v("y")]);
+        let e = ife(
+            c.clone(),
+            ife(q.clone(), ife(cq, v("a"), v("b")), v("d")),
+            v("f"),
+        );
+        let want = ife(c, ife(q, v("a"), v("d")), v("f"));
+        assert_eq!(skey(&simplify_branches(&e)), skey(&want));
     }
 }

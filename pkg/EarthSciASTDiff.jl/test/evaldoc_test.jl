@@ -25,6 +25,37 @@ using EarthSciASTDiff: _evaluation_document, lhs_state
     end
 end
 
+@testset "evaluation document: from bands the caller already has" begin
+    # the public form taking bands writes what the form computing them does,
+    # from an `EsmFile`, a `FlattenedSystem` or the `SysView` itself
+    for name in ("bd_chem", "minmod_adv", "contracted_ops", "forcing_bracket")
+        file = fixture("$name.esm")
+        sv = sysview(file, first(keys(file.models)))
+        entries = jacobian_bands(sv)
+        for cse in (true, false)
+            want = stable_json(first(evaluation_document(file; cse = cse)))
+            @test stable_json(first(evaluation_document(file, entries; cse = cse))) == want
+            @test stable_json(first(evaluation_document(sv, entries; cse = cse))) == want
+        end
+        flat = EarthSciAST.flatten(file)
+        fsv = sysview(flat; data_sources = file.data_sources)
+        fe = jacobian_bands(fsv)
+        want = evaluation_document(flat; data_sources = file.data_sources)
+        got = evaluation_document(flat, fe; data_sources = file.data_sources)
+        @test stable_json(first(got)) == stable_json(first(want))
+        @test last(got) == last(want)
+        @test stable_json(first(evaluation_document(fsv, fe))) == stable_json(first(want))
+    end
+    file = fixture("bd_chem.esm")
+    sv = sysview(file, first(keys(file.models)))
+    @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv); data_sources = Dict())
+    @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv); model_name = "x")
+    # only the form taking bands accepts a `SysView`; the others build their own
+    @test_throws MethodError evaluation_document(sv)
+    @test_throws MethodError jacobian_pattern(sv)
+    @test_throws ArgumentError evaluation_document(sv, jacobian_bands(sv; coefficients = false))
+end
+
 @testset "evaluation document: no source right-hand side survives" begin
     for name in (
             "bd_chem", "adv_interior", "adv_react_2d", "contracted_ops",

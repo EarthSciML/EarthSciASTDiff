@@ -575,6 +575,50 @@ function evaluation_document(
     return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
 end
 
+"""
+    evaluation_document(input, entries::AbstractVector{JacEntry}; model_name = nothing,
+                        cse = true, cse_min_nodes = 12, data_sources = nothing) -> (doc, fields)
+
+The same document from bands the caller already has: `entries` must be
+[`jacobian_bands`](@ref) of the same system (any axis), in its order, and
+are used as given instead of being computed again — the Rust binding's
+`evaluation_document(sv, entries, cse, cse_min_nodes)`. `input` is an
+`EsmFile`, a `FlattenedSystem` (`model_name` and `data_sources` as in the
+form above) or the `SysView` the bands were computed from, which already
+names its model and carries its `data_sources`, so neither keyword may be
+passed with one. `fields[k]` names `entries[k]`'s field.
+"""
+function evaluation_document(
+        input, entries::AbstractVector{JacEntry}; model_name = nothing,
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+    )
+    any(en -> en.band.coef === nothing, entries) && throw(
+        ArgumentError(
+            "evaluation_document needs coefficients; these are structure-only " *
+                "bands (`jacobian_bands(...; coefficients = false)`)"
+        )
+    )
+    sv = _bands_sysview(input, model_name, data_sources)
+    return _evaluation_document(
+        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes
+    )
+end
+
+# The `SysView` precomputed bands belong to. Only this form takes a `SysView`
+# itself (every other entry point builds its own, and some also need the
+# source document); it already names its model and carries its data sources.
+function _bands_sysview(sv::SysView, model_name, data_sources)
+    model_name === nothing && data_sources === nothing && return sv
+    throw(
+        ArgumentError(
+            "a SysView already names its model and carries its data_sources; " *
+                "pass `model_name` and `data_sources` to `sysview` instead"
+        )
+    )
+end
+_bands_sysview(input, model_name, data_sources) =
+    first(_sv_src(input, model_name; data_sources = data_sources))
+
 # With `cse`, repeated coefficient subtrees are hoisted into observed
 # variables of the derived model `m` ([`hoist_observed`](@ref)) so the
 # tree-walk's factored array-observed buffers evaluate them once per cell per
