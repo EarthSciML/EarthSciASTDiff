@@ -1,6 +1,6 @@
 name = "EarthSciASTDiff"
 uuid = "8f0c9a34-6c1e-4f7b-9d2a-3e5b7c1d9f42"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["EarthSciML Authors and Contributors"]
 
 [deps]
@@ -13,7 +13,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 # EarthSciAST: tested at both ends of the range by conformance.yml; raise the
 # floor only to a published release. 0.4 and 0.5 no longer precompile (their
 # registered compat admits JSONSchema 1.6, which they fail against).
-EarthSciAST = "0.6, 0.7, 0.8, 0.9"
+EarthSciAST = "0.6, 0.7, 0.8, 0.9, 0.10"
 JSON3 = "1"
 OrderedCollections = "1, 2.0"
 SparseArrays = "1.10"

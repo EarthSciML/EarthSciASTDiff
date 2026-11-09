@@ -95,7 +95,10 @@ pub fn canonical_float(f: f64) -> String {
 
 /// Deterministic JSON: sorted object keys at every level, floats in the
 /// reference's layout ([`canonical_float`]), every other scalar by
-/// serde_json.
+/// serde_json. A `const` node's `value` is written in canonical-number form
+/// (CONFORMANCE_SPEC §5.5.3.1 rule 1: an integral, i64-representable number
+/// as an integer, at any depth), as earthsci-ast ≥ 0.10 serializes it, so the
+/// text does not depend on the earthsci-ast release.
 pub fn stable_json(v: &Value) -> String {
     let mut out = String::new();
     write_stable(v, &mut out);
@@ -105,6 +108,7 @@ pub fn stable_json(v: &Value) -> String {
 fn write_stable(v: &Value, out: &mut String) {
     match v {
         Value::Object(m) => {
+            let is_const = m.get("op").and_then(Value::as_str) == Some("const");
             out.push('{');
             let mut keys: Vec<&String> = m.keys().collect();
             keys.sort();
@@ -114,7 +118,11 @@ fn write_stable(v: &Value, out: &mut String) {
                 }
                 out.push_str(&serde_json::to_string(k).unwrap());
                 out.push(':');
-                write_stable(&m[*k], out);
+                if is_const && k.as_str() == "value" {
+                    write_stable(&canon_numbers(&m[*k]), out);
+                } else {
+                    write_stable(&m[*k], out);
+                }
             }
             out.push('}');
         }
@@ -135,9 +143,49 @@ fn write_stable(v: &Value, out: &mut String) {
     }
 }
 
+/// §5.5.3.1 rule 1 over a `const` value: every integral, i64-representable
+/// float becomes an integer, nested arrays and objects walked.
+fn canon_numbers(v: &Value) -> Value {
+    match v {
+        Value::Number(n) if !(n.is_i64() || n.is_u64()) => match n.as_f64() {
+            Some(f)
+                if f.is_finite()
+                    && f.fract() == 0.0
+                    && (-(2f64.powi(63))..2f64.powi(63)).contains(&f) =>
+            {
+                Value::from(f as i64)
+            }
+            _ => v.clone(),
+        },
+        Value::Array(a) => Value::Array(a.iter().map(canon_numbers).collect()),
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .map(|(k, x)| (k.clone(), canon_numbers(x)))
+                .collect(),
+        ),
+        _ => v.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::canonical_float;
+
+    #[test]
+    fn const_values_are_written_in_canonical_number_form() {
+        let v = serde_json::json!({
+            "op": "+",
+            "args": [
+                {"op": "const", "args": [], "value": [[1.0, 0.5], [-2.0, 1e300]]},
+                2.0
+            ]
+        });
+        // only inside a const `value`: the coefficient literal keeps its float
+        assert_eq!(
+            super::stable_json(&v),
+            r#"{"args":[{"args":[],"op":"const","value":[[1,0.5],[-2,1.0e300]]},2.0],"op":"+"}"#
+        );
+    }
 
     #[test]
     fn canonical_float_matches_the_reference_layout() {

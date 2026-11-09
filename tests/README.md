@@ -157,7 +157,9 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   whose right-hand side reads `t` (currently `tgrad_photolysis`). A fixture
   without them is autonomous: its time band list MUST be empty.
 - Floats in every golden use the reference layout of spec §5 item 2 (an
-  integral float keeps its `.0`; scientific notation for magnitudes outside `[1e-4, 1e6)`).
+  integral float keeps its `.0`, except inside a `const` node's `value`, where
+  it is written as an integer; scientific notation for magnitudes outside
+  `[1e-4, 1e6)`).
 
 Value-level conformance (Jacobian entries at sample points) is asserted in
 each binding's own test suite, every value obtained by running the emitted

@@ -95,8 +95,24 @@ def _key_str(k: Any) -> str:
     raise TypeError(f"JSON object key {k!r} is not a string or a number")
 
 
+def _canon_numbers(x: Any) -> Any:
+    """CONFORMANCE_SPEC §5.5.3.1 rule 1 over a ``const`` node's ``value``: an
+    integral, Int64-representable float becomes an integer, at any depth."""
+    if isinstance(x, float):
+        if math.isfinite(x) and x.is_integer() and -(2.0**63) <= x < 2.0**63:
+            return int(x)
+        return x
+    if isinstance(x, (list, tuple)):
+        return [_canon_numbers(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _canon_numbers(v) for k, v in x.items()}
+    return x
+
+
 def _write_stable(x: Any, out: list) -> None:
     if isinstance(x, dict):
+        if x.get("op") == "const" and "value" in x:
+            x = {**x, "value": _canon_numbers(x["value"])}
         items = sorted(((_key_str(k), v) for k, v in x.items()), key=lambda kv: kv[0])
         out.append("{")
         for i, (k, v) in enumerate(items):
@@ -121,7 +137,9 @@ def _write_stable(x: Any, out: list) -> None:
 
 def stable_json(x: Any) -> str:
     """Deterministic JSON: sorted object keys at every level, floats in the
-    reference's layout (``canonical_float``) — emit.jl's ``stable_json``."""
+    reference's layout (``canonical_float``), a ``const`` node's ``value`` in
+    canonical-number form (``_canon_numbers``, as EarthSciAST >= 0.10 writes
+    it) — emit.jl's ``stable_json``."""
     out: list = []
     _write_stable(x, out)
     return "".join(out)

@@ -8,6 +8,12 @@
 Deterministic JSON: object keys emitted in sorted order at every level,
 scalars formatted by JSON3. Used for conformance goldens and for structural
 expression keys ([`skey`](@ref)) — equal trees always produce equal text.
+
+A `const` node's `value` is written in canonical-number form (EarthSciAST
+CONFORMANCE_SPEC §5.5.3.1 rule 1: an integral, `Int64`-representable number
+as an integer literal, at any depth), as EarthSciAST ≥ 0.10 serializes it, so
+the text does not depend on the EarthSciAST release or on whether a table was
+authored `[1.0, 2.0]` or built in code.
 """
 function stable_json(x)::String
     io = IOBuffer()
@@ -16,13 +22,24 @@ function stable_json(x)::String
 end
 
 function _sj(io::IO, x::AbstractDict)
+    isconst = get(x, "op", nothing) == "const"
     print(io, '{')
     for (i, k) in enumerate(sort!(collect(String.(keys(x)))))
         i > 1 && print(io, ',')
-        _sj(io, k); print(io, ':'); _sj(io, x[k])
+        _sj(io, k); print(io, ':')
+        v = x[k]
+        _sj(io, isconst && k == "value" ? _canon_numbers(v) : v)
     end
     return print(io, '}')
 end
+
+# §5.5.3.1 rule 1 over a `const` value: nested arrays and objects walked
+_canon_numbers(x::AbstractFloat) =
+    isfinite(x) && isinteger(x) && -2.0^63 <= x < 2.0^63 ? Int64(x) : x
+_canon_numbers(x::Union{AbstractVector, Tuple}) = Any[_canon_numbers(v) for v in x]
+_canon_numbers(x::AbstractDict) =
+    OrderedDict{String, Any}(String(k) => _canon_numbers(v) for (k, v) in x)
+_canon_numbers(x) = x
 function _sj(io::IO, x::Union{AbstractVector, Tuple})
     print(io, '[')
     for (i, v) in enumerate(x)
