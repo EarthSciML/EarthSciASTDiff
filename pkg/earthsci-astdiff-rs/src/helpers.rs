@@ -90,31 +90,26 @@ pub fn canonical_float(f: f64) -> String {
 }
 
 /// The shortest round-trip decimal digits of `|f|` (finite, non-zero) and the
-/// decimal exponent of the first one, as Julia's (Ryu) `show` picks them.
-///
-/// `{:e}` finds the shortest digit count, but when the exact binary value lies
-/// exactly halfway between two candidates of that length that both round-trip
-/// (705129328097.90625 between …9062 and …9063) it takes the upper one, where
-/// Julia, Python's `repr` and ECMAScript's Number::toString take the one with
-/// the even last digit. Printing again at that precision converts exactly and
-/// rounds half to even, which gives the even candidate — unless that one
-/// falls outside the rounding interval, which happens at a power of two, where
-/// the interval below is half as wide as the one above (2^-24 =
-/// 5.9604644775390625e-8 reads back from …063 but not from …062). Then only
-/// `{:e}`'s candidate round-trips, and Julia writes it too.
+/// decimal exponent of the first one, as the Julia reference's writer
+/// (`JSON3.write`, Ryu) picks them. The digits are Ryu's (the `ryu` crate,
+/// which serde_json already uses): the same algorithm as the reference, so
+/// the same choice when the exact value lies halfway between two shortest
+/// candidates (705129328097.90625 → …9062, the even last digit) and at a
+/// power of two, where the interval below is half as wide as the one above
+/// (2^-24 → 5.960464477539063e-8). Std's `{:e}` takes the upper candidate of
+/// a tie, so it is not used. Only the layout of `ryu`'s output is discarded.
 fn shortest_digits(f: f64) -> (String, i32) {
-    let a = f.abs();
-    let sci = format!("{a:e}");
-    // digits after the point in `d[.ddd]e<exp>`
-    let prec = sci.find('e').unwrap().saturating_sub(2);
-    let even = format!("{a:.prec$e}");
-    let pick = if even.parse::<f64>() == Ok(a) {
-        even
-    } else {
-        sci
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format_finite(f.abs());
+    let (mant, exp) = match s.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().unwrap()),
+        None => (s, 0),
     };
-    let (mant, exp) = pick.split_once('e').unwrap();
-    (mant.replace('.', ""), exp.parse().unwrap())
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    let all = format!("{int}{frac}");
+    let lead = all.len() - all.trim_start_matches('0').len();
+    let ds = all.trim_matches('0').to_string();
+    (ds, int.len() as i32 - 1 - lead as i32 + exp)
 }
 
 /// Deterministic JSON: sorted object keys at every level, floats in the

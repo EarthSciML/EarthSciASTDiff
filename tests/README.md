@@ -158,7 +158,8 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   without them is autonomous: its time band list MUST be empty.
 - `goldens/canonical_floats.json`: `[bits, text]` pairs — a double's IEEE
   bit pattern in hex and the text every binding's `stable_json` writes for it,
-  from the Julia reference's writer. They pin the digits as well as the
+  from the Julia reference's writer (`scripts/regenerate-goldens.jl` rewrites
+  the texts from the bits; add a case by adding its bits). They pin the digits as well as the
   layout: decimal ties (an exact value halfway between two shortest
   candidates, e.g. `705129328097.90625`), written with the even last digit;
   one tie per decimal exponent and sign from `1e-8` to `1e15`; powers of two

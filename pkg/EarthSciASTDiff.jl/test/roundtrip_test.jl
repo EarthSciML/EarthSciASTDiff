@@ -33,11 +33,12 @@ end
 @testset "stable_json float goldens" begin
     # tests/goldens/canonical_floats.json: [bits, text] pairs every binding's
     # writer must reproduce, decimal ties (written with the even last digit)
-    # among them. The reference writer checks the file itself.
+    # among them. The texts are this writer's (scripts/regenerate-goldens.jl
+    # rewrites them from the bits); the pair keeps the bits in a failure.
     gpath = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "canonical_floats.json")
     for (bits, want) in EarthSciASTDiff.JSON3.read(read(gpath, String))
         x = reinterpret(Float64, parse(UInt64, bits; base = 16))
-        @test stable_json(Any[x]) == "[$want]"
+        @test (bits => stable_json(Any[x])) == (bits => "[$want]")
     end
 end
 
