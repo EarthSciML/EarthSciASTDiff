@@ -287,3 +287,22 @@ fn time_bands_empty_for_autonomous() {
         );
     }
 }
+
+/// `tests/goldens/canonical_floats.json`: `[bits, text]` pairs every binding's
+/// writer must reproduce, decimal ties among them — an exact value halfway
+/// between two shortest candidates is written with the even last digit, as
+/// the Julia reference writes it.
+#[test]
+fn stable_json_float_goldens() {
+    let pairs: Vec<(String, String)> =
+        serde_json::from_str(&golden("canonical_floats.json")).unwrap();
+    assert!(pairs.len() > 50);
+    for (bits, want) in pairs {
+        let x = f64::from_bits(u64::from_str_radix(&bits, 16).unwrap());
+        assert_eq!(
+            stable_json(&serde_json::json!([x])),
+            format!("[{want}]"),
+            "bits {bits}"
+        );
+    }
+}

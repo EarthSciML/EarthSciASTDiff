@@ -964,7 +964,11 @@ Fixture corpus in `tests/` of this repository:
    one per operator row of §3, including the tie/branch policies.
 2. **Band goldens** — per fixture model: the `entries` list in
    deterministic JSON (sorted object keys; an integer node as an integer
-   literal; a float node in shortest round-trip digits, positional iff the
+   literal; a float node in shortest round-trip digits — when the exact
+   value lies halfway between two shortest candidates, the one with the even
+   last digit (`705129328097.90625` → `7.051293280979062e11`), as the Julia
+   reference's writer (`JSON3.write`, Ryu), Python's `repr` and ECMAScript's Number::toString choose; pinned by
+   `tests/goldens/canonical_floats.json` — positional iff the
    first significant digit's decimal exponent is in `-4..5`, else
    `d.f…e<exp>`, always with at least one fraction digit — `0.0`, `1.0`,
    `100.0`, `1.0e6`, `2.4405875e6`, `7.27220521664304e-5`. This is the float

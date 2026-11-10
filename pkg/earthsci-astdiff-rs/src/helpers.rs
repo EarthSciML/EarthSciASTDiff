@@ -71,11 +71,7 @@ pub fn canonical_float(f: f64) -> String {
     if f == 0.0 {
         return if f.is_sign_negative() { "-0.0" } else { "0.0" }.into();
     }
-    // `{:e}` is the shortest round-trip digits as `d[.ddd]e<exp>`
-    let sci = format!("{:e}", f.abs());
-    let (mant, exp) = sci.split_once('e').unwrap();
-    let e10: i32 = exp.parse().unwrap();
-    let ds: String = mant.chars().filter(|c| *c != '.').collect();
+    let (ds, e10) = shortest_digits(f);
     let sign = if f < 0.0 { "-" } else { "" };
     let body = if (-4..=5).contains(&e10) {
         if e10 < 0 {
@@ -91,6 +87,29 @@ pub fn canonical_float(f: f64) -> String {
         format!("{}.{frac}e{e10}", &ds[..1])
     };
     format!("{sign}{body}")
+}
+
+/// The shortest round-trip decimal digits of `|f|` (finite, non-zero) and the
+/// decimal exponent of the first one, as the Julia reference's writer
+/// (`JSON3.write`, Ryu) picks them. The digits are Ryu's (the `ryu` crate,
+/// which serde_json already uses): the same algorithm as the reference, so
+/// the same choice when the exact value lies halfway between two shortest
+/// candidates (705129328097.90625 → …9062, the even last digit) and at a
+/// power of two, where the interval below is half as wide as the one above
+/// (2^-24 → 5.960464477539063e-8). Std's `{:e}` takes the upper candidate of
+/// a tie, so it is not used. Only the layout of `ryu`'s output is discarded.
+fn shortest_digits(f: f64) -> (String, i32) {
+    let mut buf = ryu::Buffer::new();
+    let s = buf.format_finite(f.abs());
+    let (mant, exp) = match s.split_once('e') {
+        Some((m, e)) => (m, e.parse::<i32>().unwrap()),
+        None => (s, 0),
+    };
+    let (int, frac) = mant.split_once('.').unwrap_or((mant, ""));
+    let all = format!("{int}{frac}");
+    let lead = all.len() - all.trim_start_matches('0').len();
+    let ds = all.trim_matches('0').to_string();
+    (ds, int.len() as i32 - 1 - lead as i32 + exp)
 }
 
 /// Deterministic JSON: sorted object keys at every level, floats in the

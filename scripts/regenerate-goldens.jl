@@ -230,3 +230,16 @@ for (name, tag, layout) in (
     write(ppath, stable_json(serialize_scatter_plan(scatter_plan(file, layout))))
     println("wrote ", ppath)
 end
+# the float goldens: `[bits, text]` pairs, the bits the corpus (ties, powers
+# of two, RFC 8785 Appendix B, subnormals, layout switches; tests/README.md)
+# and the text this writer's. Add a case by adding its bits, then run this.
+let path = joinpath(root, "tests", "goldens", "canonical_floats.json")
+    bits = [String(p[1]) for p in EarthSciASTDiff.JSON3.read(read(path, String))]
+    rows = map(bits) do b
+        x = reinterpret(Float64, parse(UInt64, b; base = 16))
+        text = stable_json(Any[x])[2:(end - 1)]
+        "  [\"$b\", \"$text\"]"
+    end
+    write(path, "[\n" * join(rows, ",\n") * "\n]\n")
+    println("wrote ", path)
+end

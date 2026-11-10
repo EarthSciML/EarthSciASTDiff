@@ -156,6 +156,17 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   the same goldens for `wrt: "time"` (spec §4.2), present only for a fixture
   whose right-hand side reads `t` (currently `tgrad_photolysis`). A fixture
   without them is autonomous: its time band list MUST be empty.
+- `goldens/canonical_floats.json`: `[bits, text]` pairs — a double's IEEE
+  bit pattern in hex and the text every binding's `stable_json` writes for it,
+  from the Julia reference's writer (`scripts/regenerate-goldens.jl` rewrites
+  the texts from the bits; add a case by adding its bits). They pin the digits as well as the
+  layout: decimal ties (an exact value halfway between two shortest
+  candidates, e.g. `705129328097.90625`), written with the even last digit;
+  one tie per decimal exponent and sign from `1e-8` to `1e15`; powers of two
+  where the even (or nearest) candidate does not read back, so the other one
+  is written (`2^-24` → `5.960464477539063e-8`); the RFC 8785
+  Appendix B vectors; subnormals; powers of ten and their neighbours at the
+  layout switches. Every binding's test suite checks each pair.
 - Floats in every golden use the reference layout of spec §5 item 2 (an
   integral float keeps its `.0`, except inside a `const` node's `value`, where
   it is written as an integer; scientific notation for magnitudes outside

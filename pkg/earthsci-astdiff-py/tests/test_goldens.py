@@ -1,6 +1,9 @@
 """The cross-language conformance gate: stable_json of the serialized band
 list must be byte-identical to the Julia reference's goldens."""
 
+import json
+import struct
+
 import earthsci_ast as ea
 import pytest
 from earthsci_astdiff import jacobian_bands, serialize_band, stable_json
@@ -111,6 +114,15 @@ def test_stable_json_float_layout(value, want):
     # EarthSciAST CONFORMANCE_SPEC §5.5.3.1's probe table plus Julia `show`
     # values: the goldens are written in the reference's float layout
     assert stable_json([value]) == f"[{want}]"
+
+
+def test_stable_json_float_goldens(golden_dir):
+    # [bits, text] pairs every binding's writer must reproduce, decimal ties
+    # (written with the even last digit, as `repr` does) among them
+    pairs = json.loads((golden_dir / "canonical_floats.json").read_text())
+    for bits, want in pairs:
+        x = struct.unpack(">d", bytes.fromhex(bits))[0]
+        assert stable_json([x]) == f"[{want}]", bits
 
 
 def test_stable_json_non_string_keys():
