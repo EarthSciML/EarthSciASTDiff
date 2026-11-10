@@ -30,6 +30,17 @@ end
     @test stable_json(d1) == "{\"a\":{\"y\":\"s\",\"z\":[1,2]},\"b\":1}"
 end
 
+@testset "stable_json float goldens" begin
+    # tests/goldens/canonical_floats.json: [bits, text] pairs every binding's
+    # writer must reproduce, decimal ties (written with the even last digit)
+    # among them. The reference writer checks the file itself.
+    gpath = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "canonical_floats.json")
+    for (bits, want) in EarthSciASTDiff.JSON3.read(read(gpath, String))
+        x = reinterpret(Float64, parse(UInt64, bits; base = 16))
+        @test stable_json(Any[x]) == "[$want]"
+    end
+end
+
 @testset "goldens" begin
     # Golden = stable_json of the serialized entries. Regenerate with
     # scripts/regenerate-goldens.jl after an INTENDED rule/format change.

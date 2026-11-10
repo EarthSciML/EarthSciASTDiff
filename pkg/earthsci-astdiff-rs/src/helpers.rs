@@ -71,11 +71,7 @@ pub fn canonical_float(f: f64) -> String {
     if f == 0.0 {
         return if f.is_sign_negative() { "-0.0" } else { "0.0" }.into();
     }
-    // `{:e}` is the shortest round-trip digits as `d[.ddd]e<exp>`
-    let sci = format!("{:e}", f.abs());
-    let (mant, exp) = sci.split_once('e').unwrap();
-    let e10: i32 = exp.parse().unwrap();
-    let ds: String = mant.chars().filter(|c| *c != '.').collect();
+    let (ds, e10) = shortest_digits(f);
     let sign = if f < 0.0 { "-" } else { "" };
     let body = if (-4..=5).contains(&e10) {
         if e10 < 0 {
@@ -91,6 +87,34 @@ pub fn canonical_float(f: f64) -> String {
         format!("{}.{frac}e{e10}", &ds[..1])
     };
     format!("{sign}{body}")
+}
+
+/// The shortest round-trip decimal digits of `|f|` (finite, non-zero) and the
+/// decimal exponent of the first one, as Julia's (Ryu) `show` picks them.
+///
+/// `{:e}` finds the shortest digit count, but when the exact binary value lies
+/// exactly halfway between two candidates of that length that both round-trip
+/// (705129328097.90625 between …9062 and …9063) it takes the upper one, where
+/// Julia, Python's `repr` and ECMAScript's Number::toString take the one with
+/// the even last digit. Printing again at that precision converts exactly and
+/// rounds half to even, which gives the even candidate — unless that one
+/// falls outside the rounding interval, which happens at a power of two, where
+/// the interval below is half as wide as the one above (2^-24 =
+/// 5.9604644775390625e-8 reads back from …063 but not from …062). Then only
+/// `{:e}`'s candidate round-trips, and Julia writes it too.
+fn shortest_digits(f: f64) -> (String, i32) {
+    let a = f.abs();
+    let sci = format!("{a:e}");
+    // digits after the point in `d[.ddd]e<exp>`
+    let prec = sci.find('e').unwrap().saturating_sub(2);
+    let even = format!("{a:.prec$e}");
+    let pick = if even.parse::<f64>() == Ok(a) {
+        even
+    } else {
+        sci
+    };
+    let (mant, exp) = pick.split_once('e').unwrap();
+    (mant.replace('.', ""), exp.parse().unwrap())
 }
 
 /// Deterministic JSON: sorted object keys at every level, floats in the
