@@ -228,6 +228,8 @@ function _jacobian_block(
         String(wrt), entries, rect ? _columns_field(sv, wrt, forcing) : nothing,
         structure, cse, cse_min_nodes
     )
+    aux = _auxiliary(sv, entries)
+    isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
             _column_block_plan(cl)
@@ -665,6 +667,26 @@ function _hoist!(doc, m, sv::SysView, entries::Vector{JacEntry}, cse::Bool, cse_
     return h.coefs
 end
 
+# The `auxiliary` definitions (esm-jacobian-spec.md §4.5) as observed of a
+# derived model: each a declared unknown of its shape defined by a bare-LHS
+# equation, after the source's own equations.
+function _add_auxiliary!(m, aux)
+    for (n, shape, _) in aux
+        m["variables"][n] = OrderedDict{String, Any}("type" => "unknown", "shape" => Any[shape...])
+    end
+    for (n, _, d) in aux
+        push!(m["equations"], OrderedDict{String, Any}("lhs" => n, "rhs" => _ser_expr(d)))
+    end
+    return
+end
+
+# The block's `auxiliary` field (esm-jacobian-spec.md §4.5): `[{name, shape,
+# rhs}]` in recurrence order.
+_auxiliary_field(aux) = Any[
+    OrderedDict{String, Any}("name" => n, "shape" => Any[shape...], "rhs" => _ser_expr(d))
+        for (n, shape, d) in aux
+]
+
 # Derived model: the source's observed definitions that the coefficients
 # read, with its state derivatives zeroed, plus one state per band whose RHS
 # is the band's coefficient field, after the optional hoisting of
@@ -676,7 +698,11 @@ function _evaluation_document(
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
-    _zero_source_derivatives!(m, sv, ctx, entries)
+    aux = _auxiliary(sv, entries)
+    roots = ASTExpr[en.band.coef for en in entries]
+    append!(roots, last.(aux))
+    _zero_source_derivatives!(m, sv, ctx, roots)
+    _add_auxiliary!(m, aux)
     coefs = _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
     names = String[]
     for (k, en) in enumerate(entries)

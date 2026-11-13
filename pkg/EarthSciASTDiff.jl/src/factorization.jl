@@ -68,7 +68,7 @@ function plan_factorization(
 end
 
 _column_block_plan(cl) =
-    ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku)
+    ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku, cl.rank1)
 
 "The structure classes [`detect_structure`](@ref) reports (spec §4)."
 const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block)
@@ -179,10 +179,11 @@ end
 Line-by-line factorization info for a `:column_block` Jacobian: every
 coupling stays within one line along `axis`, so the matrix is one
 `(length(block_vars)·line_length)`-square block per line. `pattern` names the
-coupling along the line (`"dense"`, `"lower"`, `"upper"`, `"banded"`) and
-`kl` / `ku` bound it below and above the diagonal, so a solver can pick a
-column solver (banded LU, a triangular sweep, dense LU) without looking at
-the entries.
+coupling along the line (`"dense"`, `"lower"`, `"upper"`, `"banded"`,
+`"diag_plus_rank1"`) and `kl` / `ku` bound it below and above the diagonal,
+so a solver can pick a column solver (banded LU, a triangular sweep, dense
+LU, a Sherman–Morrison solve over `rank1`'s terms) without looking at the
+entries.
 """
 struct ColumnBlockPlan <: FactorizationPlan
     axis::String
@@ -191,16 +192,25 @@ struct ColumnBlockPlan <: FactorizationPlan
     pattern::String
     kl::Int
     ku::Int
+    # the rank-one terms of a "diag_plus_rank1" line block (spec §6): each
+    # {"entry": 1-based entry index, "u": row factor, "v": line factor}
+    rank1::Vector{Any}
 end
+ColumnBlockPlan(axis, line_length, block_vars, pattern, kl, ku) =
+    ColumnBlockPlan(axis, line_length, block_vars, pattern, kl, ku, Any[])
 
-serialize_plan(p::ColumnBlockPlan) = OrderedDict{String, Any}(
-    "type" => "column_block",
-    "axis" => p.axis,
-    "line_length" => p.line_length,
-    "block_vars" => p.block_vars,
-    "pattern" => p.pattern,
-    "bandwidth" => Any[p.kl, p.ku],
-)
+function serialize_plan(p::ColumnBlockPlan)
+    d = OrderedDict{String, Any}(
+        "type" => "column_block",
+        "axis" => p.axis,
+        "line_length" => p.line_length,
+        "block_vars" => p.block_vars,
+        "pattern" => p.pattern,
+        "bandwidth" => Any[p.kl, p.ku],
+    )
+    isempty(p.rank1) || (d["rank1"] = Any[p.rank1...])
+    return d
+end
 
 function serialize_plan(p::BlockDiagonalPlan)
     nzpairs(M) = Any[

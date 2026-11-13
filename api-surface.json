@@ -118,10 +118,11 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
+        "julia": "extended_bands",
         "python": "extended_bands",
         "rust": "extended_bands"
       },
-      "notes": "The extended first-order system through causal recurrences (spec \u00a74.5): state bands with recurrence columns and each recurrence definition's own bands. Julia follows once EarthSciAST.jl runs recurrences."
+      "notes": "The extended first-order system through causal recurrences (spec \u00a74.5): state bands with recurrence columns and each recurrence definition's own bands."
     },
     {
       "name": "forcing_names",
@@ -294,10 +295,11 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
+        "julia": "recurrences",
         "python": "recurrences",
         "rust": "recurrences"
       },
-      "notes": "The causal self-reference recurrences of a view (spec \u00a74.5), with frame and axis."
+      "notes": "The causal self-reference recurrences of a view (spec \u00a74.5), with frame and axis. A recurrence's `dim` follows each language's own indexing: 1-based in Julia, 0-based in Python and Rust (the emitted `recurrences` field of a pair block is 1-based in every binding)."
     },
     {
       "name": "scatter_plan",
@@ -411,6 +413,7 @@
       "kind": "function",
       "tier": "stable",
       "bindings": {
+        "julia": "transfer_definition",
         "python": "transfer_definition",
         "rust": "transfer_definition"
       },

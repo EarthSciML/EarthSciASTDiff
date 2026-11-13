@@ -90,10 +90,12 @@ one line along index set `axis`, or `nothing` when one does not: every band
 couples two array states of one common shape that holds `axis` once, and
 at every band point the column equals the row in every other dimension. A
 point reading past the axis is a ghost read and does not count. Returns
-`(axis, dim, line_length, block_vars, kl, ku, pattern)`: `kl` / `ku` the
+`(axis, dim, line_length, block_vars, kl, ku, pattern, rank1)`: `kl` / `ku` the
 largest distances below / above the diagonal any point reaches along the
 axis, and `pattern` their name — `"dense"` (both span the line), `"lower"`,
-`"upper"`, or `"banded"` — read off the exact band points, never probed.
+`"upper"`, `"banded"` or `"diag_plus_rank1"` — read off the exact band
+points, never probed, with `rank1` the rank-one terms of a
+`"diag_plus_rank1"` line block (esm-jacobian-spec.md §6; empty otherwise).
 """
 function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     isempty(entries) && return nothing
@@ -110,7 +112,9 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     dim = only(dim)
     N = _ctx(sv).index_sets[axis]
     kl = 0; ku = 0
-    for en in entries
+    # per entry: whether every point sits at distance 0 on the axis
+    diag = fill(true, length(entries))
+    for (k, en) in enumerate(entries)
         ok = _all_points(en.band) do cell, _, cidx
             for d in eachindex(cidx)
                 d == dim || cidx[d] == cell[d] || return false
@@ -118,18 +122,89 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
             1 <= cidx[dim] <= N || return true            # ghost read
             off = cidx[dim] - cell[dim]
             kl = max(kl, -off); ku = max(ku, off)
+            diag[k] &= off == 0
             return true
         end
         ok || return nothing
     end
-    pattern = kl == N - 1 && ku == N - 1 ? "dense" :
+    # every entry at distance 0 or a rank-one term, and at least one of
+    # those: D + Σ u vᵀ per line, for a Sherman–Morrison solve
+    rank1 = Any[]
+    lowrank = (kl, ku) != (0, 0)
+    for (k, en) in enumerate(entries)
+        diag[k] && continue
+        t = _rank1_term(en.band, dim)
+        if t === nothing
+            lowrank = false
+        else
+            push!(
+                rank1, OrderedDict{String, Any}(
+                    "entry" => k,
+                    "u" => _ser_expr(_canon_lits(t[1])), "v" => _ser_expr(_canon_lits(t[2])),
+                )
+            )
+        end
+    end
+    lowrank || empty!(rank1)
+    pattern = !isempty(rank1) ? "diag_plus_rank1" :
+        kl == N - 1 && ku == N - 1 ? "dense" :
         ku == 0 && kl == N - 1 ? "lower" :
         kl == 0 && ku == N - 1 ? "upper" : "banded"
     vars = sort!(unique(vcat([en.u for en in entries], [en.v for en in entries])))
     return (
         axis = axis, dim = dim, line_length = N, block_vars = vars,
-        kl = kl, ku = ku, pattern = pattern,
+        kl = kl, ku = ku, pattern = pattern, rank1 = rank1,
     )
+end
+
+# The factors of a product: numerator and denominator factors, `*` and `/`
+# flattened and a unary minus taken out as -1.
+function _factors!(e::ASTExpr, num::Vector{ASTExpr}, den::Vector{ASTExpr})
+    if e isa OpExpr
+        if e.op == "*"
+            foreach(a -> _factors!(a, num, den), e.args)
+            return
+        elseif e.op == "/" && length(e.args) == 2
+            _factors!(e.args[1], num, den)
+            _factors!(e.args[2], den, num)
+            return
+        elseif e.op == "-" && length(e.args) == 1
+            push!(num, lit(-1))
+            _factors!(e.args[1], num, den)
+            return
+        end
+    end
+    push!(num, e)
+    return
+end
+
+# `coef = u · v` with `u` free of the contracted name `kap` and `v` free of
+# every row name, or `nothing` when a factor reads both.
+function _split_rank1(coef::ASTExpr, kap::String, rows::Set{String})
+    num = ASTExpr[]; den = ASTExpr[]
+    _factors!(coef, num, den)
+    un = ASTExpr[]; ud = ASTExpr[]; vn = ASTExpr[]; vd = ASTExpr[]
+    for (fs, is_num) in ((num, true), (den, false)), f in fs
+        fv = free_variables(f)
+        k = kap in fv
+        r = !isdisjoint(fv, rows)
+        k && r && return nothing
+        push!(k ? (is_num ? vn : vd) : (is_num ? un : ud), f)
+    end
+    build(n, d) = isempty(d) ? mul(n...) : op("/", mul(n...), mul(d...))
+    return build(un, ud), build(vn, vd)
+end
+
+# A band whose every point reads one other cell of its row's line — the line
+# position being its one contracted name, under no `where` — with a
+# coefficient that splits as `u(row) · v(κ)`: a rank-one term. A
+# structure-only band (no coefficient, spec §2.1) has none to split.
+function _rank1_term(b::Band, dim::Int)
+    (b.coef === nothing || b.guard !== nothing || length(b.contracted) != 1) && return nothing
+    kap = b.contracted[1][1]
+    (dim <= length(b.cidx) && b.cidx[dim] isa VarExpr && b.cidx[dim].name == kap) ||
+        return nothing
+    return _split_rank1(b.coef, kap, Set{String}(r for r in b.ridx if r isa String))
 end
 
 """
