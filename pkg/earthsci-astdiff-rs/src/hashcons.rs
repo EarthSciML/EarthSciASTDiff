@@ -95,8 +95,7 @@ pub(crate) fn same_expr(a: &Expr, b: &Expr) -> bool {
 /// regions, the child `Arc`s), which on an unchanged node is a copy thrown
 /// away. A mapped child is matched back to its slot by the slot's address
 /// (`for_each_child` and `map_children` both visit the node's own fields),
-/// not by visit order, which differs for the hash-map children (`axes`,
-/// `bindings`).
+/// not by visit order, which differs for the hash-map child (`bindings`).
 pub(crate) fn map_children_shared(e: &Expr, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
     let Expr::Operator(n) = e else {
         return e.clone();
@@ -321,7 +320,7 @@ impl StructIndex {
     /// other is keyed by the `skey` of its SHELL, every child slot holding a
     /// placeholder carrying the child's id, matched to the child by slot
     /// address as in [`map_children_shared`] (the two walks order the
-    /// hash-map children, `axes` and `bindings`, differently); a shell that
+    /// hash-map child, `bindings`, differently); a shell that
     /// serializes as `{"op", "args"}` alone (a set field that is never
     /// written) joins the plain table, so the two tables split nodes exactly
     /// where `skey` does. O(node fields), not O(subtree).
@@ -750,17 +749,17 @@ mod tests {
 
     #[test]
     fn mapped_children_land_in_their_slots() {
-        // `axes` is a hash map: `for_each_child` visits it sorted,
+        // `bindings` is a hash map: `for_each_child` visits it sorted,
         // `map_children` in hash order. Each mapped child must land in its
         // own slot whatever the order.
-        let mut axes = HashMap::new();
+        let mut bindings = HashMap::new();
         for k in ["a", "b", "c", "d", "e", "f", "g", "h"] {
-            axes.insert(k.to_string(), Expr::Variable(k.to_string()));
+            bindings.insert(k.to_string(), Expr::Variable(k.to_string()));
         }
         let e = Expr::operator(ExpressionNode {
-            op: "table_lookup".into(),
+            op: "apply_expression_template".into(),
             args: vec![Expr::Variable("p".into())],
-            axes: Some(axes),
+            bindings: Some(bindings),
             ..Default::default()
         });
         let m = map_children_shared(&e, &mut |c| match c {
@@ -770,7 +769,7 @@ mod tests {
         let Expr::Operator(mn) = &m else {
             unreachable!()
         };
-        for (k, v) in mn.axes.as_ref().unwrap() {
+        for (k, v) in mn.bindings.as_ref().unwrap() {
             assert_eq!(v, &Expr::Variable(format!("{k}{k}")));
         }
         assert_eq!(mn.args[0], Expr::Variable("pp".into()));

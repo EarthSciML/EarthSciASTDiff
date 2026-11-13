@@ -190,10 +190,11 @@ def lhs_state(eq) -> str | None:
     """The state an equation integrates: plain ``D(u)`` or the pointwise-
     lifted ``faq{ expr: D(index(u, i…)) }`` form.
 
-    Only the esm 1.1.0 ``faq`` tag is matched: EarthSciAST's loader rewrites
-    the deprecated ``aggregate`` alias at the wire boundary. Matching the old
-    tag silently classifies every array state equation as non-differential
-    (zero bands, no error) — the reference's faq_tag_test.jl."""
+    Only the esm 1.1.0 ``faq`` tag is matched: esm 2.0.0 removed the old
+    ``aggregate`` spelling, which EarthSciAST's loader rejects. Matching the
+    old tag silently classified every array state equation as
+    non-differential (zero bands, no error) — the reference's
+    faq_tag_test.jl."""
     lhs = eq.lhs
     if not isinstance(lhs, ExprNode):
         return None

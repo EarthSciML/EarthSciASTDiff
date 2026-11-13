@@ -119,13 +119,6 @@ function _points(entries)
     return out
 end
 
-# EarthSciAST.jl executes recurrences from 0.11 on (EarthSciAST#546). Below
-# it the structural tests (goldens, recognition, refusals, the extended
-# system) still run; every test that evaluates a document is skipped.
-const _REC_EXEC = pkgversion(EarthSciAST) >= v"0.11"
-_REC_EXEC || @info "recurrence value tests skipped: EarthSciAST $(pkgversion(EarthSciAST)) " *
-    "does not execute recurrences (needs ≥ 0.11)"
-
 @testset "recurrences: goldens" begin
     for (name, axes, pairs, cax) in (
             (_REC, (:states, :parameters), ((:states, :states), (:states, :parameters)), "lev"),
@@ -176,7 +169,7 @@ _REC_EXEC || @info "recurrence value tests skipped: EarthSciAST $(pkgversion(Ear
     end
 end
 
-_REC_EXEC && @testset "recurrences: J matches central differences of the source" begin
+@testset "recurrences: J matches central differences of the source" begin
     for (name, wrt, tag) in (
             (_REC, :states, ""), (_REC, :parameters, ".parameters"), ("pbl_rank1", :states, ""),
         )
@@ -216,7 +209,7 @@ _REC_EXEC && @testset "recurrences: J matches central differences of the source"
     end
 end
 
-_REC_EXEC && @testset "recurrences: the three derivations agree" begin
+@testset "recurrences: the three derivations agree" begin
     file = _rec_file()
     for (wrt, tag) in ((:states, ""), (:parameters, ".parameters"))
         g = _rec_json("$_REC$tag.jvals.json")
@@ -240,7 +233,7 @@ _REC_EXEC && @testset "recurrences: the three derivations agree" begin
     end
 end
 
-_REC_EXEC && @testset "recurrences: the contraction matches central differences" begin
+@testset "recurrences: the contraction matches central differences" begin
     file = _rec_file()
     for wrt in ((:states, :states), (:states, :parameters))
         gd = _rec_json("$_REC.$(wrt[1])-$(wrt[2]).hvals.json")
@@ -319,7 +312,7 @@ end
     @test !full.rank1_undecided && full.pattern == "diag_plus_rank1"
 end
 
-_REC_EXEC && @testset "recurrences: a running-max tie takes the earlier argument" begin
+@testset "recurrences: a running-max tie takes the earlier argument" begin
     # V[k] = max(V[k-1], x[k]): at an exact tie V[k-1] == x[k] the
     # derivative follows the earlier argument, the carried maximum (spec
     # §3.2's left fold)
@@ -452,12 +445,10 @@ end
     reads = [en for en in entries if "k_t" in EarthSciAST.free_variables(en.band.coef)]
     @test !isempty(reads)
     @test all(en -> !("k_t" in first.(en.band.contracted)), reads)
-    if _REC_EXEC
-        J = _materialized(file, :states, fill(0.5, 4), nothing, 0.0)
-        for k in 1:4, j in 1:4
-            want = j <= k ? 2.0 * 0.5^(k - j) : 0.0
-            @test isapprox(get(J, ("x[$k]", "x[$j]"), 0.0), want; rtol = 1.0e-12)
-        end
+    J = _materialized(file, :states, fill(0.5, 4), nothing, 0.0)
+    for k in 1:4, j in 1:4
+        want = j <= k ? 2.0 * 0.5^(k - j) : 0.0
+        @test isapprox(get(J, ("x[$k]", "x[$j]"), 0.0), want; rtol = 1.0e-12)
     end
 end
 
@@ -547,12 +538,10 @@ end
     end
     aux = [a["name"] for a in block["auxiliary"]]
     @test !isempty(aux) && issubset(aux, read)
-    if _REC_EXEC
-        J = _materialized(file, :states, fill(0.5, 4), nothing, 0.0)
-        for k in 1:4, j in 1:4
-            want = j <= k ? 0.5^(k - j) : 0.0
-            @test isapprox(get(J, ("x[$k]", "x[$j]"), 0.0), want; rtol = 1.0e-12)
-        end
+    J = _materialized(file, :states, fill(0.5, 4), nothing, 0.0)
+    for k in 1:4, j in 1:4
+        want = j <= k ? 0.5^(k - j) : 0.0
+        @test isapprox(get(J, ("x[$k]", "x[$j]"), 0.0), want; rtol = 1.0e-12)
     end
 end
 

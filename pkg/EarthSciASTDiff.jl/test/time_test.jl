@@ -57,8 +57,8 @@ end
 
 @testset "time bands: ∂f/∂t against a central difference in t" begin
     # tgrad_photolysis covers max(0, cos(ω t + φᵢ)) through an array observed,
-    # interp.linear of t through a scalar observed, a datetime.hour factor
-    # (a.e. zero) and a datetime.julian_day source. That source is O(1e-10)
+    # the esm:std linear template of t through a scalar observed, an hour
+    # factor (a.e. zero) and a julian_day source. That source is O(1e-10)
     # here, below a central difference's resolution at JD ≈ 2.4e6; but the O3
     # row is the NO row plus it, so their difference pins it — to 1e-3, since
     # binary64 resolves JD to ~5e-10 days, coarse against the phase τ/86400.

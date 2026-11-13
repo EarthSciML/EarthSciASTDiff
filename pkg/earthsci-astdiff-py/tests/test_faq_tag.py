@@ -2,8 +2,8 @@
 reference's test/faq_tag_test.jl).
 
 EarthSciAST renamed the unified query node's wire tag from ``aggregate`` to
-``faq`` at esm 1.1.0; the loader rewrites the deprecated alias at the wire
-boundary. Matching the old tag throws nothing: ``lhs_state`` stops recognising
+``faq`` at esm 1.1.0, and esm 2.0.0 removed the old spelling (the loader
+rejects it, ``removed_op``). Matching the old tag threw nothing: ``lhs_state`` stops recognising
 the pointwise-lifted ``faq{ expr: D(index(u, …)) }`` LHS, every array state
 equation is classified as non-differential, and the band list comes back
 EMPTY. So these assertions are about non-emptiness as much as correctness."""
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import earthsci_ast as ea
 import pytest
 from earthsci_ast.esm_types import ExprNode
-from earthsci_astdiff import jacobian_bands, serialize_band, stable_json, sysview
+from earthsci_astdiff import jacobian_bands, sysview
 from earthsci_astdiff.system import lhs_state, view_states
 
 
@@ -85,12 +85,9 @@ def _alias_doc(tag: str, version: str):
     )
 
 
-def test_deprecated_alias_differentiates_identically():
-    def ser(f):
-        return [(e.u, e.v, stable_json(serialize_band(e))) for e in jacobian_bands(f)]
-
-    new = ser(_alias_doc("faq", "1.1.0"))
-    with pytest.warns(Warning, match="deprecated_op_alias"):
-        old = ser(_alias_doc("aggregate", "1.0.0"))
-    assert new
-    assert new == old
+def test_removed_alias_is_refused_at_load():
+    assert jacobian_bands(_alias_doc("faq", "1.1.0"))
+    # Even a 1.0.0 document, where `aggregate` was the current spelling: the
+    # 2.0.0 loader rejects every removed op whatever `esm` it declares.
+    with pytest.raises(Exception, match="removed_op"):
+        _alias_doc("aggregate", "1.0.0")

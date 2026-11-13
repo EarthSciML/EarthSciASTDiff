@@ -221,11 +221,12 @@ def test_structure_refuses_what_the_full_mode_refuses():
 
     ctx = Ctx({"i": 4}, {"x": [4]}, set())
     xi = ExprNode(op="index", args=["x", "i"])
-    week = ExprNode(op="fn", args=[xi], name="datetime.week")
+    # ops with no derivative rule, alone and under a product
+    xx = ExprNode(op="grad", args=[xi], dim="x")
     for body in (
         ExprNode(op="D", args=[xi], wrt="lon"),
-        week,
-        ExprNode(op="*", args=[2, week]),
+        xx,
+        ExprNode(op="*", args=[2, xx]),
     ):
         rhs = ExprNode(op="faq", args=[], output_idx=["i"], expr=body, ranges={"i": [1, 4]})
         for co in (True, False):
@@ -243,7 +244,6 @@ def test_drule_check_agrees_with_dscalar():
 
     s = Site.of("x")
     tab = o("const", value=[0.0, 1.0, 4.0])
-    ax = o("const", value=[0.0, 1.0, 2.0])
     for e in (
         "x",
         "y",
@@ -271,9 +271,8 @@ def test_drule_check_agrees_with_dscalar():
         o("max", "x", "y"),
         o("min", o("sign", "x")),
         o("<", "x", "y"),
-        o("fn", "x", tab, ax, name="interp.searchsorted"),
-        o("fn", tab, ax, "x", name="interp.linear"),
-        o("fn", o("*", 3, "x"), name="datetime.julian_day"),
+        o("index", tab, o("floor", "x")),
+        o("+", o("index", tab, o("min", o("max", o("floor", "x"), 1), 2)), o("*", 3, "x")),
         o("faq", output_idx=[], reduce="max", ranges={"k": [1, 3]}, expr=o("*", "x", "k")),
     ):
         assert drule_check(e, s) == (not is_zero(dscalar(e, s))), e

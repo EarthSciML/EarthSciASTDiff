@@ -226,7 +226,7 @@ def test_flat_evaldoc_refuses_a_component_named_like_the_derived_model():
 
 
 DIURNAL = {
-    "esm": "1.1.0",
+    "esm": "2.0.0",
     "metadata": {"name": "Diurnal"},
     "domain": {
         "independent_variable": "t",
@@ -234,6 +234,7 @@ DIURNAL = {
     },
     "models": {
         "Chem": {
+            "expression_template_imports": [{"ref": "esm:std/calendar.esm", "only": ["hour"]}],
             "variables": {
                 "c": {"type": "unknown", "default": 1.0},
                 "k": {"type": "parameter", "default": 0.5},
@@ -245,7 +246,12 @@ DIURNAL = {
                         "op": "*",
                         "args": [
                             {"op": "-", "args": ["k"]},
-                            {"op": "fn", "name": "datetime.hour", "args": ["t"]},
+                            {
+                                "op": "apply_expression_template",
+                                "args": [],
+                                "name": "hour",
+                                "bindings": {"t": "t"},
+                            },
                             "c",
                         ],
                     },
@@ -265,8 +271,8 @@ def _j1(doc: dict, t: float) -> float:
 def test_evaluation_document_carries_the_domain(valid_dir):
     """The evaluation document carries the source's ``domain`` (spec §8.1),
     so it has the source's time origin; the right-hand side passes ``t`` to
-    the calendar functions as UTC seconds whatever the origin, so a
-    ``datetime.hour`` coefficient reads the same with or without it (the
+    the esm:std calendar templates as UTC seconds whatever the origin, so an
+    ``hour`` coefficient reads the same with or without it (the
     reference's flat_evaldoc_test.jl)."""
     file = ea.load_string(json.dumps(DIURNAL))
     for src in (file, ea.flatten(file)):

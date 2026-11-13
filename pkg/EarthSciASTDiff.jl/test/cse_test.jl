@@ -156,10 +156,10 @@ end
     t4, _ = cse_templates(ASTExpr[OpExpr("*", ASTExpr[P, Q])]; min_nodes = 4)
     @test isempty(t4)
     # map-valued slots go by ascending key, whatever the Dict's order: the
-    # "a" axis (E) is numbered before the "b" axis (D)
+    # "a" binding (E) is numbered before the "b" binding (D)
     tl = OpExpr(
-        "table_lookup", ASTExpr[]; table = "t",
-        table_axes = Dict{String, ASTExpr}("b" => D, "a" => E)
+        "apply_expression_template", ASTExpr[]; name = "t",
+        bindings = Dict{String, ASTExpr}("b" => D, "a" => E)
     )
     t5, _ = cse_templates(ASTExpr[tl, OpExpr("*", ASTExpr[D, E])]; min_nodes = 4)
     @test [skey(t5["jt1"]), skey(t5["jt2"])] == [skey(E), skey(D)]

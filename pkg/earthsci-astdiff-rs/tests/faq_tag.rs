@@ -2,8 +2,8 @@
 //! reference's test/faq_tag_test.jl).
 //!
 //! EarthSciAST renamed the unified query node's wire tag from `aggregate` to
-//! `faq` at esm 1.1.0; the loader rewrites the deprecated alias at the wire
-//! boundary. Matching the old tag throws nothing: `lhs_state` stops
+//! `faq` at esm 1.1.0, and esm 2.0.0 removed the old spelling (the loader
+//! rejects it, `removed_op`). Matching the old tag threw nothing: `lhs_state` stops
 //! recognising the pointwise-lifted `faq{ expr: D(index(u, …)) }` LHS, every
 //! array state equation is classified as non-differential, and the band list
 //! comes back EMPTY. So these assertions are about non-emptiness as much as
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use earthsci_ast::{Equation, EsmFile, Expr};
 use earthsci_astdiff::system::{lhs_state, observed_defs, view_states};
-use earthsci_astdiff::{jacobian_bands, serialize_band, stable_json, sysview, Wrt};
+use earthsci_astdiff::{jacobian_bands, sysview, Wrt};
 use serde_json::{json, Value};
 
 fn root() -> PathBuf {
@@ -80,9 +80,9 @@ fn array_models_differentiate_to_a_non_empty_band_set() {
     }
 }
 
-fn alias_doc(tag: &str, version: &str) -> EsmFile {
+fn alias_json(tag: &str, version: &str) -> serde_json::Value {
     let body = json!({"op": "*", "args": [-0.5, {"op": "index", "args": ["u", "i"]}]});
-    let doc = json!({
+    json!({
         "esm": version,
         "metadata": {"name": "FaqAlias"},
         "index_sets": {"x": {"kind": "interval", "size": 4}},
@@ -91,21 +91,21 @@ fn alias_doc(tag: &str, version: &str) -> EsmFile {
             "equations": [{
                 "lhs": {"op": "D", "args": ["u"], "wrt": "t"},
                 "rhs": {"op": tag, "args": [], "output_idx": ["i"],
-                        "ranges": {"i": [1, 4]}, "expr": body}}]}}});
-    earthsci_ast::load_document(&doc).expect("document loads")
+                        "ranges": {"i": [1, 4]}, "expr": body}}]}}})
+}
+
+fn alias_doc(tag: &str, version: &str) -> EsmFile {
+    earthsci_ast::load_document(&alias_json(tag, version)).expect("document loads")
 }
 
 #[test]
-fn deprecated_alias_differentiates_identically() {
-    let ser = |f: &EsmFile| -> Vec<String> {
-        jacobian_bands(f, None, Wrt::States)
+fn removed_alias_is_refused_at_load() {
+    assert!(
+        !jacobian_bands(&alias_doc("faq", "1.1.0"), None, Wrt::States)
             .unwrap()
-            .iter()
-            .map(|e| format!("{}|{}|{}", e.u, e.v, stable_json(&serialize_band(e))))
-            .collect()
-    };
-    let new = ser(&alias_doc("faq", "1.1.0"));
-    let old = ser(&alias_doc("aggregate", "1.0.0"));
-    assert!(!new.is_empty());
-    assert_eq!(new, old);
+            .is_empty()
+    );
+    // Even a 1.0.0 document, where `aggregate` was the current spelling: the
+    // 2.0.0 loader rejects every removed op whatever `esm` it declares.
+    assert!(earthsci_ast::load_document(&alias_json("aggregate", "1.0.0")).is_err());
 }

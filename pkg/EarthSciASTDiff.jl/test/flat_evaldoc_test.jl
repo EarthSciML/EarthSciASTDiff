@@ -146,20 +146,22 @@ end
 # The evaluation document carries the source's `domain` (esm-jacobian-spec.md
 # §8.1), so it has the source's time origin: a runtime that turns timestamps
 # into model time with `time_origin` gets the same `t` for the document as
-# for its source. The right-hand side itself passes `t` to the calendar
-# functions as UTC seconds whatever the origin, so a `datetime.hour`
+# for its source. The right-hand side itself passes `t` to the esm:std
+# calendar templates as UTC seconds whatever the origin, so an `hour`
 # coefficient, `∂/∂c (-k hour(t) c) = -k hour(t)`, reads the same with or
 # without the domain. The same in Python and Rust, written the same.
 const _DIURNAL = """
-{"esm": "1.1.0", "metadata": {"name": "Diurnal"},
+{"esm": "2.0.0", "metadata": {"name": "Diurnal"},
  "domain": {"independent_variable": "t",
             "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
  "models": {"Chem": {
+   "expression_template_imports": [{"ref": "esm:std/calendar.esm", "only": ["hour"]}],
    "variables": {"c": {"type": "unknown", "default": 1.0},
                  "k": {"type": "parameter", "default": 0.5}},
    "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
                   "rhs": {"op": "*", "args": [{"op": "-", "args": ["k"]},
-                          {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}}
+                          {"op": "apply_expression_template", "args": [], "name": "hour",
+                           "bindings": {"t": "t"}}, "c"]}}]}}}
 """
 
 # J_1 of an evaluation document at state c = 0.3 and time t.

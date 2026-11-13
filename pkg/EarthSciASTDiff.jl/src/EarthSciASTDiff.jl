@@ -81,7 +81,7 @@ include("expr_helpers.jl")   # literal/constructor helpers, Site, occurrence
 include("hashcons.jl")       # structural interning (size-independent equality)
 include("simplify_branches.jl") # ifelse-aware simplification (swell control)
 include("cse.jl")            # hash-consed template extraction (swell control)
-include("scalar_rules.jl")   # dscalar + closed-function derivative table
+include("scalar_rules.jl")   # dscalar: the per-op derivative table
 include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus
 include("reductions.jl")     # filters, max/min/* reductions, one-hot index reads

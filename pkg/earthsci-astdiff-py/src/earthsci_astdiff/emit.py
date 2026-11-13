@@ -800,7 +800,7 @@ def _finish_derived(doc: dict, sv, derived: str) -> dict:
 def _domain(doc: dict, domain) -> dict:
     """The source's ``domain``, as far as it bears on evaluation (spec §8.1):
     its ``temporal`` (``start``, ``end``, ``reference_time``), which sets the
-    time origin the calendar functions (``datetime.*``) read, and its
+    time origin a runtime converts timestamps into ``t`` with, and its
     ``element_type`` and ``array_type``. Not ``independent_variable``: the
     derived equations are written with respect to ``t``. Built key by key from
     EarthSciAST's serialization (a raw domain dict is taken as serialized), so

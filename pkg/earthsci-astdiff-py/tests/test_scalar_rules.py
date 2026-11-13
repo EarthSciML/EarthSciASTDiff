@@ -113,19 +113,23 @@ def test_pre_rule_vs_fd(data, x):
 def test_structural_zero_and_policies():
     # a different variable is a structural zero without descent
     assert dscalar(ex({"op": "*", "args": ["y", 3.0]}), Site.of("x")) == 0
-    # comparisons and datetime.* are zero-derivative
+    # comparisons are zero-derivative
     assert dscalar(ex({"op": "<", "args": ["x", 1.0]}), Site.of("x")) == 0
-    assert dscalar(ex({"op": "fn", "name": "datetime.year", "args": ["x"]}), Site.of("x")) == 0
-    # ... except julian_day, which is continuous: d/dt = 1/86400
-    jd = ex({"op": "fn", "name": "datetime.julian_day", "args": [{"op": "*", "args": [3, "x"]}]})
-    assert evaluate(dscalar(jd, Site.of("x")), {"x": 0.7}) == pytest.approx(3 / 86400)
-    # a datetime name outside esm-spec §9.2 has no rule
+    # `index` of a literal array is piecewise-constant in its integer
+    # subscripts: derivative 0 (spec §3.2)
+    tbl = ex({"op": "const", "args": [], "value": [1.0, 3.0, 2.0]})
+    fx = op("floor", "x")
+    assert dscalar(op("index", tbl, fx), Site.of("x")) == 0
+    # ... but a site-dependent read of a variable has no rule (another
+    # variable may depend on the site: a recurrence array is never inlined),
+    # nor a read of an array expression that reads variables
     with pytest.raises(DerivativeRuleError):
-        dscalar(ex({"op": "fn", "name": "datetime.week", "args": ["x"]}), Site.of("x"))
-    # a julian_day call of the wrong arity is a rule error, not silently
-    # differentiated through its first argument
+        dscalar(op("index", "q", fx), Site.of("x"))
+    ui = Site.of(op("index", "u", 1))
     with pytest.raises(DerivativeRuleError):
-        dscalar(ex({"op": "fn", "name": "datetime.julian_day", "args": ["x", "x"]}), Site.of("x"))
+        dscalar(op("index", "u", op("floor", op("index", "u", 1))), ui)
+    with pytest.raises(DerivativeRuleError):
+        dscalar(op("index", op("+", tbl, "y"), fx), Site.of("x"))
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
         dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))
@@ -136,49 +140,107 @@ def test_structural_zero_and_policies():
     assert evaluate(dscalar(pre3, Site.of("x")), {"x": 0.7}) == pytest.approx(3.0)
 
 
-def test_interp_linear_slope():
-    table = ex({"op": "const", "args": [], "value": [0.0, 10.0, 12.0]})
-    axis = ex({"op": "const", "args": [], "value": [0.0, 1.0, 2.0]})
-    e = op("fn", table, axis, "x", name="interp.linear")
-    d = dscalar(e, Site.of("x"))
-    assert evaluate(d, {"x": 0.4}) == pytest.approx(10.0)
-    assert evaluate(d, {"x": 1.6}) == pytest.approx(2.0)
-    assert evaluate(d, {"x": -0.5}) == 0.0
-    assert evaluate(d, {"x": 2.5}) == 0.0
-    with pytest.raises(DerivativeRuleError):
-        dscalar(op("fn", "tbl", "ax", "x", name="interp.linear"), Site.of("x"))
+# The esm:std templates (esm 2.0.0) that replaced the `fn` closed functions
+# differentiate through their expansion by the core rules plus the `index`
+# rule: a 2.0.0 document of one model `M` whose state `w` (and `v`) reads
+# `rhs`, checked against central differences of the source and the expected
+# slopes (the reference's scalar_rules_test.jl).
+def _std_doc(rhs, imports, v=False):
+    import earthsci_ast as ea
 
-
-def test_interp_bilinear_partials():
-    tbl = ex(
-        {"op": "const", "args": [], "value": [[1.0, 2.0, 4.0], [3.0, 5.0, 9.0], [4.0, 7.0, 13.0]]}
+    variables = {"w": {"type": "unknown", "default": 0.4}}
+    eqs = [{"lhs": {"op": "D", "args": ["w"], "wrt": "t"}, "rhs": rhs}]
+    if v:
+        variables["v"] = {"type": "unknown", "default": 7.0}
+        eqs.append({"lhs": {"op": "D", "args": ["v"], "wrt": "t"}, "rhs": 0.0})
+    return ea.load_document(
+        {
+            "esm": "2.0.0",
+            "metadata": {"name": "StdTemplates"},
+            "models": {
+                "M": {
+                    "expression_template_imports": [
+                        {"ref": f"esm:std/{f}.esm", "only": [n]} for f, n in imports
+                    ],
+                    "variables": variables,
+                    "equations": eqs,
+                }
+            },
+        }
     )
-    axx = ex({"op": "const", "args": [], "value": [0.0, 1.0, 2.0]})
-    axy = ex({"op": "const", "args": [], "value": [0.0, 10.0, 30.0]})
-    e = op("fn", tbl, axx, axy, "x", "y", name="interp.bilinear")
-    dx = dscalar(e, Site.of("x"))
-    dy = dscalar(e, Site.of("y"))
 
-    def f(x, y):
-        return evaluate(e, {"x": x, "y": y})
 
-    h = 1e-5
-    pts = [
-        (0.4, 7.0),
-        (1.5, 7.0),
-        (0.4, 21.0),
-        (1.5, 21.0),
-        (-1.0, 12.0),
-        (3.0, 12.0),
-        (0.7, -5.0),
-        (0.7, 45.0),
-        (-1.0, -5.0),
-        (3.0, 45.0),
-    ]
-    for x, y in pts:
-        assert evaluate(dx, {"x": x, "y": y}) == pytest.approx(
-            (f(x + h, y) - f(x - h, y)) / (2 * h), abs=1e-8
-        )
-        assert evaluate(dy, {"x": x, "y": y}) == pytest.approx(
-            (f(x, y + h) - f(x, y - h)) / (2 * h), abs=1e-8
-        )
+def _cnst(v):
+    return {"op": "const", "args": [], "value": v}
+
+
+def _apply(name, b):
+    return {"op": "apply_expression_template", "args": [], "name": name, "bindings": b}
+
+
+def test_std_bilinear_both_partials():
+    from oracle import check_against_fd
+
+    file = _std_doc(
+        _apply(
+            "bilinear",
+            {
+                "table": _cnst([[1.0, 2.0, 4.0], [3.0, 5.0, 9.0], [4.0, 7.0, 13.0]]),
+                "axis_x": _cnst([0.0, 1.0, 2.0]),
+                "axis_y": _cnst([0.0, 10.0, 30.0]),
+                "x": "w",
+                "y": "v",
+                "nx": 3,
+                "ny": 3,
+            },
+        ),
+        [("interp", "bilinear")],
+        v=True,
+    )
+    # every cell, each clamp region and the corners: both states feed the
+    # same lookup, so the Jacobian row carries BOTH partials
+    for u in (
+        [0.4, 7.0],
+        [1.5, 7.0],
+        [0.4, 21.0],
+        [1.5, 21.0],
+        [-1.0, 12.0],
+        [3.0, 12.0],
+        [0.7, -5.0],
+        [0.7, 45.0],
+        [-1.0, -5.0],
+        [3.0, 45.0],
+    ):
+        check_against_fd(file, u, tol=1e-6)
+
+
+def test_std_linear_segment_slope():
+    from docvals import doc_jacobian
+
+    file = _std_doc(
+        _apply(
+            "linear",
+            {"table": _cnst([0.0, 10.0, 12.0]), "axis": _cnst([0.0, 1.0, 2.0]), "x": "w", "n": 3},
+        ),
+        [("interp", "linear")],
+    )
+    # inside each segment, and flat outside the axis
+    for x, slope in ((0.4, 10.0), (1.6, 2.0), (2.5, 0.0), (-0.5, 0.0)):
+        J = doc_jacobian(file, "M", states={"w": x}).J
+        assert J.get(("w", "w"), 0.0) == pytest.approx(slope, abs=1e-12)
+
+
+def test_std_calendar_hour_flat_julian_day_not():
+    from docvals import doc_jacobian
+    from earthsci_astdiff import jacobian_bands
+
+    # hour(w) is piecewise-constant: no entry; julian_day(3w) has slope
+    # 3/86400 (it carries the fractional time of day)
+    hour = _std_doc({"op": "*", "args": [_apply("hour", {"t": "w"}), 2.0]}, [("calendar", "hour")])
+    assert jacobian_bands(hour, "M") == []
+    jd = _std_doc(
+        _apply("julian_day", {"t": {"op": "*", "args": [3, "w"]}}), [("calendar", "julian_day")]
+    )
+    for x in (0.4, 1.0e9 + 0.3):
+        J = doc_jacobian(jd, "M", states={"w": x}).J
+        assert J[("w", "w")] == pytest.approx(3 / 86400, rel=1e-12)

@@ -79,11 +79,16 @@ test oracle that evaluates band coefficients itself.
 Causal recurrences (spec §4.5, §9.7) are in every binding
 (`recurrence.jl` / `recurrence.rs` / `recurrence.py`), and the Julia
 reference writes the goldens of `recurrence_sweep` and `pbl_rank1` like any
-other. Their VALUES need an EarthSciAST that executes recurrences (≥ 0.11,
-EarthSciAST#546): below it Julia's `recurrence_test.jl` runs only its
-structural tests, and scripts/regenerate-value-goldens.jl skips those two
-fixtures. Each binding checks them against central differences of the
-source right-hand side.
+other. Each binding checks their values against central differences of
+the source right-hand side.
+
+esm 2.0.0 (EarthSciAST 0.11, the floor) removed `fn` (`datetime.*`,
+`interp.*`), `table_lookup` and the `aggregate` spelling: there are no
+rules for them. Their esm:std template replacements expand at load into
+core ops and differentiate through the `index`-of-a-literal-array rule
+(spec §3.2, §3.4). A simplified coefficient can then hold a non-finite
+literal (the calendar templates' `0/0` branch); `canon_lits` writes it back
+as `0/0` / `±1/0` in every binding.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree

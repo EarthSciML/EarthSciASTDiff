@@ -116,9 +116,9 @@ on a path or a git branch:
 
 | Binding | Manifest | Range |
 |---|---|---|
-| Julia | `pkg/EarthSciASTDiff.jl/Project.toml` `[compat]` | `EarthSciAST = "0.6, 0.7, 0.8, 0.9, 0.10"` |
-| Rust | `pkg/earthsci-astdiff-rs/Cargo.toml` | `earthsci-ast = ">=0.5, <0.11"` |
-| Python | `pkg/earthsci-astdiff-py/pyproject.toml` | `earthsci-ast>=0.4,<0.11` |
+| Julia | `pkg/EarthSciASTDiff.jl/Project.toml` `[compat]` | `EarthSciAST = "0.11"` |
+| Rust | `pkg/earthsci-astdiff-rs/Cargo.toml` | `earthsci-ast = ">=0.11, <0.12"` |
+| Python | `pkg/earthsci-astdiff-py/pyproject.toml` | `earthsci-ast>=0.11,<0.12` |
 
 CI tests what those ranges promise:
 
@@ -257,6 +257,13 @@ EarthSciAST implementation and is gated by the same goldens.
       differentiates to `1/86400` (it is continuous; the other `datetime.*`
       fields stay 0), and the Rust and Python golden writers emit floats in
       the reference's layout (`2.4405875e6`, not `2440587.5`).
+- [x] esm 2.0.0 (EarthSciAST 0.11): the `fn` closed functions are gone, and
+      their esm:std template replacements differentiate through their
+      expansion: an `index` read of a literal array is piecewise-constant in
+      its integer subscripts (spec §3.2, §3.4), so `linear` / `bilinear`
+      give the segment slopes and `julian_day` `d[t]/86400` with no rule of
+      their own. A non-finite literal a simplified coefficient folds to (the
+      calendar templates' `0/0` branch) is written back as `0/0` / `±1/0`.
 - [x] Forcing-buffer and array-parameter columns
       ([#1](https://github.com/EarthSciML/EarthSciASTDiff/issues/1), spec
       §4.3): `wrt: "forcing"` over the cells of the live data buffers (the
@@ -291,8 +298,7 @@ EarthSciAST implementation and is gated by the same goldens.
       factorization plan. Pinned by `filtered_scan` and `semiring_reduce`
       goldens.
 - [x] Causal recurrences ([#3](https://github.com/EarthSciML/EarthSciASTDiff/issues/3),
-      spec §4.5, §9.7) — in every binding; their values need an
-      EarthSciAST.jl that runs recurrences (≥ 0.11, EarthSciAST#546): an observed that
+      spec §4.5, §9.7) — in every binding: an observed that
       reads itself at an earlier cell is an intermediate, differentiated
       on its definition and as an extra column of its readers. The block
       composes the chain rule through the line's transfer recurrence

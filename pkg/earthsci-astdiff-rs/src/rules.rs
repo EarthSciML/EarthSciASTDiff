@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
-use serde_json::Value;
 
 use crate::hashcons::NodeRef;
 use crate::helpers::{add, free_vars, is_zero, mul, neg, op, Site, SiteScan};
@@ -22,19 +21,6 @@ impl std::fmt::Display for DerivativeRuleError {
 impl std::error::Error for DerivativeRuleError {}
 
 type R = Result<Expr, DerivativeRuleError>;
-
-/// The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
-/// their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
-const PIECEWISE_CONSTANT_DATETIME: &[&str] = &[
-    "datetime.year",
-    "datetime.month",
-    "datetime.day",
-    "datetime.hour",
-    "datetime.minute",
-    "datetime.second",
-    "datetime.day_of_year",
-    "datetime.is_leap_year",
-];
 
 const ZERO_DERIV_OPS: &[&str] = &[
     "<", "<=", ">", ">=", "==", "!=", "and", "or", "not", "sign", "floor", "ceil", "pi", "π", "e",
@@ -262,7 +248,13 @@ fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
         }
         "faq" if n.output_idx.as_ref().is_none_or(|o| o.is_empty()) => dsum(n, s, sc),
         o if ZERO_DERIV_OPS.contains(&o) => Ok(lit(0)),
-        "fn" => dfn(n, s, sc),
+        // A site-bearing `index` that is not itself the site. Its subscripts
+        // are integer-valued, so a read of a literal array (an expanded
+        // template's `const` table or axis) is piecewise-constant in them: 0.
+        // A read of a variable (which may be the site's own, or a recurrence
+        // array that depends on it) at a site-dependent subscript, or of an
+        // array expression that reads variables, has no rule.
+        "index" if index_is_literal_read(n) => Ok(lit(0)),
         "index" => Err(DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent \
              index) has no scalar rule"
@@ -280,8 +272,7 @@ fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
 /// exactly the [`DerivativeRuleError`] `dscalar_in` would, and is `false`
 /// exactly when `dscalar_in` would return a literal 0, so a check the full
 /// mode skips on a zero derivative (`window_weight`'s) is skipped here too.
-/// It visits the nodes `dscalar_in` visits and builds no derivative; a
-/// closed function (`fn`, a small and rare node) is decided by `dfn`.
+/// It visits the nodes `dscalar_in` visits and builds no derivative.
 pub(crate) fn drule_check(e: &Expr, s: &Site, sc: &SiteScan) -> Result<bool, DerivativeRuleError> {
     drule_check_in(e, s, sc, &mut HashMap::new())
 }
@@ -385,7 +376,6 @@ fn drule_check_op(
             Ok(true)
         }
         o if ZERO_DERIV_OPS.contains(&o) => Ok(false),
-        "fn" => Ok(!is_zero(&dfn(n, s, sc)?)),
         // `index`, and every op without a rule: `dscalar_op` fails.
         _ => Ok(!is_zero(&dscalar_op(e, n, s, sc)?)),
     }
@@ -459,194 +449,10 @@ fn dsum(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
     Ok(plus(db, Some(summed)))
 }
 
-fn const_vector(e: &Expr) -> Option<Vec<f64>> {
-    let Expr::Operator(n) = e else { return None };
-    if n.op != "const" {
-        return None;
-    }
-    let Some(Value::Array(v)) = &n.value else {
-        return None;
-    };
-    v.iter().map(|x| x.as_f64()).collect()
-}
-
-fn const_matrix(e: &Expr) -> Option<Vec<Vec<f64>>> {
-    let Expr::Operator(n) = e else { return None };
-    if n.op != "const" {
-        return None;
-    }
-    let Some(Value::Array(v)) = &n.value else {
-        return None;
-    };
-    let rows: Option<Vec<Vec<f64>>> = v
-        .iter()
-        .map(|r| match r {
-            Value::Array(a) => a.iter().map(|x| x.as_f64()).collect(),
-            _ => None,
-        })
-        .collect();
-    let rows = rows?;
-    if rows.is_empty() || rows.iter().any(|r| r.len() != rows[0].len()) {
-        return None;
-    }
-    Some(rows)
-}
-
-/// ∂(bilinear blend)/∂(the axis of `xv`) — see the reference rule (§3.4).
-fn bilinear_partial(t: &[Vec<f64>], xv: &[f64], yv: &[f64], xe: &Expr, ye: &Expr) -> Expr {
-    let (nx, ny) = (xv.len(), yv.len());
-    let mut out = Expr::Integer(0); // x ≥ axis_x[nx]: flat in x
-    for i in (0..nx - 1).rev() {
-        let sl = |j: usize| (t[i + 1][j] - t[i][j]) / (xv[i + 1] - xv[i]);
-        let mut leaf = Expr::Number(sl(ny - 1)); // y ≥ axis_y[ny]: top edge
-        for j in (0..ny - 1).rev() {
-            let wy = op(
-                "/",
-                vec![
-                    add(vec![ye.clone(), Expr::Number(-yv[j])]),
-                    Expr::Number(yv[j + 1] - yv[j]),
-                ],
-            );
-            let ex = add(vec![
-                Expr::Number(sl(j)),
-                mul(vec![
-                    wy,
-                    add(vec![Expr::Number(sl(j + 1)), neg(Expr::Number(sl(j)))]),
-                ]),
-            ]);
-            leaf = op(
-                "ifelse",
-                vec![op("<", vec![ye.clone(), Expr::Number(yv[j + 1])]), ex, leaf],
-            );
-        }
-        leaf = op(
-            "ifelse",
-            vec![
-                op("<", vec![ye.clone(), Expr::Number(yv[0])]),
-                Expr::Number(sl(0)),
-                leaf,
-            ],
-        );
-        out = op(
-            "ifelse",
-            vec![
-                op("<", vec![xe.clone(), Expr::Number(xv[i + 1])]),
-                leaf,
-                out,
-            ],
-        );
-    }
-    op(
-        "ifelse",
-        vec![
-            op("<", vec![xe.clone(), Expr::Number(xv[0])]),
-            Expr::Integer(0),
-            out,
-        ],
-    )
-}
-
-fn dfn(n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
-    let a = &n.args;
-    let name = n
-        .name
-        .as_deref()
-        .ok_or_else(|| DerivativeRuleError("`fn` node without a name".into()))?;
-    if PIECEWISE_CONSTANT_DATETIME.contains(&name) || name == "interp.searchsorted" {
-        return Ok(Expr::Integer(0));
-    }
-    if name == "datetime.julian_day" {
-        // continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
-        if a.len() != 1 {
-            return Err(DerivativeRuleError(format!(
-                "`datetime.julian_day` takes 1 argument, got {}",
-                a.len()
-            )));
-        }
-        let dx = dscalar_in(&a[0], s, sc)?;
-        if is_zero(&dx) {
-            return Ok(Expr::Integer(0));
-        }
-        return Ok(op("/", vec![dx, Expr::Integer(86400)]));
-    }
-    if name == "interp.linear" {
-        let (table, axis, x) = (&a[0], &a[1], &a[2]);
-        let dx = dscalar_in(x, s, sc)?;
-        if is_zero(&dx) {
-            return Ok(Expr::Integer(0));
-        }
-        let (yv, xv) = (const_vector(table), const_vector(axis));
-        let (Some(yv), Some(xv)) = (yv, xv) else {
-            return Err(DerivativeRuleError(
-                "interp.linear table/axis must be literal `const` arrays \
-                 (spec §9.2 interp_table_not_const)"
-                    .into(),
-            ));
-        };
-        let nk = xv.len();
-        if nk != yv.len() || nk < 2 {
-            return Err(DerivativeRuleError(
-                "interp.linear table/axis length mismatch or < 2 knots".into(),
-            ));
-        }
-        let mut slope = Expr::Integer(0); // x ≥ axis[N]: flat
-        for k in (0..nk - 1).rev() {
-            let sk = (yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]);
-            slope = op(
-                "ifelse",
-                vec![
-                    op("<", vec![x.clone(), Expr::Number(xv[k + 1])]),
-                    Expr::Number(sk),
-                    slope,
-                ],
-            );
-        }
-        slope = op(
-            "ifelse",
-            vec![
-                op("<", vec![x.clone(), Expr::Number(xv[0])]),
-                Expr::Integer(0),
-                slope,
-            ],
-        );
-        return Ok(mul(vec![slope, dx]));
-    }
-    if name == "interp.bilinear" {
-        let (table, ax, ay, x, y) = (&a[0], &a[1], &a[2], &a[3], &a[4]);
-        let dx = dscalar_in(x, s, sc)?;
-        let dy = dscalar_in(y, s, sc)?;
-        if is_zero(&dx) && is_zero(&dy) {
-            return Ok(Expr::Integer(0));
-        }
-        let (t, xv, yv) = (const_matrix(table), const_vector(ax), const_vector(ay));
-        let (Some(t), Some(xv), Some(yv)) = (t, xv, yv) else {
-            return Err(DerivativeRuleError(
-                "interp.bilinear table/axes must be literal `const` arrays \
-                 (spec §9.2 interp_table_not_const)"
-                    .into(),
-            ));
-        };
-        let (nx, ny) = (xv.len(), yv.len());
-        if t.len() != nx || t.iter().any(|r| r.len() != ny) || nx < 2 || ny < 2 {
-            return Err(DerivativeRuleError(
-                "interp.bilinear table/axis shape mismatch or < 2 knots".into(),
-            ));
-        }
-        let mut terms = Vec::new();
-        if !is_zero(&dx) {
-            terms.push(mul(vec![bilinear_partial(&t, &xv, &yv, x, y), dx]));
-        }
-        if !is_zero(&dy) {
-            let tt: Vec<Vec<f64>> = (0..ny)
-                .map(|j| (0..nx).map(|i| t[i][j]).collect())
-                .collect();
-            terms.push(mul(vec![bilinear_partial(&tt, &yv, &xv, y, x), dy]));
-        }
-        return Ok(add(terms));
-    }
-    Err(DerivativeRuleError(format!(
-        "unknown closed function `{name}`"
-    )))
+/// Does the `index` node `n` read a literal array (one that reads no
+/// variable)? Its derivative is then 0 (spec §3.2).
+fn index_is_literal_read(n: &ExpressionNode) -> bool {
+    matches!(n.args.first(), Some(a @ Expr::Operator(_)) if free_vars(a).is_empty())
 }
 
 #[cfg(test)]
@@ -660,29 +466,26 @@ mod tests {
     }
 
     #[test]
-    fn datetime_rules() {
+    fn index_of_a_literal_array() {
+        use serde_json::json;
         let s = Site::of(&Expr::Variable("x".into()));
-        // integer calendar fields are piecewise-constant: a.e. zero
-        let hour = ex(serde_json::json!({"op": "fn", "name": "datetime.hour", "args": ["x"]}));
-        assert!(is_zero(&dscalar(&hour, &s).unwrap()));
-        // julian_day is continuous: d/dx julian_day(3x) = 3/86400
-        let jd = ex(
-            serde_json::json!({"op": "fn", "name": "datetime.julian_day",
-                                       "args": [{"op": "*", "args": [3, "x"]}]}),
-        );
-        let d = dscalar(&jd, &s).unwrap();
-        let v = earthsci_ast::evaluate(&d, &std::collections::HashMap::new()).unwrap();
-        assert!((v - 3.0 / 86400.0).abs() < 1e-18, "{v}");
-        // a datetime name outside esm-spec §9.2 has no rule
-        let wk = ex(serde_json::json!({"op": "fn", "name": "datetime.week", "args": ["x"]}));
-        assert!(dscalar(&wk, &s).is_err());
-        // a call of the wrong arity is a rule error, not silently
-        // differentiated through its first argument
-        let bad = ex(
-            serde_json::json!({"op": "fn", "name": "datetime.julian_day",
-                                        "args": ["x", "x"]}),
-        );
-        assert!(dscalar(&bad, &s).is_err());
+        // `index` of a literal array is piecewise-constant in its integer
+        // subscripts: derivative 0 (spec §3.2)
+        let tbl = json!({"op": "const", "args": [], "value": [1.0, 3.0, 2.0]});
+        let fx = json!({"op": "floor", "args": ["x"]});
+        let e = ex(json!({"op": "index", "args": [tbl, fx]}));
+        assert!(is_zero(&dscalar(&e, &s).unwrap()));
+        // ... but a site-dependent read of a variable has no rule (another
+        // variable may depend on the site: a recurrence array is never
+        // inlined), nor a read of an array expression that reads variables
+        let q = ex(json!({"op": "index", "args": ["q", fx]}));
+        assert!(dscalar(&q, &s).is_err());
+        let ui = Site::of(&ex(json!({"op": "index", "args": ["u", 1]})));
+        let uu = ex(json!({"op": "index", "args": ["u",
+            {"op": "floor", "args": [{"op": "index", "args": ["u", 1]}]}]}));
+        assert!(dscalar(&uu, &ui).is_err());
+        let ay = ex(json!({"op": "index", "args": [{"op": "+", "args": [tbl, "y"]}, fx]}));
+        assert!(dscalar(&ay, &s).is_err());
     }
 
     #[test]
@@ -765,7 +568,6 @@ mod tests {
         let ix = RefCell::new(OccIndex::new("x"));
         let chk = |e: &Expr| drule_check(e, &s, &SiteScan::new(&ix, &s));
         let tab = json!({"op": "const", "args": [], "value": [0.0, 1.0, 4.0]});
-        let ax = json!({"op": "const", "args": [], "value": [0.0, 1.0, 2.0]});
         let o = |op: &str, a: Vec<serde_json::Value>| json!({"op": op, "args": a});
         let sign = o("sign", vec![json!("x")]);
         for v in [
@@ -798,10 +600,26 @@ mod tests {
             o("max", vec![json!("x"), json!("y")]),
             o("min", vec![sign.clone()]),
             o("<", vec![json!("x"), json!("y")]),
-            json!({"op": "fn", "name": "interp.searchsorted", "args": ["x", tab, ax]}),
-            json!({"op": "fn", "name": "interp.linear", "args": [tab, ax, "x"]}),
-            json!({"op": "fn", "name": "datetime.julian_day",
-                   "args": [{"op": "*", "args": [3, "x"]}]}),
+            o("index", vec![tab.clone(), o("floor", vec![json!("x")])]),
+            o(
+                "+",
+                vec![
+                    o(
+                        "index",
+                        vec![
+                            tab.clone(),
+                            o(
+                                "min",
+                                vec![
+                                    o("max", vec![o("floor", vec![json!("x")]), json!(1)]),
+                                    json!(2),
+                                ],
+                            ),
+                        ],
+                    ),
+                    o("*", vec![json!(3), json!("x")]),
+                ],
+            ),
             json!({"op": "faq", "args": [], "output_idx": [], "reduce": "max",
                    "ranges": {"k": [1, 3]}, "expr": {"op": "*", "args": ["x", "k"]}}),
         ] {
@@ -834,11 +652,12 @@ mod tests {
             params: Default::default(),
         };
         let xi = json!({"op": "index", "args": ["x", "i"]});
-        let week = json!({"op": "fn", "name": "datetime.week", "args": [xi]});
+        // ops with no derivative rule, alone and under a product
+        let gr = json!({"op": "grad", "args": [xi], "dim": "x"});
         for body in [
             json!({"op": "D", "args": [xi], "wrt": "lon"}),
-            week.clone(),
-            json!({"op": "*", "args": [2, week]}),
+            gr.clone(),
+            json!({"op": "*", "args": [2, gr]}),
         ] {
             let rhs = ex(json!({"op": "faq", "args": [], "output_idx": ["i"],
                                 "ranges": {"i": [1, 4]}, "expr": body}));

@@ -35,8 +35,8 @@ _SCALAR_SLOTS = ("lower", "upper", "expr", "filter")
 
 def cse_children(e: ExprNode) -> list[Expr]:
     """The child slots of ``e`` in the order of esm-jacobian-spec §4.1:
-    ``args``, ``lower``, ``upper``, ``expr``, ``filter``, ``values``, ``axes``
-    by ascending key, ``key``, ``bindings`` by ascending key. Fixed by the
+    ``args``, ``lower``, ``upper``, ``expr``, ``filter``, ``values``,
+    ``key``, ``bindings`` by ascending key. Fixed by the
     spec, not by ``map_children`` (which visits a map in insertion order), so
     every binding numbers subtrees alike. Raises if ``iter_children`` reaches a
     child this list misses (a field a newer EarthSciAST added)."""
@@ -46,9 +46,6 @@ def cse_children(e: ExprNode) -> list[Expr]:
         if c is not None:
             cs.append(c)
     cs.extend(getattr(e, "values", None) or ())
-    ax = getattr(e, "table_axes", None)
-    if ax:
-        cs.extend(ax[k] for k in sorted(ax))
     kx = getattr(e, "key", None)
     if kx is not None:
         cs.append(kx)

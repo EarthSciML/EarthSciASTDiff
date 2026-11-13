@@ -2,9 +2,9 @@
 #
 # EarthSciAST renamed the unified query node's wire tag from `aggregate` to
 # `faq` (Functional Aggregate Query) at esm 1.1.0
-# (`docs/content/rfcs/faq-node-rename.md`). `aggregate` survives as a
-# deprecated alias that the load pipeline normalizes at the wire boundary,
-# warning once per document, and is removed at esm 2.0.0.
+# (`docs/content/rfcs/faq-node-rename.md`). `aggregate` survived as a
+# deprecated alias until esm 2.0.0 removed it (EarthSciAST 0.11): the parser
+# now rejects it (`removed_op`).
 #
 # This package matched the OLD tag for four days after the rename. Nothing
 # threw: `lhs_state` simply stopped recognising the pointwise-lifted
@@ -40,10 +40,9 @@ using EarthSciASTDiff: lhs_state, view_states
     )
     @test lhs_state((lhs = plain, rhs = nothing)) == "u"
 
-    # The pre-1.1.0 spelling reaching `expression_from_json` directly is
-    # normalized to `faq` by EarthSciAST, so it is recognised too — the
-    # deprecated-alias path, removed at esm 2.0.0.
-    aliased = EarthSciAST.expression_from_json(
+    # The pre-1.1.0 spelling was removed at esm 2.0.0: refused, never read
+    # as some other node.
+    @test_throws EarthSciAST.ParseError EarthSciAST.expression_from_json(
         O(
             "op" => "aggregate", "args" => Any[], "output_idx" => Any["i"],
             "ranges" => O("i" => Any[1, 4]),
@@ -53,8 +52,6 @@ using EarthSciASTDiff: lhs_state, view_states
             )
         )
     )
-    @test aliased.op == "faq"
-    @test lhs_state((lhs = aliased, rhs = nothing)) == "u"
 end
 
 @testset "faq tag: array models differentiate to a NON-EMPTY band set" begin
@@ -76,7 +73,7 @@ end
     end
 end
 
-@testset "faq tag: the deprecated alias differentiates identically" begin
+@testset "faq tag: the removed alias is refused at load" begin
     O(kv...) = Dict{String, Any}(kv...)
     body = O("op" => "*", "args" => Any[-0.5, O("op" => "index", "args" => Any["u", "i"])])
     mk(tag, version) = EarthSciAST.load_document(
@@ -106,19 +103,10 @@ end
         )
     )
 
-    new_bands = jacobian_bands(mk("faq", "1.1.0"), "FaqAlias")
-    # A 1.0.0 document spelling `aggregate` is LEGAL: that is the pre-1.1.0
-    # spelling. EarthSciAST normalizes it and warns once.
-    old_bands = @test_logs (:warn, r"E_DEPRECATED_OP_ALIAS") match_mode = :any begin
-        jacobian_bands(mk("aggregate", "1.0.0"), "FaqAlias")
-    end
-    @test !isempty(new_bands)
-    @test length(new_bands) == length(old_bands)
-    for (a, b) in zip(new_bands, old_bands)
-        @test a.u == b.u && a.v == b.v && a.band.rows == b.band.rows
-        @test stable_json(EarthSciAST.serialize_expression(a.band.coef)) ==
-            stable_json(EarthSciAST.serialize_expression(b.band.coef))
-    end
+    @test !isempty(jacobian_bands(mk("faq", "1.1.0"), "FaqAlias"))
+    # Even a 1.0.0 document, where `aggregate` was the current spelling: the
+    # 2.0.0 loader rejects every removed op whatever `esm` it declares.
+    @test_throws EarthSciAST.ParseError mk("aggregate", "1.0.0")
 end
 
 @testset "faq tag: emitted documents declare the 1.1.0 floor and re-load" begin

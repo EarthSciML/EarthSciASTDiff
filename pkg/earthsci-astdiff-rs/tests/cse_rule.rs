@@ -73,12 +73,12 @@ fn an_integer_leaf_is_not_a_float_leaf() {
 
 #[test]
 fn map_slots_are_visited_by_ascending_key() {
-    // `axes` written "b" then "a": the spec numbers the "a" entry first
+    // `bindings` written "b" then "a": the spec numbers the "a" entry first
     // (child slots, §4.1), so equal-size E (under "a") is jt1.
     let d = json!({"op": "sin", "args": [{"op": "+", "args": ["x", "z"]}]});
     let e = json!({"op": "cos", "args": [{"op": "+", "args": ["y", "z"]}]});
-    let tl = json!({"op": "table_lookup", "args": [], "table": "t",
-                    "axes": {"b": d, "a": e}});
+    let tl = json!({"op": "apply_expression_template", "args": [], "name": "t",
+                    "bindings": {"b": d, "a": e}});
     let (tmpl, _) = cse_templates(&[ex(tl), ex(json!({"op": "*", "args": [d, e]}))], 4, "jt");
     assert_eq!(tmpl.len(), 2);
     assert_eq!(skey(&tmpl[0].1), skey(&ex(e)));
