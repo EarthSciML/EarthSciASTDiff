@@ -30,6 +30,8 @@ Layered API, lowest to highest:
                                      per-cell block LU is the first implementation)
   - [`evaluation_document`](@ref)  — the band fields of `J` as an ESM document
                                      an unmodified EarthSciAST evaluator runs
+  - [`extended_bands`](@ref)       — the extended system through causal recurrences
+                                     ([`recurrences`](@ref), spec §4.5)
   - [`jacobian_bands2`](@ref)      — second-order bands for an axis pair
                                      (Rosenbrock adjoints; never a tensor)
   - [`jvp_document`](@ref)         — `J v`, and [`vjp_document`](@ref) / [`hvp_document`](@ref)
@@ -66,6 +68,7 @@ export Site, dscalar, simplify_branches,
     cse_templates, expand_templates, hoist_observed,
     jacobian_pattern, evaluation_document,
     JacEntry2, jacobian_bands2, col_idx, col2_idx,
+    Recurrence, ExtendedBands, recurrences, extended_bands, transfer_definition,
     jvp_document, vjp_document, hvp_document,
     detect_structure, column_lines, jac_prototype,
     FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, plan_factorization,
@@ -84,6 +87,7 @@ include("bands.jl")          # Band + the array-level band calculus
 include("reductions.jl")     # filters, max/min/* reductions, one-hot index reads
 include("clip.jl")           # static region clipping + band re-merging
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
+include("recurrence.jl")     # causal recurrences: extended system, transfer, sweeps
 include("jacobian.jl")       # jacobian_bands driver
 include("eval_cse.jl")       # evaluation-model CSE (hoisted observed buffers)
 include("emit.jl")           # "jacobians" document block: emit / parse / goldens

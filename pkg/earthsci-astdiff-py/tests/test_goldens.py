@@ -21,8 +21,6 @@ GOLDEN_NAMES = (
     "semiring_reduce",
     "faq_operand_list",
     "pre_operator",
-    # this binding's and the Rust one's (the reference cannot produce them
-    # yet: the Rust binding writes them, tests/write_goldens.rs)
     "recurrence_sweep",
     "pbl_rank1",
 )

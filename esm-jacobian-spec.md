@@ -848,6 +848,11 @@ of a `+` that holds `k` once (simplified); for a pinned row `c`, `c − e`
 whose lag simplifies to an integer literal below 1 (a read of the current or
 a later cell: its term would be gated off by `ℓ >= 1`, a silent zero).
 
+Active recurrences whose definitions read one another — a cycle among the
+bands of step 2 whose row and column are two different recurrences — form
+one coupled system along the axis, which no transfer per recurrence
+expresses: such a pass MUST be refused.
+
 **Transfer recurrence.** On each line of `V` along its axis, `dV/dx = (I −
 G)⁻¹ B`, `G` the self bands and `B` the other bands of the definition. The
 inverse is the **transfer** recurrence `T_V`, named `_tr_<V>` (`_` appended
@@ -902,9 +907,13 @@ frame with `κ` on the axis, coefficient `_tr_<V>[frame…, κ]` (`κ` last), an
 The **composition** of `outer` (rows `R`, column `V` at `φ`) with `inner`
 (rows `V`, column `x`):
 
-1. an inner contracted name that occurs in `outer` is renamed `<name>_c`
-   (`_c` appended until clear of both bands); the composite's contracted
-   names are the outer's, then the inner's;
+1. an outer row or contracted name that `inner` reads free (a name of its
+   coefficient, column indices or `where` that is none of its row or
+   contracted names, e.g. a parameter spelled like the transfer band's `κ`)
+   is renamed `<name>_c` throughout `outer` (`_c` appended until clear of
+   both bands and of the names chosen before it); then an inner contracted
+   name that occurs in `outer` is renamed the same way; the composite's
+   contracted names are the outer's, then the inner's;
 2. each inner row name becomes the outer column index `φ_m` of its
    dimension; for each dimension, with `[lo, hi]` the inner row range (or its
    pinned literal) intersected with `[1, shape_m]` (a ghost read of `V`
@@ -931,7 +940,10 @@ The **composition** of `outer` (rows `R`, column `V` at `φ`) with `inner`
 Per row equation (two equations of the same state are kept apart, in
 equation order) the entries are stably sorted by column name and, within a
 column, direct bands before composites; each of those keeps the order it was
-produced in. The composites' coefficients read
+produced in. On the `parameters` and `forcing` axes every composite is held
+to the closed-column rule of §4.3, like the direct entries (an outer read of
+`V` substitutes its index into the composite's columns). The
+composites' coefficients read
 `_tr_<V>`, and the block's `auxiliary` field (§4) carries the definition of
 every transfer variable some coefficient reads; the evaluation document
 (§8) declares them as observed (`{"type": "unknown", "shape": …}`) after the
@@ -1069,14 +1081,14 @@ Fixture corpus in `tests/` of this repository:
    second axis's recurrence rows (§9.7) reaches. `pbl_rank1.esm` (boundary-
    layer mixing toward a column mean plus per-cell titration: a
    `diag_plus_rank1` line block, §6) carries the states goldens, the CSR
-   plan and `pbl_rank1.column-lev.block.json`. Until the Julia reference
-   runs recurrences (EarthSciAST.jl executes none yet, EarthSciAST#546),
-   these two fixtures' goldens are written by the Rust binding
-   (`tests/write_goldens.rs`) and byte-compared by Rust and Python; their
-   values are checked against central differences of the SOURCE right-hand
-   side, evaluated by EarthSciAST, and the three derivations of `J` (the
-   evaluation document through the transfer recurrence, the tangent and the
-   adjoint sweeps) against each other.
+   plan and `pbl_rank1.column-lev.block.json`. The Julia reference writes
+   these two fixtures' goldens like every other, and every binding
+   byte-compares them; their values, which need an evaluator that executes
+   recurrences (EarthSciAST.jl ≥ 0.11, EarthSciAST#546), are checked against
+   central differences of the SOURCE right-hand side, evaluated by
+   EarthSciAST, and the three derivations of `J` (the evaluation document
+   through the transfer recurrence, the tangent and the adjoint sweeps)
+   against each other.
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,
@@ -1156,6 +1168,10 @@ A `"column_block"` structure (§4) carries a line-by-line plan:
   product of their denominator factors (`/` only when there is one), `v`
   likewise, literals canonical. The reseact PBL-mean shape
   `pbl_f[k] · (mean − x[k]) / τ` is one (`pbl_rank1.esm`).
+  Structure-only entries (§2.1) carry no coefficient to factor: when every
+  entry off distance 0 has the shape of such a term (one contracted name,
+  the line position, no `where`), the pattern depends on the coefficients,
+  and a producer MUST NOT plan the line block from them.
 
 ## 7. Out of scope (this draft)
 

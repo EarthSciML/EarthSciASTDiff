@@ -15,8 +15,7 @@ mod common;
 use common::docvals::doc_jacobian;
 use common::{load, root};
 
-/// The first eleven are the reference's; the last two are this binding's
-/// (tests/write_goldens.rs: the reference cannot produce them yet).
+/// Every fixture with a band golden (the reference writes them all).
 const NAMES: [&str; 14] = [
     "bd_chem",
     "adv_interior",

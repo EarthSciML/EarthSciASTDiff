@@ -7,7 +7,7 @@ for name in (
         "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv", "minmod_adv",
         "contracting_observed", "tgrad_photolysis", "forcing_bracket",
         "filtered_scan", "semiring_reduce", "faq_operand_list",
-        "pre_operator",
+        "pre_operator", "recurrence_sweep", "pbl_rank1",
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -78,7 +78,7 @@ end
 # entries without coefficients, for every model fixture above and the
 # flattened coupled document (the list the tests check, shared with them)
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
-for name in STRUCTURE_FIXTURES
+for name in (STRUCTURE_FIXTURES..., "recurrence_sweep", "pbl_rank1")
     src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
         sysview(src, first(keys(src.models)))
@@ -117,6 +117,7 @@ for (name, wrt) in (
         ("tgrad_photolysis", :time),
         ("forcing_bracket", :forcing),
         ("forcing_bracket", :parameters),
+        ("recurrence_sweep", :parameters),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -149,6 +150,8 @@ for (name, wrt) in (
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
         ("pre_operator", (:states, :states)),
+        ("recurrence_sweep", (:states, :states)),
+        ("recurrence_sweep", (:states, :parameters)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
@@ -162,7 +165,9 @@ for (name, wrt) in (
 end
 # product documents (spec §9.6): `Jv` and `Jᵀλ` for every axis with a value
 # golden, and the §4.4 contraction (two stages, as in the `*.hvals.json`) for
-# every pair, plus its symmetric form on a (states, states) pair.
+# every pair, plus its symmetric form on a (states, states) pair. Through the
+# public builders: through a recurrence they are the §9.7 sweeps over the
+# extended system, never the materialized bands.
 for (name, wrt) in (
         ("bd_chem", :states), ("adv_interior", :states), ("contracted_ops", :states),
         ("flux_form_adv", :states), ("minmod_adv", :states),
@@ -171,15 +176,13 @@ for (name, wrt) in (
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
         ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
+        ("recurrence_sweep", :states), ("recurrence_sweep", :parameters),
+        ("pbl_rank1", :states),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
-    sv = sysview(file, first(keys(file.models)))
-    entries = jacobian_bands(sv; wrt = wrt)
     tag = wrt == :states ? "" : ".$wrt"
-    for (kind, build) in (
-            ("jvp", EarthSciASTDiff._jvp_document), ("vjp", EarthSciASTDiff._vjp_document),
-        )
-        doc, _ = build(sv, entries, wrt, nothing)
+    for (kind, build) in (("jvp", jvp_document), ("vjp", vjp_document))
+        doc, _ = build(file; wrt = wrt)
         path = joinpath(root, "tests", "goldens", "$name$tag.$kind.evaldoc.json")
         write(path, stable_json(doc))
         println("wrote ", path)
@@ -195,13 +198,13 @@ for (name, wrt) in (
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
         ("pre_operator", (:states, :states)),
+        ("recurrence_sweep", (:states, :states)),
+        ("recurrence_sweep", (:states, :parameters)),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
-    sv = sysview(file, first(keys(file.models)))
-    entries = jacobian_bands2(sv; wrt = wrt)
     forms = wrt == (:states, :states) ? (:contract, :symmetric) : (:contract,)
     for form in forms
-        doc, _ = EarthSciASTDiff._hvp_document(sv, entries, wrt, nothing, 2; form = form)
+        doc, _ = hvp_document(file; stages = 2, wrt = wrt, form = form)
         kind = form == :contract ? "hvp" : "hvp-sym"
         path = joinpath(root, "tests", "goldens", "$name.$(wrt[1])-$(wrt[2]).$kind.evaldoc.json")
         write(path, stable_json(doc))
@@ -224,11 +227,23 @@ for (name, tag, layout) in (
         ("filtered_scan", "csr", Csr()),
         ("semiring_reduce", "csr", Csr()),
         ("pre_operator", "csr", Csr()),
+        ("recurrence_sweep", "csr", Csr()),
+        ("pbl_rank1", "csr", Csr()),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     ppath = joinpath(root, "tests", "goldens", "$name.$tag.plan.json")
     write(ppath, stable_json(serialize_scatter_plan(scatter_plan(file, layout))))
     println("wrote ", ppath)
+end
+# the blocks with a column axis (spec §6): `column_block` and its plan — the
+# `diag_plus_rank1` pattern of `pbl_rank1`
+for name in ("recurrence_sweep", "pbl_rank1")
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    mname = first(keys(file.models))
+    doc = jacobian_document(file, mname; column_axis = :lev)
+    path = joinpath(root, "tests", "goldens", "$name.column-lev.block.json")
+    write(path, stable_json(doc["jacobians"][mname]))
+    println("wrote ", path)
 end
 # the float goldens: `[bits, text]` pairs, the bits the corpus (ties, powers
 # of two, RFC 8785 Appendix B, subnormals, layout switches; tests/README.md)

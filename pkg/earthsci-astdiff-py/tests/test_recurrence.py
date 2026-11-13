@@ -1,6 +1,6 @@
 """Causal recurrences (spec §4.5, §9.7), mirroring the Rust binding's
-tests/recurrence.rs. The ``recurrence_sweep`` goldens (written by the Rust
-binding, tests/write_goldens.rs) are checked against numbers no band of this
+tests/recurrence.rs. The ``recurrence_sweep`` goldens (written by the Julia
+reference, like every other) are checked against numbers no band of this
 package produced: central differences of the SOURCE right-hand side,
 evaluated by EarthSciAST, which executes the recurrences itself. The three
 derivations of ``J`` — the materialized bands through the transfer

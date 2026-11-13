@@ -65,24 +65,31 @@ jacobian_bands2(flat::EarthSciAST.FlattenedSystem; kw...) =
 jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing) =
     last(_bands2(sv, _axis_pair(wrt)..., forcing))
 
-# (first-order entries, second-order entries). The first-order pass inlines
-# the observed that move with EITHER axis: one that reads only parameters
-# (an Arrhenius rate) is opaque on the state axis, and would hide its
-# parameter sites from the second derivative.
+# (extended first-order system, second-order entries). The first-order pass
+# inlines the observed that move with EITHER axis: one that reads only
+# parameters (an Arrhenius rate) is opaque on the state axis, and would hide
+# its parameter sites from the second derivative. A recurrence is a second
+# column too (esm-jacobian-spec.md §4.5): the rows and columns are the
+# extended system's. `memo` shares that pass with the other blocks of one
+# emission.
 function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder = _FirstOrder())
     ctx = _ctx(sv)
     t2 = _targets(sv, a2, forcing, a2 == :states ? _observed_defs(sv) : nothing)
-    e1 = _first_order!(memo, sv, a1, a2, forcing, t2)
-    tset = Set{String}(t2)
+    e1 = _first_order_ext!(memo, sv, a1, a2, forcing, t2)
+    tset = union(Set{String}(t2), Set{String}(r.name for r in e1.recurrences))
     out = JacEntry2[]
-    for en in e1
+    for en in Iterators.flatten((e1.rows, e1.rec_rows))
         for w in sort!(String[x for x in free_variables(en.band.coef) if x in tset])
             for b in merge_bands(_coef_bands(en.band, w, ctx))
                 push!(out, JacEntry2(en.u, en.v, w, normalize_band(b), length(en.band.cidx)))
             end
         end
     end
-    a2 in (:parameters, :forcing) && foreach(_check_closed_col2, out)
+    if a2 in (:parameters, :forcing)
+        for en in out
+            _is_recurrence(e1, en.w) || _check_closed_col2(en)
+        end
+    end
     # The second derivatives repeat the first-order coefficients' shared
     # subtrees band after band: intern them as the first-order pass is.
     t = _Interner()
@@ -186,9 +193,21 @@ function _jacobian_block(
     )
     a1, a2 = wrt
     e1, entries = _bands2(sv, a1, a2, forcing, memo)
-    return _block(
+    through = !isempty(e1.recurrences)
+    block = _block(
         Any[String(a1), String(a2)], entries,
         a2 in (:parameters, :forcing) ? _columns_field(sv, a2, forcing) : nothing,
-        _structure2(e1, entries, sv, a1, memo), cse, cse_min_nodes
+        # through a recurrence the contraction is not lane-local (§4.5)
+        through ? nothing : _structure2(e1.rows, entries, sv, a1, memo), cse, cse_min_nodes
     )
+    through && (block["recurrences"] = _recurrences_field(e1.recurrences))
+    return block
 end
+
+# A pair block's `recurrences` field (esm-jacobian-spec.md §4.5): each active
+# recurrence's name and its 1-based recurrence dimension, in recurrence
+# order. Entries naming one as `row`, `col` or `col2` are terms of the chain
+# rule through it, which only the §9.7 contraction completes.
+_recurrences_field(recs::Vector{Recurrence}) = Any[
+    OrderedDict{String, Any}("name" => r.name, "dim" => r.dim) for r in recs
+]
