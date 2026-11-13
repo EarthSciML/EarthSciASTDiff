@@ -1,5 +1,5 @@
-//! Causal recurrences (spec §4.5, §9.7). The goldens this crate writes for
-//! `recurrence_sweep` (tests/write_goldens.rs) are checked here against
+//! Causal recurrences (spec §4.5, §9.7). The goldens the Julia reference
+//! writes for `recurrence_sweep` are checked here against
 //! numbers no band of this crate produced: central differences of the
 //! SOURCE right-hand side, evaluated by EarthSciAST, which executes the
 //! recurrences itself. The three derivations of `J` — the materialized bands

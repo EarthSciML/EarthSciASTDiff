@@ -142,11 +142,11 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   and `pbl_rank1`.
 - `goldens/` — **who writes them.** Every golden is written by the Julia
   reference (`scripts/regenerate-goldens.jl`,
-  `scripts/regenerate-value-goldens.jl`) except those of `recurrence_sweep`
-  and `pbl_rank1`, which the Rust binding writes
-  (`cargo test --test write_goldens -- --ignored`) until EarthSciAST.jl runs
-  recurrences; Rust and Python compare them byte-exactly, and their values
-  are checked against central differences of the source right-hand side.
+  `scripts/regenerate-value-goldens.jl`). The values of `recurrence_sweep`
+  and `pbl_rank1` need an EarthSciAST.jl that executes recurrences (≥ 0.11,
+  EarthSciAST#546): below it the value script leaves their `*.jvals.json` /
+  `*.hvals.json` as they are. Every binding checks those values against
+  central differences of the source right-hand side.
 - `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

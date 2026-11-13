@@ -1069,14 +1069,14 @@ Fixture corpus in `tests/` of this repository:
    second axis's recurrence rows (§9.7) reaches. `pbl_rank1.esm` (boundary-
    layer mixing toward a column mean plus per-cell titration: a
    `diag_plus_rank1` line block, §6) carries the states goldens, the CSR
-   plan and `pbl_rank1.column-lev.block.json`. Until the Julia reference
-   runs recurrences (EarthSciAST.jl executes none yet, EarthSciAST#546),
-   these two fixtures' goldens are written by the Rust binding
-   (`tests/write_goldens.rs`) and byte-compared by Rust and Python; their
-   values are checked against central differences of the SOURCE right-hand
-   side, evaluated by EarthSciAST, and the three derivations of `J` (the
-   evaluation document through the transfer recurrence, the tangent and the
-   adjoint sweeps) against each other.
+   plan and `pbl_rank1.column-lev.block.json`. The Julia reference writes
+   these two fixtures' goldens like every other, and every binding
+   byte-compares them; their values, which need an evaluator that executes
+   recurrences (EarthSciAST.jl ≥ 0.11, EarthSciAST#546), are checked against
+   central differences of the SOURCE right-hand side, evaluated by
+   EarthSciAST, and the three derivations of `J` (the evaluation document
+   through the transfer recurrence, the tangent and the adjoint sweeps)
+   against each other.
 3. **Value oracle** — per fixture model and sample point: the assembled
    Jacobian must match a machine-precision reference (AD through the
    binding's evaluator, or the shipped reference values) to `rtol 1e-12`,

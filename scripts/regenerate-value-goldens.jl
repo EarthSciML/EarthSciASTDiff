@@ -9,6 +9,12 @@ using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "docvals.jl"))
+# The fixtures with causal recurrences (spec §4.5, §9.7): their documents run
+# only on an EarthSciAST that executes recurrences (0.11 on, EarthSciAST#546),
+# so an older one leaves their goldens as they are.
+const RECURRENT = ("recurrence_sweep", "pbl_rank1")
+_runs(name) = !(name in RECURRENT) || pkgversion(EarthSciAST) >= v"0.11" ||
+    (println("skipped ", name, ": EarthSciAST ", pkgversion(EarthSciAST), " does not execute recurrences"); false)
 # `<name>.<axis>.jvals.json` for the other axes: wrt = :time (the single
 # column `t`) at the same pinned point, and the forcing / parameter axes of
 # the forcing fixture (canonical column space, spec §4) at two points of its
@@ -20,7 +26,7 @@ const STATE_NAMES = (
     "bd_chem", "adv_interior", "contracted_ops", "flux_form_adv",
     "minmod_adv", "contracting_observed", "tgrad_photolysis", "forcing_bracket",
     "filtered_scan", "semiring_reduce", "faq_operand_list",
-    "pre_operator",
+    "pre_operator", "recurrence_sweep", "pbl_rank1",
 )
 # The native compiler declines a derived model whose coefficients carry a sum,
 # a filter or a non-`+` reduction (`compiler_refused_rule`); the interpreter
@@ -30,12 +36,14 @@ for (name, wrt, t, tag) in Iterators.flatten(
         (
             ((n, :states, 0.7, "") for n in STATE_NAMES),
             (("tgrad_photolysis", :time, 0.7, ".time"),),
+            (("recurrence_sweep", :parameters, 0.7, ".parameters"),),
             (
                 ("forcing_bracket", w, t, ".$w$sfx") for w in (:forcing, :parameters)
                     for (t, sfx) in ((0.37, ""), (2.0, ".w0"))
             ),
         )
     )
+    _runs(name) || continue
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
@@ -63,17 +71,28 @@ for (name, wrt, t, tag) in Iterators.flatten(
 end
 # The second columns a point of the pair's bands reaches with both of its
 # columns inside their extents (a ghost point reaches nothing): structural,
-# read off the bands by a point walk.
+# read off the bands by a point walk. Through a recurrence (spec §4.5) a
+# second column may be a recurrence, which is no column of the axis, and the
+# second axis's recurrence rows carry the contraction on to their columns.
 function _reached2(file, wrt)
     sv = sysview(file, first(keys(file.models)))
     shapes = EarthSciASTDiff._ctx(sv).shapes
     inext(v, c) = all(1 <= c[d] <= get(shapes, v, Int[])[d] for d in eachindex(c))
+    e2 = extended_bands(sv; wrt = wrt[2], second = wrt[1])
+    isrec(v) = EarthSciASTDiff._is_recurrence(e2, v)
     out = Set{String}()
     for en in jacobian_bands2(sv; wrt = wrt)
+        isrec(en.w) && continue
         EarthSciASTDiff._foreach_point(en.band) do _, _, c
             c1, c2 = c[1:(en.ncol)], c[(en.ncol + 1):end]
             inext(en.v, c1) && inext(en.w, c2) &&
                 push!(out, EarthSciASTDiff._cellname(en.w, c2))
+        end
+    end
+    for en in e2.rec_rows
+        isrec(en.v) && continue
+        EarthSciASTDiff._foreach_point(en.band) do _, _, c
+            inext(en.v, c) && push!(out, EarthSciASTDiff._cellname(en.v, c))
         end
     end
     return out
@@ -93,7 +112,10 @@ for (name, wrt, t) in (
         ("filtered_scan", (:states, :states), 0.7),
         ("semiring_reduce", (:states, :states), 0.7),
         ("pre_operator", (:states, :states), 0.7),
+        ("recurrence_sweep", (:states, :states), 0.7),
+        ("recurrence_sweep", (:states, :parameters), 0.7),
     )
+    _runs(name) || continue
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
     rn = _doc_source(file, nothing, bkw).rownames

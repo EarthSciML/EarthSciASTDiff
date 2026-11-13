@@ -76,12 +76,14 @@ EarthSciAST's interpreter (`pkg/earthsci-astdiff-rs/tests/common/docvals.rs`,
 `test/docvals.jl`); never add a value evaluator back to a package, nor a
 test oracle that evaluates band coefficients itself.
 
-Causal recurrences (spec §4.5, §9.7) are in Rust and Python only
-(`recurrence.rs` / `recurrence.py`) until EarthSciAST.jl executes them
-(EarthSciAST#546): the goldens of `recurrence_sweep` and `pbl_rank1` are
-written by `cargo test --test write_goldens -- --ignored`, not by
-scripts/regenerate-goldens.jl, and checked against central differences of
-the source right-hand side in each binding's recurrence tests.
+Causal recurrences (spec §4.5, §9.7) are in every binding
+(`recurrence.jl` / `recurrence.rs` / `recurrence.py`), and the Julia
+reference writes the goldens of `recurrence_sweep` and `pbl_rank1` like any
+other. Their VALUES need an EarthSciAST that executes recurrences (≥ 0.11,
+EarthSciAST#546): below it Julia's `recurrence_test.jl` runs only its
+structural tests, and scripts/regenerate-value-goldens.jl skips those two
+fixtures. Each binding checks them against central differences of the
+source right-hand side.
 
 Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `hashcons.jl`     — structural interning (`StructIndex`/`sid`): subtree
@@ -97,6 +99,10 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `clip.jl`         — static region clipping (affine breakpoint splits, exact
   guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
+- `recurrence.jl`   — causal recurrences (spec §4.5): recognition, the
+  transfer recurrence `T = (I − G)⁻¹`, `materialize` (the chain rule
+  through `T`) and the tangent/adjoint sweeps products.jl's §9.7 documents
+  run; the extended system itself (`ExtendedBands`) is jacobian.jl's
 - `eval_cse.jl`     — evaluation-model CSE (`hoist_observed`): repeated
   coefficient subtrees become observed-array buffers of the derived eval
   model (compile-time / per-call duplicate-work control)
