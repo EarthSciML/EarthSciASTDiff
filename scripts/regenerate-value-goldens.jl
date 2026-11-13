@@ -9,12 +9,6 @@ using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "docvals.jl"))
-# The fixtures with causal recurrences (spec §4.5, §9.7): their documents run
-# only on an EarthSciAST that executes recurrences (0.11 on, EarthSciAST#546),
-# so an older one leaves their goldens as they are.
-const RECURRENT = ("recurrence_sweep", "pbl_rank1")
-_runs(name) = !(name in RECURRENT) || pkgversion(EarthSciAST) >= v"0.11" ||
-    (println("skipped ", name, ": EarthSciAST ", pkgversion(EarthSciAST), " does not execute recurrences"); false)
 # `<name>.<axis>.jvals.json` for the other axes: wrt = :time (the single
 # column `t`) at the same pinned point, and the forcing / parameter axes of
 # the forcing fixture (canonical column space, spec §4) at two points of its
@@ -43,7 +37,6 @@ for (name, wrt, t, tag) in Iterators.flatten(
             ),
         )
     )
-    _runs(name) || continue
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
@@ -115,7 +108,6 @@ for (name, wrt, t) in (
         ("recurrence_sweep", (:states, :states), 0.7),
         ("recurrence_sweep", (:states, :parameters), 0.7),
     )
-    _runs(name) || continue
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
     rn = _doc_source(file, nothing, bkw).rownames

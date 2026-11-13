@@ -327,24 +327,26 @@ fn j1(doc: &Value, t: f64) -> f64 {
 
 /// The evaluation document carries the source's `domain` (spec §8.1), so it
 /// has the source's time origin; the right-hand side passes `t` to the
-/// calendar functions as UTC seconds whatever the origin, so a
-/// `datetime.hour` coefficient reads the same with or without it (the
+/// esm:std calendar templates as UTC seconds whatever the origin, so an
+/// `hour` coefficient reads the same with or without it (the
 /// reference's flat_evaldoc_test.jl).
 #[test]
 fn carries_the_domain() {
     let src = json!({
-        "esm": "1.1.0",
+        "esm": "2.0.0",
         "metadata": {"name": "Diurnal"},
         "domain": {"independent_variable": "t",
                    "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
         "models": {"Chem": {
+            "expression_template_imports": [{"ref": "esm:std/calendar.esm", "only": ["hour"]}],
             "variables": {
                 "c": {"type": "unknown", "default": 1.0},
                 "k": {"type": "parameter", "default": 0.5}},
             "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
                            "rhs": {"op": "*", "args": [
                                {"op": "-", "args": ["k"]},
-                               {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}
+                               {"op": "apply_expression_template", "args": [], "name": "hour",
+                                "bindings": {"t": "t"}}, "c"]}}]}}
     });
     let file = earthsci_ast::load_document(&src).unwrap();
     let flat = earthsci_ast::flatten(&file).unwrap();
@@ -599,18 +601,20 @@ fn refuses_bad_sources() {
 #[test]
 fn product_documents_carry_the_domain() {
     let src = json!({
-        "esm": "1.1.0",
+        "esm": "2.0.0",
         "metadata": {"name": "Diurnal"},
         "domain": {"independent_variable": "t",
                    "temporal": {"start": "2024-05-01T06:00:00Z", "end": "2024-05-02T06:00:00Z"}},
         "models": {"Chem": {
+            "expression_template_imports": [{"ref": "esm:std/calendar.esm", "only": ["hour"]}],
             "variables": {
                 "c": {"type": "unknown", "default": 1.0},
                 "k": {"type": "parameter", "default": 0.5}},
             "equations": [{"lhs": {"op": "D", "args": ["c"], "wrt": "t"},
                            "rhs": {"op": "*", "args": [
                                {"op": "-", "args": ["k"]},
-                               {"op": "fn", "name": "datetime.hour", "args": ["t"]}, "c"]}}]}}
+                               {"op": "apply_expression_template", "args": [], "name": "hour",
+                                "bindings": {"t": "t"}}, "c"]}}]}}
     });
     let file = earthsci_ast::load_document(&src).unwrap();
     let flat = earthsci_ast::flatten(&file).unwrap();

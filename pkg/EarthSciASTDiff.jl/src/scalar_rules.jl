@@ -20,30 +20,19 @@
 #                              `inline_observed` lowers it away before
 #                              differentiation; this rule covers an
 #                              expression that reaches `dscalar` unlowered.
-#   * `interp.linear`        → slope of the active segment (0 outside the
-#                              axis — extrapolate-flat), emitted as a segment
-#                              `ifelse` over slopes precomputed from the
-#                              literal `const` tables — no registry addition.
-#   * the integer-valued `datetime.*` fields and `interp.searchsorted` → 0
-#                              (piecewise-constant, matching the a.e.-zero
-#                              contract in EarthSciAST/src/registered_functions.jl);
-#                              `datetime.julian_day` is CONTINUOUS (it carries
-#                              the fractional time of day, esm-spec §9.2), so
-#                              its derivative is `d[t] / 86400`; any other
-#                              `datetime.*` name has no rule and throws.
-#   * rewrite-target ops (spatial `D`, `grad`, `table_lookup`, …) → error:
-#     they have no evaluator and must be lowered before differentiation,
-#     mirroring the tree-walk's `unlowered_operator` gate.
-
-# The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
-# their time argument, so a.e. zero. `datetime.julian_day` is not one of them.
-const PIECEWISE_CONSTANT_DATETIME = Set(
-    [
-        "datetime.year", "datetime.month", "datetime.day", "datetime.hour",
-        "datetime.minute", "datetime.second", "datetime.day_of_year",
-        "datetime.is_leap_year",
-    ]
-)
+#   * `index(A, i…)` that is not the site itself → 0 when `A` is a
+#                              literal array (it reads no variable): the
+#                              subscripts are integer-valued, so the read is
+#                              piecewise-constant in them. This is the rule
+#                              the esm:std interpolation and calendar
+#                              templates differentiate through (esm 2.0.0
+#                              removed the `fn` closed functions they
+#                              replace); the explicit `x` in a template's
+#                              blend carries the slope.
+#   * rewrite-target ops (spatial `D`, `grad`, …) → error: they have no
+#     evaluator and must be lowered before differentiation, mirroring the
+#     tree-walk's `unlowered_operator` gate. The ops esm 2.0.0 removed
+#     (`fn`, `table_lookup`) never load, and have no rule either.
 
 const ZERO_DERIV_OPS = Set(
     [
@@ -69,8 +58,8 @@ Derivative of the scalar expression `e` with respect to site `s`, as a new
 ESM expression. Structural rules only; a subtree in which `s` does not occur
 differentiates to a literal zero without descent. Throws
 [`DerivativeRuleError`](@ref) on an op with no rule (rewrite targets,
-joined or value-invention `faq` nodes in scalar position, unknown closed
-functions).
+joined or value-invention `faq` nodes in scalar position, a dynamic read
+of the site's own variable).
 """
 dscalar(e::ASTExpr, s::Site)::ASTExpr = dscalar(e, s, _SiteScan(s))
 
@@ -220,12 +209,14 @@ function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
         return _dsum(e, s, occ)
     elseif o in ZERO_DERIV_OPS
         return lit(0)
-    elseif o == "fn"
-        return dfn(e, s, occ)
     elseif o == "index"
-        # A site-bearing `index` that is not itself the site: index of a
-        # non-variable array expression, or index expressions that depend on
-        # the site (neither occurs in a lowered model RHS).
+        # A site-bearing `index` that is not itself the site. Its subscripts
+        # are integer-valued, so a read of a literal array (an expanded
+        # template's `const` table or axis) is piecewise-constant in them: 0.
+        # A read of a variable (which may be the site's own, or a recurrence
+        # array that depends on it) at a site-dependent subscript, or of an
+        # array expression that reads variables, has no rule.
+        _index_is_literal_read(e) && return lit(0)
         throw(
             DerivativeRuleError(
                 "`index` of a non-variable array expression (or a site-dependent " *
@@ -250,8 +241,7 @@ structure-only mode (esm-jacobian-spec.md §2.1): throws exactly the
 [`DerivativeRuleError`](@ref) `dscalar` would, and returns `false` exactly
 when `dscalar` would return a literal 0, so a check the full mode skips on a
 zero derivative (`_window_weight`'s) is skipped here too. It visits the
-nodes `dscalar` visits and builds no derivative; a closed function (`fn`, a
-small and rare node) is decided by `dfn` itself.
+nodes `dscalar` visits and builds no derivative.
 """
 drule_check(e::ASTExpr, s::Site, occ::_Occ)::Bool =
     _drule_check(e, s, occ, IdDict{OpExpr, Bool}())
@@ -302,142 +292,12 @@ function _drule_check_op(e::OpExpr, s::Site, occ::_Occ, memo)::Bool
         return true
     elseif o in ZERO_DERIV_OPS
         return false
-    elseif o == "fn"
-        return !iszero_lit(dfn(e, s, occ))
     end
     # `index`, and every op without a rule: `_dscalar_op` throws.
     return !iszero_lit(_dscalar_op(e, s, occ))
 end
 
-# The numeric vector of a literal `const` table node, or nothing.
-function _const_vector(e::ASTExpr)
-    e isa OpExpr && e.op == "const" || return nothing
-    v = e.value
-    v isa AbstractVector && all(x -> x isa Real, v) || return nothing
-    return Float64[Float64(x) for x in v]
-end
-
-# The numeric matrix of a literal 2-D `const` table node (`value[i][j]` →
-# `T[i, j]`), or nothing.
-function _const_matrix(e::ASTExpr)
-    e isa OpExpr && e.op == "const" || return nothing
-    v = e.value
-    v isa AbstractVector || return nothing
-    rows = Vector{Vector{Float64}}()
-    for r in v
-        (r isa AbstractVector && all(x -> x isa Real, r)) || return nothing
-        push!(rows, Float64[Float64(x) for x in r])
-    end
-    (isempty(rows) || any(length(r) != length(rows[1]) for r in rows)) &&
-        return nothing
-    return permutedims(reduce(hcat, rows))
-end
-
-# ∂(bilinear blend)/∂(the axis of `xv`), as a nested segment `ifelse`:
-# outer chain locates the x-cell `i` (flat-zero outside `xv` — the clamp
-# makes the blend constant in x there); each leaf is an inner chain over the
-# y-cells blending the two x-slope rows with the CLAMPED y-weight
-# (`(y − y_j)/Δy_j` per cell, the edge rows outside `yv`). The knot
-# convention matches spec §9.2 step 2 (a query exactly on an interior knot
-# selects the cell whose weight is 0). ∂/∂y is this function on the
-# transposed table with the axes and query expressions swapped.
-function _bilinear_partial(
-        T::Matrix{Float64}, xv::Vector{Float64},
-        yv::Vector{Float64}, xe::ASTExpr, ye::ASTExpr
-    )::ASTExpr
-    nx, ny = length(xv), length(yv)
-    out = lit(0)                              # x ≥ axis_x[nx]: flat in x
-    for i in (nx - 1):-1:1
-        sl(j) = (T[i + 1, j] - T[i, j]) / (xv[i + 1] - xv[i])
-        leaf = lit(sl(ny))                    # y ≥ axis_y[ny]: top edge row
-        for j in (ny - 1):-1:1
-            wy = op("/", add(ye, lit(-yv[j])), lit(yv[j + 1] - yv[j]))
-            e = add(lit(sl(j)), mul(wy, add(lit(sl(j + 1)), neg(lit(sl(j))))))
-            leaf = op("ifelse", op("<", ye, lit(yv[j + 1])), e, leaf)
-        end
-        leaf = op("ifelse", op("<", ye, lit(yv[1])), lit(sl(1)), leaf)  # bottom edge
-        out = op("ifelse", op("<", xe, lit(xv[i + 1])), leaf, out)
-    end
-    return op("ifelse", op("<", xe, lit(xv[1])), lit(0), out)
-end
-
-# Closed-function derivative table (esm-spec §9.2: exactly 12 names, all
-# decided here — an unknown name is a spec violation, not a fallthrough).
-dfn(e::OpExpr, s::Site)::ASTExpr = dfn(e, s, IdDict{OpExpr, Bool}())
-
-function dfn(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
-    name = e.name
-    a = e.args
-    if name in PIECEWISE_CONSTANT_DATETIME || name == "interp.searchsorted"
-        return lit(0)
-    elseif name == "datetime.julian_day"
-        # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
-        length(a) == 1 || throw(
-            DerivativeRuleError(
-                "`datetime.julian_day` takes 1 argument, got $(length(a))"
-            )
-        )
-        dx = dscalar(a[1], s, occ); iszero_lit(dx) && return lit(0)
-        return op("/", dx, lit(86400))
-    elseif name == "interp.linear"
-        # interp.linear(table, axis, x) — spec §9.2: TABLE first, AXIS second,
-        # extrapolate-flat boundaries, and both arrays MUST be literal
-        # `const` nodes (interp_table_not_const otherwise). d/dx is the
-        # active segment's slope, 0 outside the axis (flat extrapolation),
-        # emitted as a nested segment `ifelse` over slopes precomputed here
-        # (esm-jacobian-spec.md §3.4).
-        table, axis, x = a[1], a[2], a[3]
-        dx = dscalar(x, s, occ); iszero_lit(dx) && return lit(0)
-        yv = _const_vector(table); xv = _const_vector(axis)
-        (yv === nothing || xv === nothing) && throw(
-            DerivativeRuleError(
-                "interp.linear table/axis must be literal `const` arrays " *
-                    "(spec §9.2 interp_table_not_const)"
-            )
-        )
-        n = length(xv)
-        (n == length(yv) && n >= 2) || throw(
-            DerivativeRuleError(
-                "interp.linear table/axis length mismatch or < 2 knots"
-            )
-        )
-        slopes = [(yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]) for k in 1:(n - 1)]
-        slope = lit(0)                                # x ≥ axis[N]: flat
-        for k in (n - 1):-1:1
-            slope = op("ifelse", op("<", x, lit(xv[k + 1])), lit(slopes[k]), slope)
-        end
-        slope = op("ifelse", op("<", x, lit(xv[1])), lit(0), slope)  # flat below
-        return mul(slope, dx)
-    elseif name == "interp.bilinear"
-        # interp.bilinear(table, axis_x, axis_y, x, y) — spec §9.2: row-major
-        # literal table (`table[i][j]` at `(axis_x[i], axis_y[j])`), per-axis
-        # clamp (extrapolate-flat). On cell (i, j), ∂/∂x is the x-slope of
-        # the y-blend — constant in x, linear in the CLAMPED y-weight — and
-        # symmetrically for ∂/∂y. Each partial is a nested segment `ifelse`
-        # over the partial's own axis whose leaves are inner chains over the
-        # other axis (esm-jacobian-spec.md §3.4); constants precomputed here.
-        table, ax, ay, x, y = a[1], a[2], a[3], a[4], a[5]
-        dx = dscalar(x, s, occ); dy = dscalar(y, s, occ)
-        iszero_lit(dx) && iszero_lit(dy) && return lit(0)
-        T = _const_matrix(table); xv = _const_vector(ax); yv = _const_vector(ay)
-        (T === nothing || xv === nothing || yv === nothing) && throw(
-            DerivativeRuleError(
-                "interp.bilinear table/axes must be literal `const` arrays " *
-                    "(spec §9.2 interp_table_not_const)"
-            )
-        )
-        nx, ny = length(xv), length(yv)
-        (size(T) == (nx, ny) && nx >= 2 && ny >= 2) || throw(
-            DerivativeRuleError(
-                "interp.bilinear table/axis shape mismatch or < 2 knots"
-            )
-        )
-        terms = ASTExpr[]
-        iszero_lit(dx) || push!(terms, mul(_bilinear_partial(T, xv, yv, x, y), dx))
-        iszero_lit(dy) ||
-            push!(terms, mul(_bilinear_partial(permutedims(T), yv, xv, y, x), dy))
-        return add(terms...)
-    else
-        throw(DerivativeRuleError("unknown closed function `$name`"))
-    end
-end
+# Does the `index` node `e` read a literal array (one that reads no
+# variable)? Its derivative is then 0 (spec §3.1).
+_index_is_literal_read(e::OpExpr)::Bool =
+    !isempty(e.args) && e.args[1] isa OpExpr && isempty(free_variables(e.args[1]))

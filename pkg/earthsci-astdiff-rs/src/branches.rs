@@ -110,8 +110,19 @@ fn assume(e: &Expr, hck: u64, ck: usize, val: bool, cx: &mut SbrCtx) -> Expr {
 const INT64_MAXF: f64 = 9_223_372_036_854_775_807.0;
 const INT64_MINF: f64 = -9_223_372_036_854_775_808.0;
 
+/// The wire-canonical literal (simplify_branches.jl `_canon_lit`): an
+/// integral Int64-representable float is an integer, and a NON-FINITE float,
+/// which JSON cannot write, is the quotient ESM spells it with (the esm:std
+/// calendar templates' `0/0`): NaN is `0/0`, ±Inf is `±1/0`.
 pub fn canon_lit(e: &Expr) -> Expr {
     if let Expr::Number(x) = e {
+        if x.is_nan() {
+            return op("/", vec![Expr::Integer(0), Expr::Integer(0)]);
+        }
+        if x.is_infinite() {
+            let s = if *x > 0.0 { 1 } else { -1 };
+            return op("/", vec![Expr::Integer(s), Expr::Integer(0)]);
+        }
         if x.is_finite()
             && *x == x.trunc()
             && *x >= INT64_MINF

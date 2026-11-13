@@ -7,12 +7,13 @@ description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symb
 
 [dependencies]
 # The crates.io releases this crate is tested with: conformance.yml runs the
-# tests at both ends of the range (the floor is the lowest release the tests
-# pass against; 0.4 lacks `rhs_program`). Raise the floor only to a published
+# tests at both ends of the range (the floor is 0.11, the first release that
+# reads esm 2.0.0, whose esm:std templates replaced the `fn` closed
+# functions; its `ExpressionNode` has no `axes`). Raise the floor only to a published
 # release. upstream-main.yml tests against EarthSciAST `main` by patching in
 # a sibling checkout, which works locally too:
 #   cargo test --config 'patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"'
-earthsci-ast = ">=0.5, <0.11"
+earthsci-ast = ">=0.11, <0.12"
 indexmap = "2"
 # the shortest round-trip digits, as the Julia reference writes them
 # (`canonical_float`); already in the tree through serde_json

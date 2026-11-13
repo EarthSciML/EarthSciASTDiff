@@ -269,8 +269,8 @@ function is_array_expr(e::ASTExpr, ctx::Ctx)::Bool
     # `arrayop` is deliberately absent: it was REMOVED at esm 0.8.0 and is not
     # a deprecated alias, so EarthSciAST's parser rejects it by name
     # (`[E_REMOVED_OP]`) and no tree reaching here can carry it. `faq` is the
-    # unified query node, spelled `aggregate` before esm 1.1.0 and normalized
-    # to `faq` at the wire boundary (docs/content/rfcs/faq-node-rename.md).
+    # unified query node; its old spelling `aggregate` was removed the same
+    # way at esm 2.0.0.
     e.op in (
         "faq", "makearray", "broadcast",
         "reshape", "transpose", "concat",

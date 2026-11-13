@@ -46,7 +46,7 @@ _cse_field(e::OpExpr, s::Symbol) = hasfield(OpExpr, s) ? getfield(e, s) : nothin
     _cse_children(e::OpExpr) -> Vector{ASTExpr}
 
 The child slots of `e` in the order of esm-jacobian-spec §4.1: `args`,
-`lower`, `upper`, `expr`, `filter`, `values`, `axes` by ascending key, `key`,
+`lower`, `upper`, `expr`, `filter`, `values`, `key`,
 `bindings` by ascending key. Expressions inside `ranges` are part of the node,
 not slots. Throws if `map_children` reaches a child this list misses (a field
 a newer EarthSciAST added), rather than silently numbering it differently
@@ -60,12 +60,6 @@ function _cse_children(e::OpExpr)::Vector{ASTExpr}
     end
     v = _cse_field(e, :values)
     v === nothing || append!(cs, v)
-    ax = _cse_field(e, :table_axes)
-    if ax !== nothing
-        for name in sort!(collect(keys(ax)))
-            push!(cs, ax[name])
-        end
-    end
     kx = _cse_field(e, :key)
     kx === nothing || push!(cs, kx)
     b = _cse_field(e, :bindings)

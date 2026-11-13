@@ -15,19 +15,6 @@ from earthsci_ast.expression import free_variables
 from .expr_helpers import Site, add, is_site, is_zero, mul, neg, occurs, occurs_memo, op
 from .reductions import check_window, reduce_op, window_weight
 
-# The integer-valued calendar fields of esm-spec §9.2: piecewise-constant in
-# their time argument, so a.e. zero. ``datetime.julian_day`` is not one of them.
-PIECEWISE_CONSTANT_DATETIME = {
-    "datetime.year",
-    "datetime.month",
-    "datetime.day",
-    "datetime.hour",
-    "datetime.minute",
-    "datetime.second",
-    "datetime.day_of_year",
-    "datetime.is_leap_year",
-}
-
 ZERO_DERIV_OPS = {
     "<",
     "<=",
@@ -149,9 +136,15 @@ def dscalar(e: Expr, s: Site) -> Expr:
         return _dsum(e, s)
     if o in ZERO_DERIV_OPS:
         return 0
-    if o == "fn":
-        return dfn(e, s)
     if o == "index":
+        # A site-bearing `index` that is not itself the site. Its subscripts
+        # are integer-valued, so a read of a literal array (an expanded
+        # template's `const` table or axis) is piecewise-constant in them: 0.
+        # A read of a variable (which may be the site's own, or a recurrence
+        # array that depends on it) at a site-dependent subscript, or of an
+        # array expression that reads variables, has no rule.
+        if _index_is_literal_read(e):
+            return 0
         raise DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent "
             "index) has no scalar rule"
@@ -172,8 +165,7 @@ def drule_check(e: Expr, s: Site) -> bool:
     exactly the ``DerivativeRuleError`` ``dscalar`` would, and returns False
     exactly when ``dscalar`` would return a literal 0, so a check the full
     mode skips on a zero derivative (``window_weight``'s) is skipped here
-    too. It visits the nodes ``dscalar`` visits and builds no derivative; a
-    closed function (``fn``, a small and rare node) is decided by ``dfn``."""
+    too. It visits the nodes ``dscalar`` visits and builds no derivative."""
     return _drule_check(e, s, {}, {})
 
 
@@ -232,8 +224,6 @@ def _drule_check_op(e: ExprNode, s: Site, memo: dict, occ: dict) -> bool:
         return True
     if o in ZERO_DERIV_OPS:
         return False
-    if o == "fn":
-        return not is_zero(dfn(e, s))
     # ``index``, and every op without a rule: ``dscalar`` raises.
     return not is_zero(dscalar(e, s))
 
@@ -279,115 +269,7 @@ def _dsum(e: ExprNode, s: Site) -> Expr:
     return plus(ranges=summed)
 
 
-def _const_vector(e: Expr) -> list[float] | None:
-    if not (isinstance(e, ExprNode) and e.op == "const"):
-        return None
-    v = e.value
-    if not (
-        isinstance(v, list)
-        and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v)
-    ):
-        return None
-    return [float(x) for x in v]
-
-
-def _const_matrix(e: Expr) -> list[list[float]] | None:
-    """value[i][j] → T[i][j] (row-major, spec §9.2)."""
-    if not (isinstance(e, ExprNode) and e.op == "const"):
-        return None
-    v = e.value
-    if not isinstance(v, list) or not v:
-        return None
-    rows = []
-    for r in v:
-        if not (
-            isinstance(r, list)
-            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in r)
-        ):
-            return None
-        rows.append([float(x) for x in r])
-    if any(len(r) != len(rows[0]) for r in rows):
-        return None
-    return rows
-
-
-def _bilinear_partial(
-    T: list[list[float]], xv: list[float], yv: list[float], xe: Expr, ye: Expr
-) -> Expr:
-    """∂(bilinear blend)/∂(the axis of ``xv``) — see scalar_rules.jl."""
-    nx, ny = len(xv), len(yv)
-    out: Expr = 0  # x ≥ axis_x[nx]: flat in x
-    for i in range(nx - 2, -1, -1):  # 0-based cell i ↔ knots i, i+1
-
-        def sl(j: int, i: int = i) -> float:
-            return (T[i + 1][j] - T[i][j]) / (xv[i + 1] - xv[i])
-
-        leaf: Expr = sl(ny - 1)  # y ≥ axis_y[ny]: top edge row
-        for j in range(ny - 2, -1, -1):
-            wy = op("/", add(ye, -yv[j]), yv[j + 1] - yv[j])
-            ex = add(sl(j), mul(wy, add(sl(j + 1), neg(sl(j)))))
-            leaf = op("ifelse", op("<", ye, yv[j + 1]), ex, leaf)
-        leaf = op("ifelse", op("<", ye, yv[0]), sl(0), leaf)  # bottom edge
-        out = op("ifelse", op("<", xe, xv[i + 1]), leaf, out)
-    return op("ifelse", op("<", xe, xv[0]), 0, out)
-
-
-def dfn(e: ExprNode, s: Site) -> Expr:
-    """Closed-function derivative table (esm-spec §9.2)."""
-    name = e.name
-    a = e.args
-    if name is None:
-        raise DerivativeRuleError("`fn` node without a name")
-    if name in PIECEWISE_CONSTANT_DATETIME or name == "interp.searchsorted":
-        return 0
-    if name == "datetime.julian_day":
-        # continuous Julian day of UTC seconds: d(JD)/dt = 1/86400 per second
-        if len(a) != 1:
-            raise DerivativeRuleError(f"`datetime.julian_day` takes 1 argument, got {len(a)}")
-        dx = dscalar(a[0], s)
-        if is_zero(dx):
-            return 0
-        return op("/", dx, 86400)
-    if name == "interp.linear":
-        table, axis, x = a[0], a[1], a[2]
-        dx = dscalar(x, s)
-        if is_zero(dx):
-            return 0
-        yv, xv = _const_vector(table), _const_vector(axis)
-        if yv is None or xv is None:
-            raise DerivativeRuleError(
-                "interp.linear table/axis must be literal `const` arrays "
-                "(spec §9.2 interp_table_not_const)"
-            )
-        n = len(xv)
-        if n != len(yv) or n < 2:
-            raise DerivativeRuleError("interp.linear table/axis length mismatch or < 2 knots")
-        slopes = [(yv[k + 1] - yv[k]) / (xv[k + 1] - xv[k]) for k in range(n - 1)]
-        slope: Expr = 0  # x ≥ axis[N]: flat
-        for k in range(n - 2, -1, -1):
-            slope = op("ifelse", op("<", x, xv[k + 1]), slopes[k], slope)
-        slope = op("ifelse", op("<", x, xv[0]), 0, slope)  # flat below
-        return mul(slope, dx)
-    if name == "interp.bilinear":
-        table, ax, ay, x, y = a[0], a[1], a[2], a[3], a[4]
-        dx, dy = dscalar(x, s), dscalar(y, s)
-        if is_zero(dx) and is_zero(dy):
-            return 0
-        T = _const_matrix(table)
-        xv, yv = _const_vector(ax), _const_vector(ay)
-        if T is None or xv is None or yv is None:
-            raise DerivativeRuleError(
-                "interp.bilinear table/axes must be literal `const` arrays "
-                "(spec §9.2 interp_table_not_const)"
-            )
-        nx, ny = len(xv), len(yv)
-        if len(T) != nx or any(len(r) != ny for r in T) or nx < 2 or ny < 2:
-            raise DerivativeRuleError("interp.bilinear table/axis shape mismatch or < 2 knots")
-        terms = []
-        if not is_zero(dx):
-            terms.append(mul(_bilinear_partial(T, xv, yv, x, y), dx))
-        if not is_zero(dy):
-            Tt = [[T[i][j] for i in range(nx)] for j in range(ny)]
-            terms.append(mul(_bilinear_partial(Tt, yv, xv, y, x), dy))
-        return add(*terms)
-    raise DerivativeRuleError(f"unknown closed function `{name}`")
+def _index_is_literal_read(e: ExprNode) -> bool:
+    """Does the ``index`` node ``e`` read a literal array (one that reads no
+    variable)? Its derivative is then 0 (spec §3.2)."""
+    return bool(e.args) and isinstance(e.args[0], ExprNode) and not free_variables(e.args[0])

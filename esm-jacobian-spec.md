@@ -26,8 +26,8 @@ with the same recurrence semantics as the document's own.
 
 Producing the block requires the derivative semantics of §3, defined on the
 **expanded, lowered** expression tree: expression templates expanded
-(esm-spec §9.6.4), rewrite-target operators (spatial `D`, `grad`,
-`table_lookup`, …) already rewritten away. Differentiating an unlowered tree
+(esm-spec §9.6.4), rewrite-target operators (spatial `D`, `grad`, …)
+already rewritten away. Differentiating an unlowered tree
 is a conformance violation, mirroring the `unlowered_operator` evaluation
 gate.
 
@@ -211,6 +211,7 @@ Textbook rules, with these bindings-relevant details:
 | comparisons, `and`/`or`/`not` | `0` | comparisons return 1.0/0.0 *values*; still 0 even in multiplicative position |
 | `sign`, `floor`, `ceil` | `0` | a.e. |
 | `const`, `enum`, niladic constants | `0` | |
+| `index(A, i…)`, `A` a literal array (it reads no variable), that is not the site | `0` | the subscripts are integer-valued, so the read is piecewise-constant in them; the rule the esm:std templates differentiate through (§3.4). A read of a **variable** at a site-dependent subscript is not this row's (§3.5 decides it, or it has no rule, `underivable_operator`): another variable can depend on the site (a recurrence array, §4.5, is never inlined) |
 | `Pre(a)` | `d[a]` | the identity, and lowered away before differentiation (below); never `0` |
 
 **`Pre` in a right-hand side.** esm-spec §5.1 defines `Pre(a)` only inside an
@@ -239,19 +240,32 @@ otherwise, this row follows it.
 
 ### 3.3 Rewrite-target operators
 
-Spatial `D`, `grad`, `div`, `laplacian`, `integral`, `table_lookup`, and any
+Spatial `D`, `grad`, `div`, `laplacian`, `integral`, and any
 op outside the evaluable core: **no derivative rule exists**. A producer
 encountering one MUST fail (diagnostic `underivable_operator`), never emit 0.
 
-### 3.4 Closed functions (esm-spec §9.2)
+### 3.4 Standard-library templates (esm 2.0.0)
 
-| name | rule |
+esm 2.0.0 removed the closed functions (`fn` with `datetime.*` and
+`interp.*`), `table_lookup` and the `aggregate` spelling of `faq`
+(esm-spec §4.2 "Removed ops"); the loader refuses a document that uses one
+(`removed_op`), so none reaches the derivative calculus and none has a rule
+here. Their replacements are expression templates of the standard library
+(`esm:std/calendar.esm`, `esm:std/interp.esm`), expanded before
+differentiation (§1) into core operators, so the rules above decide them; no
+template has a rule of its own. Informatively, what those rules give:
+
+| template | derivative |
 |---|---|
-| `datetime.year`, `.month`, `.day`, `.hour`, `.minute`, `.second`, `.day_of_year`, `.is_leap_year` | `0` (integer-valued, so piecewise-constant: the registry's a.e.-zero contract) |
-| `datetime.julian_day(x)` | `d[x] / 86400` — the Julian day is continuous (it carries the fractional time of day, §9.2), one day per 86400 s of UTC time. A `datetime.*` name outside the §9.2 registry has no rule (`underivable_operator`). |
-| `interp.searchsorted` | `0` (integer-valued) |
-| `interp.linear(table, axis, x)` | `slope · d[x]`, where `slope` is the active segment's slope `(table[k+1] − table[k]) / (axis[k+1] − axis[k])` for `axis[k] ≤ x < axis[k+1]`, and **0 outside the axis** (extrapolate-flat, §9.2). Since `table`/`axis` MUST be literal `const` arrays (§9.2 `interp_table_not_const`), the producer precomputes the per-segment slopes and emits a nested segment `ifelse` (`ifelse(x < axis[k+1], sₖ, …)`, flat-zero guards at both ends) — scalar-evaluable, no dynamic table gather, only existing operators. |
-| `interp.bilinear(table, axis_x, axis_y, x, y)` | `∂B/∂x · d[x] + ∂B/∂y · d[y]`. On cell `(i, j)` (located per §9.2's clamp + largest-knot-below convention), `∂B/∂x = sxᵢⱼ + wy · (sxᵢ,ⱼ₊₁ − sxᵢⱼ)` where `sxᵢⱼ = (table[i+1][j] − table[i][j]) / (axis_x[i+1] − axis_x[i])` and `wy` is the **clamped** y-weight; symmetrically for `∂B/∂y`. Outside `axis_x` the blend is constant in `x`, so `∂B/∂x = 0` there (and symmetrically for `y`), while the *other* partial persists at the clamped edge row/column. Since the table and axes MUST be literal `const` arrays, the producer precomputes the per-cell slope constants and emits each partial as a nested segment `ifelse` over the partial's own axis whose leaves are inner segment chains over the other axis (edge rows as the clamp leaves) — scalar-evaluable, no dynamic table gather, only existing operators. A query exactly on an interior knot selects the cell whose weight is 0, matching §9.2 step 2. |
+| `year`, `month`, `day`, `hour`, `minute`, `second`, `day_of_year`, `is_leap_year` | `0`: integer-valued through `floor` |
+| `julian_day(t)` | `d[t] / 86400`: the term `t − floor(t)` carries the fractional time of day |
+| `searchsorted` | `0`: a `faq` sum of comparisons |
+| `linear(table, axis, x, n)` | the active segment's slope `· d[x]`, 0 outside the axis (extrapolate-flat): the cell index is a read of the literal `axis` through `index` (§3.2), so only the blend's explicit `x` differentiates |
+| `bilinear(table, axis_x, axis_y, x, y, nx, ny)` | `∂B/∂x · d[x] + ∂B/∂y · d[y]`, each partial 0 where its query is clamped, the other partial persisting at the edge row or column |
+
+The calendar templates return `0/0` for `|t| ≥ 2⁵²` s, so a coefficient can
+hold a non-finite literal once simplified; it is written as a quotient
+(§4, `coef`).
 
 ### 3.5 Array operators
 
@@ -430,6 +444,9 @@ row)/∂(col)`:
   Int64-representable float literal is an integer literal) — producers whose
   in-memory simplification folds mixed int/float constants must normalize
   before emission, or parse round-trips and cross-binding goldens diverge.
+  A non-finite literal, which JSON cannot write, is written as the quotient
+  ESM spells it with: NaN as `{"op": "/", "args": [0, 0]}`, ±∞ as
+  `{"op": "/", "args": [±1, 0]}`.
 - `contracted` (optional) — free CONTRACTED column dimensions, each a
   `[name, lo, hi]` triple (string name, inclusive integer bounds). The names
   are local to the entry (disjoint from its `row_idx` names) and may appear
@@ -562,7 +579,7 @@ inputs are the coefficients, in entry order, and a threshold `min_nodes`
    the same as a float leaf (`1` and `1.0` differ), `0.0` and `-0.0`
    differ, and every NaN is the same. A node's *child slots* are, in this
    order: the elements of `args`; `lower`; `upper`; `expr`; `filter`; the
-   elements of `values`; the entries of `axes` by ascending key; `key`; the
+   elements of `values`; `key`; the
    entries of `bindings` by ascending key (absent fields contribute none).
    Expressions in any other field (for example inside `ranges`) are part of
    the node itself, not child slots. The size `|s|` of a distinct subtree
@@ -619,9 +636,9 @@ equation order, and the single column within each equation.
   observed that can depend on a target; the time axis does not — an
   observed's time dependence can also arrive through data its definition
   reads, so `{t}` is not a sound seed.)
-- Closed functions of `t` follow §3.4: the integer `datetime.*` fields
-  differentiate to 0, `datetime.julian_day` to `1/86400`, and
-  `interp.linear` / `interp.bilinear` of `t` to the active segment's slope.
+- The esm:std templates of `t` differentiate through their expansion
+  (§3.4): the integer calendar fields to 0, `julian_day` to `1/86400`, and
+  `linear` / `bilinear` of `t` to the active segment's slope.
 - `f_t` is the **partial** derivative with every parameter held fixed. Time
   dependence that enters only through data — two-record forcing blend weights
   a provider sets at each refresh, parameters a `data` source updates — is
@@ -1019,8 +1036,9 @@ Fixture corpus in `tests/` of this repository:
    whose right-hand side reads `t` also carries the same four for
    `wrt: "time"` as `<name>.time.*.json` (`tgrad_photolysis.esm`: a
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
-   `interp.linear` of `t` through a scalar observed, a `datetime.hour`
-   factor, a `datetime.julian_day` source, and one autonomous row). A fixture
+   the esm:std `linear` template of `t` through a scalar observed, an `hour`
+   factor, a `julian_day` source, and one autonomous row; an esm 2.0.0
+   document). A fixture
    with forcing carries the same four for `wrt: "forcing"` and
    `wrt: "parameters"` as `<name>.forcing.*.json` and
    `<name>.parameters.*.json`, its forcing set inferred, plus a second value
@@ -1289,8 +1307,8 @@ when given, each value as EarthSciAST serializes it. `independent_variable`
 is not written, since the derived equations are written with respect to `t`;
 nor is a `domain` with none of these fields. The document so has its
 source's time origin (`reference_time`, else `start`), from which a runtime
-converts timestamps into the model time `t` it evaluates at. (The calendar
-functions `datetime.*` themselves read their argument as UTC seconds, so the
+converts timestamps into the model time `t` it evaluates at. (The esm:std
+calendar templates themselves read their argument as UTC seconds, so the
 right-hand side at a given `t` does not depend on the origin.) A `domain`
 needs no newer `esm` version, so the version rule of §5 item 2 is unchanged.
 

@@ -91,11 +91,12 @@ end
         "faq", ASTExpr[]; output_idx = Any["i"], expr_body = body,
         ranges = Dict{String, Any}("i" => Any[1, 4])
     )
-    # an op with no derivative rule, and a closed function outside §9.2
+    # ops with no derivative rule, alone and under a product
+    xx = OpExpr("grad", ASTExpr[xi]; dim = "x")
     for body in (
             OpExpr("D", ASTExpr[xi]; wrt = "lon"),
-            OpExpr("fn", ASTExpr[xi]; name = "datetime.week"),
-            OpExpr("*", ASTExpr[IntExpr(2), OpExpr("fn", ASTExpr[xi]; name = "datetime.week")]),
+            xx,
+            OpExpr("*", ASTExpr[IntExpr(2), xx]),
         )
         @test_throws DerivativeRuleError bands(over(body), "x", ctx; shape_u = [4])
         @test_throws DerivativeRuleError bands(
@@ -109,7 +110,6 @@ end
     sc() = _SiteScan(_OccIndex("x"), s)
     o(op, a...) = OpExpr(op, ASTExpr[a...])
     lin = OpExpr("const", ASTExpr[]; value = [0.0, 1.0, 4.0])
-    ax = OpExpr("const", ASTExpr[]; value = [0.0, 1.0, 2.0])
     for e in (
             x, y, IntExpr(0), o("+", x, y), o("-", x), o("-", y, x), o("neg", y),
             o("*", x, y), o("*", IntExpr(0), x), o("*", o("sign", x), y),
@@ -118,9 +118,11 @@ end
             o("exp", x), o("log", o("sign", x)), o("sqrt", x), o("cos", o("ceil", x)),
             o("atan", y, x), o("abs", x), o("ifelse", o("<", x, y), y, IntExpr(1)),
             o("max", x, y), o("min", o("sign", x)), o("<", x, y),
-            OpExpr("fn", ASTExpr[x, lin, ax]; name = "interp.searchsorted"),
-            OpExpr("fn", ASTExpr[lin, ax, x]; name = "interp.linear"),
-            OpExpr("fn", ASTExpr[o("*", IntExpr(3), x)]; name = "datetime.julian_day"),
+            o("index", lin, o("floor", x)),
+            o(
+                "+", o("index", lin, o("min", o("max", o("floor", x), IntExpr(1)), IntExpr(2))),
+                o("*", IntExpr(3), x)
+            ),
             OpExpr(
                 "faq", ASTExpr[]; output_idx = Any[], reduce = "max",
                 ranges = Dict{String, Any}("k" => Any[1, 3]),

@@ -160,12 +160,8 @@ LHS and the pointwise-lifted `faq{ expr: D(index(u, i, j)) }` form the
 flatten pipeline produces. `nothing` for `ic`/observed/other equations.
 
 The `faq` (Functional Aggregate Query) node was spelled `aggregate` before esm
-1.1.0. Only the current spelling is matched here: every document reaches this
-package through EarthSciAST's load pipeline, which rewrites the deprecated
-alias to `faq` at the wire boundary and warns once per document
-(`docs/content/rfcs/faq-node-rename.md`). Matching the old spelling instead
-silently classifies every array state equation as non-differential, which is
-exactly how this was missed for four days.
+1.1.0, and esm 2.0.0 removed that spelling (EarthSciAST's parser rejects it,
+`removed_op`), so only `faq` can reach this package.
 """
 function lhs_state(eq)
     l = eq.lhs

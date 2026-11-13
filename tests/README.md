@@ -87,10 +87,10 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     meet at a row boundary and stay apart in both modes
   - `tgrad_photolysis.esm` — the time-derivative (`wrt: "time"`, spec §4.2)
     target: a photolysis rate `max(0, cos(ω t + φᵢ))` through an array
-    observed, `interp.linear` of `t` through a scalar observed, a
-    `datetime.hour` factor (piecewise-constant: no time band), a
-    `datetime.julian_day` source (continuous: `d[t]/86400`), and one
-    autonomous row
+    observed, the esm:std `linear` template of `t` through a scalar
+    observed, an `hour` factor (piecewise-constant: no time band), a
+    `julian_day` source (continuous: `d[t]/86400`), and one autonomous row
+    (an esm 2.0.0 document)
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
@@ -142,11 +142,9 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   and `pbl_rank1`.
 - `goldens/` — **who writes them.** Every golden is written by the Julia
   reference (`scripts/regenerate-goldens.jl`,
-  `scripts/regenerate-value-goldens.jl`). The values of `recurrence_sweep`
-  and `pbl_rank1` need an EarthSciAST.jl that executes recurrences (≥ 0.11,
-  EarthSciAST#546): below it the value script leaves their `*.jvals.json` /
-  `*.hvals.json` as they are. Every binding checks those values against
-  central differences of the source right-hand side.
+  `scripts/regenerate-value-goldens.jl`). Every binding checks the values
+  of `recurrence_sweep` and `pbl_rank1` against central differences of the
+  source right-hand side.
 - `goldens/` — `<fixture>.bands.json` (every fixture): the `entries` list of the `"jacobians"`
   block in deterministic JSON (sorted object keys; entries in equation order,
   then sorted target variable, then sorted canonical site key). Regenerate

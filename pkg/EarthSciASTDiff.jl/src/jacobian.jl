@@ -96,9 +96,10 @@ state (`wrt = :states`), every parameter outside the forcing set
 (`wrt = :forcing`, the cells of the buffers [`forcing_names`](@ref) selects,
 their record axis included) that structurally occurs in its (observed-inlined)
 RHS — or with respect to time itself (`wrt = :time`, the single scalar site
-`t`; the integer-valued `datetime.*` calendar fields are piecewise-constant
-and differentiate to 0, the continuous `datetime.julian_day` to `d[t]/86400`,
-and `interp.linear`/`interp.bilinear` of `t` to the active-segment slope).
+`t`; the esm:std calendar and interpolation templates differentiate through
+their expansion: a calendar field is piecewise-constant in `t` and
+differentiates to 0, `julian_day` to `d[t]/86400`, and `linear`/`bilinear`
+of `t` to the active segment's slope).
 
 `forcing` names the forcing set explicitly; `nothing` infers it from the
 document (every array parameter with a `data` update). It also decides which

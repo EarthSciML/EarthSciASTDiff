@@ -789,7 +789,7 @@ end
 
 # The source's `domain`, as far as it bears on evaluation (esm-jacobian-spec.md
 # §8.1): its `temporal` (`start`, `end`, `reference_time`), which sets the time
-# origin the calendar functions (`datetime.*`) read, and its `element_type`
+# origin a runtime converts timestamps into `t` with, and its `element_type`
 # and `array_type`. Not `independent_variable`: the derived equations are
 # written with respect to `t`. Built key by key from EarthSciAST's
 # serialization, so every binding writes the same object; absent when nothing

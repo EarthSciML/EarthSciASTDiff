@@ -128,13 +128,21 @@ end
 # constant folds produce float literals (`2 * 1.0` → `NumExpr(2.0)`). Keep
 # in-memory coefficients in the parse-canonical form, or emit→parse
 # round-trips (and cross-binding goldens) change the structural key.
+#
+# A NON-FINITE literal has no JSON spelling, so it goes back to the quotient
+# that folded to it, as ESM writes one (the esm:std calendar templates'
+# out-of-range branch is `0/0`): NaN is `0/0`, ±Inf is `±1/0`. `simplify`
+# refolds it, and every simplification here ends in this normalization.
 _canon_lit(e::ASTExpr) = e
-_canon_lit(e::NumExpr) =
-    (
-        isfinite(e.value) && isinteger(e.value) &&
-        typemin(Int64) <= e.value <= typemax(Int64) &&
-        Float64(Int64(e.value)) == e.value
-    ) ? IntExpr(Int64(e.value)) : e
+function _canon_lit(e::NumExpr)
+    x = e.value
+    isnan(x) && return op("/", IntExpr(0), IntExpr(0))
+    isinf(x) && return op("/", IntExpr(x > 0 ? 1 : -1), IntExpr(0))
+    return (
+            isinteger(x) && typemin(Int64) <= x <= typemax(Int64) &&
+            Float64(Int64(x)) == x
+        ) ? IntExpr(Int64(x)) : e
+end
 function _canon_lits(e::ASTExpr)::ASTExpr
     e isa OpExpr && return map_children(_canon_lits, e)
     return _canon_lit(e)

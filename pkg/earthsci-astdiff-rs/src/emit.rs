@@ -1925,7 +1925,7 @@ fn data_sources_field(sv: &SysView) -> Result<Option<Value>, crate::bands::BandE
 
 /// The source's `domain`, as far as it bears on evaluation (spec §8.1): its
 /// `temporal` (`start`, `end`, `reference_time`), which sets the time origin
-/// the calendar functions (`datetime.*`) read, and its `element_type` and
+/// a runtime converts timestamps into `t` with, and its `element_type` and
 /// `array_type`. Not `independent_variable`: the derived equations are
 /// written with respect to `t`. `None` when nothing is left.
 fn domain_field(domain: &earthsci_ast::Domain) -> Option<Value> {

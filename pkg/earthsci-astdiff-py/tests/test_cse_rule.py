@@ -46,16 +46,6 @@ def test_an_integer_leaf_is_not_a_float_leaf():
     assert tmpl == {}
 
 
-def test_map_slots_are_visited_by_ascending_key():
-    # `axes` written "b" then "a": the spec numbers the "a" entry first
-    # (child slots, §4.1), so equal-size E (under "a") is jt1.
-    D = N("sin", N("+", "x", "z"))
-    E = N("cos", N("+", "y", "z"))
-    tl = ExprNode(op="table_lookup", args=[], table="t", table_axes={"b": D, "a": E})
-    tmpl, _ = cse_templates([tl, N("*", D, E)], min_nodes=4)
-    assert [skey(tmpl["jt1"]), skey(tmpl["jt2"])] == [skey(E), skey(D)]
-
-
 def test_an_operator_with_no_children_is_extracted():
     Z = N("zarg")
     tmpl, rw = cse_templates([N("*", Z, Z)], min_nodes=1)

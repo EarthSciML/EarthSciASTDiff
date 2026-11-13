@@ -57,6 +57,14 @@ def _assume(e: Expr, ck: str, val: bool, cache: dict[int, str]) -> Expr:
 
 
 def canon_lit(e: Expr) -> Expr:
+    """Wire-canonical literal (simplify_branches.jl ``_canon_lit``): an
+    integral Int64-representable float is an integer, and a NON-FINITE float,
+    which JSON cannot write, is the quotient ESM spells it with (the esm:std
+    calendar templates' ``0/0``): NaN is ``0/0``, ±Inf is ``±1/0``."""
+    if isinstance(e, float) and e != e:
+        return op("/", 0, 0)
+    if isinstance(e, float) and abs(e) == float("inf"):
+        return op("/", 1 if e > 0 else -1, 0)
     if (
         isinstance(e, float)
         and e == e

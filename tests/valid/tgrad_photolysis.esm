@@ -1,8 +1,8 @@
 {
-  "esm": "1.1.0",
+  "esm": "2.0.0",
   "metadata": {
     "name": "TGradPhotolysis",
-    "description": "Non-autonomous per-cell photochemistry on 4 cells (the wrt = time golden fixture, esm-jacobian-spec.md \u00a74.2): a photolysis rate j(t) = j0 max(0, cos(omega t + 0.3 i)) read through an array observed, a scalar emission observed through interp.linear of t scaled by a piecewise-constant datetime.hour(t) factor, a diurnal datetime.julian_day(t) source, and one autonomous row (S)."
+    "description": "Non-autonomous per-cell photochemistry on 4 cells (the wrt = time golden fixture, esm-jacobian-spec.md \u00a74.2): a photolysis rate j(t) = j0 max(0, cos(omega t + 0.3 i)) read through an array observed, a scalar emission observed through the esm:std linear template of t scaled by a piecewise-constant esm:std hour(t) factor, a diurnal esm:std julian_day(t) source, and one autonomous row (S)."
   },
   "index_sets": {
     "x": {
@@ -12,6 +12,21 @@
   },
   "models": {
     "Photo": {
+      "expression_template_imports": [
+        {
+          "ref": "esm:std/interp.esm",
+          "only": [
+            "linear"
+          ]
+        },
+        {
+          "ref": "esm:std/calendar.esm",
+          "only": [
+            "hour",
+            "julian_day"
+          ]
+        }
+      ],
       "variables": {
         "NO2": {
           "type": "unknown",
@@ -127,10 +142,11 @@
             "args": [
               "e0",
               {
-                "op": "fn",
-                "name": "interp.linear",
-                "args": [
-                  {
+                "op": "apply_expression_template",
+                "args": [],
+                "name": "linear",
+                "bindings": {
+                  "table": {
                     "op": "const",
                     "args": [],
                     "value": [
@@ -140,7 +156,7 @@
                       0.5
                     ]
                   },
-                  {
+                  "axis": {
                     "op": "const",
                     "args": [],
                     "value": [
@@ -150,8 +166,9 @@
                       2.0
                     ]
                   },
-                  "t"
-                ]
+                  "x": "t",
+                  "n": 4
+                }
               }
             ]
           }
@@ -232,11 +249,12 @@
                       "args": [
                         1,
                         {
-                          "op": "fn",
-                          "name": "datetime.hour",
-                          "args": [
-                            "t"
-                          ]
+                          "op": "apply_expression_template",
+                          "args": [],
+                          "name": "hour",
+                          "bindings": {
+                            "t": "t"
+                          }
                         }
                       ]
                     }
@@ -392,11 +410,12 @@
                               "op": "-",
                               "args": [
                                 {
-                                  "op": "fn",
-                                  "name": "datetime.julian_day",
-                                  "args": [
-                                    "t"
-                                  ]
+                                  "op": "apply_expression_template",
+                                  "args": [],
+                                  "name": "julian_day",
+                                  "bindings": {
+                                    "t": "t"
+                                  }
                                 },
                                 2440587.5
                               ]
