@@ -185,36 +185,45 @@ struct _FirstOrder
     ext::Dict{Tuple{Symbol, Union{Nothing, Symbol}}, ExtendedBands}
     bands::Dict{Tuple{Symbol, Union{Nothing, Symbol}}, Vector{JacEntry}}
     structure::IdDict{Vector{JacEntry}, Symbol}
-    has_recs::Base.RefValue{Union{Nothing, Bool}}
+    info::Base.RefValue{Union{Nothing, _RecInfo}}
 end
 _FirstOrder() = _FirstOrder(
     Dict{Tuple{Symbol, Union{Nothing, Symbol}}, ExtendedBands}(),
     Dict{Tuple{Symbol, Union{Nothing, Symbol}}, Vector{JacEntry}}(),
-    IdDict{Vector{JacEntry}, Symbol}(), Ref{Union{Nothing, Bool}}(nothing)
+    IdDict{Vector{JacEntry}, Symbol}(), Ref{Union{Nothing, _RecInfo}}(nothing)
 )
+
+# The view's recurrence analysis, computed once per emission.
+function _rec_info!(memo::_FirstOrder, sv::SysView)
+    memo.info[] === nothing && (memo.info[] = _rec_info(sv))
+    return memo.info[]
+end
 
 function _memo_key(memo::_FirstOrder, sv::SysView, a1::Symbol, a2)
     a2 === a1 && return (a1, nothing)
-    if a1 == :time
-        memo.has_recs[] === nothing && (memo.has_recs[] = !isempty(recurrences(sv)))
-        memo.has_recs[] || return (a1, nothing)
-    end
+    a1 == :time && isempty(_rec_info!(memo, sv).recs) && return (a1, nothing)
     return (a1, a2)
 end
 
 # The extended `a1` pass seeded with `seed`.
 function _first_order_ext!(memo::_FirstOrder, sv::SysView, a1::Symbol, a2, forcing, seed = String[])
     return get!(memo.ext, _memo_key(memo, sv, a1, a2)) do
-        _extended_pass(sv, _ctx(sv), _observed_defs(sv), a1, forcing, seed)
+        info = _rec_info!(memo, sv)
+        _extended_pass(sv, info.ctx, info.obs, a1, forcing, seed; info = info)
     end
 end
+
+# Composites on the parameters and forcing axes are held to §4.3's
+# closed-column rule like the direct entries.
+_closed_axis(wrt::Symbol) = wrt in (:parameters, :forcing)
 
 # The materialized `a1` pass (the extended one composed through its
 # recurrences, §4.5).
 function _first_order!(memo::_FirstOrder, sv::SysView, a1::Symbol, a2, forcing, seed = String[])
     return get!(memo.bands, _memo_key(memo, sv, a1, a2)) do
         ext = _first_order_ext!(memo, sv, a1, a2, forcing, seed)
-        isempty(ext.recurrences) ? ext.rows : _intern_entries(materialize(sv, ext))
+        isempty(ext.recurrences) ? ext.rows :
+            _intern_entries(materialize(sv, ext; closed = _closed_axis(a1)))
     end
 end
 
@@ -233,9 +242,10 @@ function _jacobian_bands(
         sv, _ctx(sv), _observed_defs(sv), wrt, forcing, seed; coefficients = coefficients
     )
     isempty(ext.recurrences) && return ext.rows
-    coefficients && return _intern_entries(materialize(sv, ext))
+    closed = _closed_axis(wrt)
+    coefficients && return _intern_entries(materialize(sv, ext; closed = closed))
     eqs = Int[]
-    entries = materialize(sv, ext; eqs = eqs)
+    entries = materialize(sv, ext; eqs = eqs, closed = closed)
     return _structure_only(entries, eqs)
 end
 
@@ -295,14 +305,16 @@ end
 # V). A recurrence is active when it moves with the targets or `seed` (a
 # pair's second axis); recurrences are never inlined (no fixpoint exists), so
 # an inactive one stays an opaque read, constant with respect to every target.
+# `info` is the view's recurrence analysis (`_rec_info`), shared when the
+# caller already has it.
 function _extended_pass(
         sv::SysView, ctx::Ctx, obs, wrt::Symbol, forcing, seed;
-        coefficients::Bool = true
+        coefficients::Bool = true, info::_RecInfo = _rec_info(sv, obs, ctx)
     )
     src_obs = obs
     targets = _targets(sv, wrt, forcing, obs)
     tset = Set{String}(targets)
-    recs = recurrences(sv, obs, ctx)
+    recs = info.recs
     act = isempty(recs) ? Recurrence[] : _active(recs, obs, union(tset, seed))
     # Structure-only (spec §2.1) runs on a placeholder coefficient, except
     # through an active recurrence: its composition through the transfer
@@ -349,7 +361,8 @@ function _extended_pass(
         # every self band is a lag back along the axis, or refused
         en.u == en.v && _lag(act[findfirst(r -> r.name == en.u, act)], en.band)
     end
-    if wrt in (:parameters, :forcing)
+    _check_uncoupled(act, rec_rows)
+    if _closed_axis(wrt)
         for en in Iterators.flatten((entries, rec_rows))
             en.v in tset && _check_closed_columns(en)
         end
@@ -363,7 +376,7 @@ function _extended_pass(
     end
     isempty(act) &&
         return ExtendedBands(Recurrence[], entries, JacEntry[], row_eq, Dict{String, String}())
-    return ExtendedBands(act, entries, rec_rows, row_eq, _transfer_names(sv, recs))
+    return ExtendedBands(act, entries, rec_rows, row_eq, info.transfer)
 end
 
 # The bands of one row variable `u` (a state, or a recurrence over its own

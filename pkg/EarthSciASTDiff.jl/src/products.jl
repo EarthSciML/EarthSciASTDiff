@@ -556,8 +556,9 @@ _first_pass(sv::SysView, wrt::Symbol, forcing) =
 # recurrence rows carry the adjoint back to the second axis's columns), both
 # over the recurrences that move with either axis. `nothing` without one.
 function _pair_extended(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder)
-    obs = _observed_defs(sv)
-    isempty(recurrences(sv, obs, _ctx(sv))) && return nothing
+    info = _rec_info!(memo, sv)
+    isempty(info.recs) && return nothing
+    obs = info.obs
     t1 = _targets(sv, a1, forcing, obs)
     t2 = _targets(sv, a2, forcing, obs)
     e1 = _first_order_ext!(memo, sv, a1, a2, forcing, t2)

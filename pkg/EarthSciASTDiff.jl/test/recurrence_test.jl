@@ -305,11 +305,18 @@ end
         @test en["row"] == en["col"] && length(en["contracted"]) == 1
     end
     @test jacobian_document(file, mname)["jacobians"][mname]["structure"] == "general"
-    # structure-only entries carry no coefficient to split: no rank-one term
+    # structure-only entries carry no coefficient to split: the rank-one
+    # decision is left open, and no plan is made from them (spec §6)
     psv = sysview(file, mname)
-    so = column_lines(jacobian_bands(psv; coefficients = false), psv, "lev")
+    soe = jacobian_bands(psv; coefficients = false)
+    so = column_lines(soe, psv, "lev")
+    @test so.rank1_undecided
     @test so.pattern != "diag_plus_rank1"
     @test isempty(so.rank1)
+    @test_throws ArgumentError plan_factorization(soe, psv; column_axis = :lev)
+    # the full entries decide it
+    full = column_lines(jacobian_bands(psv), psv, "lev")
+    @test !full.rank1_undecided && full.pattern == "diag_plus_rank1"
 end
 
 _REC_EXEC && @testset "recurrences: a running-max tie takes the earlier argument" begin
@@ -358,6 +365,155 @@ end
         end
         @test err isa BandError
         @test err isa BandError && occursin("recurrence `V`", err.msg)
+    end
+    # a read of the current cell next to an earlier one is a lag-0 self band:
+    # refused as not strictly earlier, not as an unplaceable read
+    eqs = copy(sv0.equations)
+    body = _o(
+        "ifelse", _o("<=", "k", 1), _ix("x", 1),
+        _o("+", _o("*", 0.5, _ix("V", "k")), _ix("V", _o("-", "k", 1)))
+    )
+    eqs[1] = EarthSciAST.Equation(eqs[1].lhs, EarthSciAST.expression_from_json(_faqk(body)))
+    sv = SysView(sv0.variables, eqs, sv0.index_sets, sv0.domain, sv0.data_sources)
+    err = try
+        jacobian_bands(sv)
+        nothing
+    catch e
+        e
+    end
+    @test err isa BandError && occursin("lag 0", err.msg) &&
+        occursin("not strictly earlier", err.msg)
+end
+
+@testset "recurrences: a coupled pair is refused" begin
+    # V and W each read themselves and each other one level back: one
+    # coupled system, which no transfer per recurrence expresses
+    good = _o("ifelse", _o("<=", "k", 1), _ix("x", 1), _ix("V", _o("-", "k", 1)))
+    sv0 = sysview(EarthSciAST.load_document(_recdoc(good)), "R")
+    step(a, b) = _faqk(
+        _o(
+            "ifelse", _o("<=", "k", 1), _ix("x", 1),
+            _o(
+                "+", _ix("x", "k"), _o("*", 0.5, _ix(a, _o("-", "k", 1))),
+                _o("*", 0.25, _ix(b, _o("-", "k", 1)))
+            )
+        )
+    )
+    vars = copy(sv0.variables)
+    vars["W"] = vars["V"]
+    eqs = copy(sv0.equations)
+    eqs[1] = EarthSciAST.Equation(eqs[1].lhs, EarthSciAST.expression_from_json(step("V", "W")))
+    insert!(
+        eqs, 2,
+        EarthSciAST.Equation(VarExpr("W"), EarthSciAST.expression_from_json(step("W", "V")))
+    )
+    sv = SysView(vars, eqs, sv0.index_sets, sv0.domain, sv0.data_sources)
+    @test [r.name for r in recurrences(sv)] == ["V", "W"]
+    err = try
+        jacobian_bands(sv)
+        nothing
+    catch e
+        e
+    end
+    @test err isa BandError && occursin("read each other", err.msg)
+end
+
+@testset "recurrences: a free name spelled like the transfer index" begin
+    # V[k] = k_t·x[k] + 0.5·V[k − 1], with `k_t` a parameter: the transfer
+    # band's contracted `κ` is also spelled `k_t`, and composing must rename
+    # it apart rather than let the coefficient's `k_t` read the sum index
+    lev = _O("type" => "unknown", "shape" => Any["lev"])
+    doc = _model(
+        _O(
+            "x" => merge(lev, _O("default" => 0.5)), "V" => lev,
+            "k_t" => _O("type" => "parameter", "default" => 2.0),
+        ),
+        Any[
+            _O(
+                "lhs" => "V",
+                "rhs" => _faqk(
+                    _o(
+                        "ifelse", _o("<=", "k", 1), _o("*", "k_t", _ix("x", 1)),
+                        _o(
+                            "+", _o("*", "k_t", _ix("x", "k")),
+                            _o("*", 0.5, _ix("V", _o("-", "k", 1)))
+                        )
+                    )
+                ),
+            ),
+            _O(
+                "lhs" => _O("op" => "D", "args" => Any["x"], "wrt" => "t"),
+                "rhs" => _faqk(_ix("V", "i"); idx = "i"),
+            ),
+        ],
+    )
+    file = EarthSciAST.load_document(doc)
+    entries = jacobian_bands(file, "R")
+    reads = [en for en in entries if "k_t" in EarthSciAST.free_variables(en.band.coef)]
+    @test !isempty(reads)
+    @test all(en -> !("k_t" in first.(en.band.contracted)), reads)
+    if _REC_EXEC
+        J = _materialized(file, :states, fill(0.5, 4), nothing, 0.0)
+        for k in 1:4, j in 1:4
+            want = j <= k ? 2.0 * 0.5^(k - j) : 0.0
+            @test isapprox(get(J, ("x[$k]", "x[$j]"), 0.0), want; rtol = 1.0e-12)
+        end
+    end
+end
+
+@testset "recurrences: composites obey the closed-column rule" begin
+    # D(x)[i] = V[1 + jj, i] with `jj` a parameter. On the forcing axis (`p`)
+    # the parameter-valued index is one-hot (spec §3.5), so the composites
+    # through V's transfer have closed columns (§4.3, which `materialize`
+    # checks on every composite); on the parameters axis `jj` is itself a
+    # target, and the site-dependent read is refused before any composite
+    isets = _O(
+        "lev" => _O("kind" => "interval", "size" => 4),
+        "col" => _O("kind" => "interval", "size" => 2),
+    )
+    body = _o(
+        "ifelse", _o("<=", "k", 1), _ix("p", "c", 1),
+        _o("+", _ix("p", "c", "k"), _o("*", 0.5, _ix("V", "c", _o("-", "k", 1))))
+    )
+    doc = _O(
+        "esm" => "1.1.0", "metadata" => _O("name" => "R"), "index_sets" => isets,
+        "models" => _O(
+            "R" => _O(
+                "variables" => _O(
+                    "x" => _O("type" => "unknown", "shape" => Any["lev"], "default" => 0.5),
+                    "V" => _O("type" => "unknown", "shape" => Any["col", "lev"]),
+                    "p" => _O("type" => "parameter", "shape" => Any["col", "lev"], "default" => 1.0),
+                    "jj" => _O("type" => "parameter", "default" => 1),
+                ),
+                "equations" => Any[
+                    _O(
+                        "lhs" => "V",
+                        "rhs" => _O(
+                            "op" => "faq", "args" => Any[], "output_idx" => Any["c", "k"],
+                            "ranges" => _O("c" => _O("from" => "col"), "k" => _O("from" => "lev")),
+                            "expr" => body,
+                        ),
+                    ),
+                    _O(
+                        "lhs" => _O("op" => "D", "args" => Any["x"], "wrt" => "t"),
+                        "rhs" => _faqk(_ix("V", _o("+", 1, "jj"), "i"); idx = "i"),
+                    ),
+                ],
+            )
+        ),
+    )
+    sv = sysview(EarthSciAST.load_document(doc), "R")
+    for co in (true, false)
+        es = jacobian_bands(sv; wrt = :forcing, forcing = ["p"], coefficients = co)
+        @test !isempty(es) && all(en -> en.v == "p", es)
+        for en in es
+            bound = Set{String}(r for r in en.band.ridx if r isa String)
+            union!(bound, first.(en.band.contracted))
+            @test all(c -> issubset(EarthSciAST.free_variables(c), bound), en.band.cidx)
+        end
+        @test_throws EarthSciASTDiff.DerivativeRuleError jacobian_bands(
+            sv; wrt = :parameters, coefficients = co
+        )
     end
 end
 

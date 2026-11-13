@@ -90,12 +90,19 @@ one line along index set `axis`, or `nothing` when one does not: every band
 couples two array states of one common shape that holds `axis` once, and
 at every band point the column equals the row in every other dimension. A
 point reading past the axis is a ghost read and does not count. Returns
-`(axis, dim, line_length, block_vars, kl, ku, pattern, rank1)`: `kl` / `ku` the
+`(axis, dim, line_length, block_vars, kl, ku, pattern, rank1, rank1_undecided)`: `kl` / `ku` the
 largest distances below / above the diagonal any point reaches along the
 axis, and `pattern` their name — `"dense"` (both span the line), `"lower"`,
 `"upper"`, `"banded"` or `"diag_plus_rank1"` — read off the exact band
 points, never probed, with `rank1` the rank-one terms of a
 `"diag_plus_rank1"` line block (esm-jacobian-spec.md §6; empty otherwise).
+
+Structure-only entries (§2.1) carry no coefficient to factor. When every
+entry off distance 0 has the shape of a rank-one term and one of them has no
+coefficient, whether the line block is `"diag_plus_rank1"` depends on the
+coefficients: `rank1_undecided` is then `true`, `pattern` names the
+bandwidth alone and `rank1` is empty, and [`plan_factorization`](@ref)
+refuses to plan from it.
 """
 function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     isempty(entries) && return nothing
@@ -131,8 +138,13 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     # those: D + Σ u vᵀ per line, for a Sherman–Morrison solve
     rank1 = Any[]
     lowrank = (kl, ku) != (0, 0)
+    undecided = false
     for (k, en) in enumerate(entries)
         diag[k] && continue
+        if en.band.coef === nothing && _rank1_shape(en.band, dim)
+            undecided = true
+            continue
+        end
         t = _rank1_term(en.band, dim)
         if t === nothing
             lowrank = false
@@ -145,7 +157,8 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
             )
         end
     end
-    lowrank || empty!(rank1)
+    undecided &= lowrank
+    (lowrank && !undecided) || empty!(rank1)
     pattern = !isempty(rank1) ? "diag_plus_rank1" :
         kl == N - 1 && ku == N - 1 ? "dense" :
         ku == 0 && kl == N - 1 ? "lower" :
@@ -153,7 +166,7 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     vars = sort!(unique(vcat([en.u for en in entries], [en.v for en in entries])))
     return (
         axis = axis, dim = dim, line_length = N, block_vars = vars,
-        kl = kl, ku = ku, pattern = pattern, rank1 = rank1,
+        kl = kl, ku = ku, pattern = pattern, rank1 = rank1, rank1_undecided = undecided,
     )
 end
 
@@ -200,11 +213,17 @@ end
 # coefficient that splits as `u(row) · v(κ)`: a rank-one term. A
 # structure-only band (no coefficient, spec §2.1) has none to split.
 function _rank1_term(b::Band, dim::Int)
-    (b.coef === nothing || b.guard !== nothing || length(b.contracted) != 1) && return nothing
+    (b.coef === nothing || !_rank1_shape(b, dim)) && return nothing
     kap = b.contracted[1][1]
-    (dim <= length(b.cidx) && b.cidx[dim] isa VarExpr && b.cidx[dim].name == kap) ||
-        return nothing
     return _split_rank1(b.coef, kap, Set{String}(r for r in b.ridx if r isa String))
+end
+
+# The shape of a rank-one term, coefficient aside: one contracted name, the
+# line position, under no `where`.
+function _rank1_shape(b::Band, dim::Int)
+    (b.guard === nothing && length(b.contracted) == 1) || return false
+    kap = b.contracted[1][1]
+    return dim <= length(b.cidx) && b.cidx[dim] isa VarExpr && b.cidx[dim].name == kap
 end
 
 """

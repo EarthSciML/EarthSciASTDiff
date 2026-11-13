@@ -40,8 +40,6 @@ _vars(names) = ASTExpr[VarExpr(n) for n in names]
 
 _index(v::String, idx::Vector{ASTExpr}) = isempty(idx) ? VarExpr(v) : op("index", VarExpr(v), idx...)
 
-_and_all(cs) = isempty(cs) ? nothing : length(cs) == 1 ? cs[1] : op("and", cs...)
-
 # A `faq` node with the given output indices, ranges and body.
 _faq(output_idx, ranges, expr::ASTExpr) = OpExpr(
     "faq", ASTExpr[]; output_idx = Any[output_idx...],
@@ -140,19 +138,26 @@ function _recognize(v::String, d::ASTExpr, sv::SysView, ctx::Ctx)
 end
 
 # The names reachable from `seeds` through the observed definitions, read
-# backwards: every observed whose definition (transitively) reads a seed.
+# backwards: every observed whose definition (transitively) reads a seed. A
+# worklist over the readers map, as `inlinable_observed`'s clause 1
+# (system.jl): O(document), not O(document × chain depth).
 function _reader_closure(obs, seeds)
-    deps = Dict{String, Set{String}}(n => free_variables(e) for (n, e) in obs)
+    readers = Dict{String, Vector{String}}()    # name → observed that read it
     keep = Set{String}()
-    while true
-        before = length(keep)
-        for (n, fv) in deps
-            n in keep && continue
-            any(x -> x in seeds || x in keep, fv) && push!(keep, n)
+    work = String[]
+    for (n, e) in obs
+        fv = free_variables(e)
+        isdisjoint(fv, seeds) || (push!(keep, n); push!(work, n))
+        for m in fv
+            haskey(obs, m) && push!(get!(readers, m, String[]), n)
         end
-        length(keep) == before && return keep
     end
-    return
+    while !isempty(work)
+        for n in get(readers, pop!(work), ())
+            n in keep || (push!(keep, n); push!(work, n))
+        end
+    end
+    return keep
 end
 
 # The recurrences that move with `seeds` (an axis's targets, or a pair's two
@@ -207,6 +212,8 @@ function _lag_expr(rec::Recurrence, b::Band)
     k = r
     has(e) = k in free_variables(e)
     isk(e) = e isa VarExpr && e.name == k
+    # the cell itself: lag 0, which `_lag` refuses as not strictly earlier
+    isk(c) && return lit(0)
     c isa OpExpr || throw(fail())
     if c.op == "-" && length(c.args) == 2 && isk(c.args[1]) && !has(c.args[2])
         return c.args[2]
@@ -218,6 +225,41 @@ function _lag_expr(rec::Recurrence, b::Band)
         return _simp(op("-", add(rest...)))
     end
     throw(fail())
+end
+
+# Active recurrences whose definitions read one another (directly or through
+# other recurrences) form one coupled system along the axis: one transfer
+# `T = (I − G)⁻¹` per recurrence cannot express it, and the chain rule
+# through them (`_total`) would not terminate. Refused, naming the cycle.
+function _check_uncoupled(act::Vector{Recurrence}, rec_rows)
+    deps = Dict{String, Set{String}}(r.name => Set{String}() for r in act)
+    for en in rec_rows
+        en.u != en.v && haskey(deps, en.v) && push!(deps[en.u], en.v)
+    end
+    state = Dict{String, Int}()                 # 1 on the path, 2 done
+    path = String[]
+    function visit(n)
+        s = get(state, n, 0)
+        s == 2 && return
+        if s == 1
+            cyc = path[findfirst(==(n), path):end]
+            throw(
+                BandError(
+                    "recurrences " * join(("`$c`" for c in cyc), ", ") * " read each " *
+                        "other: a coupled system has no transfer per recurrence " *
+                        "(esm-jacobian-spec.md §4.5)"
+                )
+            )
+        end
+        state[n] = 1
+        push!(path, n)
+        foreach(visit, sort!(collect(deps[n])))
+        pop!(path)
+        state[n] = 2
+        return
+    end
+    foreach(r -> visit(r.name), act)
+    return
 end
 
 _lit_at_least(e::ASTExpr, lo::Int) = e isa IntExpr && e.value >= lo
@@ -252,7 +294,7 @@ function _term(b::Band, sigma, conds, read::ASTExpr, zero::ASTExpr)
     conds = copy(conds)
     b.guard === nothing || push!(conds, _subst_free(b.guard, sigma))
     body = op("*", _subst_free(b.coef, sigma), read)
-    c = _and_all(conds)
+    c = _conj(conds)
     c === nothing || (body = op("ifelse", c, body, zero))
     isempty(b.contracted) && return body
     return _faq(String[], b.contracted, body)
@@ -378,11 +420,7 @@ function _transfer_j(rec::Recurrence, bs::Vector{Band})
         _all_names!(taken, b.coef)
         union!(taken, first.(b.contracted))
     end
-    j = "_tj"
-    while j in taken
-        j *= "_j"
-    end
-    return j
+    return _fresh!(taken, "_tj", "_j")
 end
 
 """
@@ -412,12 +450,11 @@ end
 
 # The transfer band of `rec`: rows `V` at the frame, column `V` at the frame
 # with the axis replaced by a contracted `κ ≤ k`, coefficient `T[o, k, κ]`.
+# `κ` is clear of the frame only: a band it is composed with that reads the
+# same name free has it renamed apart there (`_rename_apart`).
 function _transfer_band(rec::Recurrence, tname::String)
     d = rec.dim
-    kap = "$(rec.frame[d])_t"
-    while kap in rec.frame
-        kap *= "_t"
-    end
+    kap = _fresh!(Set{String}(rec.frame), "$(rec.frame[d])_t", "_t")
     cidx = _vars(rec.frame)
     cidx[d] = VarExpr(kap)
     tidx = copy(cidx)
@@ -446,15 +483,44 @@ function _band_names(b::Band)
     return t
 end
 
+# `outer` with each of its row and contracted names that `inner` reads FREE
+# (a parameter or observed of that spelling, not an inner row or contracted
+# name) renamed apart (`_c` appended, clear of `taken`, which they join):
+# composed, the inner coefficient, columns and guard sit inside the outer
+# band's scope, where such a name would read the outer index instead.
+function _rename_apart(outer::Band, inner::Band, taken::Set{String})
+    free = Set{String}()
+    inner.coef === nothing || union!(free, free_variables(inner.coef))
+    foreach(c -> union!(free, free_variables(c)), inner.cidx)
+    inner.guard === nothing || union!(free, free_variables(inner.guard))
+    setdiff!(free, (r for r in inner.ridx if r isa String))
+    setdiff!(free, first.(inner.contracted))
+    m = Dict{String, ASTExpr}()
+    for n in Iterators.flatten(((r for r in outer.ridx if r isa String), first.(outer.contracted)))
+        n in free && (m[n] = VarExpr(_fresh!(taken, "$(n)_c", "_c")))
+    end
+    isempty(m) && return outer
+    nm(x) = x isa String && haskey(m, x) ? m[x].name : x
+    sub(e) = e === nothing ? nothing : _subst_free(e, m)
+    return Band(
+        copy(outer.rows), Union{String, Int}[nm(r) for r in outer.ridx],
+        ASTExpr[sub(c) for c in outer.cidx], sub(outer.coef),
+        Tuple{String, Int, Int}[(nm(n), lo, hi) for (n, lo, hi) in outer.contracted],
+        sub(outer.guard)
+    )
+end
+
 # The chain rule on two bands: `outer` (rows `R`, column `V` at `φ`) followed
 # by `inner` (rows `V`, column `x`). Each inner row name becomes the outer
-# column index it is read at; the inner contracted names are renamed apart
-# (`_c` appended) and become contracted names of the composite. The inner row
-# box and `V`'s extent restrict the composite exactly. `nothing` when the
-# composite is empty.
+# column index it is read at; the outer names the inner band reads free and
+# the inner contracted names the outer band uses are renamed apart (`_c`
+# appended), and the inner contracted names become contracted names of the
+# composite. The inner row box and `V`'s extent restrict the composite
+# exactly. `nothing` when the composite is empty.
 function _compose(outer::Band, inner::Band, shape_v::Vector{Int})
+    taken = union(_band_names(outer), _band_names(inner))
+    outer = _rename_apart(outer, inner, taken)
     onames = _band_names(outer)
-    taken = union(onames, _band_names(inner))
     sigma = Dict{String, ASTExpr}()
     extra = Tuple{String, Int, Int}[]
     for (n, lo, hi) in inner.contracted
@@ -515,7 +581,7 @@ function _compose(outer::Band, inner::Band, shape_v::Vector{Int})
         )
     )
     guard = _conj(
-        _conj(outer.guard, _and_all(conds)),
+        _conj(outer.guard, _conj(conds)),
         inner.guard === nothing ? nothing : _subst_free(inner.guard, sigma)
     )
     b = Band(
@@ -622,7 +688,7 @@ function _tidy(b0::Band)
         end
         (any(((lo, hi),) -> hi < lo, rows) || any(((_, lo, hi),) -> hi < lo, ctr)) &&
             return nothing
-        guard = _and_all(keep)
+        guard = _conj(keep)
         changed || break
     end
     return normalize_band(Band(rows, b0.ridx, b0.cidx, b0.coef, ctr, guard))
@@ -636,9 +702,12 @@ every state band whose column is a target, plus, for each state band reading
 a recurrence `V`, its composition with `dV/dx`. Per row equation (two
 equations of one state are never merged) the entries are stably sorted by
 column name, a column's direct bands before its composites. With `eqs` (an
-`Int` vector) the row equation of each entry is appended to it.
+`Int` vector) the row equation of each entry is appended to it. With
+`closed = true` (the `parameters` and `forcing` axes) every composite is held
+to the closed-column rule of §4.3 like the direct entries: an outer read of
+`V` substitutes its index into the composite's columns.
 """
-function materialize(sv::SysView, ext; eqs = nothing)
+function materialize(sv::SysView, ext; eqs = nothing, closed::Bool = false)
     ctx = _ctx(sv)
     memo = Dict{String, Vector{JacEntry}}()
     out = JacEntry[]
@@ -662,7 +731,10 @@ function materialize(sv::SysView, ext; eqs = nothing)
         shape = get(ctx.shapes, rec.name, Int[])
         for dd in _total(rec, ext, ctx, memo)
             b = _compose(en.band, dd.band, shape)
-            b === nothing || push!(group, (dd.v, 1, JacEntry(en.u, dd.v, b)))
+            b === nothing && continue
+            ce = JacEntry(en.u, dd.v, b)
+            closed && _check_closed_columns(ce)
+            push!(group, (dd.v, 1, ce))
         end
     end
     flush!()
@@ -700,27 +772,52 @@ function _total(rec::Recurrence, ext, ctx::Ctx, memo)
     return out
 end
 
+"""
+    _RecInfo
+
+The recurrence analysis of one view, computed once per emission and shared
+by its passes and blocks: the observed definitions, the context, every
+recurrence (`recurrences`), their transfer names (`_transfer_names`) and,
+filled on first use, their transfer definitions.
+"""
+struct _RecInfo
+    obs::Dict{String, ASTExpr}
+    ctx::Ctx
+    recs::Vector{Recurrence}
+    transfer::Dict{String, String}
+    defs::Dict{String, ASTExpr}
+end
+
+function _rec_info(sv::SysView, obs = _observed_defs(sv), ctx = _ctx(sv))
+    recs = recurrences(sv, obs, ctx)
+    names = isempty(recs) ? Dict{String, String}() : _transfer_names(sv, recs)
+    return _RecInfo(obs, ctx, recs, names, Dict{String, ASTExpr}())
+end
+
 # The `auxiliary` definitions a band list reads (esm-jacobian-spec.md §4.5):
 # for each recurrence whose transfer variable some coefficient reads,
 # `(name, shape, definition)` — the shape is the recurrence's followed by its
-# axis once more. In recurrence order.
-function _auxiliary(sv::SysView, entries)
-    obs = _observed_defs(sv)
-    ctx = _ctx(sv)
+# axis once more. In recurrence order. A transfer name is clear of every
+# source name (`_transfer_names`), so a coefficient reads it exactly when it
+# was composed through that transfer.
+function _auxiliary(info::_RecInfo, entries)
     out = Tuple{String, Vector{String}, ASTExpr}[]
-    recs = recurrences(sv, obs, ctx)
-    isempty(recs) && return out
-    names = _transfer_names(sv, recs)
+    isempty(info.recs) && return out
+    tnames = Set{String}(values(info.transfer))
     read = Set{String}()
     for en in entries
-        en.band.coef === nothing || union!(read, free_variables(en.band.coef))
+        en.band.coef === nothing && continue
+        for n in free_variables(en.band.coef)
+            n in tnames && push!(read, n)
+        end
     end
-    for rec in recs
-        t = names[rec.name]
+    for rec in info.recs
+        t = info.transfer[rec.name]
         t in read || continue
-        push!(
-            out, (t, [rec.shape; rec.shape[rec.dim]], transfer_definition(rec, obs, recs, ctx, t))
-        )
+        d = get!(info.defs, t) do
+            transfer_definition(rec, info.obs, info.recs, info.ctx, t)
+        end
+        push!(out, (t, [rec.shape; rec.shape[rec.dim]], d))
     end
     return out
 end

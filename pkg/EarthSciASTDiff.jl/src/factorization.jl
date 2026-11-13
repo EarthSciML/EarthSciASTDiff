@@ -62,6 +62,13 @@ function plan_factorization(
         cl === nothing && throw(
             ArgumentError("the Jacobian is not :column_block along `$column_axis`")
         )
+        cl.rank1_undecided && throw(
+            ArgumentError(
+                "a :column_block plan along `$column_axis` from structure-only entries " *
+                    "(`coefficients = false`): whether the line block is diag_plus_rank1 " *
+                    "depends on coefficients they do not carry (plan from full entries)"
+            )
+        )
         return _column_block_plan(cl)
     end
     return nothing
