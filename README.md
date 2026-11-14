@@ -116,9 +116,9 @@ on a path or a git branch:
 
 | Binding | Manifest | Range |
 |---|---|---|
-| Julia | `pkg/EarthSciASTDiff.jl/Project.toml` `[compat]` | `EarthSciAST = "0.11"` |
-| Rust | `pkg/earthsci-astdiff-rs/Cargo.toml` | `earthsci-ast = ">=0.11, <0.12"` |
-| Python | `pkg/earthsci-astdiff-py/pyproject.toml` | `earthsci-ast>=0.11,<0.12` |
+| Julia | `pkg/EarthSciASTDiff.jl/Project.toml` `[compat]` | `EarthSciAST = "0.11, 0.12"` |
+| Rust | `pkg/earthsci-astdiff-rs/Cargo.toml` | `earthsci-ast = ">=0.11, <0.13"` |
+| Python | `pkg/earthsci-astdiff-py/pyproject.toml` | `earthsci-ast>=0.11,<0.13` |
 
 CI tests what those ranges promise:
 
