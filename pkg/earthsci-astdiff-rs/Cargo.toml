@@ -1,6 +1,6 @@
 [package]
 name = "earthsci-astdiff"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST"
@@ -13,7 +13,7 @@ description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symb
 # release. upstream-main.yml tests against EarthSciAST `main` by patching in
 # a sibling checkout, which works locally too:
 #   cargo test --config 'patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"'
-earthsci-ast = ">=0.11, <0.12"
+earthsci-ast = ">=0.11, <0.13"
 indexmap = "2"
 # the shortest round-trip digits, as the Julia reference writes them
 # (`canonical_float`); already in the tree through serde_json

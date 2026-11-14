@@ -1,6 +1,6 @@
 name = "EarthSciASTDiff"
 uuid = "8f0c9a34-6c1e-4f7b-9d2a-3e5b7c1d9f42"
-version = "0.6.0"
+version = "0.6.1"
 authors = ["EarthSciML Authors and Contributors"]
 
 [deps]
@@ -14,7 +14,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 # floor only to a published release. 0.11 is the floor: it reads esm 2.0.0,
 # whose esm:std templates replaced the `fn` closed functions the fixtures and
 # the derivative rules no longer carry.
-EarthSciAST = "0.11"
+EarthSciAST = "0.11, 0.12"
 JSON3 = "1"
 OrderedCollections = "1, 2.0"
 SparseArrays = "1.10"
