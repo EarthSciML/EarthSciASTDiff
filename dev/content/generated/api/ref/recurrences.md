@@ -1,0 +1,78 @@
+---
+title: "recurrences"
+description: "Stable function · Differentiate a model"
+type: "api"
+api_tabs: true
+---
+
+
+**Tier:** stable · **Kind:** function · **Topic:** [Differentiate a model](/generated/api/topics/differentiate)
+
+| Julia | Python | Rust |
+|---|---|---|
+| `recurrences` | `recurrences` | `recurrences` |
+
+
+**Note:** The causal self-reference recurrences of a view (spec §4.5), with frame and axis. A recurrence's `dim` follows each language's own indexing: 1-based in Julia, 0-based in Python and Rust (the emitted `recurrences` field of a pair block is 1-based in every binding).
+
+
+<div class="api-tabs">
+
+<div class="api-tab" data-lang="julia" data-label="Julia">
+<p class="api-tab-label">Julia</p>
+
+```julia
+recurrences(sv::SysView)
+recurrences(sv::SysView, obs)
+recurrences(sv::SysView, obs, ctx)
+```
+
+```julia
+recurrences(sv::SysView, obs = _observed_defs(sv), ctx = _ctx(sv)) -> Vector{Recurrence}
+```
+
+Every recurrence of the view (esm-jacobian-spec.md §4.5), in equation order:
+each observed whose definition reads itself, with its frame and axis read off
+the definition. A self-read that cannot be placed on one axis is refused
+with a `BandError` (EarthSciAST rejects such a document anyway; the producer
+never guesses).
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/EarthSciASTDiff.jl/src/recurrence.jl#L87)
+
+</div>
+
+<div class="api-tab" data-lang="python" data-label="Python">
+<p class="api-tab-label">Python</p>
+
+```python
+recurrences(sv, obs: dict, ctx) -> list[Recurrence]
+```
+
+Every recurrence of the view, in equation order: each observed whose
+definition reads itself, with its frame and axis read off the
+definition. A self-read the producer cannot place on one axis is refused
+(EarthSciAST rejects such a document anyway; the producer never
+guesses).
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/earthsci-astdiff-py/src/earthsci_astdiff/recurrence.py#L144)
+
+</div>
+
+<div class="api-tab" data-lang="rust" data-label="Rust">
+<p class="api-tab-label">Rust</p>
+
+```rust
+pub fn recurrences(sv: &SysView<'_>, obs: &HashMap<String, Expr>, ctx: &Ctx) -> Result<Vec<Recurrence>, BandError>
+```
+
+Every recurrence of the view, in equation order: each observed whose
+definition reads itself, with its frame and axis read off the
+definition. A self-read the producer cannot place on one axis is
+refused (EarthSciAST rejects such a document anyway; the producer never
+guesses).
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/earthsci-astdiff-rs/src/recurrence.rs#L143) · [Rust docs](https://docs.rs/earthsci-astdiff/latest/earthsci_astdiff/recurrence/fn.recurrences.html)
+
+</div>
+
+</div>

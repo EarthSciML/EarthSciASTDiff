@@ -1,0 +1,142 @@
+---
+title: "jacobian_structure"
+description: "Stable function · Other"
+type: "api"
+api_tabs: true
+---
+
+
+**Tier:** stable · **Kind:** function · **Topic:** [Other](/generated/api/topics/other)
+
+| Julia | Python | Rust |
+|---|---|---|
+| `jacobian_bands` | `jacobian_bands` | `jacobian_structure` |
+
+
+**Note:** Structure-only entries (spec §2.1): Julia and Python pass `coefficients = false` to `jacobian_bands` (each `band.coef` is then `nothing` / `None`); Rust returns `StructureEntry`s, and differentiates a view through `jacobian_structure_view`.
+
+
+<div class="api-tabs">
+
+<div class="api-tab" data-lang="julia" data-label="Julia">
+<p class="api-tab-label">Julia</p>
+
+```julia
+jacobian_bands(file::EarthSciAST.EsmFile, model_name; kw...)
+jacobian_bands(flat::EarthSciAST.FlattenedSystem; kw...)
+jacobian_bands(sv::SysView; wrt, forcing, coefficients)
+```
+
+```julia
+jacobian_bands(file::EsmFile, model_name; wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
+jacobian_bands(flat::FlattenedSystem;    wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
+jacobian_bands(sv::SysView;              wrt = :states, forcing = nothing, coefficients = true) -> Vector{JacEntry}
+```
+
+Differentiate every differential equation of the system with respect to every
+state (`wrt = :states`), every parameter outside the forcing set
+(`wrt = :parameters`, scalar and array-valued alike), every forcing buffer
+(`wrt = :forcing`, the cells of the buffers [`forcing_names`](/generated/api/ref/forcing_names) selects,
+their record axis included) that structurally occurs in its (observed-inlined)
+RHS — or with respect to time itself (`wrt = :time`, the single scalar site
+`t`; the esm:std calendar and interpolation templates differentiate through
+their expansion: a calendar field is piecewise-constant in `t` and
+differentiates to 0, `julian_day` to `d[t]/86400`, and `linear`/`bilinear`
+of `t` to the active segment's slope).
+
+`forcing` names the forcing set explicitly; `nothing` infers it from the
+document (every array parameter with a `data` update). It also decides which
+parameters the `:parameters` axis leaves to the forcing axis.
+
+The pattern implied by the result is GLOBAL: `ifelse`/`min`/`max` branches
+are unioned, so it is valid at every point and is a superset of any local
+(point-wise) pattern.
+
+On the `:parameters` and `:forcing` axes every column index must be closed at
+build time (literals, folded metaparameters, `const` gathers, and the entry's
+row and contracted index names); an unclosed one throws
+(esm-jacobian-spec.md §4.3). A model whose right-hand sides read the forcing
+set only where the derivative is identically zero (an `ifelse` condition, a
+piecewise-constant op) has an empty forcing list.
+
+`coefficients = false` returns STRUCTURE-ONLY entries (esm-jacobian-spec.md
+§2.1): regions are clipped and sites found as in the full mode, but no
+derivative is taken, no coefficient simplified, and bands merge on
+(`ridx`, `cidx`, `contracted`, `guard`) alone. Every `band.coef` is
+`nothing`. Their points include the full mode's, and equal them unless the
+full mode drops a band whose coefficient simplifies to zero. Use them where
+only the pattern is needed ([`jacobian_pattern`](/generated/api/ref/jacobian_pattern),
+[`detect_structure`](/generated/api/ref/detect_structure)); a document or product needs the full mode.
+Through an active recurrence the pass runs in full and the coefficients are
+dropped.
+
+An observed that reads itself at an earlier cell (a causal recurrence,
+esm-jacobian-spec.md §4.5, [`recurrences`](/generated/api/ref/recurrences)) is differentiated as an
+intermediate ([`extended_bands`](/generated/api/ref/extended_bands)), and the chain rule through it is
+composed with its line's transfer recurrence `T = (I − G)⁻¹`
+([`transfer_definition`](/generated/api/ref/transfer_definition)): the coefficients read `T`, which the emitted
+block carries as `auxiliary` and the evaluation document declares.
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/EarthSciASTDiff.jl/src/jacobian.jl#L88)
+
+</div>
+
+<div class="api-tab" data-lang="python" data-label="Python">
+<p class="api-tab-label">Python</p>
+
+```python
+jacobian_bands(obj, model_name: str | None = None, wrt: str = 'states', forcing=None, coefficients: bool = True) -> list[JacEntry]
+```
+
+Differentiate a model's right-hand side into a list of Jacobian bands.
+
+**Parameters**
+
+- `obj` — an `EsmFile`, a flattened system or a [`SysView`](/generated/api/ref/sys_view).
+- `model_name` — which model of an `EsmFile`; may be omitted when the
+  file has exactly one.
+- `wrt` — `"states"` (default), `"parameters"` (every parameter
+  outside the forcing set, array-valued ones cell by cell), `"forcing"`
+  (the cells of the forcing buffers, record axis included) or `"time"`.
+- `forcing` — the forcing set; `None` infers it (every array
+  parameter with a `data` update, see [`forcing_names`](/generated/api/ref/forcing_names)).
+- `coefficients` — `False` returns structure-only entries (spec
+  §2.1): regions are clipped and sites found as in the full mode, but no
+  derivative is taken, no coefficient simplified, and bands merge on
+  (`ridx`, `cidx`, `contracted`, `guard`) alone. Every
+  `band.coef` is `None`. Their points include the full mode's, and
+  equal them unless a full band's coefficient simplifies to zero.
+  Through an active recurrence (§4.5) the pass runs in full and the
+  coefficients are dropped.
+
+**Returns**
+
+One [`JacEntry`](/generated/api/ref/jac_entry) per (row variable, column variable) pair that occurs
+in the model. The derivative is symbolic, so the result does not depend on
+the point where it is later evaluated.
+
+On the `"parameters"` and `"forcing"` axes every column index must be
+closed at build time; an unclosed one raises [`BandError`](/generated/api/ref/band_error) (spec
+§4.3). A model that reads the forcing set only where the derivative is
+identically zero (an `ifelse` condition, a piecewise-constant op) has an
+empty forcing list.
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/earthsci-astdiff-py/src/earthsci_astdiff/jacobian.py#L139)
+
+</div>
+
+<div class="api-tab" data-lang="rust" data-label="Rust">
+<p class="api-tab-label">Rust</p>
+
+```rust
+pub fn jacobian_structure(file: &EsmFile, model_name: Option<&str>, wrt: Wrt) -> Result<Vec<StructureEntry>, BandError>
+```
+
+`jacobian_structure_view` of a model of `file` (`model_name` may be
+`None` when the file has exactly one), its forcing set inferred.
+
+[Source](https://github.com/EarthSciML/EarthSciASTDiff/blob/9891c3005a31b74a0547498d0d2981ebb69cdc14/pkg/earthsci-astdiff-rs/src/jacobian.rs#L295) · [Rust docs](https://docs.rs/earthsci-astdiff/latest/earthsci_astdiff/jacobian/fn.jacobian_structure.html)
+
+</div>
+
+</div>
