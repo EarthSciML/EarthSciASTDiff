@@ -129,8 +129,8 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         # reads it as the observed, so there is no oracle; check the inliner.)
         obsk = copy(obs)
         obsk["k"] = NumExpr(7.0)
-        @test EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obsk)) ==
-            EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obs))
+        @test EarthSciAST.serialize_expression(EarthSciASTDiff.inline_observed(eq.rhs, obsk)) ==
+            EarthSciAST.serialize_expression(EarthSciASTDiff.inline_observed(eq.rhs, obs))
 
         # A scalar sum observed built with `output_idx` absent (the schema
         # requires it on the wire; the typed AST allows `nothing`) inlines
@@ -148,7 +148,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         obs2["c"] = EarthSciAST.reconstruct(obs["c"]; output_idx = nothing)
         a = EarthSciASTDiff.inline_observed(eq.rhs, obs)
         b = EarthSciASTDiff.inline_observed(eq.rhs, obs2)
-        @test EarthSciAST.to_ascii(a) == EarthSciAST.to_ascii(b)
+        @test EarthSciAST.serialize_expression(a) == EarthSciAST.serialize_expression(b)
 
         # oidx [i, k]: the reading faq binds the contracted name (the capture);
         # [i, j]: it does not (the leftover index was free).
