@@ -148,7 +148,19 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         obs2["c"] = EarthSciAST.reconstruct(obs["c"]; output_idx = nothing)
         a = EarthSciASTDiff.inline_observed(eq.rhs, obs)
         b = EarthSciASTDiff.inline_observed(eq.rhs, obs2)
-        @test EarthSciAST.serialize_expression(a) == EarthSciAST.serialize_expression(b)
+        # The serialized form keeps an absent `output_idx` absent, so read it as
+        # `[]` on both sides: the claim is that the inlining agrees.
+        function oidx_as_empty(v)
+            if v isa AbstractDict
+                get(v, "op", nothing) == "faq" && !haskey(v, "output_idx") && (v["output_idx"] = Any[])
+                foreach(oidx_as_empty, values(v))
+            elseif v isa AbstractVector
+                foreach(oidx_as_empty, v)
+            end
+            return v
+        end
+        @test oidx_as_empty(EarthSciAST.serialize_expression(a)) ==
+            oidx_as_empty(EarthSciAST.serialize_expression(b))
 
         # oidx [i, k]: the reading faq binds the contracted name (the capture);
         # [i, j]: it does not (the leftover index was free).
