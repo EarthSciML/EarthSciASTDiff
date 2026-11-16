@@ -478,8 +478,9 @@ end
 # column yields a band with contracted dimensions and the whole residual
 # guard.
 function _bands_faq!(out, e::OpExpr, v::String, ctx::Ctx, shape_u, scale, co::Bool)
-    oidx = [String(x) for x in e.output_idx if x isa AbstractString]
-    length(oidx) == length(e.output_idx) || throw(
+    eoidx = something(e.output_idx, Any[])
+    oidx = [String(x) for x in eoidx if x isa AbstractString]
+    length(oidx) == length(eoidx) || throw(
         BandError(
             "singleton `1` output_idx entries not supported yet"
         )
@@ -622,7 +623,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
             # or an array variable's declared rank (the inliner's
             # `_value_rank` reads it the same way).
             val_rank = if val isa OpExpr && val.op == "faq"
-                length(val.output_idx)
+                length(something(val.output_idx, Any[]))
             elseif val isa OpExpr && val.op == "makearray" &&
                     val.regions !== nothing && !isempty(val.regions)
                 length(val.regions[1])
@@ -646,7 +647,7 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
                 vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
                 Int[
                     haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
-                        for n in val.output_idx
+                        for n in something(val.output_idx, Any[])
                 ]
             else
                 ones(Int, length(sub_shape))   # identity/broadcast bands are 1-based

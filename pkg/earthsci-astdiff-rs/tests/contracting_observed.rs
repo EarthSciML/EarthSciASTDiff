@@ -8,8 +8,11 @@
 use std::collections::HashMap;
 
 use earthsci_ast::Expr;
-use earthsci_astdiff::system::{lhs_state, observed_defs};
-use earthsci_astdiff::{inline_observed, jacobian_bands, skey, sysview, Wrt};
+use earthsci_astdiff::system::{lhs_definition, lhs_state, observed_defs};
+use earthsci_astdiff::{
+    inline_observed, jacobian_bands, jacobian_bands_view, serialize_band, skey, sysview, SysView,
+    Wrt,
+};
 use serde_json::{json, Value};
 
 mod common;
@@ -278,6 +281,62 @@ fn scalar_sum_observed_bare_read() {
     check(&file, |i, k, a, b| {
         -(if (a, b) == (i, k) { c } else { 0.0 }) - if a == 0 { uval(i, k) } else { 0.0 }
     });
+}
+
+#[test]
+fn scalar_sum_observed_without_output_idx() {
+    // A scalar sum observed built with `output_idx` absent (the schema
+    // requires it on the wire; the typed AST allows `None`) is read as one
+    // with an empty list: its definition, the inlined right-hand side and the
+    // bands are the same as the control's.
+    let file = doc_with(
+        neg(mul(json!("c"), idx("u", &["i", "k"]))),
+        ["i", "k"],
+        sdef(None),
+        cvar(),
+        vec![json!({"lhs": "c", "rhs": ksum(json!(
+                            {"op": "index", "args": ["u", 1, "k"]}))})],
+    );
+    let sv = sysview(&file, None).unwrap();
+    let kc = sv
+        .equations
+        .iter()
+        .position(|e| lhs_definition(e).is_some_and(|n| n == "c"))
+        .unwrap();
+    let oidx = |e: &Expr| match e {
+        Expr::Operator(n) => n.output_idx.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(oidx(&sv.equations[kc].rhs), Some(vec![]));
+    let mut eqs2 = sv.equations.clone();
+    eqs2[kc].rhs.node_mut().unwrap().output_idx = None;
+    let sv2 = SysView {
+        variables: sv.variables.clone(),
+        equations: &eqs2,
+        index_sets: sv.index_sets.clone(),
+        domain: sv.domain,
+        data_sources: sv.data_sources,
+    };
+    let obs = observed_defs(&sv).unwrap();
+    let obs2 = observed_defs(&sv2).unwrap();
+    assert_eq!(oidx(&obs2["c"]), Some(vec![]));
+    let eq = sv
+        .equations
+        .iter()
+        .find(|e| lhs_state(e).is_some())
+        .unwrap();
+    assert_eq!(
+        skey(&inline_observed(&eq.rhs, &obs2).unwrap()),
+        skey(&inline_observed(&eq.rhs, &obs).unwrap())
+    );
+    let bands = |v: &SysView| -> Vec<Value> {
+        jacobian_bands_view(v, Wrt::States, None)
+            .unwrap()
+            .iter()
+            .map(serialize_band)
+            .collect()
+    };
+    assert_eq!(bands(&sv2), bands(&sv));
 }
 
 #[test]

@@ -400,8 +400,9 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
     piece's contraction (filtered by the residual guard's contracted
     conjuncts; its row-only conjuncts guard the band); a gathered column
     yields a band with contracted dimensions and the whole residual guard."""
-    oidx = [str(x) for x in e.output_idx if isinstance(x, str)]
-    if len(oidx) != len(e.output_idx):
+    eoidx = e.output_idx or []
+    oidx = [str(x) for x in eoidx if isinstance(x, str)]
+    if len(oidx) != len(eoidx):
         raise BandError("singleton `1` output_idx entries not supported yet")
     red = reduce_op(e, BandError)
     ranges = e.ranges or {}
@@ -524,7 +525,8 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale, co: bool) -> Non
             if isinstance(val, ExprNode) and val.op == "faq":
                 vr = val.ranges or {}
                 origins = [
-                    _range_of(vr[str(n)], ctx)[0] if str(n) in vr else 1 for n in val.output_idx
+                    _range_of(vr[str(n)], ctx)[0] if str(n) in vr else 1
+                    for n in val.output_idx or []
                 ]
             else:
                 origins = [1] * len(sub_shape)

@@ -216,7 +216,7 @@ function _indexed_definition(eq)
     sub = l.args[2:end]
     (f !== nothing && all(x -> x isa VarExpr, sub)) || return (name, nothing)
     names = String[x.name for x in sub]
-    (String[String(x) for x in f.output_idx] == names && allunique(names)) ||
+    (String[String(x) for x in something(f.output_idx, Any[])] == names && allunique(names)) ||
         return (name, nothing)
     return (
         name, OpExpr(
@@ -253,6 +253,10 @@ end
 # inlined, so the chain rule through it is silently lost. An arrayed observed
 # whose definition cannot be rewritten (partial, pinned, or split over several
 # equations) is therefore an error rather than a fallback to that.
+#
+# A faq definition whose `output_idx` is absent (`nothing`: the schema
+# requires the field on the wire, the typed AST does not) is read as `[]`, a
+# scalar sum, so a bare read splices the same tree either way.
 function _observed_defs(sv::SysView)
     states = Set{String}()
     for eq in sv.equations
@@ -283,11 +287,14 @@ function _observed_defs(sv::SysView)
             )
             continue
         end
-        defs[n] = d
+        defs[n] = _oidx_present(d)
         bare === nothing && push!(indexed, n)
     end
     return defs
 end
+
+_oidx_present(d) = d isa OpExpr && d.op == "faq" && d.output_idx === nothing ?
+    EarthSciAST.reconstruct(d; output_idx = Any[]) : d
 
 """
     view_states(sv::SysView, obs = _observed_defs(sv)) -> Vector{String}

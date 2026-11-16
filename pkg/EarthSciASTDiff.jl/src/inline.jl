@@ -277,7 +277,7 @@ _ones_rank(n::Int) = (n, ones(Int, n))
 function _value_rank(val, fresh::_Fresh, scope)
     if val isa OpExpr && val.op == "faq"
         vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
-        oidx = [String(x) for x in val.output_idx]
+        oidx = [String(x) for x in something(val.output_idx, Any[])]
         return (
             length(oidx),
             Int[haskey(vr, n) ? _range_origin(vr[n]) : 1 for n in oidx],
@@ -289,7 +289,7 @@ function _value_rank(val, fresh::_Fresh, scope)
         haskey(fresh.shapes, val.name) && return _ones_rank(length(fresh.shapes[val.name]))
         d = get(fresh.obs, val.name, nothing)
         if d isa OpExpr && d.op == "faq"
-            return _ones_rank(length(d.output_idx))
+            return _ones_rank(length(something(d.output_idx, Any[])))
         elseif d isa OpExpr && d.op == "makearray" && d.regions !== nothing &&
                 !isempty(d.regions)
             return _ones_rank(length(d.regions[1]))

@@ -242,7 +242,7 @@ def _indexed_definition(eq) -> tuple[str, Expr | None] | None:
     if lhs.op != "index" or not lhs.args or not isinstance(lhs.args[0], str):
         return None
     name, sub = lhs.args[0], list(lhs.args[1:])
-    if faq is None or [str(x) for x in faq.output_idx] != sub or len(set(sub)) != len(sub):
+    if faq is None or [str(x) for x in faq.output_idx or []] != sub or len(set(sub)) != len(sub):
         return name, None
     return name, ExprNode(
         op="faq",
@@ -272,7 +272,8 @@ def observed_defs(sv: SysView) -> dict[str, Expr]:
     names on the left — bare, or indexed (an arrayed observed, rewritten by
     :func:`_indexed_definition`) — and that no ``D(·)`` equation also targets
     (mirrors ``earthsci_ast.classification``). First definition wins; an
-    arrayed observed defined by more than one equation is rejected."""
+    arrayed observed defined by more than one equation is rejected. A faq
+    definition with ``output_idx`` absent is read as one with ``[]``."""
     states = {lhs_state(eq) for eq in sv.equations} - {None}
     out: dict[str, Expr] = {}
     indexed: set[str] = set()
@@ -297,10 +298,19 @@ def observed_defs(sv: SysView) -> dict[str, Expr]:
                     "equation (piecewise definitions are not supported)"
                 )
             continue
-        out[n] = d
+        out[n] = _oidx_present(d)
         if bare is None:
             indexed.add(n)
     return out
+
+
+def _oidx_present(d: Expr) -> Expr:
+    """A faq definition whose ``output_idx`` is absent (``None``: the schema
+    requires the field on the wire, the typed AST does not) read as ``[]``, a
+    scalar sum, so a bare read splices the same tree either way."""
+    if isinstance(d, ExprNode) and d.op == "faq" and d.output_idx is None:
+        return dataclasses.replace(d, output_idx=[])
+    return d
 
 
 def view_states(sv: SysView, obs: dict[str, Expr] | None = None) -> list[str]:
