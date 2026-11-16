@@ -435,12 +435,25 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
             }
             continue;
         }
-        defs.insert(n.clone(), d);
+        defs.insert(n.clone(), oidx_present(d));
         if bare.is_none() {
             indexed.insert(n.clone());
         }
     }
     Ok(defs)
+}
+
+// A faq definition whose `output_idx` is absent (`None`: the schema requires
+// the field on the wire, the typed AST does not) is read as `[]`, a scalar
+// sum, so a bare read splices the same tree either way (Julia
+// `_oidx_present`).
+fn oidx_present(mut d: Expr) -> Expr {
+    if matches!(&d, Expr::Operator(n) if n.op == "faq" && n.output_idx.is_none()) {
+        if let Some(n) = d.node_mut() {
+            n.output_idx = Some(Vec::new());
+        }
+    }
+    d
 }
 
 /// The unknowns occupying a solver slot: every unknown MINUS the observed

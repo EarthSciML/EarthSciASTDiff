@@ -129,12 +129,13 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         # reads it as the observed, so there is no oracle; check the inliner.)
         obsk = copy(obs)
         obsk["k"] = NumExpr(7.0)
-        @test EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obsk)) ==
-            EarthSciAST.to_ascii(EarthSciASTDiff.inline_observed(eq.rhs, obs))
+        @test EarthSciAST.serialize_expression(EarthSciASTDiff.inline_observed(eq.rhs, obsk)) ==
+            EarthSciAST.serialize_expression(EarthSciASTDiff.inline_observed(eq.rhs, obs))
 
         # A scalar sum observed built with `output_idx` absent (the schema
-        # requires it on the wire; the typed AST allows `nothing`) inlines
-        # like one with an empty list.
+        # requires it on the wire; the typed AST allows `nothing`) is read as
+        # one with an empty list: its definition, the inlined right-hand side
+        # and the bands are the same as the control's.
         file = load(
             doc(
                 o -> neg(mul("c", idx("u", o...))); vars = cvar,
@@ -142,13 +143,21 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
             )
         )
         sv = EarthSciASTDiff.sysview(file, "ContractObs")
+        kc = only(k for (k, e) in enumerate(sv.equations) if EarthSciASTDiff.lhs_definition(e) == "c")
+        @test sv.equations[kc].rhs.output_idx == Any[]
+        eqs2 = copy(sv.equations)
+        eqs2[kc] = EarthSciAST.Equation(
+            eqs2[kc].lhs, EarthSciAST.reconstruct(eqs2[kc].rhs; output_idx = nothing)
+        )
+        sv2 = EarthSciASTDiff.SysView(sv.variables, eqs2, sv.index_sets, sv.domain, sv.data_sources)
         obs = EarthSciASTDiff._observed_defs(sv)
+        obs2 = EarthSciASTDiff._observed_defs(sv2)
+        @test obs2["c"].output_idx == Any[]
         eq = only(e for e in sv.equations if EarthSciASTDiff.lhs_state(e) !== nothing)
-        obs2 = copy(obs)
-        obs2["c"] = EarthSciAST.reconstruct(obs["c"]; output_idx = nothing)
-        a = EarthSciASTDiff.inline_observed(eq.rhs, obs)
-        b = EarthSciASTDiff.inline_observed(eq.rhs, obs2)
-        @test EarthSciAST.to_ascii(a) == EarthSciAST.to_ascii(b)
+        @test EarthSciASTDiff.skey(EarthSciASTDiff.inline_observed(eq.rhs, obs2)) ==
+            EarthSciASTDiff.skey(EarthSciASTDiff.inline_observed(eq.rhs, obs))
+        @test map(EarthSciASTDiff.serialize_band, EarthSciASTDiff.jacobian_bands(sv2)) ==
+            map(EarthSciASTDiff.serialize_band, EarthSciASTDiff.jacobian_bands(sv))
 
         # oidx [i, k]: the reading faq binds the contracted name (the capture);
         # [i, j]: it does not (the leftover index was free).

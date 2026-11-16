@@ -11,9 +11,9 @@ import pytest
 from docvals import doc_jacobian
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expr_walk import map_children
-from earthsci_astdiff import inline_observed
+from earthsci_astdiff import inline_observed, jacobian_bands, serialize_band
 from earthsci_astdiff.expr_helpers import skey
-from earthsci_astdiff.system import lhs_state, observed_defs, sysview
+from earthsci_astdiff.system import lhs_definition, lhs_state, observed_defs, sysview
 from oracle import check_against_fd
 
 NX, NZ = 2, 3
@@ -265,16 +265,28 @@ def test_repeated_reads_inline_to_one_tree():
 
 
 def test_scalar_sum_without_output_idx():
-    # The typed AST allows output_idx None (the schema requires the key).
+    # A scalar sum observed built with output_idx absent (the schema requires
+    # the key; the typed AST allows None) is read as one with an empty list:
+    # its definition, the inlined right-hand side and the bands are the same
+    # as the control's.
     from dataclasses import replace
 
-    eq, obs = _inlined(
+    sv = sysview(
         _doc(
             lambda o: _neg(_mul("c", _idx("u", *o))),
             variables=C,
             equations=[{"lhs": "c", "rhs": _ksum(_idx("u", 1, "k"))}],
         )
     )
-    obs2 = dict(obs, c=replace(obs["c"], output_idx=None))
-    a, b = inline_observed(eq.rhs, obs), inline_observed(eq.rhs, obs2)
-    assert len(_sums(a, [])) == len(_sums(b, [])) == 1
+    (kc,) = [k for k, e in enumerate(sv.equations) if lhs_definition(e) == "c"]
+    assert sv.equations[kc].rhs.output_idx == []
+    eqs2 = list(sv.equations)
+    eqs2[kc] = replace(eqs2[kc], rhs=replace(eqs2[kc].rhs, output_idx=None))
+    sv2 = replace(sv, equations=eqs2)
+    obs, obs2 = observed_defs(sv), observed_defs(sv2)
+    assert obs2["c"].output_idx == []
+    (eq,) = [e for e in sv.equations if lhs_state(e) is not None]
+    assert skey(inline_observed(eq.rhs, obs2)) == skey(inline_observed(eq.rhs, obs))
+    assert [serialize_band(b) for b in jacobian_bands(sv2)] == [
+        serialize_band(b) for b in jacobian_bands(sv)
+    ]
