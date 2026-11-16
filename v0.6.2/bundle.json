@@ -1,0 +1,18 @@
+{
+  "id": "astdiff",
+  "title": "EarthSciASTDiff",
+  "description": "Analytical sparse Jacobians for EarthSciAST (.esm) models by symbolic differentiation of the expression AST.",
+  "repo": "EarthSciML/EarthSciASTDiff",
+  "nav": [
+    {
+      "title": "Specification",
+      "path": "generated/spec/"
+    },
+    {
+      "title": "API",
+      "path": "generated/api/"
+    }
+  ],
+  "sha": "78ad1a93defb9e0880834468ea7c69e49c301898",
+  "version": "v0.6.2"
+}
