@@ -151,16 +151,16 @@
     }
    },
    "expression_templates": {
-    "central_grad_lon_zero_grad_bc": {
+    "central_D_lon_zero_grad_bc": {
      "params": [
       "f"
      ],
      "match": {
-      "op": "grad",
+      "op": "D",
       "args": [
        "f"
       ],
-      "dim": "lon"
+      "wrt": "lon"
      },
      "body": {
       "op": "makearray",
@@ -347,16 +347,16 @@
       "args": []
      }
     },
-    "central_grad_lat_zero_grad_bc": {
+    "central_D_lat_zero_grad_bc": {
      "params": [
       "f"
      ],
      "match": {
-      "op": "grad",
+      "op": "D",
       "args": [
        "f"
       ],
-      "dim": "lat"
+      "wrt": "lat"
      },
      "body": {
       "op": "makearray",
@@ -566,11 +566,11 @@
           ]
          },
          {
-          "op": "grad",
+          "op": "D",
           "args": [
            "_var"
           ],
-          "dim": "lon"
+          "wrt": "lon"
          }
         ]
        },
@@ -584,11 +584,11 @@
           ]
          },
          {
-          "op": "grad",
+          "op": "D",
           "args": [
            "_var"
           ],
-          "dim": "lat"
+          "wrt": "lat"
          }
         ]
        }

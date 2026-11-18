@@ -29,7 +29,7 @@
 #                              removed the `fn` closed functions they
 #                              replace); the explicit `x` in a template's
 #                              blend carries the slope.
-#   * rewrite-target ops (spatial `D`, `grad`, …) → error: they have no
+#   * rewrite-target ops (spatial `D`, `integral`, user ops) → error: they have no
 #     evaluator and must be lowered before differentiation, mirroring the
 #     tree-walk's `unlowered_operator` gate. The ops esm 2.0.0 removed
 #     (`fn`, `table_lookup`) never load, and have no rule either.
