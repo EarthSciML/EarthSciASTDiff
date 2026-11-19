@@ -222,7 +222,7 @@ def test_structure_refuses_what_the_full_mode_refuses():
     ctx = Ctx({"i": 4}, {"x": [4]}, set())
     xi = ExprNode(op="index", args=["x", "i"])
     # ops with no derivative rule, alone and under a product
-    xx = ExprNode(op="upwind_gradient", args=[xi], dim="x")  # a user op
+    xx = ExprNode(op="grad", args=[xi], dim="x")
     for body in (
         ExprNode(op="D", args=[xi], wrt="lon"),
         xx,

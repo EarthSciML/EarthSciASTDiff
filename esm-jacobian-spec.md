@@ -26,7 +26,7 @@ with the same recurrence semantics as the document's own.
 
 Producing the block requires the derivative semantics of §3, defined on the
 **expanded, lowered** expression tree: expression templates expanded
-(esm-spec §9.6.4), rewrite-target operators (spatial `D`, `integral`, user ops)
+(esm-spec §9.6.4), rewrite-target operators (spatial `D`, `grad`, …)
 already rewritten away. Differentiating an unlowered tree
 is a conformance violation, mirroring the `unlowered_operator` evaluation
 gate.
@@ -240,7 +240,7 @@ otherwise, this row follows it.
 
 ### 3.3 Rewrite-target operators
 
-Spatial `D`, `integral`, and any
+Spatial `D`, `grad`, `div`, `laplacian`, `integral`, and any
 op outside the evaluable core: **no derivative rule exists**. A producer
 encountering one MUST fail (diagnostic `underivable_operator`), never emit 0.
 

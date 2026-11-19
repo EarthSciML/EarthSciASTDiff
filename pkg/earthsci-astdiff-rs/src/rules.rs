@@ -653,7 +653,7 @@ mod tests {
         };
         let xi = json!({"op": "index", "args": ["x", "i"]});
         // ops with no derivative rule, alone and under a product
-        let gr = json!({"op": "upwind_gradient", "args": [xi], "dim": "x"}); // a user op
+        let gr = json!({"op": "grad", "args": [xi], "dim": "x"});
         for body in [
             json!({"op": "D", "args": [xi], "wrt": "lon"}),
             gr.clone(),

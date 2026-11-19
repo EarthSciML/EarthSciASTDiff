@@ -132,7 +132,7 @@ def test_structural_zero_and_policies():
         dscalar(op("index", op("+", tbl, "y"), fx), Site.of("x"))
     # unknown ops fail loudly
     with pytest.raises(DerivativeRuleError):
-        dscalar(ex({"op": "upwind_gradient", "args": ["x"]}), Site.of("x"))
+        dscalar(ex({"op": "grad", "args": ["x"]}), Site.of("x"))
     # `Pre(x)` differentiates as `x` (spec §3.2): the identity in a right-hand
     # side, as EarthSciAST evaluates it, not a constant
     assert dscalar(ex({"op": "Pre", "args": ["x"]}), Site.of("x")) == 1

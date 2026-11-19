@@ -92,7 +92,7 @@ end
         ranges = Dict{String, Any}("i" => Any[1, 4])
     )
     # ops with no derivative rule, alone and under a product
-    xx = OpExpr("upwind_gradient", ASTExpr[xi]; dim = "x")  # a user op
+    xx = OpExpr("grad", ASTExpr[xi]; dim = "x")
     for body in (
             OpExpr("D", ASTExpr[xi]; wrt = "lon"),
             xx,
