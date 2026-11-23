@@ -1139,7 +1139,7 @@ fn axis_block(
 /// class (each when given). Coefficients are written as produced (operator
 /// references kept); nothing is extracted after the fact.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn block_fields<T: Clone + BandEntry>(
+pub(crate) fn block_fields<T>(
     wrt: Value,
     entries: &[T],
     serialize: impl Fn(&T) -> Value,
@@ -1162,30 +1162,6 @@ pub(crate) fn block_fields<T: Clone + BandEntry>(
         block.insert("structure".into(), json!(st));
     }
     block
-}
-
-/// A first- or second-order entry, for [`block_fields`].
-pub(crate) trait BandEntry {
-    fn band(&self) -> &Band;
-    fn band_mut(&mut self) -> &mut Band;
-}
-
-impl BandEntry for JacEntry {
-    fn band(&self) -> &Band {
-        &self.band
-    }
-    fn band_mut(&mut self) -> &mut Band {
-        &mut self.band
-    }
-}
-
-impl BandEntry for JacEntry2 {
-    fn band(&self) -> &Band {
-        &self.band
-    }
-    fn band_mut(&mut self) -> &mut Band {
-        &mut self.band
-    }
 }
 
 /// A parameter or forcing block's `columns` field.
