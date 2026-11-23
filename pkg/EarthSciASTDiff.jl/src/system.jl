@@ -19,29 +19,18 @@ struct SysView
     index_sets::Dict{String, Any}
     domain::Any
     data_sources::Any
+    refs::Any       # RefLayer of the system's operator definitions, or nothing
 end
 SysView(variables, equations, index_sets) = SysView(variables, equations, index_sets, nothing)
 SysView(variables, equations, index_sets, domain) =
     SysView(variables, equations, index_sets, domain, nothing)
+SysView(variables, equations, index_sets, domain, data_sources) =
+    SysView(variables, equations, index_sets, domain, data_sources, nothing)
 
-# `expanded_model` is EarthSciAST's public template-expansion seam
-# (EarthSciAST ≥ 0.9.1): the typed model with Option-B
-# `apply_expression_template` references expanded — the same step
-# `build_evaluator` performs before compiling. Imported (not redefined) so
-# `EarthSciASTDiff.expanded_model === EarthSciAST.expanded_model` and the two
-# packages' exports never collide; re-exported from this module for
-# convenience.
-#
-# `expand_flattened_refs` is the SAME seam for the other input shape — a
-# coupled document's `FlattenedSystem`, whose surviving references resolve
-# against the flattener's MERGED `template_registry` (esm-spec §9.6.4 rule 7)
-# rather than a per-model `component_templates` entry. `expanded_model` takes
-# an `EsmFile` + model name and cannot serve here; this is EarthSciAST's
-# documented "Expand at your boundary" utility for flattened consumers (the
-# MTK `System`/`PDESystem` constructors call it at their entries for exactly
-# this reason). Not exported: it is EarthSciAST-internal, unlike
-# `expanded_model`.
-import EarthSciAST: expanded_model, expand_flattened_refs
+# `expanded_model` is EarthSciAST's explicit expansion utility, re-exported
+# for convenience as before. No analysis here calls it: references are kept
+# (esm-spec §9.6.4 rule 2, operator_refs.jl).
+import EarthSciAST: expanded_model
 
 """
     sysview(file::EsmFile, model_name; data_sources = file.data_sources) -> SysView
@@ -51,31 +40,57 @@ import EarthSciAST: expanded_model, expand_flattened_refs
 the derived documents copy for each data-fed parameter (esm-jacobian-spec.md
 §8.1). A `FlattenedSystem` does not carry them, so pass the flattened
 document's own when its parameters read data.
+
+Operator references (`apply_operator`, esm-spec §9.6) are kept as they are:
+never expanded. The view carries the definitions they reach — a flattened
+system's merged registry (bodies closed by `flatten`, §9.6.4 rule 7), or a
+model's own `operators` block, closed here the same way — and every analysis
+differentiates each definition once (operator_refs.jl).
 """
 function sysview(file::EarthSciAST.EsmFile, model_name; data_sources = file.data_sources)
-    model = expanded_model(file, model_name === nothing ? nothing : String(model_name))
+    name = model_name === nothing ? nothing : String(model_name)
+    model = _select_model(file, name)
+    isets = Dict{String, Any}(String(k) => v for (k, v) in file.index_sets)
+    raw = _model_registry(file, name)
+    eqs = model.equations
+    refs = nothing
+    if raw !== nothing && !isempty(raw)
+        reg, closing = _close_registry(raw)
+        eqs = isempty(closing) ? eqs : [_close_equation(eq, closing) for eq in eqs]
+        refs = RefLayer(reg, _iset_sizes(isets))
+    end
     return SysView(
         Dict{String, Any}(String(k) => v for (k, v) in model.variables),
-        model.equations,
-        Dict{String, Any}(String(k) => v for (k, v) in file.index_sets),
-        file.domain,
-        data_sources
+        eqs, isets, file.domain, data_sources, refs
     )
 end
 
+# The model `name` of `file` (the only one when `name` is nothing).
+function _select_model(file::EarthSciAST.EsmFile, name)
+    models = file.models
+    (models === nothing || isempty(models)) && throw(ArgumentError("the document has no model"))
+    if name === nothing
+        length(models) == 1 ||
+            throw(ArgumentError("document has $(length(models)) models; pass model_name"))
+        return first(values(models))
+    end
+    haskey(models, name) || throw(ArgumentError("the document has no model `$name`"))
+    return models[name]
+end
+
+# The model's own `operators` block (esm-spec §9.6.1) as the loader keeps it.
+function _model_registry(file::EarthSciAST.EsmFile, name)
+    ct = file.component_templates
+    ct === nothing && return nothing
+    n = name === nothing ? String(first(keys(file.models))) : name
+    return get(ct, "models.$n", nothing)
+end
+
+_iset_sizes(isets) = Dict{String, Int}(
+    String(n) => s.size for (n, s) in isets if s.size !== nothing
+)
+
 function sysview(flat::EarthSciAST.FlattenedSystem; data_sources = nothing)
-    # Expand FIRST, for the same reason the `EsmFile` method does. `flatten`
-    # ALWAYS hands its consumers reference-preserving expressions, so without
-    # this the two methods disagree: an `EsmFile` reaches the band calculus
-    # Option-A expanded, a `FlattenedSystem` reaches it with
-    # `apply_expression_template` nodes intact — nodes the calculus has no
-    # rule for and the inliner rejects outright ("definition is not an
-    # faq, makearray or const"). Expanding here restores the invariant
-    # this file exists to hold: we differentiate the SAME tree the tree-walk
-    # evaluator compiles, whichever input shape it arrived in. A no-op when no
-    # references survived (empty registry), so single-model and
-    # `ESS_TEMPLATE_REF_DISABLE=1` documents are byte-identical to before.
-    flat = expand_flattened_refs(flat)
     # A pointwise-lifted state's `shape` is the one `flatten` records: the
     # lift's index sets (esm-libraries-spec §4.7.5, "Pointwise lift: index
     # sets"; Julia's `flatten` has recorded one since before 0.6, by that
@@ -96,7 +111,11 @@ function sysview(flat::EarthSciAST.FlattenedSystem; data_sources = nothing)
         var === nothing && continue
         _check_lifted_shape(String(name), var.shape, extents, isets)
     end
-    return SysView(vars, flat.equations, isets, flat.domain, data_sources)
+    # The merged registry `flatten` carries (esm-spec §9.6.4 rule 7): every
+    # body closed, every reference binding all of its definition's params.
+    reg = flat.template_registry
+    refs = isempty(reg) ? nothing : RefLayer(reg, _iset_sizes(isets))
+    return SysView(vars, flat.equations, isets, flat.domain, data_sources, refs)
 end
 
 # Check the shape `flatten` recorded on lifted state `name` against its
@@ -149,7 +168,7 @@ function _ctx(sv::SysView)
         end
         var.type == EarthSciAST.ParameterVariable && push!(params, String(n))
     end
-    return Ctx(isets, shapes, params)
+    return Ctx(isets, shapes, params, sv.refs)
 end
 
 """
@@ -351,22 +370,6 @@ end
 # externally-provided time-varying data, so a free-variable seed of `{"t"}` is
 # not a sound over-approximation of time-dependence.
 
-# An expression whose true dependencies `free_variables` CANNOT see. A
-# surviving `apply_expression_template` node keeps its body in the registry and
-# exposes only its bindings, so its body's free references are invisible
-# (EarthSciAST `expression_graph` guards the same way, graph.jl:320). `sysview`
-# expands references at both entries, so this should never fire; it is here so
-# that if an unexpanded reference ever does reach the calculus, the observed is
-# treated as target-DEPENDENT (kept, hence inlined, hence loudly rejected by
-# the inliner) rather than silently pruned to zero.
-function _opaque_deps(e::ASTExpr)::Bool
-    found = false
-    EarthSciAST.foreach_subexpr(e) do x
-        found |= x isa OpExpr && x.op == "apply_expression_template"
-    end
-    return found
-end
-
 # Names occurring in an index-ARGUMENT position — `args[2:end]` of an `index`
 # node, i.e. a subscript rather than a value. `args[1]` (the indexed object) is
 # an ordinary value position and is walked normally.
@@ -418,7 +421,7 @@ function inlinable_observed(
     readers = Dict{String, Vector{String}}()      # name → observed that read it
     work = String[]
     for (n, fv) in fvs
-        (isdisjoint(fv, targets) && !_opaque_deps(obs[n])) || push!(work, n)
+        isdisjoint(fv, targets) || push!(work, n)
         for m in fv
             haskey(obs, m) && push!(get!(readers, m, String[]), n)
         end

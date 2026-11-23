@@ -86,6 +86,7 @@ include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus
 include("reductions.jl")     # filters, max/min/* reductions, one-hot index reads
 include("clip.jl")           # static region clipping + band re-merging
+include("operator_refs.jl")  # operator references: derived definitions, composition
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("recurrence.jl")     # causal recurrences: extended system, transfer, sweeps
 include("jacobian.jl")       # jacobian_bands driver

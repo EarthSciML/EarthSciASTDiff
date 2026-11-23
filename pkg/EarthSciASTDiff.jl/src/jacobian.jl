@@ -394,7 +394,7 @@ function _row_bands!(out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ct
     rhs = inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
     hits = sort!(String[v for v in free_variables(rhs) if v in cols])
     for v in hits
-        for b in merge_bands(bands(rhs, v, ctx; shape_u = shape_u, coefficients = co))
+        for b in merge_bands(_ref_bands(rhs, v, ctx, shape_u, co))
             push!(out, JacEntry(u, v, normalize_band(b)))
         end
     end

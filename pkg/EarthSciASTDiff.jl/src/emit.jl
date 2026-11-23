@@ -565,7 +565,7 @@ end
 
 """
     evaluation_document(input; wrt = :states, model_name = nothing, forcing = nothing,
-                        cse = true, data_sources = nothing) -> (doc, fields)
+                        cse = false, data_sources = nothing) -> (doc, fields)
 
 The derived evaluation document of the first-order bands on axis `wrt`
 (esm-jacobian-spec.md §8, model `"JacobianEval"`): the source's observed the
@@ -574,8 +574,10 @@ coefficients read, every source derivative zeroed, and one band-field state
 right-hand-side call of an unmodified EarthSciAST evaluator at `(u, p, t)`
 leaves every band value in `du`; `fields[k]` names entry `k`'s field.
 Placing the values in a matrix is a scatter plan's ([`bind_plan`](@ref)).
-With `cse`, repeated coefficient subtrees are hoisted into observed arrays
-([`hoist_observed`](@ref)).
+The coefficients are written as the band calculus produced them — with
+operator references where the source has them (esm-spec §9.6.4), never
+expanded — and nothing is deduplicated after the fact: `cse` is accepted for
+compatibility and has no effect (a deprecation warning when `true`).
 
 A data-fed parameter (one whose `update` has a `data` rule) keeps those
 rules, and the document carries the `data_sources` entries they name, so
@@ -587,7 +589,7 @@ that is not found is a `BandError`.
 """
 function evaluation_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
     )
     sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
@@ -596,7 +598,7 @@ end
 
 """
     evaluation_document(input, entries::AbstractVector{JacEntry}; model_name = nothing,
-                        cse = true, cse_min_nodes = 12, data_sources = nothing) -> (doc, fields)
+                        cse = false, cse_min_nodes = 12, data_sources = nothing) -> (doc, fields)
 
 The same document from bands the caller already has: `entries` must be
 [`jacobian_bands`](@ref) of the same system (any axis), in its order, and
@@ -609,7 +611,7 @@ passed with one. `fields[k]` names `entries[k]`'s field.
 """
 function evaluation_document(
         input, entries::AbstractVector{JacEntry}; model_name = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
     )
     any(en -> en.band.coef === nothing, entries) && throw(
         ArgumentError(
@@ -689,11 +691,10 @@ _auxiliary_field(aux) = Any[
 
 # Derived model: the source's observed definitions that the coefficients
 # read, with its state derivatives zeroed, plus one state per band whose RHS
-# is the band's coefficient field, after the optional hoisting of
-# [`_hoist!`](@ref). Returns (document, band-state names).
+# is the band's coefficient field. Returns (document, band-state names).
 function _evaluation_document(
         sv::SysView, entries::Vector{JacEntry};
-        cse::Bool = true, cse_min_nodes::Int = 12
+        cse::Bool = false, cse_min_nodes::Int = 12
     )
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
@@ -703,7 +704,12 @@ function _evaluation_document(
     append!(roots, last.(aux))
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_auxiliary!(m, aux)
-    coefs = _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
+    cse && Base.depwarn(
+        "`evaluation_document(...; cse = true)` has no effect: the evaluation " *
+            "document is no longer deduplicated after the fact (coefficients keep " *
+            "their operator references instead)", :evaluation_document
+    )
+    coefs = ASTExpr[en.band.coef for en in entries]
     names = String[]
     for (k, en) in enumerate(entries)
         b = en.band; nm = "J_$k"; push!(names, nm)
@@ -782,6 +788,7 @@ end
 # source agree on its layout, its time origin and its data inputs.
 function _finish_derived!(doc, sv::SysView, derived::String)
     _component_tree!(doc, sv, derived)
+    _operators_blocks!(doc, sv)
     _domain!(doc, sv.domain)
     _data_sources!(doc, sv)
     return _derived_version!(doc)

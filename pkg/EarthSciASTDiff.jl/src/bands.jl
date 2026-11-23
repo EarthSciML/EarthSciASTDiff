@@ -53,12 +53,23 @@ _rebuild(
     contracted = b.contracted, guard = b.guard
 ) = Band(rows, ridx, cidx, coef, contracted, guard)
 
-"Differentiation context: index-set sizes, array-variable shapes, parameter names."
+"""
+Differentiation context: index-set sizes, array-variable shapes, parameter
+names, the system's operator-reference layer (`refs`, `nothing` without
+definitions) and the first index value of each array whose cells do not
+start at 1 (`origins`: the placeholder of an array reference whose body is a
+`faq` over a shifted range; operator_refs.jl).
+"""
 struct Ctx
     index_sets::Dict{String, Int}
     shapes::Dict{String, Vector{Int}}
     params::Set{String}
+    refs::Any
+    origins::Dict{String, Vector{Int}}
 end
+Ctx(index_sets, shapes, params) = Ctx(index_sets, shapes, params, nothing)
+Ctx(index_sets, shapes, params, refs) =
+    Ctx(index_sets, shapes, params, refs, Dict{String, Vector{Int}}())
 is_array(ctx::Ctx, name) = haskey(ctx.shapes, name)
 
 """
@@ -276,6 +287,7 @@ function is_array_expr(e::ASTExpr, ctx::Ctx)::Bool
         "reshape", "transpose", "concat",
     ) && return true
     e.op == "index" && return false
+    _is_ref(e) && return _def!(_layer(), e.name).rank > 0
     return any(x -> is_array_expr(x, ctx), e.args)
 end
 
@@ -392,9 +404,12 @@ function _bands_array!(
     if e isa VarExpr
         e.name == v || return out
         names = ["_r$k" for k in 1:length(shape_u)]           # identity band
+        org = get(ctx.origins, v, nothing)
         push!(
             out, Band(
-                [(1, n) for n in shape_u], Union{String, Int}[names...],
+                org === nothing ? [(1, n) for n in shape_u] :
+                    [(o, o + n - 1) for (o, n) in zip(org, shape_u)],
+                Union{String, Int}[names...],
                 ASTExpr[VarExpr(n) for n in names], co ? mul(scale...) : _ONE
             )
         )
@@ -629,6 +644,8 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
                 length(val.regions[1])
             elseif val isa VarExpr && haskey(ctx.shapes, val.name)
                 length(ctx.shapes[val.name])
+            elseif _is_ref(val)
+                _def!(_layer(), val.name).rank
             else
                 nothing
             end
@@ -649,6 +666,8 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
                     haskey(vr, String(n)) ? _range_of(vr[String(n)], ctx)[1] : 1
                         for n in something(val.output_idx, Any[])
                 ]
+            elseif val isa VarExpr && haskey(ctx.origins, val.name)
+                ctx.origins[val.name]          # a reference's placeholder
             else
                 ones(Int, length(sub_shape))   # identity/broadcast bands are 1-based
             end
