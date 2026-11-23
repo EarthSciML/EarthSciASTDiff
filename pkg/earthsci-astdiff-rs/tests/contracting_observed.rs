@@ -316,6 +316,7 @@ fn scalar_sum_observed_without_output_idx() {
         index_sets: sv.index_sets.clone(),
         domain: sv.domain,
         data_sources: sv.data_sources,
+        refs: sv.refs.clone(),
     };
     let obs = observed_defs(&sv).unwrap();
     let obs2 = observed_defs(&sv2).unwrap();

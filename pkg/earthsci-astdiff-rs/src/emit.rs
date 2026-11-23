@@ -1763,7 +1763,11 @@ pub fn evaluation_document(
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     add_auxiliary(&mut model, &aux);
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let coefs = hoist(&mut doc, &mut model, sv, &bands, cse, cse_min_nodes);
+    // Nothing is deduplicated after the fact: the coefficients are written
+    // as the band calculus produced them, with operator references where the
+    // source has them. `cse` and `cse_min_nodes` no longer have an effect.
+    let _ = (cse, cse_min_nodes, &hoist);
+    let coefs: Vec<Expr> = bands.iter().map(|b| b.coef.clone()).collect();
     let Some(Value::Array(mut eqs)) = model.remove("equations") else {
         unreachable!()
     };
@@ -1866,7 +1870,13 @@ pub(crate) fn finish_derived(
     let mut models = Map::new();
     models.insert(derived.into(), Value::Object(model));
     component_tree(&mut models, sv, derived)?;
-    doc.insert("models".into(), Value::Object(models));
+    let mut models = Value::Object(models);
+    if sv.refs.is_some() {
+        let mut wrap = json!({"models": models});
+        crate::operator_refs::operators_blocks(&mut wrap, &sv.refs, &crate::system::ctx_of(sv)?)?;
+        models = wrap["models"].take();
+    }
+    doc.insert("models".into(), models);
     if let Some(d) = sv.domain.and_then(domain_field) {
         doc.insert("domain".into(), d);
     }

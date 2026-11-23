@@ -35,6 +35,9 @@ pub struct SysView<'a> {
     /// The derived documents copy the entries a data-fed parameter names
     /// (spec §8.1).
     pub data_sources: Option<&'a IndexMap<String, DataSource>>,
+    /// The operator definitions the equations' references resolve against
+    /// (operator_refs.rs), `None` without any.
+    pub refs: Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
 }
 
 impl<'a> SysView<'a> {
@@ -92,6 +95,9 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         index_sets: file.index_sets.clone().unwrap_or_default(),
         domain: file.domain.as_ref(),
         data_sources: file.data_sources.as_ref(),
+        // EarthSciAST's Rust `load` expands every reference before a model
+        // reaches here (a model's own block is not on the typed model yet).
+        refs: None,
     })
 }
 
@@ -160,13 +166,33 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
             .collect::<Result<Vec<_>, _>>()?;
         var.to_mut().shape = Some(axes);
     }
+    let refs = refs_of(&flat.template_registry, &index_sets);
     Ok(SysView {
         variables,
         equations: &flat.equations,
         index_sets,
         domain: flat.domain.as_ref(),
         data_sources: None,
+        refs,
     })
+}
+
+// The layer of a flattened system's merged registry (esm-spec §9.6.4 rule
+// 7: every body closed), `None` when it is empty.
+fn refs_of(
+    reg: &IndexMap<String, serde_json::Value>,
+    index_sets: &IndexMap<String, IndexSet>,
+) -> Option<std::rc::Rc<crate::operator_refs::RefLayer>> {
+    if reg.is_empty() {
+        return None;
+    }
+    let sizes = index_sets
+        .iter()
+        .filter_map(|(k, s)| s.size.map(|n| (k.clone(), n)))
+        .collect();
+    Some(std::rc::Rc::new(crate::operator_refs::RefLayer::new(
+        reg, sizes,
+    )))
 }
 
 fn interval(n: i64) -> IndexSet {
@@ -278,6 +304,7 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
             ctx.params.insert(n.clone());
         }
     }
+    ctx.refs = sv.refs.clone();
     Ok(ctx)
 }
 
@@ -470,20 +497,6 @@ pub fn view_states(sv: &SysView, obs: &HashMap<String, Expr>) -> Vec<String> {
     out
 }
 
-// An expression whose true dependencies `free_variables` cannot see: a
-// surviving template reference exposes only its bindings. Treated as
-// target-DEPENDENT so it is kept (and loudly rejected by the inliner) rather
-// than silently pruned to zero.
-fn opaque_deps(e: &Expr) -> bool {
-    let Expr::Operator(n) = e else { return false };
-    if n.op == "apply_expression_template" {
-        return true;
-    }
-    let mut found = false;
-    n.for_each_child(&mut |c: &Expr| found = found || opaque_deps(c));
-    found
-}
-
 // Names occurring under an index SUBSCRIPT — `args[1..]` of an `index` node.
 fn index_arg_names(acc: &mut HashSet<String>, e: &Expr) {
     let Expr::Operator(n) = e else { return };
@@ -516,7 +529,7 @@ pub fn inlinable_observed(
     let mut work: Vec<&str> = Vec::new();
     for (n, e) in obs {
         let fv = free_variables(e);
-        if !fv.is_disjoint(targets) || opaque_deps(e) {
+        if !fv.is_disjoint(targets) {
             work.push(n);
         }
         for m in &fv {

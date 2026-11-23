@@ -12,6 +12,7 @@ pub(crate) mod hashcons;
 pub mod helpers;
 pub mod inline;
 pub mod jacobian;
+pub mod operator_refs;
 pub mod points;
 pub mod products;
 pub mod recurrence;

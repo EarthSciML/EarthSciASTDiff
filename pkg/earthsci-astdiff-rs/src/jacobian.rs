@@ -7,7 +7,7 @@ use std::rc::Rc;
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, VariableType};
 
-use crate::bands::{bands_in, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
+use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::hashcons::Interner;
 use crate::inline::inline_observed_cached;
@@ -602,7 +602,7 @@ fn row_bands(
         .collect();
     hits.sort();
     for v in &hits {
-        let mut bs = bands_in(&rhs, v, ctx, &shape_u, co)?;
+        let mut bs = crate::operator_refs::ref_bands(&rhs, v, ctx, &shape_u, co)?;
         if !co {
             // Structure-only bands merge on structure alone (spec §2.1 item
             // 2): one-hot lifting has rewritten the placeholder per band
