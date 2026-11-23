@@ -21,7 +21,7 @@
 #     operator) is differentiated once per parameter and binding shape into
 #     BANDS of its own index space (`_def_bands!`): the band calculus runs on
 #     the body with the parameter as the column variable. Each band's
-#     coefficient becomes a derived definition `<D>.d_<p>.b<k>` whose
+#     coefficient becomes a derived definition `<D>.d_<p>.b<k>@<shape>` whose
 #     parameters are D's plus the band's row and contracted index names. A
 #     use reads the array as an intermediate: the band calculus sees a
 #     placeholder array variable in its place (`_abstract_refs`), and the
@@ -40,7 +40,10 @@
 #
 # Both spellings of the reference op are read alike: `apply_operator`
 # (esm 2.4.0) and `apply_expression_template`, the name EarthSciAST releases
-# before it give the same node (esm-spec §9.6.12, "Old names").
+# before it give the same node (esm-spec §9.6.12, "Old names"). Derived
+# references and blocks are written as `apply_operator` / `operators`: the
+# loader of every supported EarthSciAST rewrites the old spelling, so a
+# loaded source never carries it.
 
 const _REF_OPS = ("apply_operator", "apply_expression_template")
 
@@ -87,39 +90,14 @@ end
 
 function RefLayer(registry::AbstractDict, index_sets::Dict{String, Int}; refop = nothing)
     reg = OrderedDict{String, Any}(String(k) => v for (k, v) in registry)
-    op = refop === nothing ? _registry_refop(reg) : String(refop)
+    # EarthSciAST ≥ 0.15 reads `apply_expression_template` as `apply_operator`
+    # at load (esm-spec §9.6.12), so derived references use the current name.
+    op = refop === nothing ? "apply_operator" : String(refop)
     return RefLayer(
         reg, Dict{String, _DefInfo}(), OrderedDict{String, Any}(), op,
         Dict{Tuple{String, String}, ASTExpr}(), Dict{Any, Vector{Band}}(),
         Dict{String, Any}(), Dict{Any, Tuple{Vector{Int}, Vector{Int}}}(), index_sets
     )
-end
-
-# The op name the registry's own nested references use (`apply_operator` when
-# none does: the current spelling).
-function _registry_refop(reg)
-    for (_, d) in reg
-        b = _entry_get(d, "body")
-        b === nothing && continue
-        found = _raw_refop(b)
-        found === nothing || return found
-    end
-    return "apply_operator"
-end
-
-function _raw_refop(x)
-    if x isa AbstractDict
-        o = get(x, "op", nothing)
-        o isa AbstractString && o in _REF_OPS && return String(o)
-        for (_, v) in x
-            r = _raw_refop(v); r === nothing || return r
-        end
-    elseif x isa AbstractVector
-        for v in x
-            r = _raw_refop(v); r === nothing || return r
-        end
-    end
-    return nothing
 end
 
 _entry_get(d::AbstractDict, k) = get(d, k, nothing)
@@ -175,13 +153,15 @@ _no_defmode(f) = _with_defparams(f, nothing)
 
 # ── definitions ─────────────────────────────────────────────────────────────
 
-const _DERIVED_NAME = r"^(.+)\.d_([^.]+?)(?:\.b(\d+))?$"
+# `<D>.d_<p>` (a scalar definition's derivative) or `<D>.d_<p>.b<k>@<shape>`
+# (band k of an array definition's at one binding shape, `_shape_tag`).
+const _DERIVED_NAME = r"^(.+)\.d_([^.@]+)(?:\.b(\d+)@(.*))?$"
 
 # The definition `name`: a registry entry, or a derived definition — one this
 # layer wrote, or one a document written from another view of the same
-# system names (regenerated from its name: `<D>.d_<p>` from D's body,
-# `<D>.d_<p>.b<k>` from D's bands at the use's binding shape, `bindings`).
-function _def!(L::RefLayer, name::AbstractString, bindings = nothing, ctx = nothing)::_DefInfo
+# system names (regenerated from its name alone: `<D>.d_<p>` from D's body,
+# `<D>.d_<p>.b<k>@<shape>` from D's bands at the binding shape it names).
+function _def!(L::RefLayer, name::AbstractString)::_DefInfo
     name = String(name)
     d = get(L.defs, name, nothing)
     d === nothing || return d
@@ -201,7 +181,7 @@ function _def!(L::RefLayer, name::AbstractString, bindings = nothing, ctx = noth
     m === nothing && throw(
         BandError("operator reference to `$name`, which the system does not define")
     )
-    base = _def!(L, m.captures[1], nothing, ctx)
+    base = _def!(L, m.captures[1])
     p = String(m.captures[2])
     p in base.params || throw(
         BandError("operator reference to `$name`: `$(base.name)` has no parameter `$p`")
@@ -209,10 +189,9 @@ function _def!(L::RefLayer, name::AbstractString, bindings = nothing, ctx = noth
     if m.captures[3] === nothing
         _dparam!(L, base, p)
     else
-        (bindings === nothing || ctx === nothing) && throw(
-            BandError("derived definition `$name` is reached without the bindings of a use")
-        )
-        _def_bands!(L, base, _shapekey(L, base, bindings, ctx), p, true)
+        # the binding shape is the name's own: a derived band definition binds
+        # only the parameters its coefficient reads
+        _def_bands!(L, base, _parse_shape_tag(base, String(m.captures[4]), name), p, true)
     end
     d = get(L.defs, name, nothing)
     d === nothing && throw(
@@ -229,8 +208,11 @@ end
 # and the body's output rank.
 function _roles!(L::RefLayer, d::_DefInfo)
     ps = Set{String}(d.params)
+    # a structural field holds a name as a string, or (a range bound in the
+    # typed IR) as a `VarExpr`
     function scal!(x)
         x isa AbstractString && String(x) in ps && push!(d.structural, String(x))
+        x isa VarExpr && x.name in ps && push!(d.structural, x.name)
         x isa AbstractVector && foreach(scal!, x)
         x isa AbstractDict && foreach(scal!, values(x))
         x isa EarthSciAST.IndexSetRef && scal!(x.from)
@@ -315,8 +297,8 @@ _ref_node(L::RefLayer, name::String, bindings::Dict{String, ASTExpr}) =
 _identity_bindings(params) = Dict{String, ASTExpr}(p => VarExpr(p) for p in params)
 
 # Register the derived definition `name` (params, body). A name already
-# registered must carry the same body: the definition was differentiated at
-# two binding shapes with different results, which one name cannot carry.
+# registered must carry the same body (band names carry their binding shape,
+# `_shape_tag`, so two shapes never share one).
 function _register_derived!(L::RefLayer, name::String, params::Vector{String}, body::ASTExpr, what::String)
     haskey(L.registry, name) && throw(
         BandError(
@@ -328,8 +310,8 @@ function _register_derived!(L::RefLayer, name::String, params::Vector{String}, b
     if old !== nothing
         (old.params == params && skey(old.body) == skey(body)) || throw(
             BandError(
-                "`$name` ($what) differs between two binding shapes of one definition; " *
-                    "a definition used at more than one binding shape is not supported"
+                "the derived definition `$name` ($what) was produced twice with " *
+                    "different bodies"
             )
         )
         return old
@@ -355,6 +337,7 @@ function _used_params(body::ASTExpr, params::Vector{String})
     used = Set{String}()
     function scal(x)
         x isa AbstractString && push!(used, String(x))
+        x isa VarExpr && push!(used, x.name)
         x isa AbstractVector && foreach(scal, x)
         x isa AbstractDict && foreach(scal, values(x))
         x isa EarthSciAST.IndexSetRef && push!(used, x.from)
@@ -550,7 +533,11 @@ function _specialize(e::ASTExpr, lits::Dict{String, Any})::ASTExpr
         return v isa Real ? lit(v) : VarExpr(String(v))
     end
     e isa OpExpr || return e
-    sv(x) = x isa AbstractString && haskey(lits, String(x)) ? lits[String(x)] : x
+    function sv(x)
+        x isa AbstractString && haskey(lits, String(x)) && return lits[String(x)]
+        x isa VarExpr && haskey(lits, x.name) && return _specialize(x, lits)
+        return x
+    end
     function sr(r)
         r isa AbstractVector && return Any[sv(x) for x in r]
         r isa EarthSciAST.IndexSetRef && return EarthSciAST.IndexSetRef(String(sv(r.from)); of = r.of)
@@ -623,7 +610,7 @@ _def_ctx(L::RefLayer, D::_DefInfo, sk) = Ctx(
 The bands of array definition `D`'s body with respect to its parameter `p`
 at binding shape `sk`, in D's own index space and generic in D's parameter
 names (memoized). With `co`, each coefficient is a leaf, a reference, or a
-reference `<D>.d_<p>.b<k>(params…, index names…)` to the derived definition
+reference `<D>.d_<p>.b<k>@<shape>(params…, index names…)` to the derived definition
 holding it.
 """
 function _def_bands!(L::RefLayer, D::_DefInfo, sk, p::String, co::Bool)::Vector{Band}
@@ -648,7 +635,7 @@ function _def_bands!(L::RefLayer, D::_DefInfo, sk, p::String, co::Bool)::Vector{
 end
 
 # A band coefficient of `D`'s body written out generically: a leaf or a lone
-# reference as itself, anything else as `<D>.d_<p>.b<k>` over the parameters
+# reference as itself, anything else as `<D>.d_<p>.b<k>@<shape>` over the parameters
 # of D it reads and the band's row and contracted index names it reads.
 function _generic_coef!(L::RefLayer, D::_DefInfo, sk, p::String, k::Int, b::Band)
     c = b.coef
@@ -672,11 +659,61 @@ function _generic_coef!(L::RefLayer, D::_DefInfo, sk, p::String, k::Int, b::Band
             BandError("`$(D.name)`: index name `$n` is also a parameter name")
         )
     end
-    name = D.name * ".d_" * p * ".b" * string(k)
+    name = D.name * ".d_" * p * ".b" * string(k) * "@" * _shape_tag(D, sk)
     params = vcat(_used_params(c, D.params), extra)
     _register_derived!(L, name, params, c, "band $k of ∂$(D.name)/∂$(p)")
     L.bandkey[name] = sk
     return _ref_node(L, name, _identity_bindings(params))
+end
+
+# The binding shape `sk` as a derived band name carries it: per array or
+# structural parameter of D, in parameter order, its argument's extents
+# joined by `x` or its literal, comma-separated. Band k at one shape and band
+# k at another are different definitions (a boundary band empty at one
+# extent shifts the numbering), so the name says which shape it is of.
+function _shape_tag(D::_DefInfo, sk)
+    parts = String[]
+    for (p, v) in sk
+        push!(
+            parts, if v isa Tuple
+                join(string.(v), "x")
+            elseif v isa Integer || v isa AbstractString
+                string(v)
+            else
+                throw(
+                    BandError(
+                        "operator `$(D.name)`: structural parameter `$p` is bound to " *
+                            "the non-integer $v"
+                    )
+                )
+            end
+        )
+    end
+    return join(parts, ",")
+end
+
+# The shape key a derived band name's `<shape>` tag denotes (`_shape_tag`
+# read back): one part per structural or array parameter of D, in order.
+function _parse_shape_tag(D::_DefInfo, tag::String, name::String)
+    parts = split(tag, ","; keepempty = true)
+    key = Any[]
+    i = 0
+    bad() = BandError("derived definition `$name`: `$tag` is not a binding shape of `$(D.name)`")
+    for p in D.params
+        (p in D.structural || p in D.array) || continue
+        i += 1
+        i <= length(parts) || throw(bad())
+        x = String(parts[i])
+        if p in D.structural
+            push!(key, p => something(tryparse(Int, x), x))
+        else
+            dims = isempty(x) ? Int[] : [tryparse(Int, y) for y in split(x, "x")]
+            any(isnothing, dims) && throw(bad())
+            push!(key, p => Tuple(Int.(dims)))
+        end
+    end
+    i == length(parts) || (i == 0 && tag == "") || throw(bad())
+    return Tuple(key)
 end
 
 # ── uses of array definitions: the intermediate and the composition ─────────
@@ -897,7 +934,10 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
         g = _conj(o.guard, sub(b.guard))
         isempty(conds) || (g = _conj(g, _conj(conds)))
         cidx = ASTExpr[_canon_lits(simplify(sub(c))) for c in b.cidx]
-        coef = co ? mul(o.coef, _bind(b.coef, sigma)) : nothing
+        # The inner coefficient is any expression (an argument's band, or a
+        # composed band `ref * argcoef`), not only a generic leaf: substitute
+        # its row and contracted names everywhere, references' bindings included.
+        coef = co ? mul(o.coef, _subst_names(b.coef, sigma)) : nothing
         contracted = vcat(o.contracted, bcon)
         names = String[r for r in o.ridx if r isa String]
         append!(names, String[n for (n, _, _) in contracted])
@@ -1033,18 +1073,14 @@ end
 
 # The definitions a set of references reaches, transitively through bodies,
 # each made present in `L` (a derived definition another view wrote is
-# regenerated from its name and the use's bindings).
-function _reached!(L::RefLayer, refs, ctx::Ctx)
+# regenerated from its name).
+function _reached!(L::RefLayer, refs)
     seen = Set{String}()
     work = collect(refs)
     while !isempty(work)
-        name, braw = popfirst!(work)
+        name, _ = popfirst!(work)
         name in seen && continue
-        B = braw === nothing ? Dict{String, ASTExpr}() :
-            Dict{String, ASTExpr}(String(k) => expression_from_json(v) for (k, v) in braw)
-        d = _with_layer(L) do
-            _def!(L, name, B, ctx)
-        end
+        d = _with_layer(() -> _def!(L, name), L)
         push!(seen, name)
         for r in _raw_refs!(Tuple{String, Any}[], _entry_get(d.entry, "body"))
             r[1] in seen || push!(work, r)
@@ -1077,11 +1113,10 @@ definitions its references reach.
 function _operators_blocks!(doc, sv)
     L = sv.refs
     L === nothing && return doc
-    ctx = _ctx(sv)
     for (_, m) in doc["models"]
         refs = _raw_refs!(Tuple{String, Any}[], m)
         isempty(refs) && continue
-        m[_operators_key(L)] = _operators_block(L, _reached!(L, refs, ctx))
+        m[_operators_key(L)] = _operators_block(L, _reached!(L, refs))
     end
     return doc
 end

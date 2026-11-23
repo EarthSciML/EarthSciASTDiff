@@ -15,9 +15,7 @@ use std::collections::{HashMap, HashSet};
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 
-use crate::bands::{
-    bands, merge_bands, normalize_band, range_of, subst_free, Band, BandError, Ctx,
-};
+use crate::bands::{merge_bands, normalize_band, range_of, subst_free, Band, BandError, Ctx};
 use crate::branches::{canon_lits, simp};
 use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{free_vars, mul, op};
@@ -593,10 +591,13 @@ fn self_bands(
     }
     let def = inline_observed(&obs[&rec.name], &map).map_err(|e| BandError(e.0))?;
     let shape = ctx.shapes.get(&rec.name).cloned().unwrap_or_default();
-    Ok(merge_bands(bands(&def, &rec.name, ctx, &shape)?)
-        .iter()
-        .map(normalize_band)
-        .collect())
+    // through `ref_bands`: the definition may hold operator references
+    Ok(merge_bands(crate::operator_refs::ref_bands(
+        &def, &rec.name, ctx, &shape, true,
+    )?)
+    .iter()
+    .map(normalize_band)
+    .collect())
 }
 
 /// The output index name of the transfer recurrence's extra axis: `_tj`,

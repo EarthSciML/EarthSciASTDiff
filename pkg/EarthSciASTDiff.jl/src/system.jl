@@ -55,9 +55,7 @@ function sysview(file::EarthSciAST.EsmFile, model_name; data_sources = file.data
     eqs = model.equations
     refs = nothing
     if raw !== nothing && !isempty(raw)
-        reg, closing = _close_registry(raw)
-        eqs = isempty(closing) ? eqs : [_close_equation(eq, closing) for eq in eqs]
-        refs = RefLayer(reg, _iset_sizes(isets))
+        eqs, refs = _closed_refs(raw, eqs, isets)
     end
     return SysView(
         Dict{String, Any}(String(k) => v for (k, v) in model.variables),
@@ -113,9 +111,22 @@ function sysview(flat::EarthSciAST.FlattenedSystem; data_sources = nothing)
     end
     # The merged registry `flatten` carries (esm-spec §9.6.4 rule 7): every
     # body closed, every reference binding all of its definition's params.
+    # It is closed here all the same (a no-op on closed bodies): a body that
+    # still read a name freely would otherwise contribute no derivative with
+    # respect to it, a structurally nonzero entry silently dropped.
     reg = flat.template_registry
-    refs = isempty(reg) ? nothing : RefLayer(reg, _iset_sizes(isets))
-    return SysView(vars, flat.equations, isets, flat.domain, data_sources, refs)
+    eqs, refs = isempty(reg) ? (flat.equations, nothing) :
+        _closed_refs(reg, flat.equations, isets)
+    return SysView(vars, eqs, isets, flat.domain, data_sources, refs)
+end
+
+# The equations and the reference layer of a registry closed as `flatten`
+# closes it (`_close_registry`): every reference binds the free names of the
+# definitions it reaches.
+function _closed_refs(raw, eqs, isets)
+    reg, closing = _close_registry(raw)
+    eqs = isempty(closing) ? eqs : [_close_equation(eq, closing) for eq in eqs]
+    return eqs, RefLayer(reg, _iset_sizes(isets))
 end
 
 # Check the shape `flatten` recorded on lifted state `name` against its

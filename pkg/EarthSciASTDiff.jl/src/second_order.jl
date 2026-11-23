@@ -99,11 +99,57 @@ end
 
 # One band per site of `w` in a first-order coefficient, broadcast over the
 # entry's rows: `_scalar_bands!` with the entry's contracted names bound too.
+# A coefficient may hold operator references (operator_refs.jl): scalar ones
+# are differentiated by the derivative table's reference row under the view's
+# layer; an array one is read as an intermediate, its bands with respect to
+# `w` composed with the coefficient's with respect to it (as `_ref_bands`).
 function _coef_bands(b::Band, w::String, ctx::Ctx)
+    L = ctx.refs
+    L === nothing && return _coef_site_bands(b, clip_regions(b.coef, b.ridx, b.rows), w, ctx)
+    return _with_layer(L) do
+        out = Band[]
+        for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
+            body2, ps = _abstract_refs(L, body, ctx)
+            if isempty(ps)
+                append!(out, _coef_site_bands(b, [(rows2, body)], w, ctx))
+                continue
+            end
+            shapes = copy(ctx.shapes); origins = copy(ctx.origins)
+            for (n, (_, ext, org)) in ps
+                shapes[n] = ext; origins[n] = org
+            end
+            ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins)
+            fv = free_variables(body2)
+            got = Band[]
+            w in fv && append!(got, _coef_site_bands(b, [(rows2, body2)], w, ctx2))
+            for (n, (r, _, _)) in ps
+                (n in fv && w in free_variables(r)) || continue
+                inner = _ref_value_bands(L, r, w, ctx, true)
+                isempty(inner) && continue
+                # the bands of the coefficient with respect to the
+                # intermediate, their columns its cells only
+                outer = Band[
+                    _rebuild(x; cidx = x.cidx[(length(b.cidx) + 1):end])
+                        for x in _coef_site_bands(b, [(rows2, body2)], n, ctx2)
+                ]
+                for x in _compose(outer, inner, w, ctx, true)
+                    push!(got, _rebuild(x; cidx = vcat(b.cidx, x.cidx)))
+                end
+            end
+            restore = Dict{String, ASTExpr}(n => r for (n, (r, _, _)) in ps)
+            append!(out, Band[_restore(x, restore) for x in got])
+        end
+        return out
+    end
+end
+
+# The bands of the sites of `w` in the clipped regions `pieces` (row box,
+# coefficient body) of b's coefficient.
+function _coef_site_bands(b::Band, pieces, w::String, ctx::Ctx)
     out = Band[]
     outer = String[[r for r in b.ridx if r isa String]; [n for (n, _, _) in b.contracted]]
     occ = _OccIndex(w)                 # one occurrence index for every region
-    for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
+    for (rows2, body) in pieces
         nested = _nested_sums(body, w, outer)
         taken = Ref{Union{Nothing, Set{String}}}(nothing)
         for s in sorted_sites(body, w)
@@ -112,12 +158,12 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
             )
             c2 = s.expr isa VarExpr ? ASTExpr[] : ASTExpr[s.expr.args[2:end]...]
             c2, d, extra, g = _lift_nested(nested, s, body, c2, dscalar(body, s, _SiteScan(occ, s)), ctx, outer, taken)
-            coef = _simp(d)
-            iszero_lit(coef) && continue
-            c2, coef, contracted = _one_hot(c2, coef, vcat(b.contracted, extra), b.ridx, w, ctx)
+            coef2 = _simp(d)
+            iszero_lit(coef2) && continue
+            c2, coef2, contracted = _one_hot(c2, coef2, vcat(b.contracted, extra), b.ridx, w, ctx)
             push!(
                 out, Band(
-                    rows2, b.ridx, vcat(b.cidx, c2), coef, contracted, _conj(b.guard, g)
+                    rows2, b.ridx, vcat(b.cidx, c2), coef2, contracted, _conj(b.guard, g)
                 )
             )
         end

@@ -11,7 +11,7 @@
 //!   `∂D(B)/∂s = Σ_p D.d_p(B) · ∂B[p]/∂s` ([`dref`]);
 //! * an ARRAY (stencil) definition is differentiated once per parameter and
 //!   binding shape into bands of its own index space ([`def_bands`]), each
-//!   coefficient a derived definition `<D>.d_<p>.b<k>`; a use reads the array
+//!   coefficient a derived definition `<D>.d_<p>.b<k>@<shape>`; a use reads the array
 //!   as an intermediate placeholder whose bands are composed with the
 //!   definition's ([`ref_bands`], [`compose`]).
 //!
@@ -97,13 +97,12 @@ impl std::fmt::Debug for RefLayer {
 
 impl RefLayer {
     pub fn new(registry: &IndexMap<String, Value>, index_sets: HashMap<String, i64>) -> RefLayer {
-        let refop = registry
-            .values()
-            .find_map(|d| d.get("body").and_then(raw_refop))
-            .unwrap_or_else(|| "apply_operator".to_string());
+        // EarthSciAST >= 0.15 reads `apply_expression_template` as
+        // `apply_operator` at load (esm-spec §9.6.12), so derived references
+        // use the current name.
         RefLayer {
             registry: registry.clone(),
-            refop,
+            refop: "apply_operator".to_string(),
             index_sets,
             st: RefCell::new(State::default()),
         }
@@ -112,21 +111,6 @@ impl RefLayer {
     /// The derived definitions written so far, in creation order.
     pub fn derived(&self) -> IndexMap<String, Value> {
         self.st.borrow().derived.clone()
-    }
-}
-
-fn raw_refop(x: &Value) -> Option<String> {
-    match x {
-        Value::Object(m) => {
-            if let Some(Value::String(o)) = m.get("op") {
-                if REF_OPS.contains(&o.as_str()) {
-                    return Some(o.clone());
-                }
-            }
-            m.values().find_map(raw_refop)
-        }
-        Value::Array(a) => a.iter().find_map(raw_refop),
-        _ => None,
     }
 }
 
@@ -187,31 +171,108 @@ pub(crate) fn index_is_independent_param(n: &ExpressionNode, s: &Site) -> bool {
 
 // ── definitions ─────────────────────────────────────────────────────────────
 
-fn derived_name(name: &str) -> Option<(String, String, Option<usize>)> {
-    let (head, k) = match name.rfind(".b") {
-        Some(i) if name[i + 2..].chars().all(|c| c.is_ascii_digit()) && i + 2 < name.len() => {
-            (&name[..i], Some(name[i + 2..].parse().ok()?))
+/// `<D>.d_<p>` (a scalar definition's derivative) or `<D>.d_<p>.b<k>@<shape>`
+/// (band k of an array definition's at one binding shape, [`shape_tag`]):
+/// (D, p, (k, shape)). The rightmost `.d_` that parses wins, as operator_refs.jl's
+/// `_DERIVED_NAME` regex.
+/// (D, p, band (k, shape) or `None` for a scalar definition's derivative).
+type DerivedName = (String, String, Option<(usize, String)>);
+
+fn derived_name(name: &str) -> Option<DerivedName> {
+    let mut end = name.len();
+    while let Some(i) = name[..end].rfind(".d_") {
+        end = i;
+        if i == 0 {
+            break;
         }
-        _ => (name, None),
-    };
-    let i = head.rfind(".d_")?;
-    let p = &head[i + 3..];
-    if p.is_empty() || p.contains('.') {
-        return None;
+        let rest = &name[i + 3..];
+        let plen = rest.find(['.', '@']).unwrap_or(rest.len());
+        if plen == 0 {
+            continue;
+        }
+        let (p, tail) = rest.split_at(plen);
+        if tail.is_empty() {
+            return Some((name[..i].to_string(), p.to_string(), None));
+        }
+        let Some(t) = tail.strip_prefix(".b") else {
+            continue;
+        };
+        let Some(at) = t.find('@') else { continue };
+        let digits = &t[..at];
+        if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(k) = digits.parse() else { continue };
+        return Some((
+            name[..i].to_string(),
+            p.to_string(),
+            Some((k, t[at + 1..].to_string())),
+        ));
     }
-    Some((head[..i].to_string(), p.to_string(), k))
+    None
+}
+
+/// The shape key a derived band name's `<shape>` tag denotes ([`shape_tag`]
+/// read back): one part per array parameter of `d`, in parameter order.
+fn parse_shape_tag(d: &DefInfo, tag: &str, name: &str) -> R<ShapeKey> {
+    let bad = || {
+        BandError(format!(
+            "derived definition `{name}`: `{tag}` is not a binding shape of `{}`",
+            d.name
+        ))
+    };
+    if let Some(p) = d.params.iter().find(|p| d.structural.contains(*p)) {
+        return Err(BandError(format!(
+            "operator `{}`: its parameter `{p}` fills a structural field; an array \
+             definition with one is not supported by this binding yet",
+            d.name
+        )));
+    }
+    let arrays: Vec<&String> = d.params.iter().filter(|p| d.array.contains(*p)).collect();
+    let parts: Vec<&str> = if tag.is_empty() && arrays.is_empty() {
+        vec![]
+    } else {
+        tag.split(',').collect()
+    };
+    if parts.len() != arrays.len() {
+        return Err(bad());
+    }
+    let mut key = Vec::new();
+    for (p, x) in arrays.into_iter().zip(parts) {
+        let dims: Vec<i64> = if x.is_empty() {
+            vec![]
+        } else {
+            x.split('x')
+                .map(|y| y.parse().map_err(|_| bad()))
+                .collect::<R<_>>()?
+        };
+        key.push((p.clone(), format!("{dims:?}")));
+    }
+    Ok(key)
+}
+
+/// The binding shape `sk` as a derived band name carries it: per array
+/// parameter, in parameter order, its argument's extents joined by `x`,
+/// comma-separated (operator_refs.jl `_shape_tag`). Band k at one shape and
+/// band k at another are different definitions.
+fn shape_tag(sk: &ShapeKey) -> String {
+    sk.iter()
+        .map(|(_, v)| {
+            v.trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join("x")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 impl RefLayer {
     /// The definition `name`: a registry entry, or a derived definition (one
-    /// this layer wrote, or regenerated from its name and the use's
-    /// bindings, `ctx` their context).
-    pub(crate) fn def(
-        &self,
-        name: &str,
-        bindings: Option<&HashMap<String, Expr>>,
-        ctx: Option<&Ctx>,
-    ) -> R<Rc<DefInfo>> {
+    /// this layer wrote, or regenerated from its name alone).
+    pub(crate) fn def(&self, name: &str) -> R<Rc<DefInfo>> {
         if let Some(d) = self.st.borrow().defs.get(name) {
             return Ok(d.clone());
         }
@@ -246,7 +307,7 @@ impl RefLayer {
                 "operator reference to `{name}`, which the system does not define"
             ))
         })?;
-        let bd = self.def(&base, None, ctx)?;
+        let bd = self.def(&base)?;
         if !bd.params.contains(&p) {
             return Err(BandError(format!(
                 "operator reference to `{name}`: `{base}` has no parameter `{p}`"
@@ -256,13 +317,10 @@ impl RefLayer {
             None => {
                 self.dparam(&bd, &p)?;
             }
-            Some(_) => {
-                let (Some(b), Some(c)) = (bindings, ctx) else {
-                    return Err(BandError(format!(
-                        "derived definition `{name}` is reached without the bindings of a use"
-                    )));
-                };
-                let sk = self.shapekey(&bd, b, c)?;
+            Some((_, tag)) => {
+                // the binding shape is the name's own: a derived band
+                // definition binds only the parameters its coefficient reads
+                let sk = parse_shape_tag(&bd, &tag, name)?;
                 self.def_bands(&bd, &sk, &p, true)?;
             }
         }
@@ -318,7 +376,7 @@ impl RefLayer {
             }
         }
         if REF_OPS.contains(&n.op.as_str()) {
-            let callee = self.def(n.name.as_deref().unwrap_or(""), None, None)?;
+            let callee = self.def(n.name.as_deref().unwrap_or(""))?;
             let mut bs: Vec<_> = n.bindings.iter().flatten().collect();
             bs.sort_by(|a, b| a.0.cmp(b.0));
             for (q, b) in bs {
@@ -392,9 +450,7 @@ impl RefLayer {
                 .map(|r| r.len())
                 .unwrap_or(0),
             "index" => 0,
-            o if REF_OPS.contains(&o) => {
-                self.def(n.name.as_deref().unwrap_or(""), None, None)?.rank
-            }
+            o if REF_OPS.contains(&o) => self.def(n.name.as_deref().unwrap_or(""))?.rank,
             _ => {
                 let mut r = 0;
                 for c in &n.args {
@@ -429,8 +485,8 @@ impl RefLayer {
                 return Ok(());
             }
             return Err(BandError(format!(
-                "`{name}` ({what}) differs between two binding shapes of one definition; a \
-                 definition used at more than one binding shape is not supported"
+                "the derived definition `{name}` ({what}) was produced twice with \
+                 different bodies"
             )));
         }
         let entry = serde_json::json!({
@@ -459,8 +515,29 @@ impl RefLayer {
                 d.name
             )));
         }
-        let site = Site::of(&Expr::Variable(p.to_string()));
         let ps: HashSet<String> = d.params.iter().cloned().collect();
+        // A body must be closed (esm-spec §9.6.4 rule 7, as `flatten` closes
+        // the merged registry): differentiated only w.r.t. its parameters, a
+        // name it read freely would contribute no derivative, a structurally
+        // nonzero entry silently dropped (operator_refs.jl closes the
+        // registry in `sysview` instead).
+        let mut open: Vec<String> = free_vars(&d.body)
+            .into_iter()
+            .filter(|x| !ps.contains(x))
+            .collect();
+        if !open.is_empty() {
+            open.sort();
+            return Err(BandError(format!(
+                "operator `{}` reads {} without binding it as a parameter (the body is \
+                 not closed)",
+                d.name,
+                open.iter()
+                    .map(|x| format!("`{x}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        let site = Site::of(&Expr::Variable(p.to_string()));
         let body = with_defparams(Some(ps), || dscalar_in(&d.body, &site, &SiteScan::plain()))?;
         let body = simp(&body);
         let t = if leafy(&body) {
@@ -547,9 +624,7 @@ pub(crate) fn dref(
 ) -> Result<Expr, DerivativeRuleError> {
     let l = layer()?;
     let be = |e: BandError| DerivativeRuleError(e.0);
-    let d = l
-        .def(n.name.as_deref().unwrap_or(""), None, None)
-        .map_err(be)?;
+    let d = l.def(n.name.as_deref().unwrap_or("")).map_err(be)?;
     if d.rank != 0 {
         return Err(DerivativeRuleError(format!(
             "an array-valued operator reference (`{}`) in a scalar position",
@@ -594,9 +669,7 @@ pub(crate) fn dref_check(
 ) -> Result<bool, DerivativeRuleError> {
     let l = layer()?;
     let be = |e: BandError| DerivativeRuleError(e.0);
-    let d = l
-        .def(n.name.as_deref().unwrap_or(""), None, None)
-        .map_err(be)?;
+    let d = l.def(n.name.as_deref().unwrap_or("")).map_err(be)?;
     let empty = HashMap::new();
     let b = n.bindings.as_ref().unwrap_or(&empty);
     let mut nz = false;
@@ -634,7 +707,7 @@ impl RefLayer {
         match e {
             Expr::Variable(v) => Ok(ctx.shapes.get(v).cloned().unwrap_or_default()),
             Expr::Operator(n) if REF_OPS.contains(&n.op.as_str()) => {
-                let d = self.def(n.name.as_deref().unwrap_or(""), None, None)?;
+                let d = self.def(n.name.as_deref().unwrap_or(""))?;
                 if d.rank == 0 {
                     return Ok(vec![]);
                 }
@@ -759,7 +832,7 @@ impl RefLayer {
         let mut out = Vec::new();
         for (k, mut b) in bs.into_iter().enumerate() {
             if co {
-                b.coef = self.generic_coef(d, p, k + 1, &b)?;
+                b.coef = self.generic_coef(d, sk, p, k + 1, &b)?;
             }
             out.push(b);
         }
@@ -768,7 +841,7 @@ impl RefLayer {
         Ok(out)
     }
 
-    fn generic_coef(&self, d: &DefInfo, p: &str, k: usize, b: &Band) -> R<Expr> {
+    fn generic_coef(&self, d: &DefInfo, sk: &ShapeKey, p: &str, k: usize, b: &Band) -> R<Expr> {
         let c = &b.coef;
         let mut names: HashSet<String> = b
             .ridx
@@ -794,7 +867,7 @@ impl RefLayer {
         }
         let mut extra: Vec<String> = fv.into_iter().filter(|n| names.contains(n)).collect();
         extra.sort();
-        let name = format!("{}.d_{}.b{}", d.name, p, k);
+        let name = format!("{}.d_{}.b{}@{}", d.name, p, k, shape_tag(sk));
         let mut params = used_params(c, &d.params);
         params.extend(extra);
         self.register_derived(
@@ -850,20 +923,36 @@ fn body_extents(n: &ExpressionNode, ctx: &Ctx) -> R<(Vec<i64>, Vec<i64>)> {
 
 // ── uses of array definitions ──────────────────────────────────────────────
 
-struct Placeholder {
-    name: String,
-    r: Expr,
+pub(crate) struct Placeholder {
+    pub(crate) name: String,
+    pub(crate) r: Expr,
     ext: Vec<i64>,
     org: Vec<i64>,
 }
 
-fn abstract_refs(l: &RefLayer, e: &Expr, ctx: &Ctx) -> R<(Expr, Vec<Placeholder>)> {
+impl Placeholder {
+    /// `ctx` with this placeholder's extents and origins declared.
+    pub(crate) fn declare(&self, ctx: &mut Ctx) {
+        ctx.shapes.insert(self.name.clone(), self.ext.clone());
+        ctx.origins.insert(self.name.clone(), self.org.clone());
+    }
+}
+
+/// `b` with every placeholder read back as its reference.
+pub(crate) fn restore_band(mut b: Band, restore: &HashMap<String, Expr>) -> Band {
+    b.cidx = b.cidx.iter().map(|c| subst_names(c, restore)).collect();
+    b.coef = subst_names(&b.coef, restore);
+    b.guard = b.guard.as_ref().map(|g| subst_names(g, restore));
+    b
+}
+
+pub(crate) fn abstract_refs(l: &RefLayer, e: &Expr, ctx: &Ctx) -> R<(Expr, Vec<Placeholder>)> {
     let mut found: IndexMap<String, (Expr, String)> = IndexMap::new();
     let out = abstract_walk(l, e, &mut found, &HashSet::new())?;
     let mut ps = Vec::new();
     for (_, (r, name)) in found {
         let n = ref_node(&r).unwrap();
-        let d = l.def(n.name.as_deref().unwrap_or(""), None, None)?;
+        let d = l.def(n.name.as_deref().unwrap_or(""))?;
         let (ext, org) = l.ref_extents(&d, n.bindings.as_ref().unwrap_or(&HashMap::new()), ctx)?;
         ps.push(Placeholder { name, r, ext, org });
     }
@@ -880,7 +969,7 @@ fn abstract_walk(
         return Ok(e.clone());
     };
     if REF_OPS.contains(&n.op.as_str()) {
-        let d = l.def(n.name.as_deref().unwrap_or(""), None, None)?;
+        let d = l.def(n.name.as_deref().unwrap_or(""))?;
         if d.rank > 0 {
             let fv = free_vars(e);
             if fv.iter().any(|x| scope.contains(x)) {
@@ -935,8 +1024,7 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
         }
         let mut ctx2 = ctx.clone();
         for p in &ps {
-            ctx2.shapes.insert(p.name.clone(), p.ext.clone());
-            ctx2.origins.insert(p.name.clone(), p.org.clone());
+            p.declare(&mut ctx2);
         }
         let fv = earthsci_ast::free_variables(&rhs2);
         let mut out = Vec::new();
@@ -956,21 +1044,19 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
             let outer = bands_in(&rhs2, &p.name, &ctx2, shape_u, co)?;
             out.extend(compose(&outer, &inner, co)?);
         }
-        Ok(out
-            .into_iter()
-            .map(|mut b| {
-                b.cidx = b.cidx.iter().map(|c| subst_names(c, &restore)).collect();
-                b.coef = subst_names(&b.coef, &restore);
-                b.guard = b.guard.as_ref().map(|g| subst_names(g, &restore));
-                b
-            })
-            .collect())
+        Ok(out.into_iter().map(|b| restore_band(b, &restore)).collect())
     })
 }
 
-fn ref_value_bands(l: &RefLayer, r: &Expr, v: &str, ctx: &Ctx, co: bool) -> R<Vec<Band>> {
+pub(crate) fn ref_value_bands(
+    l: &RefLayer,
+    r: &Expr,
+    v: &str,
+    ctx: &Ctx,
+    co: bool,
+) -> R<Vec<Band>> {
     let n = ref_node(r).unwrap();
-    let d = l.def(n.name.as_deref().unwrap_or(""), None, None)?;
+    let d = l.def(n.name.as_deref().unwrap_or(""))?;
     let empty = HashMap::new();
     let b = n.bindings.as_ref().unwrap_or(&empty);
     let sk = l.shapekey(&d, b, ctx)?;
@@ -1065,7 +1151,7 @@ fn int_lit(e: &Expr) -> Option<i64> {
 /// The chain rule through an intermediate array `W`: `outer` are bands
 /// w.r.t. `W` (columns: cells of `W`), `inner` the bands of `W` (rows: cells
 /// of `W`); see operator_refs.jl `_compose`.
-fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> {
+pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> {
     let mut out = Vec::new();
     for o in outer {
         for b in inner {
@@ -1136,7 +1222,10 @@ fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> {
                 .map(|c| canon_lits(&simplify_jl(&sub(c))))
                 .collect();
             let coef = if co {
-                simp(&mul(vec![o.coef.clone(), bind(&b.coef, &sigma)]))
+                // The inner coefficient is any expression (an argument's
+                // band, or a composed band `ref * argcoef`), not only a
+                // generic leaf: substitute everywhere, bindings included.
+                simp(&mul(vec![o.coef.clone(), sub(&b.coef)]))
             } else {
                 placeholder()
             };
@@ -1200,7 +1289,7 @@ pub(crate) fn is_array_ref(e: &Expr) -> bool {
     let (Some(n), Some(l)) = (ref_node(e), current_layer()) else {
         return false;
     };
-    l.def(n.name.as_deref().unwrap_or(""), None, None)
+    l.def(n.name.as_deref().unwrap_or(""))
         .map(|d| d.rank > 0)
         .unwrap_or(false)
 }
@@ -1227,30 +1316,14 @@ fn raw_refs(x: &Value, acc: &mut Vec<(String, Option<Value>)>) {
 }
 
 impl RefLayer {
-    fn reached(
-        self: &Rc<Self>,
-        refs: Vec<(String, Option<Value>)>,
-        ctx: &Ctx,
-    ) -> R<IndexSet<String>> {
+    fn reached(self: &Rc<Self>, refs: Vec<(String, Option<Value>)>) -> R<IndexSet<String>> {
         let mut seen = IndexSet::new();
         let mut work: std::collections::VecDeque<_> = refs.into();
-        while let Some((name, braw)) = work.pop_front() {
+        while let Some((name, _)) = work.pop_front() {
             if seen.contains(&name) {
                 continue;
             }
-            let b: HashMap<String, Expr> = match braw {
-                Some(Value::Object(m)) => m
-                    .into_iter()
-                    .map(|(k, v)| {
-                        Ok((
-                            k,
-                            serde_json::from_value(v).map_err(|e| BandError(e.to_string()))?,
-                        ))
-                    })
-                    .collect::<R<_>>()?,
-                _ => HashMap::new(),
-            };
-            let d = with_layer(&Some(self.clone()), || self.def(&name, Some(&b), Some(ctx)))?;
+            let d = with_layer(&Some(self.clone()), || self.def(&name))?;
             seen.insert(name);
             let mut inner = Vec::new();
             if let Some(body) = d.entry.get("body") {
@@ -1285,7 +1358,7 @@ impl RefLayer {
 
 /// Give each top-level model of a derived document that holds an operator
 /// reference the `operators` block of the definitions its references reach.
-pub(crate) fn operators_blocks(doc: &mut Value, l: &Option<Rc<RefLayer>>, ctx: &Ctx) -> R<()> {
+pub(crate) fn operators_blocks(doc: &mut Value, l: &Option<Rc<RefLayer>>) -> R<()> {
     let Some(l) = l else { return Ok(()) };
     let key = if l.refop == "apply_operator" {
         "operators"
@@ -1301,10 +1374,55 @@ pub(crate) fn operators_blocks(doc: &mut Value, l: &Option<Rc<RefLayer>>, ctx: &
         if refs.is_empty() {
             continue;
         }
-        let names = l.reached(refs, ctx)?;
+        let names = l.reached(refs)?;
         if let Value::Object(mm) = m {
             mm.insert(key.to_string(), Value::Object(l.block(&names)));
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn derived_names_parse() {
+        assert_eq!(
+            derived_name("M.rate.d_x"),
+            Some(("M.rate".into(), "x".into(), None))
+        );
+        assert_eq!(
+            derived_name("M.adv.d_f.b2@6x4,3"),
+            Some(("M.adv".into(), "f".into(), Some((2, "6x4,3".into()))))
+        );
+        // the scalar derivative of a band definition
+        assert_eq!(
+            derived_name("M.adv.d_f.b2@6x4.d_u"),
+            Some(("M.adv.d_f.b2@6x4".into(), "u".into(), None))
+        );
+        assert_eq!(derived_name("M.adv.d_f.b2"), None);
+        assert_eq!(derived_name("rate"), None);
+    }
+
+    #[test]
+    fn shape_tags_round_trip() {
+        let sk: ShapeKey = vec![
+            ("f".into(), format!("{:?}", vec![6i64, 4])),
+            ("g".into(), format!("{:?}", vec![2i64])),
+        ];
+        assert_eq!(shape_tag(&sk), "6x4,2");
+        let d = DefInfo {
+            name: "D".into(),
+            params: vec!["f".into(), "k".into(), "g".into()],
+            body: Expr::Variable("f".into()),
+            entry: Value::Null,
+            value: HashSet::from(["k".to_string()]),
+            array: HashSet::from(["f".to_string(), "g".to_string()]),
+            structural: HashSet::new(),
+            rank: 1,
+        };
+        assert_eq!(parse_shape_tag(&d, "6x4,2", "D.d_f.b1@6x4,2").unwrap(), sk);
+        assert!(parse_shape_tag(&d, "6x4", "D.d_f.b1@6x4").is_err());
+    }
 }

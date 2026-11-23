@@ -437,9 +437,15 @@ trailing parameters, sorted; each reference binds them to their own names).
   shape (array arguments' extents, structural literals) in the body's own
   index space (§4: rows over its cells, which are a `faq` body's range values
   or a `makearray`'s positions); each coefficient that is not a leaf or a
-  lone reference is the derived definition `D.d_p.b<k>` over the parameters
-  of D it reads and the band's row and contracted index names it reads,
-  sorted. A use reads the array as an intermediate: the bands of the
+  lone reference is the derived definition `D.d_p.b<k>@<shape>` over the
+  parameters of D it reads and the band's row and contracted index names it
+  reads, sorted. `<shape>` is the binding shape: per array or structural
+  parameter of D, in parameter order, its argument's extents joined by `x`
+  (`6x4`) or its literal, comma-separated (`D.d_f.b2@6x4,3`). Band k at one
+  shape and band k at another are different definitions (a band empty at one
+  extent shifts the numbering, and a structural literal may reach a
+  coefficient), so a definition used at several binding shapes has derived
+  definitions for each. A use reads the array as an intermediate: the bands of the
   enclosing expression with respect to that array (whose columns are its
   cells) are composed with its own bands bound to the use's arguments and
   composed with the arguments' bands — inner row names read the outer
@@ -1399,8 +1405,9 @@ The derived model is named `JacobianEval` and holds:
   kept. The source's other equations, such as a model's `ic` equations, are
   kept;
 - in each top-level model whose subtree holds an operator reference (§3.6),
-  an `operators` block (or `expression_templates`, the earlier name, when the
-  source's references use `apply_expression_template`): the transitive
+  an `operators` block, its references written `apply_operator` (a source
+  loaded under the earlier names `expression_templates` /
+  `apply_expression_template` is read under the current ones): the transitive
   closure of the definitions its references reach, the source's entries as
   its registry holds them in registry order, then the derived definitions in
   name order, each `{"params", "body", "description", "reference_only":

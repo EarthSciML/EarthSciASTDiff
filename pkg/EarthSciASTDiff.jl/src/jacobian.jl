@@ -391,7 +391,10 @@ end
 # order the downstream pattern/scatter construction (assemble.jl) reads.
 function _row_bands!(out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ctx, co::Bool)
     shape_u = get(ctx.shapes, u, Int[])
-    rhs = inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
+    # under the view's layer: inlining reads definitions' ranks
+    rhs = _with_layer(ctx.refs) do
+        inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
+    end
     hits = sort!(String[v for v in free_variables(rhs) if v in cols])
     for v in hits
         for b in merge_bands(_ref_bands(rhs, v, ctx, shape_u, co))

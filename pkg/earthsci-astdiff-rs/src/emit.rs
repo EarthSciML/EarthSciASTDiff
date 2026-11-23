@@ -1828,7 +1828,7 @@ pub(crate) fn finish_derived(
     let mut models = Value::Object(models);
     if sv.refs.is_some() {
         let mut wrap = json!({"models": models});
-        crate::operator_refs::operators_blocks(&mut wrap, &sv.refs, &crate::system::ctx_of(sv)?)?;
+        crate::operator_refs::operators_blocks(&mut wrap, &sv.refs)?;
         models = wrap["models"].take();
     }
     doc.insert("models".into(), models);
