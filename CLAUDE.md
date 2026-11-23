@@ -101,6 +101,11 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `cse.jl`          — hash-consed repeated-subtree extraction into zero-param
   `expression_templates` (`cse_templates` / `expand_templates`, spec §4.1)
 - `bands.jl`        — array-level band calculus (faq/makearray)
+- `operator_refs.jl` — operator references (`apply_operator`), never
+  expanded: derived definitions `<D>.d_<p>` and the chain rule for scalar
+  definitions, bands `<D>.d_<p>.b<k>` composed at each use for array
+  (stencil) definitions, the `operators` blocks of derived documents. The
+  ONE reference-aware layer (Rust `operator_refs.rs` mirrors it)
 - `clip.jl`         — static region clipping (affine breakpoint splits, exact
   guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering

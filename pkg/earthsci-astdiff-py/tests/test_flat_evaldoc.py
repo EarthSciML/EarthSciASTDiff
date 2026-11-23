@@ -39,7 +39,7 @@ def _flat(valid_dir):
     return ea.flatten(ea.load_path(str(valid_dir / f"{NAME}.esm")))
 
 
-@pytest.mark.parametrize("cse,tag", [(True, "evaldoc"), (False, "evaldoc-nocse")])
+@pytest.mark.parametrize("cse,tag", [(False, "evaldoc")])
 def test_flat_evaldoc_golden_and_layout(cse, tag, valid_dir, golden_dir):
     flat = _flat(valid_dir)
     sv = sysview(flat)

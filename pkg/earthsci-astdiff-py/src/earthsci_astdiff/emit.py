@@ -728,7 +728,9 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     roots = [en.band.coef for en in entries] + [d for _, _, d in aux]
     _zero_source_derivatives(m, sv, ctx, roots)
     _add_auxiliary(m, aux)
-    coefs = _hoist(doc, m, sv, entries, cse, cse_min_nodes)
+    # Nothing is deduplicated after the fact (the reference's evaluation
+    # document no longer hoists): `cse` and `cse_min_nodes` have no effect.
+    coefs = [en.band.coef for en in entries]
     names: list[str] = []
     for k, en in enumerate(entries):
         b = en.band
