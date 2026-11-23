@@ -18,10 +18,10 @@ using EarthSciASTDiff: _sv_src, _build_eval, _column_names, _ctx
 function _doc_evaluator(doc, model; build_kwargs = NamedTuple())
     tree = length(doc["models"]) > 1
     build(; kw...) = tree ?
-        build_evaluator(
+        tw_build(
             EarthSciAST.flatten(EarthSciAST.load_string(stable_json(doc))); build_kwargs..., kw...
         ) :
-        build_evaluator(
+        tw_build(
             EarthSciASTDiff.JSON3.read(stable_json(doc)); model_name = model, build_kwargs..., kw...
         )
     ev = if haskey(build_kwargs, :compiler)

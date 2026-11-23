@@ -166,7 +166,7 @@ _apply(name, b) = Dict{String, Any}(
             )
         ), (("interp", "bilinear"),); v = true
     )
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     # every cell, each clamp region and the corners: both states feed the
     # same lookup, so the Jacobian row carries BOTH partials
     for u in (
@@ -187,7 +187,7 @@ end
             )
         ), (("interp", "linear"),)
     )
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     # inside each segment, and flat outside the axis
     for (x, slope) in ((0.4, 10.0), (1.6, 2.0), (2.5, 0.0), (-0.5, 0.0))
         res = doc_jacobian(file; u = [x], p = p)
@@ -212,7 +212,7 @@ end
             )
         ), (("calendar", "julian_day"),)
     )
-    _, _, p, _, _ = build_evaluator(jd)
+    _, _, p, _, _ = tw_build(jd)
     for x in (0.4, 1.0e9 + 0.3)
         @test Matrix(doc_jacobian(jd; u = [x], p = p).J) ≈ [3 / 86400;;] rtol = 1.0e-12
     end

@@ -114,7 +114,7 @@ end
 @testset "minmod: eval-CSE Jacobian matches the plain path and AD" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 2.3))
     Jad = ad_jacobian(f!, u, p0, 0.0)
     Jc = doc_jacobian(file; model_name = mname, u = u, p = p0).J        # default: CSE on

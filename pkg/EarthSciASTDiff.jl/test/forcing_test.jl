@@ -122,12 +122,12 @@ end
 
 @testset "forcing: values against ForwardDiff through the RHS" begin
     file = fixture("forcing_bracket.esm")
-    _, u00, _, _, vm0 = build_evaluator(file)
+    _, u00, _, _, vm0 = tw_build(file)
     rows = first.(sort(collect(vm0), by = last))
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(u00)]
     for (wrt, names) in ((:forcing, ["F", "G"]), (:parameters, ["E"]))
         pf = _promoted(BRACKET, "Bracket", names)
-        f!, uf, pp, _, vm = build_evaluator(pf)
+        f!, uf, pp, _, vm = tw_build(pf)
         x = copy(uf)
         for (i, r) in enumerate(rows)
             x[vm[r]] = u[i]
@@ -152,7 +152,7 @@ end
         end
     end
     # the scalar parameter columns against ForwardDiff over `p`
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     res = doc_jacobian(file; wrt = :parameters, u = u, p = p, t = 0.37)
     Jp = ForwardDiff.jacobian(collect(Float64, p)) do q
         du = similar(q, length(u)); f!(du, u, NamedTuple{keys(p)}(Tuple(q)), 0.37); du
@@ -195,7 +195,7 @@ end
 
 @testset "forcing: the Jᵀλ document is the transposed product" begin
     file = fixture("forcing_bracket.esm")
-    _, u0, p, _, _ = build_evaluator(file)
+    _, u0, p, _, _ = tw_build(file)
     u = u0 .* (0.5 .+ rand(length(u0)))
     λ = randn(length(u0))
     for wrt in FORCING_AXES
@@ -223,7 +223,10 @@ end
     @test col(layout.u0) ≈ -2 * 1.0 * layout.u0[iS]
     # S's row reads F[1,1]²: refill the buffer in place, as a provider does
     bufs["F"][1, 1] = 3.0
-    EarthSciAST.notify_forcing_refresh!(bufs["F"])
+    # EarthSciAST up to 0.14 announces a refill per buffer; `main` announces
+    # it to the problem that reads it, and a bare build reads its buffers live
+    applicable(EarthSciAST.notify_forcing_refresh!, bufs["F"]) &&
+        EarthSciAST.notify_forcing_refresh!(bufs["F"])
     @test col(layout.u0) ≈ -2 * 3.0 * layout.u0[iS]
 end
 
@@ -261,7 +264,7 @@ end
     # reached with the (state-identical) layout of the in-range document.
     past = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 1, _op("+", "i", 2))))
     @test length(jacobian_bands(past, "B"; wrt = :forcing, forcing = ["F"])) == 1
-    _, u0, _, _, vm = build_evaluator(ok)
+    _, u0, _, _, vm = tw_build(ok)
     lay = (u0 = u0, var_map = vm)
     @test jacobian_pattern(ok; wrt = :forcing, forcing = ["F"], source_layout = lay).pattern |>
         nnz == 4
@@ -277,7 +280,7 @@ end
 
 @testset "parameters: an array parameter read past its extent is a ghost read" begin
     ok = _bracket_doc(_op("*", _ix("c", "i"), _ix("F", 2, _op("+", "i", 1))))
-    _, u0, _, _, vm = build_evaluator(ok)
+    _, u0, _, _, vm = tw_build(ok)
     lay = (u0 = u0, var_map = vm)
     # an array parameter read past its extent (F is not data-fed here) is a
     # ghost read, as the same stencil on a state is: i = 4 reads F[1,6]

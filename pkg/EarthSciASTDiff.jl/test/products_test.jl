@@ -26,7 +26,7 @@ _axistag(wrt::Symbol) = wrt == :states ? "" : ".$wrt"
 # An equality-filtered `faq` is refused by EarthSciAST's native compiler until
 # it implements §9.3's equality-filter scatter; the interpreter evaluates it.
 function _eval_product(doc, model, u::AbstractDict, inputs::AbstractDict, t; params = nothing)
-    f!, x0, p, _, vm = build_evaluator(
+    f!, x0, p, _, vm = tw_build(
         EarthSciASTDiff.JSON3.read(stable_json(doc)); model_name = model,
         compiler = :interpreter
     )

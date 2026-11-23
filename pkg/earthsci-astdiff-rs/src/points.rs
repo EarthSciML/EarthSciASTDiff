@@ -42,10 +42,16 @@ fn fold_const_gathers(e: &Expr, bind: &HashMap<String, f64>) -> R<Expr> {
     if n.op == "index" {
         if let Some(Expr::Operator(cn)) = n.args.first() {
             if cn.op == "const" {
-                let mut v = cn
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| BandError("const without value".into()))?;
+                // The literal as the JSON it was written as: EarthSciAST
+                // types it as `serde_json::Value` up to 0.14 and as its own
+                // `ConstValue` on `main`; both serialize to that JSON.
+                let lit = serde_json::to_value(
+                    cn.value
+                        .as_ref()
+                        .ok_or_else(|| BandError("const without value".into()))?,
+                )
+                .map_err(|e| BandError(format!("const value: {e}")))?;
+                let mut v = &lit;
                 for x in &n.args[1..] {
                     let i = eval_cidx(x, bind)?;
                     v = v

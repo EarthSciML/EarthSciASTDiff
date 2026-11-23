@@ -285,8 +285,23 @@ _sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing) =
 # `EsmFile` threads `model_name` through `build_evaluator`'s own selection
 # (so multi-model documents work), a `FlattenedSystem` has no model to name.
 _build_eval(src::EarthSciAST.EsmFile, model_name; kw...) =
-    build_evaluator(src; model_name = model_name === nothing ? nothing : String(model_name), kw...)
-_build_eval(src, model_name; kw...) = build_evaluator(src; kw...)
+    _tree_walk_build(src; model_name = model_name === nothing ? nothing : String(model_name), kw...)
+_build_eval(src, model_name; kw...) = _tree_walk_build(src; kw...)
+
+# The right-hand side EarthSciAST builds for `input`, as the five values the
+# layout and the tests read: `(f!, u0, p, tspan, var_map)`, the model's own
+# (unscoped) names. EarthSciAST `main` removed the deprecated
+# `build_evaluator` alias of this build; `esm_problem`, its public
+# replacement, builds the flattened run document (scoped names), so the
+# layout keeps the build the alias called, which every EarthSciAST in this
+# package's range has.
+_tree_walk_build(input; kw...) = EarthSciAST._build_evaluator(input; kw...)
+# A flattened system's names are already scoped, and `esm_problem` builds it
+# as given (the internal build has no method for one).
+function _tree_walk_build(flat::EarthSciAST.FlattenedSystem; kw...)
+    prob = EarthSciAST.esm_problem(flat, (0.0, 1.0); kw...)
+    return (prob.f!, prob.u0, prob.p, prob.tspan, prob.var_map)
+end
 
 function _only_model(file::EarthSciAST.EsmFile)
     length(file.models) == 1 ||

@@ -181,7 +181,7 @@ end
 @testset "minmod limiter: oracle + swell control" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     entries = jacobian_bands(file, mname)
 
     # analytical J matches AD at non-smooth-friendly points; pattern ⊇ AD
