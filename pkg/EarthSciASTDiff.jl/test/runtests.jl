@@ -63,4 +63,5 @@ end
     include("factorization_test.jl")
     include("scatter_test.jl")
     include("source_layout_test.jl")
+    include("operator_refs_test.jl")
 end

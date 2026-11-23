@@ -13,8 +13,9 @@ const _FLAT_GOLDENS = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
     flat = EarthSciAST.flatten(fixture("coupled_chem_advection.esm"))
     sv = sysview(flat)
     entries = jacobian_bands(sv)
-    for (cse, tag) in ((true, "evaldoc"), (false, "evaldoc-nocse"))
-        doc, fields = _evaluation_document(sv, entries; cse = cse)
+    # nothing is hoisted after the fact any more: one document
+    for tag in ("evaldoc",)
+        doc, fields = _evaluation_document(sv, entries)
         @test stable_json(doc) ==
             read(joinpath(_FLAT_GOLDENS, "coupled_chem_advection.$tag.json"), String)
         @test fields == ["J_$k" for k in eachindex(entries)]
@@ -182,7 +183,9 @@ end
         @test fields == ["J_1"]
         @test stable_json(doc["domain"]) ==
             """{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"""
-        @test doc["esm"] == "1.1.0"
+        # the `hour` definition the document carries holds a unit-bearing
+        # `const` (esm 1.2.0)
+        @test doc["esm"] == "1.2.0"
         built = EarthSciAST.load_string(stable_json(doc))
         if isdefined(EarthSciAST, :time_origin)   # EarthSciAST ≥ 0.7
             @test EarthSciAST.time_origin(built) == EarthSciAST.time_origin(file) ==
