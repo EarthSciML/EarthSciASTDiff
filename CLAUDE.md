@@ -82,7 +82,7 @@ reference writes the goldens of `recurrence_sweep` and `pbl_rank1` like any
 other. Each binding checks their values against central differences of
 the source right-hand side.
 
-esm 2.0.0 (EarthSciAST 0.11, the floor) removed `fn` (`datetime.*`,
+esm 2.0.0 (EarthSciAST 0.11) removed `fn` (`datetime.*`,
 `interp.*`), `table_lookup` and the `aggregate` spelling: there are no
 rules for them. Their esm:std template replacements expand at load into
 core ops and differentiate through the `index`-of-a-literal-array rule
