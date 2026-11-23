@@ -94,9 +94,9 @@ end
 
 """
     jacobian_document(file::EsmFile, model_name; wrt = :states, forcing = nothing,
-                      cse = true, cse_min_nodes = 12, column_axis = nothing) -> Dict
+                      cse = false, cse_min_nodes = 12, column_axis = nothing) -> Dict
     jacobian_document(flat::FlattenedSystem; wrt = :states, forcing = nothing,
-                      name = "Flattened", cse = true, cse_min_nodes = 12,
+                      name = "Flattened", cse = false, cse_min_nodes = 12,
                       column_axis = nothing, data_sources = nothing) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
@@ -115,12 +115,12 @@ model's entry is then an ARRAY of blocks, one per axis in the given order
 (`[:states, (:states, :states)]`). A bare Tuple `wrt` is refused: it would
 read either as a pair or as a list of axes, so neither is assumed.
 
-With `cse = true` (default), repeated coefficient subtrees of at least
-`cse_min_nodes` AST nodes are hoisted into zero-parameter
-`expression_templates` carried inside the block ([`cse_templates`](@ref)),
-and the emitted coefficients reference them via `apply_expression_template`
-— the size control for limiter-heavy schemes. [`parse_jacobian_block`](@ref)
-expands the references back, so the round-trip is exact either way.
+The coefficients are written as the band calculus produced them, with
+operator references where the source has them (esm-jacobian-spec.md §3.6);
+no repeated subtree is extracted after the fact. `cse` and `cse_min_nodes`
+are accepted for compatibility and have no effect (a deprecation warning
+when `cse = true`). [`parse_jacobian_block`](@ref) still expands the
+block-local `expression_templates` of a block an earlier version wrote.
 
 `column_axis` (an index-set name) lets the state block report the
 `"column_block"` structure class with its line-by-line factorization plan
@@ -135,7 +135,7 @@ source that is not found is a `BandError`.
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
     )
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
@@ -149,7 +149,7 @@ end
 function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
-        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing,
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing,
         data_sources = nothing
     )
     sv = sysview(flat; data_sources = data_sources)
@@ -169,7 +169,7 @@ end
 
 function _attach_jacobians!(
         doc, sv::SysView, model_name::String; wrt, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
     )
     # One axis may be spelled as a Symbol or a String; iterating a String
     # would split it into one-character "axes". A Pair is one axis PAIR
@@ -208,7 +208,7 @@ _axis_key(w::Union{Tuple, AbstractVector, Pair}) = _axis_pair(w)
 # shares the first-order pass with the pairs of the same emission.
 function _jacobian_block(
         sv::SysView, wrt::Symbol, memo::_FirstOrder = _FirstOrder(); forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
     )
     _check_axis(wrt)
     entries = _first_order!(memo, sv, wrt, nothing, forcing)
@@ -238,36 +238,23 @@ function _jacobian_block(
     return block
 end
 
-# The fields every block shares, in their emitted order: `wrt`, the entries
-# (coefficients template-CSE'd when `cse`), the `columns` of a parameter or
-# forcing axis and the `structure` class (each when given), and the
-# block-local `expression_templates`.
+# The fields every block shares, in their emitted order: `wrt`, the entries,
+# the `columns` of a parameter or forcing axis and the `structure` class
+# (each when given). The coefficients are written as the band calculus
+# produced them, with operator references where the source has them:
+# nothing is extracted after the fact (`cse` has no effect).
 function _block(wrt, entries, columns, structure, cse::Bool, cse_min_nodes::Int)
-    ser_entries = entries
-    templates = OrderedDict{String, ASTExpr}()
-    if cse
-        templates, rewritten = cse_templates(
-            ASTExpr[en.band.coef for en in entries]; min_nodes = cse_min_nodes
-        )
-        isempty(templates) || (
-            ser_entries = [
-                _with_band(en, _rebuild(b; coef = rewritten[k]))
-                    for (k, en) in enumerate(entries) for b in (en.band,)
-            ]
-        )
-    end
+    cse && Base.depwarn(
+        "`cse = true` has no effect: a jacobians block is no longer deduplicated " *
+            "after the fact (coefficients keep their operator references instead)",
+        :jacobian_document
+    )
     block = OrderedDict{String, Any}(
         "wrt" => wrt,
-        "entries" => Any[serialize_band(en) for en in ser_entries],
+        "entries" => Any[serialize_band(en) for en in entries],
     )
     columns === nothing || (block["columns"] = columns)
     structure === nothing || (block["structure"] = String(structure))
-    isempty(templates) || (
-        block["expression_templates"] = OrderedDict{String, Any}(
-            name => OrderedDict{String, Any}("params" => Any[], "body" => _ser_expr(body))
-                for (name, body) in templates
-        )
-    )
     return block
 end
 

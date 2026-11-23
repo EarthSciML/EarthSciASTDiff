@@ -614,9 +614,11 @@ factoring, not hygienic abstraction.
   reference to a name absent from the block's `expression_templates` is an
   error.
 - The field is an emission-size optimization only: a block with templates
-  and its fully-expanded form denote the same Jacobian, and producers MAY
-  emit either. Deterministic producers SHOULD extract by the rule below, so
-  byte-comparison goldens are stable; the bindings of this repository MUST.
+  and its fully-expanded form denote the same Jacobian. The producers of this
+  repository no longer write it (nor hoist the evaluation document, §8.1):
+  coefficients keep the source's operator references (§3.6) instead, and
+  nothing is deduplicated after the fact. Consumers still read it. The rule
+  below describes what earlier producers wrote.
 
 **Extraction rule.** The same rule picks a block's templates and the
 hoisted observed of an evaluation or product document (§8.1, §9.1). Its

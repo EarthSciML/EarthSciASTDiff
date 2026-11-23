@@ -1135,9 +1135,9 @@ fn axis_block(
 }
 
 /// The fields every block shares, in their emitted order: `wrt`, the
-/// entries (coefficients template-CSE'd when `cse` is set), the `columns`
-/// of a parameter or forcing axis and the `structure` class (each when
-/// given), and the block-local `expression_templates`.
+/// entries, the `columns` of a parameter or forcing axis and the `structure`
+/// class (each when given). Coefficients are written as produced (operator
+/// references kept); nothing is extracted after the fact.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn block_fields<T: Clone + BandEntry>(
     wrt: Value,
@@ -1148,24 +1148,10 @@ pub(crate) fn block_fields<T: Clone + BandEntry>(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Map<String, Value> {
-    let mut ser_entries: Vec<Value> = entries.iter().map(&serialize).collect();
-    let mut templates: Vec<(String, Expr)> = Vec::new();
-    if cse {
-        let coefs: Vec<Expr> = entries.iter().map(|en| en.band().coef.clone()).collect();
-        let (tpl, rewritten) = cse_templates(&coefs, cse_min_nodes, "jt");
-        if !tpl.is_empty() {
-            ser_entries = entries
-                .iter()
-                .zip(rewritten)
-                .map(|(en, coef)| {
-                    let mut en2 = en.clone();
-                    en2.band_mut().coef = coef;
-                    serialize(&en2)
-                })
-                .collect();
-            templates = tpl;
-        }
-    }
+    // Nothing is extracted after the fact (the reference writes no block-local
+    // templates any more): `cse` and `cse_min_nodes` have no effect.
+    let _ = (cse, cse_min_nodes);
+    let ser_entries: Vec<Value> = entries.iter().map(&serialize).collect();
     let mut block = Map::new();
     block.insert("wrt".into(), wrt);
     block.insert("entries".into(), Value::Array(ser_entries));
@@ -1174,13 +1160,6 @@ pub(crate) fn block_fields<T: Clone + BandEntry>(
     }
     if let Some(st) = structure {
         block.insert("structure".into(), json!(st));
-    }
-    if !templates.is_empty() {
-        let mut t = Map::new();
-        for (n, body) in &templates {
-            t.insert(n.clone(), json!({"params": [], "body": ser_expr(body)}));
-        }
-        block.insert("expression_templates".into(), Value::Object(t));
     }
     block
 }

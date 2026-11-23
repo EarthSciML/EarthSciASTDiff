@@ -188,7 +188,7 @@ _with_band(en::JacEntry2, b::Band) = JacEntry2(en.u, en.v, en.w, b, en.ncol)
 # second axis's `columns` when it is a parameter or forcing axis.
 function _jacobian_block(
         sv::SysView, wrt::Tuple{Symbol, Symbol}, memo::_FirstOrder = _FirstOrder();
-        forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12,
+        forcing = nothing, cse::Bool = false, cse_min_nodes::Int = 12,
         column_axis = nothing       # a pair block has no structure class to refine
     )
     a1, a2 = wrt

@@ -331,17 +331,11 @@ def _block(wrt, entries, serialize, columns, structure, cse: bool, cse_min_nodes
 
     from .cse import cse_templates
 
+    # Nothing is extracted after the fact (the reference writes no block-local
+    # templates any more): `cse` and `cse_min_nodes` have no effect.
+    del replace, cse_templates
     ser_entries = entries
     templates: dict = {}
-    if cse:
-        templates, rewritten = cse_templates(
-            [en.band.coef for en in entries], min_nodes=cse_min_nodes
-        )
-        if templates:
-            ser_entries = [
-                replace(en, band=replace(en.band, coef=rewritten[k]))
-                for k, en in enumerate(entries)
-            ]
     block: dict = {"wrt": wrt, "entries": [serialize(en) for en in ser_entries]}
     if columns is not None:
         block["columns"] = columns
