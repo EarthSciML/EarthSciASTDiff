@@ -50,6 +50,13 @@ own simplifiers differ in commutative-argument handling, and the goldens pin
 the Julia behavior; never switch the band calculus back to
 `earthsci_ast.expression.simplify`). Tests import `earthsci_ast` from a
 sibling EarthSciAST checkout when it is not installed (see tests/conftest.py).
+Python has no operator-reference layer (operator_refs.jl / .rs): every
+Python EarthSciAST release so far expands `apply_operator` references at
+load (its `ExprNode` has no `bindings`), so it differentiates the expanded
+tree. The goldens that depend on kept references skip while the installed
+loader expands them (`ref_golden` in tests/conftest.py, a check of the
+loader's behavior, not of a version); port the layer once a release keeps
+them.
 
 Rust binding (`pkg/earthsci-astdiff-rs/src/`): same module map; the
 `earthsci-ast` dependency is a crates.io version range in Cargo.toml, patched

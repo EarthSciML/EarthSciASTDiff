@@ -42,9 +42,8 @@ fn fold_const_gathers(e: &Expr, bind: &HashMap<String, f64>) -> R<Expr> {
     if n.op == "index" {
         if let Some(Expr::Operator(cn)) = n.args.first() {
             if cn.op == "const" {
-                // The literal as the JSON it was written as: EarthSciAST
-                // types it as `serde_json::Value` up to 0.14 and as its own
-                // `ConstValue` on `main`; both serialize to that JSON.
+                // The literal as the JSON it was written as (EarthSciAST's
+                // `ConstValue` serializes to it).
                 let lit = serde_json::to_value(
                     cn.value
                         .as_ref()

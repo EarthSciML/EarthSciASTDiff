@@ -12,7 +12,7 @@ import math
 
 import earthsci_ast as ea
 import pytest
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, ref_golden
 from earthsci_ast.simulation_array import evaluate_rhs
 from earthsci_astdiff import (
     BandError,
@@ -74,23 +74,26 @@ def _sv(valid_dir, name):
 
 @pytest.mark.parametrize("name,wrt", [(n, "states") for n in GOLDEN_NAMES] + list(AXIS_GOLDENS))
 def test_evaldoc_goldens(name, wrt, valid_dir, golden_dir):
+    stem = f"{name}{_axistag(wrt)}"
+    want = ref_golden(golden_dir / f"{stem}.evaldoc.json")
     _, sv = _sv(valid_dir, name)
     entries = jacobian_bands(sv, wrt=wrt)
-    stem = f"{name}{_axistag(wrt)}"
     doc, fields = _evaluation_document(sv, entries)
-    assert stable_json(doc) == (golden_dir / f"{stem}.evaldoc.json").read_text()
+    assert stable_json(doc) == want
     assert fields == [f"J_{k + 1}" for k in range(len(entries))]
     # without hoisting; no `-nocse` golden means nothing to hoist
     doc0, _ = _evaluation_document(sv, entries, cse=False)
     p0 = golden_dir / f"{stem}.evaldoc-nocse.json"
-    want = p0 if p0.exists() else golden_dir / f"{stem}.evaldoc.json"
-    assert stable_json(doc0) == want.read_text()
+    assert stable_json(doc0) == ref_golden(
+        p0 if p0.exists() else golden_dir / f"{stem}.evaldoc.json"
+    )
 
 
 def test_evaldoc_public_entry(valid_dir, golden_dir):
+    want = ref_golden(golden_dir / "tgrad_photolysis.time.evaldoc.json")
     file, _ = _sv(valid_dir, "tgrad_photolysis")
     doc, _ = evaluation_document(file, wrt="time")
-    assert stable_json(doc) == (golden_dir / "tgrad_photolysis.time.evaldoc.json").read_text()
+    assert stable_json(doc) == want
 
 
 @pytest.mark.parametrize("name", [*GOLDEN_NAMES, "adv_react_2d"])
@@ -171,11 +174,11 @@ def test_evaldoc_element_derivative_lhs_refused():
 @pytest.mark.parametrize("name,wrt", PRODUCT_AXES)
 @pytest.mark.parametrize("kind", ["jvp", "vjp"])
 def test_product_goldens(name, wrt, kind, valid_dir, golden_dir):
+    want = ref_golden(golden_dir / f"{name}{_axistag(wrt)}.{kind}.evaldoc.json")
     _, sv = _sv(valid_dir, name)
     build = jvp_document if kind == "jvp" else vjp_document
     doc, _ = build(sv, wrt=wrt)
-    want = golden_dir / f"{name}{_axistag(wrt)}.{kind}.evaldoc.json"
-    assert stable_json(doc) == want.read_text()
+    assert stable_json(doc) == want
 
 
 def _forms(wrt):

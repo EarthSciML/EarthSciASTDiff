@@ -13,6 +13,7 @@ import re
 
 import earthsci_ast as ea
 import pytest
+from conftest import ref_golden
 from earthsci_ast.simulation_array import evaluate_rhs
 from earthsci_astdiff import (
     BandError,
@@ -41,11 +42,12 @@ def _flat(valid_dir):
 
 @pytest.mark.parametrize("cse,tag", [(False, "evaldoc")])
 def test_flat_evaldoc_golden_and_layout(cse, tag, valid_dir, golden_dir):
+    want = ref_golden(golden_dir / f"{NAME}.{tag}.json")
     flat = _flat(valid_dir)
     sv = sysview(flat)
     entries = jacobian_bands(sv)
     doc, fields = _evaluation_document(sv, entries, cse=cse)
-    assert stable_json(doc) == (golden_dir / f"{NAME}.{tag}.json").read_text()
+    assert stable_json(doc) == want
     assert fields == [f"J_{k + 1}" for k in range(len(entries))]
     models = doc["models"]
     assert sorted(models) == ["Advection", "JacobianEval", "SimpleOzone"]
@@ -73,6 +75,7 @@ def test_flat_band_golden(wrt, tag, recorded, valid_dir, golden_dir):
             "products, (k*NO)*O3, which the reference's coefficients do not "
             "match term for term"
         )
+    want = ref_golden(golden_dir / f"{NAME}{tag}.bands.json")
     flat = _flat(valid_dir)
     if not recorded:
         for n in flat.lifted_shapes:
@@ -80,7 +83,7 @@ def test_flat_band_golden(wrt, tag, recorded, valid_dir, golden_dir):
     entries = jacobian_bands(sysview(flat), wrt=wrt)
     assert entries
     text = stable_json([serialize_band(e) for e in entries])
-    assert text == (golden_dir / f"{NAME}{tag}.bands.json").read_text()
+    assert text == want
 
 
 def _state_cells(sv) -> list[str]:
