@@ -47,8 +47,8 @@ fn pruning_decision_is_per_axis() {
     let obs = observed_defs(&sv).unwrap();
     assert!(obs.contains_key("src"));
     let set = |n: &str| HashSet::from([n.to_string()]);
-    assert!(!inlinable_observed(&obs, sv.equations, &set("u")).contains_key("src"));
-    assert!(inlinable_observed(&obs, sv.equations, &set("k")).contains_key("src"));
+    assert!(!inlinable_observed(&obs, &sv.equations, &set("u")).contains_key("src"));
+    assert!(inlinable_observed(&obs, &sv.equations, &set("k")).contains_key("src"));
 }
 
 #[test]

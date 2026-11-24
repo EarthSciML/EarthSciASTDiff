@@ -68,7 +68,7 @@ using JSON3
         path = joinpath(d, "pinned_face.esm")
         open(io -> JSON3.write(io, doc), path, "w")
         file = EarthSciAST.load_path(path)
-        f!, u0, p, _, _ = build_evaluator(file)
+        f!, u0, p, _, _ = tw_build(file)
         u = [0.3, 0.7, 1.1, 1.9, 2.3, 2.9][1:length(u0)]
 
         res = doc_jacobian(file; u = u, p = p)

@@ -35,10 +35,11 @@ fn flat_of(doc: &Value) -> FlattenedSystem {
 
 #[test]
 fn goldens_and_layout() {
-    let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+    let flat = common::flat_refs(NAME);
     let sv = sysview_flat(&flat).unwrap();
     let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
-    for (cse, tag) in [(true, "evaldoc"), (false, "evaldoc-nocse")] {
+    // nothing is hoisted after the fact any more: one document
+    for (cse, tag) in [(false, "evaldoc")] {
         let (doc, fields) = evaluation_document(&sv, &entries, cse, 12).unwrap();
         assert_eq!(
             stable_json(&doc),
@@ -82,7 +83,7 @@ fn goldens_and_layout() {
 /// to the reference's `coupled_chem_advection[.parameters].bands.json`.
 #[test]
 fn band_goldens() {
-    let flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+    let flat = common::flat_refs(NAME);
     let sv = sysview_flat(&flat).unwrap();
     for (wrt, tag) in [(Wrt::States, ""), (Wrt::Parameters, ".parameters")] {
         let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
@@ -362,7 +363,9 @@ fn carries_the_domain() {
             stable_json(&doc["domain"]),
             r#"{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"#
         );
-        assert_eq!(doc["esm"], json!("1.1.0"));
+        // the `hour` definition the document carries holds a unit-bearing
+        // `const` (esm 1.2.0)
+        assert_eq!(doc["esm"], json!("1.2.0"));
         // 13:00 UTC on 2024-05-01, in UTC seconds: -k · 13
         assert_eq!(j1(&doc, 1714568400.0), -6.5);
         let mut bare = doc.clone();
@@ -560,10 +563,11 @@ fn refuses_bad_sources() {
         }
         SysView {
             variables,
-            equations: sv.equations,
+            equations: sv.equations.clone(),
             index_sets: sv.index_sets.clone(),
             domain: sv.domain,
             data_sources: sv.data_sources,
+            refs: sv.refs.clone(),
         }
     };
     let err = evaluation_document(&with(&["x"]), &entries, true, 12).unwrap_err();

@@ -409,9 +409,10 @@ end
 function _self_bands(rec::Recurrence, obs, recs::Vector{Recurrence}, ctx::Ctx)
     names = Set{String}(r.name for r in recs)
     m = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in names))
-    d = inline_observed(obs[rec.name], m)
+    d = _with_layer(() -> inline_observed(obs[rec.name], m), ctx.refs)
     shape = get(ctx.shapes, rec.name, Int[])
-    return Band[normalize_band(b) for b in merge_bands(bands(d, rec.name, ctx; shape_u = shape))]
+    # through `_ref_bands`: the definition may hold operator references
+    return Band[normalize_band(b) for b in merge_bands(_ref_bands(d, rec.name, ctx, shape, true))]
 end
 
 function _transfer_j(rec::Recurrence, bs::Vector{Band})

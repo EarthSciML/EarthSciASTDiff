@@ -55,7 +55,7 @@ end
     push!(cases, ("adv_react_2d", "csr", Csr()))
     for (name, tag, layout) in cases
         file = fixture("$name.esm")
-        _, u0, p0, _, _ = build_evaluator(file; _hkw(name)...)
+        _, u0, p0, _, _ = tw_build(file; _hkw(name)...)
         u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.7))
         res = doc_jacobian(file; u = u, p = p0, build_kwargs = _hkw(name))
         J = res.J

@@ -331,17 +331,11 @@ def _block(wrt, entries, serialize, columns, structure, cse: bool, cse_min_nodes
 
     from .cse import cse_templates
 
+    # Nothing is extracted after the fact (the reference writes no block-local
+    # templates any more): `cse` and `cse_min_nodes` have no effect.
+    del replace, cse_templates
     ser_entries = entries
     templates: dict = {}
-    if cse:
-        templates, rewritten = cse_templates(
-            [en.band.coef for en in entries], min_nodes=cse_min_nodes
-        )
-        if templates:
-            ser_entries = [
-                replace(en, band=replace(en.band, coef=rewritten[k]))
-                for k, en in enumerate(entries)
-            ]
     block: dict = {"wrt": wrt, "entries": [serialize(en) for en in ser_entries]}
     if columns is not None:
         block["columns"] = columns
@@ -728,7 +722,9 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     roots = [en.band.coef for en in entries] + [d for _, _, d in aux]
     _zero_source_derivatives(m, sv, ctx, roots)
     _add_auxiliary(m, aux)
-    coefs = _hoist(doc, m, sv, entries, cse, cse_min_nodes)
+    # Nothing is deduplicated after the fact (the reference's evaluation
+    # document no longer hoists): `cse` and `cse_min_nodes` have no effect.
+    coefs = [en.band.coef for en in entries]
     names: list[str] = []
     for k, en in enumerate(entries):
         b = en.band

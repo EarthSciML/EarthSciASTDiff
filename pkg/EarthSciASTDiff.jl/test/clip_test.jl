@@ -106,7 +106,7 @@ end
     # exact structure: -c/dx on the full diagonal (F[i+1] = c·u[i] for all i),
     # +c/dx on the sub-diagonal for rows 2..8 only (F[1] is the inflow
     # constant, so row 1 has no u[0] ghost entry — not even a unioned one)
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 2.7))
     r = doc_jacobian(file; u = u)
     Jad = ad_jacobian(f!, u, p0, 0.0)
@@ -148,7 +148,7 @@ end
     @test [p[1] for p in EarthSciASTDiff.clip_summands(xonly, ["i", "j"], [(1, 6), (1, 5)])] ==
         [p[1] for p in EarthSciASTDiff.clip_regions(xonly, ["i", "j"], [(1, 6), (1, 5)])]
     # values: the overlapping bands add up to ForwardDiff's Jacobian
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     for _ in 1:2
         u = 0.5 .+ rand(length(u0))
         res = doc_jacobian(file; u = u, p = p)
@@ -184,7 +184,7 @@ end
     # a box cutting only one dimension: one group, exactly clip_regions
     @test [p[1] for p in EarthSciASTDiff.clip_summands(body, ["i", "j"], [(1, 6), (2, 4)])] ==
         [p[1] for p in EarthSciASTDiff.clip_regions(body, ["i", "j"], [(1, 6), (2, 4)])]
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     for _ in 1:2
         u = 0.5 .+ rand(length(u0))
         res = doc_jacobian(file; u = u, p = p)

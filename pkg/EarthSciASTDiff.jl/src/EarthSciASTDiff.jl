@@ -45,9 +45,10 @@ This package evaluates nothing: every value (`J`, `J v`, `Jᵀ λ`, the
 second-order contraction) comes from running one of its documents through
 EarthSciAST, and executing a scatter plan is the consumer's work.
 
-Differentiation runs on the *expanded, lowered* expression tree — the same
-tree `EarthSciAST.build_evaluator` compiles — so the derivative and the RHS
-can never come from different forms of the model. Sparsity is **structural**
+Differentiation runs on the lowered expression tree EarthSciAST builds, with
+operator references (`apply_operator`) kept as references: each definition
+is differentiated once into derived definitions and its bands composed at
+every use (operator_refs.jl), never expanded. Sparsity is **structural**
 (variable occurrence), never a numeric probe: `ifelse`/`min`/`max` branches
 are unioned, so the pattern is point-independent and solver preparations can
 be reused.
@@ -86,6 +87,7 @@ include("inline.jl")         # observed inlining, index-of-makearray lowering
 include("bands.jl")          # Band + the array-level band calculus
 include("reductions.jl")     # filters, max/min/* reductions, one-hot index reads
 include("clip.jl")           # static region clipping + band re-merging
+include("operator_refs.jl")  # operator references: derived definitions, composition
 include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("recurrence.jl")     # causal recurrences: extended system, transfer, sweeps
 include("jacobian.jl")       # jacobian_bands driver

@@ -315,6 +315,12 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
             push!(los, _region_bound(r[1]))
             _region_bound(r[2]) > los[end] && push!(nonsing, k)
         end
+        _is_ref(val) && _def!(_layer(), val.name).rank > 0 && throw(
+            InlineError(
+                "a makearray region value that is an array-valued operator reference " *
+                    "(`$(val.name)`) read through an observed is not supported"
+            )
+        )
         v = if val isa VarExpr ||
                 (val isa OpExpr && val.op in ("faq", "makearray", "index"))
             # TWO legal value shapes, the pair `_bands_makearray!` tells apart
@@ -396,6 +402,11 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
                 # `index(makearray…)` read (region-membership ifelse, later
                 # clipped exactly by clip.jl where the guards are decidable).
                 return _index_makearray(def, args(), obs, fresh, scope)
+            elseif _is_ref(def)
+                # An observed defined by an operator reference: its read is
+                # a read of the reference's array (operator_refs.jl reads it
+                # as an intermediate; the body is never substituted).
+                return op("index", def, args()...)
             elseif def isa OpExpr && def.op == "const"
                 # A literal connectivity/weight table (`conn[i,k]`): keep the
                 # gather, inline the table itself so downstream consumers

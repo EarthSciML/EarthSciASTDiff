@@ -59,7 +59,7 @@ function _oracle_hvp(name, hv, u, ps, t)
     a1, a2 = hv.wrt
     promote = a2 == :states ? String[] : unique(first.(something(hv.columns, [])))
     src = isempty(promote) ? file : _promoted_any(path, model, promote)
-    f!, x0, pp, _, vm = build_evaluator(src; _hkw(name)...)
+    f!, x0, pp, _, vm = tw_build(src; _hkw(name)...)
     x = copy(x0)
     rows = [vm[r] for r in hv.rownames]
     x[rows] .= u

@@ -45,6 +45,13 @@ pub struct Ctx {
     pub index_sets: HashMap<String, i64>,
     pub shapes: HashMap<String, Vec<i64>>,
     pub params: HashSet<String>,
+    /// The system's operator-reference layer (operator_refs.rs), `None`
+    /// without definitions.
+    pub refs: Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
+    /// The first index value of each array whose cells do not start at 1
+    /// (the placeholder of an array reference whose body is a `faq` over a
+    /// shifted range).
+    pub origins: HashMap<String, Vec<i64>>,
 }
 
 /// An expression has a form the band calculus cannot differentiate (for
@@ -132,6 +139,9 @@ pub fn is_array_expr(e: &Expr, ctx: &Ctx) -> bool {
             }
             if n.op == "index" {
                 return false;
+            }
+            if crate::operator_refs::is_ref(e) {
+                return crate::operator_refs::is_array_ref(e);
             }
             n.args.iter().any(|x| is_array_expr(x, ctx))
         }
@@ -534,8 +544,16 @@ fn bands_array(
             return Ok(());
         }
         let names = row_names(shape_u);
+        let org = ctx.origins.get(name);
         out.push(Band {
-            rows: shape_u.iter().map(|n| (1, *n)).collect(),
+            rows: shape_u
+                .iter()
+                .enumerate()
+                .map(|(k, n)| {
+                    let o = org.map_or(1, |o| o[k]);
+                    (o, o + n - 1)
+                })
+                .collect(),
             ridx: names.clone(),
             cidx: names
                 .iter()
@@ -972,6 +990,11 @@ fn bands_makearray(
                 } else {
                     vec![1; sub_shape.len()]
                 }
+            } else if let Some(o) = match val {
+                Expr::Variable(nm) => ctx.origins.get(nm),
+                _ => None,
+            } {
+                o.clone() // a reference's placeholder
             } else {
                 vec![1; sub_shape.len()]
             };

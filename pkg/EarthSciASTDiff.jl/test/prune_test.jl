@@ -71,7 +71,7 @@ using EarthSciASTDiff: inlinable_observed, _observed_defs, sysview
         @test haskey(keep_k, "src")         # ∂src/∂k ≠ 0 → MUST be inlined
 
         # ---- and the numbers, against the AD oracle ------------------------
-        f!, u0, p, _, _ = build_evaluator(file)
+        f!, u0, p, _, _ = tw_build(file)
         u = [0.3, 0.7, 1.1, 1.9]
 
         res = doc_jacobian(file; u = u, p = p)

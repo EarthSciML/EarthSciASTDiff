@@ -1135,11 +1135,11 @@ fn axis_block(
 }
 
 /// The fields every block shares, in their emitted order: `wrt`, the
-/// entries (coefficients template-CSE'd when `cse` is set), the `columns`
-/// of a parameter or forcing axis and the `structure` class (each when
-/// given), and the block-local `expression_templates`.
+/// entries, the `columns` of a parameter or forcing axis and the `structure`
+/// class (each when given). Coefficients are written as produced (operator
+/// references kept); nothing is extracted after the fact.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn block_fields<T: Clone + BandEntry>(
+pub(crate) fn block_fields<T>(
     wrt: Value,
     entries: &[T],
     serialize: impl Fn(&T) -> Value,
@@ -1148,24 +1148,10 @@ pub(crate) fn block_fields<T: Clone + BandEntry>(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Map<String, Value> {
-    let mut ser_entries: Vec<Value> = entries.iter().map(&serialize).collect();
-    let mut templates: Vec<(String, Expr)> = Vec::new();
-    if cse {
-        let coefs: Vec<Expr> = entries.iter().map(|en| en.band().coef.clone()).collect();
-        let (tpl, rewritten) = cse_templates(&coefs, cse_min_nodes, "jt");
-        if !tpl.is_empty() {
-            ser_entries = entries
-                .iter()
-                .zip(rewritten)
-                .map(|(en, coef)| {
-                    let mut en2 = en.clone();
-                    en2.band_mut().coef = coef;
-                    serialize(&en2)
-                })
-                .collect();
-            templates = tpl;
-        }
-    }
+    // Nothing is extracted after the fact (the reference writes no block-local
+    // templates any more): `cse` and `cse_min_nodes` have no effect.
+    let _ = (cse, cse_min_nodes);
+    let ser_entries: Vec<Value> = entries.iter().map(&serialize).collect();
     let mut block = Map::new();
     block.insert("wrt".into(), wrt);
     block.insert("entries".into(), Value::Array(ser_entries));
@@ -1175,38 +1161,7 @@ pub(crate) fn block_fields<T: Clone + BandEntry>(
     if let Some(st) = structure {
         block.insert("structure".into(), json!(st));
     }
-    if !templates.is_empty() {
-        let mut t = Map::new();
-        for (n, body) in &templates {
-            t.insert(n.clone(), json!({"params": [], "body": ser_expr(body)}));
-        }
-        block.insert("expression_templates".into(), Value::Object(t));
-    }
     block
-}
-
-/// A first- or second-order entry, for [`block_fields`].
-pub(crate) trait BandEntry {
-    fn band(&self) -> &Band;
-    fn band_mut(&mut self) -> &mut Band;
-}
-
-impl BandEntry for JacEntry {
-    fn band(&self) -> &Band {
-        &self.band
-    }
-    fn band_mut(&mut self) -> &mut Band {
-        &mut self.band
-    }
-}
-
-impl BandEntry for JacEntry2 {
-    fn band(&self) -> &Band {
-        &self.band
-    }
-    fn band_mut(&mut self) -> &mut Band {
-        &mut self.band
-    }
 }
 
 /// A parameter or forcing block's `columns` field.
@@ -1763,7 +1718,11 @@ pub fn evaluation_document(
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     add_auxiliary(&mut model, &aux);
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let coefs = hoist(&mut doc, &mut model, sv, &bands, cse, cse_min_nodes);
+    // Nothing is deduplicated after the fact: the coefficients are written
+    // as the band calculus produced them, with operator references where the
+    // source has them. `cse` and `cse_min_nodes` no longer have an effect.
+    let _ = (cse, cse_min_nodes, &hoist);
+    let coefs: Vec<Expr> = bands.iter().map(|b| b.coef.clone()).collect();
     let Some(Value::Array(mut eqs)) = model.remove("equations") else {
         unreachable!()
     };
@@ -1866,7 +1825,13 @@ pub(crate) fn finish_derived(
     let mut models = Map::new();
     models.insert(derived.into(), Value::Object(model));
     component_tree(&mut models, sv, derived)?;
-    doc.insert("models".into(), Value::Object(models));
+    let mut models = Value::Object(models);
+    if sv.refs.is_some() {
+        let mut wrap = json!({"models": models});
+        crate::operator_refs::operators_blocks(&mut wrap, &sv.refs)?;
+        models = wrap["models"].take();
+    }
+    doc.insert("models".into(), models);
     if let Some(d) = sv.domain.and_then(domain_field) {
         doc.insert("domain".into(), d);
     }

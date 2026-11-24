@@ -209,6 +209,11 @@ function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
         return _dsum(e, s, occ)
     elseif o in ZERO_DERIV_OPS
         return lit(0)
+    elseif o in _REF_OPS
+        # An operator reference (esm-spec §9.6.2): the chain rule through
+        # the definition's derived definitions, Σ_p D.d_p(B)·∂B[p]
+        # (operator_refs.jl). The body is never substituted.
+        return _dref(e, s, d)
     elseif o == "index"
         # A site-bearing `index` that is not itself the site. Its subscripts
         # are integer-valued, so a read of a literal array (an expanded
@@ -217,6 +222,10 @@ function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
         # array that depends on it) at a site-dependent subscript, or of an
         # array expression that reads variables, has no rule.
         _index_is_literal_read(e) && return lit(0)
+        # Inside a definition's body (its derivatives, operator_refs.jl) an
+        # array parameter other than the site's is an independent input:
+        # read at an integer subscript, piecewise constant in the site.
+        _index_is_independent_param(e, s) && return lit(0)
         throw(
             DerivativeRuleError(
                 "`index` of a non-variable array expression (or a site-dependent " *
@@ -292,9 +301,34 @@ function _drule_check_op(e::OpExpr, s::Site, occ::_Occ, memo)::Bool
         return true
     elseif o in ZERO_DERIV_OPS
         return false
+    elseif o in _REF_OPS
+        # `_dref` without the products: nonzero when an argument holds the
+        # site and the definition differentiates through it, refused where
+        # `_dref` refuses.
+        L = _layer()
+        D = _def!(L, e.name)
+        D.rank == 0 || return !iszero_lit(_dscalar_op(e, s, occ))
+        nz = false
+        for p in D.params
+            d(e.bindings[p]) || continue
+            p in D.array && return !iszero_lit(_dscalar_op(e, s, occ))
+            # a parameter the body never differentiates through (a
+            # piecewise-constant read) contributes nothing, as in `_dref`
+            nz |= !iszero_lit(_dparam!(L, D, p))
+        end
+        return nz
     end
     # `index`, and every op without a rule: `_dscalar_op` throws.
     return !iszero_lit(_dscalar_op(e, s, occ))
+end
+
+# Is `e` a read of an array parameter of the definition being differentiated
+# (operator_refs.jl `_with_defmode`) other than the site's own variable?
+function _index_is_independent_param(e::OpExpr, s::Site)::Bool
+    ps = _defmode_params()
+    ps === nothing && return false
+    a = e.args[1]
+    return a isa VarExpr && a.name in ps && a.name != s.name
 end
 
 # Does the `index` node `e` read a literal array (one that reads no

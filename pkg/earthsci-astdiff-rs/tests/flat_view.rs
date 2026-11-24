@@ -114,7 +114,18 @@ fn wrapped_with(flat: &FlattenedSystem, shapes: &[(String, Vec<String>)], extra:
     if let Some(d) = &flat.domain {
         doc["domain"] = serde_json::to_value(d).unwrap();
     }
-    serde_json::from_value(doc).expect("wrapped document deserializes")
+    let mut file: EsmFile = serde_json::from_value(doc).expect("wrapped document deserializes");
+    // The merged registry the flattened references resolve against, as
+    // `load` would materialize it for the model (a typed deserialization does
+    // not run load's passes; the dotted flattened names keep the wrapped
+    // document from loading). Closed already, so the view closes nothing.
+    if !flat.template_registry.is_empty() {
+        file.component_templates = Some(IndexMap::from([(
+            format!("models.{MODEL}"),
+            serde_json::to_value(&flat.template_registry).unwrap(),
+        )]));
+    }
+    file
 }
 
 fn flat_of(name: &str) -> FlattenedSystem {
@@ -128,7 +139,7 @@ fn ser(entries: &[JacEntry]) -> String {
 fn view_json(sv: &SysView) -> Value {
     json!({
         "variables": serde_json::to_value(&sv.variables).unwrap(),
-        "equations": serde_json::to_value(sv.equations).unwrap(),
+        "equations": serde_json::to_value(&*sv.equations).unwrap(),
         "index_sets": serde_json::to_value(&sv.index_sets).unwrap(),
     })
 }

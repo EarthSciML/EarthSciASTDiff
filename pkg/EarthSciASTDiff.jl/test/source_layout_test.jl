@@ -7,7 +7,7 @@ _pat_fingerprint(r) = (pattern = r.pattern, rownames = r.rownames, colnames = r.
 
 @testset "source_layout: identical pattern, no rebuild" begin
     file = fixture("adv_react_2d.esm")
-    _, u0, p, _, vm = build_evaluator(file)
+    _, u0, p, _, vm = tw_build(file)
     layout = (u0 = u0, p = p, var_map = vm)
     for wrt in (:states, :parameters)
         @test _pat_fingerprint(jacobian_pattern(file; wrt = wrt)) ==
@@ -22,14 +22,14 @@ end
 
 @testset "source_layout: a FlattenedSystem source" begin
     flat = flatten(fixture("coupled_chem_advection.esm"))
-    _, u0, p, _, vm = build_evaluator(flat)
+    _, u0, p, _, vm = tw_build(flat)
     @test _pat_fingerprint(jacobian_pattern(flat)) ==
         _pat_fingerprint(jacobian_pattern(flat; source_layout = (u0 = u0, p = p, var_map = vm)))
 end
 
 @testset "source_layout: a mismatched layout is an error, not a wrong answer" begin
     file = fixture("adv_react_2d.esm")
-    _, u0, p, _, vm = build_evaluator(file)
+    _, u0, p, _, vm = tw_build(file)
 
     @test_throws ArgumentError jacobian_pattern(file; source_layout = (u0 = u0,))
     @test_throws ArgumentError jacobian_pattern(file; source_layout = (var_map = vm,))

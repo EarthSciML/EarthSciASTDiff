@@ -93,7 +93,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         for (label, body, vars, eqs) in more
             @testset "$label" begin
                 file = load(doc(body; vars = vars, eqs = eqs))
-                f!, _, p, _, _ = build_evaluator(file)
+                f!, _, p, _, _ = tw_build(file)
                 Jad = ad_jacobian(f!, u, p, 0.0)
                 res = doc_jacobian(
                     file; u = u, p = p,
@@ -164,7 +164,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         for oidx in (["i", "k"], ["i", "j"]), (label, body) in bodies
             @testset "$label over $(join(oidx, ","))" begin
                 file = load(doc(body; oidx = oidx))
-                f!, _, p, _, _ = build_evaluator(file)
+                f!, _, p, _, _ = tw_build(file)
                 Jad = ad_jacobian(f!, u, p, 0.0)
                 # The derived model reads the sum per cell, which the native
                 # compiler declines (`compiler_refused_rule`); the interpreter
@@ -186,7 +186,7 @@ using EarthSciASTDiff: BandError, DerivativeRuleError
         for (label, s) in (("filtered", sdef(filter = filt)), ("max_product", mx))
             @testset "$label contracting observed" begin
                 file = load(doc(o -> neg(sq(si(o))); s = s))
-                f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+                f!, _, p, _, _ = tw_build(file; compiler = :interpreter)
                 Jad = ad_jacobian(f!, u, p, 0.0)
                 res = doc_jacobian(
                     file; u = u, p = p,
@@ -208,7 +208,7 @@ end
     # tests/valid/contracting_observed.esm — the cross-binding golden for the
     # nested-sum rule (spec §3.5).
     file = fixture("contracting_observed.esm")
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:length(u0)]
     Jad = ad_jacobian(f!, u, p, 0.7)
     res = doc_jacobian(

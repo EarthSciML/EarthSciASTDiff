@@ -255,6 +255,11 @@ pub fn ckey(e: &Expr) -> String {
 /// form refuses (a level search `u[κ]` with κ a min-faq, spec §3.5) — `~`
 /// followed by its stable JSON, which sorts after every canonical key.
 pub fn site_key(e: &Expr) -> String {
+    // canonical JSON ignores a reference's bindings: two references would
+    // key alike
+    if has_ref(e) {
+        return format!("~{}", skey(e));
+    }
     match canonical_json(e) {
         Ok(k) => k,
         Err(_) => format!("~{}", skey(e)),
@@ -629,4 +634,14 @@ pub fn map_expr_children(e: &Expr, f: &mut impl FnMut(&Expr) -> Expr) -> Expr {
         Expr::Operator(n) => Expr::operator(n.map_children(f)),
         _ => e.clone(),
     }
+}
+
+fn has_ref(e: &Expr) -> bool {
+    let Expr::Operator(n) = e else { return false };
+    if crate::operator_refs::REF_OPS.contains(&n.op.as_str()) {
+        return true;
+    }
+    let mut found = false;
+    n.for_each_child(&mut |c: &Expr| found = found || has_ref(c));
+    found
 }

@@ -17,6 +17,11 @@ end
 const FIXTURES = joinpath(@__DIR__, "fixtures")
 fixture(name) = EarthSciAST.load_path(joinpath(FIXTURES, name))
 
+# EarthSciAST's tree-walk right-hand side of `input` as `(f!, u0, p, tspan,
+# var_map)` (EarthSciAST `main` removed the `build_evaluator` alias these
+# tests were written against).
+tw_build(input; kw...) = EarthSciASTDiff._tree_walk_build(input; kw...)
+
 include("docvals.jl")
 
 # The native compiler declines a model whose coefficients carry a filtered or
@@ -58,4 +63,5 @@ end
     include("factorization_test.jl")
     include("scatter_test.jl")
     include("source_layout_test.jl")
+    include("operator_refs_test.jl")
 end

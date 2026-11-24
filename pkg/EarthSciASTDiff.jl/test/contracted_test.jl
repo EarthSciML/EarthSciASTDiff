@@ -35,7 +35,7 @@ using EarthSciASTDiff: Band, skey
 
     # values + exact pattern against the AD oracle (the scatter must
     # ACCUMULATE contracted entries landing on one column)
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 1.7))
     res = doc_jacobian(file; u = u)
     Jad = ad_jacobian(f!, u, p0, 0.0)

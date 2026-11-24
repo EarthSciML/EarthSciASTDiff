@@ -21,6 +21,7 @@ use crate::clip::{clip_regions, RIdx};
 use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
 use crate::helpers::{is_zero, ser_expr, OccIndex, SiteScan};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
+use crate::operator_refs::{abstract_refs, compose, ref_value_bands, restore_band, with_layer};
 use crate::recurrence::{ExtendedBands, Recurrence};
 use crate::reductions::{conj, one_hot};
 use crate::rules::dscalar_in;
@@ -181,9 +182,76 @@ pub(crate) fn bands2_memo(
 /// One band per site of `w` in a first-order coefficient, broadcast over the
 /// entry's rows: the scalar band step with the entry's contracted names
 /// bound too. `occ` and `sm` are the caller's, shared across the bands of
-/// one second column `w`.
+/// one second column `w`. A coefficient may hold operator references
+/// (operator_refs.rs): scalar ones are differentiated by the derivative
+/// table's reference row under the view's layer; an array one is read as an
+/// intermediate, its bands w.r.t. `w` composed with the coefficient's w.r.t.
+/// it (as `ref_bands`; second_order.jl `_coef_bands`).
 fn coef_bands(
     b: &Band,
+    w: &str,
+    ctx: &Ctx,
+    occ: &RefCell<OccIndex>,
+    sm: &mut SimpMemo,
+) -> R<Vec<Band>> {
+    let Some(l) = ctx.refs.clone() else {
+        return coef_site_bands(b, clip_regions(&b.coef, &b.ridx, &b.rows), w, ctx, occ, sm);
+    };
+    with_layer(&Some(l.clone()), || {
+        let mut out = Vec::new();
+        for (rows2, body) in clip_regions(&b.coef, &b.ridx, &b.rows) {
+            let (body2, ps) = abstract_refs(&l, &body, ctx)?;
+            if ps.is_empty() {
+                out.extend(coef_site_bands(b, vec![(rows2, body)], w, ctx, occ, sm)?);
+                continue;
+            }
+            let mut ctx2 = ctx.clone();
+            for p in &ps {
+                p.declare(&mut ctx2);
+            }
+            let fv = free_variables(&body2);
+            let mut got = Vec::new();
+            if fv.contains(w) {
+                let piece = vec![(rows2.clone(), body2.clone())];
+                got.extend(coef_site_bands(b, piece, w, &ctx2, occ, sm)?);
+            }
+            for p in &ps {
+                if !fv.contains(&p.name) || !free_variables(&p.r).contains(w) {
+                    continue;
+                }
+                let inner = ref_value_bands(&l, &p.r, w, ctx, true)?;
+                if inner.is_empty() {
+                    continue;
+                }
+                // the bands of the coefficient w.r.t. the intermediate, their
+                // columns its cells only
+                let pocc = RefCell::new(OccIndex::new(&p.name));
+                let piece = vec![(rows2.clone(), body2.clone())];
+                let outer: Vec<Band> = coef_site_bands(b, piece, &p.name, &ctx2, &pocc, sm)?
+                    .into_iter()
+                    .map(|mut x| {
+                        x.cidx = x.cidx[b.cidx.len()..].to_vec();
+                        x
+                    })
+                    .collect();
+                for mut x in compose(&outer, &inner, true)? {
+                    x.cidx = [b.cidx.clone(), x.cidx].concat();
+                    got.push(x);
+                }
+            }
+            let restore: HashMap<String, Expr> =
+                ps.iter().map(|p| (p.name.clone(), p.r.clone())).collect();
+            out.extend(got.into_iter().map(|x| restore_band(x, &restore)));
+        }
+        Ok(out)
+    })
+}
+
+/// The bands of the sites of `w` in the clipped regions `pieces` (row box,
+/// coefficient body) of b's coefficient.
+fn coef_site_bands(
+    b: &Band,
+    pieces: Vec<(Vec<(i64, i64)>, Expr)>,
     w: &str,
     ctx: &Ctx,
     occ: &RefCell<OccIndex>,
@@ -199,7 +267,7 @@ fn coef_bands(
         })
         .chain(b.contracted.iter().map(|(n, _, _)| n.clone()))
         .collect();
-    for (rows2, body) in clip_regions(&b.coef, &b.ridx, &b.rows) {
+    for (rows2, body) in pieces {
         let nested = nested_sums(&body, w, &outer);
         let mut taken = None;
         for s in sorted_sites(&body, w) {

@@ -15,9 +15,7 @@ use std::collections::{HashMap, HashSet};
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{Expr, ExpressionNode};
 
-use crate::bands::{
-    bands, merge_bands, normalize_band, range_of, subst_free, Band, BandError, Ctx,
-};
+use crate::bands::{merge_bands, normalize_band, range_of, subst_free, Band, BandError, Ctx};
 use crate::branches::{canon_lits, simp};
 use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{free_vars, mul, op};
@@ -142,7 +140,7 @@ fn is_candidate(def: &Expr, v: &str) -> bool {
 /// guesses).
 pub fn recurrences(sv: &SysView, obs: &HashMap<String, Expr>, ctx: &Ctx) -> R<Vec<Recurrence>> {
     let mut out: Vec<Recurrence> = Vec::new();
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         let Some(n) = defined_name(eq) else { continue };
         let Some(def) = obs.get(&n) else { continue };
         if out.iter().any(|r| r.name == n) || !is_candidate(def, &n) {
@@ -555,7 +553,7 @@ pub(crate) fn reversed_read(rec: &Recurrence, target: &str, rho: Vec<Expr>) -> E
 fn source_names(sv: &SysView) -> HashSet<String> {
     let mut t: HashSet<String> = sv.variables.keys().cloned().collect();
     t.extend(sv.index_sets.keys().cloned());
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         all_names(&eq.lhs, &mut t);
         all_names(&eq.rhs, &mut t);
     }
@@ -593,10 +591,13 @@ fn self_bands(
     }
     let def = inline_observed(&obs[&rec.name], &map).map_err(|e| BandError(e.0))?;
     let shape = ctx.shapes.get(&rec.name).cloned().unwrap_or_default();
-    Ok(merge_bands(bands(&def, &rec.name, ctx, &shape)?)
-        .iter()
-        .map(normalize_band)
-        .collect())
+    // through `ref_bands`: the definition may hold operator references
+    Ok(merge_bands(crate::operator_refs::ref_bands(
+        &def, &rec.name, ctx, &shape, true,
+    )?)
+    .iter()
+    .map(normalize_band)
+    .collect())
 }
 
 /// The output index name of the transfer recurrence's extra axis: `_tj`,

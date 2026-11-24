@@ -63,7 +63,7 @@ end
     # row is the NO row plus it, so their difference pins it — to 1e-3, since
     # binary64 resolves JD to ~5e-10 days, coarse against the phase τ/86400.
     file = fixture("tgrad_photolysis.esm")
-    f!, u0, p, _, vm = build_evaluator(file)
+    f!, u0, p, _, vm = tw_build(file)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(u0)]
     for τ in (0.3, 0.7, 1.4)
         dT = _tgrad(file, u, τ)
@@ -120,7 +120,7 @@ end
     entries = jacobian_bands(sysview(file, "M"); wrt = :time)
     @test length(entries) == 1 && entries[1].v == "t"
 
-    f!, u0, p, _, vm = build_evaluator(file)
+    f!, u0, p, _, vm = tw_build(file)
     τ = 0.7
     u = copy(u0)
     dT = _tgrad(file, u, τ)

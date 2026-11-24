@@ -255,6 +255,11 @@ fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
         // array that depends on it) at a site-dependent subscript, or of an
         // array expression that reads variables, has no rule.
         "index" if index_is_literal_read(n) => Ok(lit(0)),
+        // Inside a definition's body an array parameter other than the
+        // site's is an independent input (operator_refs.rs).
+        "index" if crate::operator_refs::index_is_independent_param(n, s) => Ok(lit(0)),
+        // An operator reference: the chain rule through derived definitions.
+        o if crate::operator_refs::REF_OPS.contains(&o) => crate::operator_refs::dref(n, s, sc),
         "index" => Err(DerivativeRuleError(
             "`index` of a non-variable array expression (or a site-dependent \
              index) has no scalar rule"
@@ -313,6 +318,9 @@ fn drule_check_op(
     memo: &mut HashMap<NodeRef, bool>,
 ) -> Result<bool, DerivativeRuleError> {
     let a = &n.args;
+    if crate::operator_refs::REF_OPS.contains(&n.op.as_str()) {
+        return crate::operator_refs::dref_check(n, &mut |x: &Expr| drule_check_in(x, s, sc, memo));
+    }
     let mut d = |x: &Expr| drule_check_in(x, s, sc, memo);
     match n.op.as_str() {
         "+" | "-" | "neg" | "/" => {
@@ -649,7 +657,7 @@ mod tests {
         let ctx = Ctx {
             index_sets: [("i".to_string(), 4)].into(),
             shapes: [("x".to_string(), vec![4])].into(),
-            params: Default::default(),
+            ..Default::default()
         };
         let xi = json!({"op": "index", "args": ["x", "i"]});
         // ops with no derivative rule, alone and under a product

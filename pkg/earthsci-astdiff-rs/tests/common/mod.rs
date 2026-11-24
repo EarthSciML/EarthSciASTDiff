@@ -84,3 +84,10 @@ pub fn cells_env(u: &Value, params: HashMap<String, Value>, t: f64) -> Env {
     }
     Env { states, params, t }
 }
+
+/// The flattened system of fixture `name`, with references kept (this
+/// binding's `flatten`; tests/operator_refs.rs checks it against the
+/// reference binding's recorded one).
+pub fn flat_refs(name: &str) -> earthsci_ast::FlattenedSystem {
+    earthsci_ast::flatten(&load(name)).unwrap()
+}

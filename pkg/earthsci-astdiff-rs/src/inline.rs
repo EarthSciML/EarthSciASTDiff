@@ -566,7 +566,10 @@ fn inline_once(
                         let idx = args(fresh)?;
                         return index_makearray(dn, &idx, obs, fresh, scope);
                     }
-                    if dn.op == "const" {
+                    if dn.op == "const" || crate::operator_refs::is_ref(def) {
+                        // a const table keeps its gather; an observed defined
+                        // by an operator reference is read as that reference's
+                        // array (never expanded, operator_refs.rs)
                         let mut a = vec![def.clone()];
                         a.extend(args(fresh)?);
                         return Ok(op("index", a));

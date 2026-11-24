@@ -92,29 +92,25 @@ _sv() = EarthSciASTDiff.SysView(Dict{String, Any}(), [], Dict{String, Any}())
     @test hoist_observed([t1, t2], _sv(); min_nodes = 8) === nothing
 end
 
-@testset "evaluation document carries the hoisted observeds" begin
+# The evaluation document is never deduplicated after the fact: `cse` has no
+# effect (`hoist_observed` itself stays a tested utility).
+@testset "evaluation document: no after-the-fact hoisting" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))
     sv = sysview(file, mname)
     entries = jacobian_bands(file, mname)
-    doc, _ = _evaluation_document(sv, entries)
-    vars = doc["models"]["JacobianEval"]["variables"]
-    hoisted = [k for k in keys(vars) if startswith(String(k), "Jcse")]
-    @test !isempty(hoisted)
-    doc0, _ = _evaluation_document(sv, entries; cse = false)
+    doc, _ = (@test_deprecated _evaluation_document(sv, entries; cse = true))
+    doc0, _ = _evaluation_document(sv, entries)
     @test !any(
-        startswith(String(k), "Jcse")
-            for k in keys(doc0["models"]["JacobianEval"]["variables"])
+        startswith(String(k), "Jcse") for k in keys(doc["models"]["JacobianEval"]["variables"])
     )
-    # the CSE'd document is materially smaller
-    @test length(EarthSciASTDiff.stable_json(doc)) <
-        length(EarthSciASTDiff.stable_json(doc0))
+    @test EarthSciASTDiff.stable_json(doc) == EarthSciASTDiff.stable_json(doc0)
 end
 
 @testset "minmod: eval-CSE Jacobian matches the plain path and AD" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     u = 0.2 .+ 0.6 .* abs.(sin.((1:length(u0)) .* 2.3))
     Jad = ad_jacobian(f!, u, p0, 0.0)
     Jc = doc_jacobian(file; model_name = mname, u = u, p = p0).J        # default: CSE on

@@ -25,9 +25,10 @@ block. A right-hand side that reads a causal recurrence (esm-spec
 with the same recurrence semantics as the document's own.
 
 Producing the block requires the derivative semantics of §3, defined on the
-**expanded, lowered** expression tree: expression templates expanded
-(esm-spec §9.6.4), rewrite-target operators (spatial `D`, `grad`, …)
-already rewritten away. Differentiating an unlowered tree
+**lowered** expression tree: rewrite-target operators (spatial `D`, `grad`,
+…) already rewritten away. Operator references are kept and differentiated
+as references (§3.6): their meaning is their expansion (esm-spec §9.6.4
+rule 2), but no producer expands them. Differentiating an unlowered tree
 is a conformance violation, mirroring the `unlowered_operator` evaluation
 gate.
 
@@ -251,8 +252,8 @@ esm 2.0.0 removed the closed functions (`fn` with `datetime.*` and
 (esm-spec §4.2 "Removed ops"); the loader refuses a document that uses one
 (`removed_op`), so none reaches the derivative calculus and none has a rule
 here. Their replacements are expression templates of the standard library
-(`esm:std/calendar.esm`, `esm:std/interp.esm`), expanded before
-differentiation (§1) into core operators, so the rules above decide them; no
+(`esm:std/calendar.esm`, `esm:std/interp.esm`), differentiated through their
+references (§3.6): each definition's body by the rules above, once; no
 template has a rule of its own. Informatively, what those rules give:
 
 | template | derivative |
@@ -400,6 +401,60 @@ over more than one contracted index, singleton `1` output indices,
 `reshape`/`transpose`/`concat` operands. A causal self-reference recurrence
 (esm-spec §4.3.1.1) is never inlined (it has no fixpoint); it is
 differentiated as an intermediate, §4.5.
+
+### 3.6 Operator references (`apply_operator`)
+
+A reference `{op: "apply_operator", name: D, bindings: B}` (esm-spec §9.6.2;
+`apply_expression_template` is the same node under its earlier name) denotes
+its expansion (esm-spec §9.6.4 rule 2), and a producer differentiates it
+WITHOUT expanding it, analysing each definition once (per binding shape where
+the analysis needs shapes) and combining the result with each use's bindings.
+The definitions are the flattened system's merged registry (bodies closed,
+esm-spec §9.6.4 rule 7), or a model's own `operators` block closed the same
+way (each body's free names, through the definitions it references, become
+trailing parameters, sorted; each reference binds them to their own names).
+
+- **Scalar definition** (its body is a scalar). For each parameter `p` read in
+  a value position, `∂D/∂p` is the derivative of the body with respect to the
+  bare parameter, by the rules of this section, written as the derived
+  definition `D.d_p` over the parameters of D it reads. A reference
+  differentiates as
+
+      d[D(B)] = Σ_p  D.d_p(B) · d[B[p]]
+
+  over the parameters whose argument holds the site: a reference to the
+  derived definition with the same arguments, times the derivative of the
+  argument. A derivative that simplifies to a single literal or name is
+  written as that leaf, and a lone reference as itself; a derived body that
+  differentiates through another definition holds a reference to that one's
+  derived definition. Inside a body, two parameters are independent: an
+  array parameter read at a subscript that depends on the site parameter is
+  piecewise constant in it (the `index` rule of §3.2). An ARRAY parameter
+  (one the body reads through `index`, as a `faq` operand or a `makearray`
+  value) whose argument holds the site has no rule here: refused, never 0.
+- **Array definition** (its body is a `faq` or `makearray` array: a stencil).
+  Its bands with respect to each parameter are computed once per binding
+  shape (array arguments' extents, structural literals) in the body's own
+  index space (§4: rows over its cells, which are a `faq` body's range values
+  or a `makearray`'s positions); each coefficient that is not a leaf or a
+  lone reference is the derived definition `D.d_p.b<k>@<shape>` over the
+  parameters of D it reads and the band's row and contracted index names it
+  reads, sorted. `<shape>` is the binding shape: per array or structural
+  parameter of D, in parameter order, its argument's extents joined by `x`
+  (`6x4`) or its literal, comma-separated (`D.d_f.b2@6x4,3`). Band k at one
+  shape and band k at another are different definitions (a band empty at one
+  extent shifts the numbering, and a structural literal may reach a
+  coefficient), so a definition used at several binding shapes is supported:
+  it has derived definitions for each, and no two of them share a name. A use reads the array as an intermediate: the bands of the
+  enclosing expression with respect to that array (whose columns are its
+  cells) are composed with its own bands bound to the use's arguments and
+  composed with the arguments' bands — inner row names read the outer
+  column indices, coefficients multiply, contractions concatenate, and the
+  inner row box joins the guard, decided over the outer box (§2.2). The
+  bindings of an array reference may not read an index bound around it.
+
+Points, structure and values equal those of the expansion. Every derived
+document carries the definitions its references reach (§8.1).
 
 ## 4. The `"jacobians"` top-level block
 
@@ -565,9 +620,11 @@ factoring, not hygienic abstraction.
   reference to a name absent from the block's `expression_templates` is an
   error.
 - The field is an emission-size optimization only: a block with templates
-  and its fully-expanded form denote the same Jacobian, and producers MAY
-  emit either. Deterministic producers SHOULD extract by the rule below, so
-  byte-comparison goldens are stable; the bindings of this repository MUST.
+  and its fully-expanded form denote the same Jacobian. The producers of this
+  repository no longer write it (nor hoist the evaluation document, §8.1):
+  coefficients keep the source's operator references (§3.6) instead, and
+  nothing is deduplicated after the fact. Consumers still read it. The rule
+  below describes what earlier producers wrote.
 
 **Extraction rule.** The same rule picks a block's templates and the
 hoisted observed of an evaluation or product document (§8.1, §9.1). Its
@@ -636,8 +693,8 @@ equation order, and the single column within each equation.
   observed that can depend on a target; the time axis does not — an
   observed's time dependence can also arrive through data its definition
   reads, so `{t}` is not a sound seed.)
-- The esm:std templates of `t` differentiate through their expansion
-  (§3.4): the integer calendar fields to 0, `julian_day` to `1/86400`, and
+- The esm:std templates of `t` differentiate through their references
+  (§3.4, §3.6): the integer calendar fields to 0, `julian_day` to `1/86400`, and
   `linear` / `bilinear` of `t` to the active segment's slope.
 - `f_t` is the **partial** derivative with every parameter held fixed. Time
   dependence that enters only through data — two-record forcing blend weights
@@ -1347,6 +1404,18 @@ The derived model is named `JacobianEval` and holds:
   local to the parameter's component read under its scope) is read and
   kept. The source's other equations, such as a model's `ic` equations, are
   kept;
+- in each top-level model whose subtree holds an operator reference (§3.6),
+  an `operators` block, its references written `apply_operator` (a source
+  loaded under the earlier names `expression_templates` /
+  `apply_expression_template` is read under the current ones): the transitive
+  closure of the definitions its references reach, the source's entries as
+  its registry holds them in registry order, then the derived definitions in
+  name order, each `{"params", "body", "description", "reference_only":
+  true}`, named as §3.6 names them (`D.d_p`; `D.d_p.b<k>@<shape>`, so a
+  definition used at several binding shapes carries the derived definitions
+  of each). The coefficients write references, never expanded bodies, and the
+  evaluation document is not hoisted (the producer option `cse` no longer
+  has an effect; the hoisting below describes earlier documents);
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`
   index sets) and their definitions, and the recurrence auxiliaries (§4.5).
   Hoisting extracts the coefficients' repeated subtrees by §4.1's rule

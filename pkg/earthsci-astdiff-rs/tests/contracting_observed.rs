@@ -308,14 +308,15 @@ fn scalar_sum_observed_without_output_idx() {
         _ => unreachable!(),
     };
     assert_eq!(oidx(&sv.equations[kc].rhs), Some(vec![]));
-    let mut eqs2 = sv.equations.clone();
+    let mut eqs2 = sv.equations.clone().into_owned();
     eqs2[kc].rhs.node_mut().unwrap().output_idx = None;
     let sv2 = SysView {
         variables: sv.variables.clone(),
-        equations: &eqs2,
+        equations: std::borrow::Cow::Owned(eqs2),
         index_sets: sv.index_sets.clone(),
         domain: sv.domain,
         data_sources: sv.data_sources,
+        refs: sv.refs.clone(),
     };
     let obs = observed_defs(&sv).unwrap();
     let obs2 = observed_defs(&sv2).unwrap();

@@ -157,7 +157,7 @@ end
     # carrying the source states as parameters).
     for name in ("bd_chem", "minmod_adv", "flux_form_adv")
         file = fixture("$name.esm")
-        f!, u0, p0, _, _ = build_evaluator(file)
+        f!, u0, p0, _, _ = tw_build(file)
         layout = _doc_source(file, nothing, NamedTuple())
         doc, io = jvp_document(file)
         ev = _doc_evaluator(doc, io.model)

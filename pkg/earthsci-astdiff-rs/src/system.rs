@@ -24,7 +24,10 @@ use crate::bands::{BandError, Ctx};
 /// its grid shape (see [`sysview_flat`]).
 pub struct SysView<'a> {
     pub variables: IndexMap<String, Cow<'a, ModelVariable>>,
-    pub equations: &'a Vec<Equation>,
+    /// The model's (or flattened system's) equations; owned only when a
+    /// reference had to be closed over the names its definition reads freely
+    /// (operator_refs.rs `close_registry`).
+    pub equations: Cow<'a, Vec<Equation>>,
     pub index_sets: IndexMap<String, IndexSet>,
     /// The document's (or flattened system's) domain, `None` when it has
     /// none: the evaluation document carries its time origin (spec §8.1).
@@ -35,6 +38,9 @@ pub struct SysView<'a> {
     /// The derived documents copy the entries a data-fed parameter names
     /// (spec §8.1).
     pub data_sources: Option<&'a IndexMap<String, DataSource>>,
+    /// The operator definitions the equations' references resolve against
+    /// (operator_refs.rs), `None` without any.
+    pub refs: Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
 }
 
 impl<'a> SysView<'a> {
@@ -82,16 +88,24 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
     let model: &Model = models(file)?
         .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
+    let index_sets = file.index_sets.clone().unwrap_or_default();
+    // the model's own `operators` block as load materialized it (esm-spec
+    // §9.6.4 rule 5), closed as `flatten` closes the merged registry
+    let raw = file
+        .component_operators(&format!("models.{name}"))
+        .to_json();
+    let (equations, refs) = closed_refs(&raw, &model.equations, &index_sets)?;
     Ok(SysView {
         variables: model
             .variables
             .iter()
             .map(|(n, v)| (n.clone(), Cow::Borrowed(v)))
             .collect(),
-        equations: &model.equations,
-        index_sets: file.index_sets.clone().unwrap_or_default(),
+        equations,
+        index_sets,
         domain: file.domain.as_ref(),
         data_sources: file.data_sources.as_ref(),
+        refs,
     })
 }
 
@@ -125,9 +139,9 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
 /// lifted state adds is never matched for the next, and a declared
 /// `_liftdim<d>_<extent>` of another size is refused.
 ///
-/// The reference expands surviving `apply_expression_template` references
-/// first (`expand_flattened_refs`); there is nothing to expand here, since
-/// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
+/// Operator references are kept as they are, never expanded: the view
+/// carries the merged registry `flatten` writes (esm-spec §9.6.4 rule 7,
+/// every body closed; closed here all the same, a no-op on closed bodies).
 pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
     let mut variables: IndexMap<String, Cow<'_, ModelVariable>> = IndexMap::new();
     for (n, v) in flat
@@ -160,13 +174,66 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
             .collect::<Result<Vec<_>, _>>()?;
         var.to_mut().shape = Some(axes);
     }
+    let (equations, refs) = closed_refs(&flat.template_registry, &flat.equations, &index_sets)?;
     Ok(SysView {
         variables,
-        equations: &flat.equations,
+        equations,
         index_sets,
         domain: flat.domain.as_ref(),
         data_sources: None,
+        refs,
     })
+}
+
+type ClosedRefs<'a> = (
+    Cow<'a, Vec<Equation>>,
+    Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
+);
+
+// The equations and the reference layer of a registry closed as `flatten`
+// closes it: every reference binds the free names of the definitions it
+// reaches (operator_refs.rs `close_registry`).
+fn closed_refs<'a>(
+    raw: &IndexMap<String, serde_json::Value>,
+    eqs: &'a Vec<Equation>,
+    index_sets: &IndexMap<String, IndexSet>,
+) -> Result<ClosedRefs<'a>, BandError> {
+    if raw.is_empty() {
+        return Ok((Cow::Borrowed(eqs), None));
+    }
+    let (reg, closing) = crate::operator_refs::close_registry(raw)?;
+    let eqs = if closing.is_empty() {
+        Cow::Borrowed(eqs)
+    } else {
+        Cow::Owned(
+            eqs.iter()
+                .map(|eq| {
+                    let mut eq = eq.clone();
+                    eq.lhs = crate::operator_refs::close_refs(&eq.lhs, &closing);
+                    eq.rhs = crate::operator_refs::close_refs(&eq.rhs, &closing);
+                    eq
+                })
+                .collect(),
+        )
+    };
+    Ok((eqs, refs_of(&reg, index_sets)))
+}
+
+// The layer of a closed registry, `None` when it is empty.
+fn refs_of(
+    reg: &IndexMap<String, serde_json::Value>,
+    index_sets: &IndexMap<String, IndexSet>,
+) -> Option<std::rc::Rc<crate::operator_refs::RefLayer>> {
+    if reg.is_empty() {
+        return None;
+    }
+    let sizes = index_sets
+        .iter()
+        .filter_map(|(k, s)| s.size.map(|n| (k.clone(), n)))
+        .collect();
+    Some(std::rc::Rc::new(crate::operator_refs::RefLayer::new(
+        reg, sizes,
+    )))
 }
 
 fn interval(n: i64) -> IndexSet {
@@ -278,6 +345,7 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
             ctx.params.insert(n.clone());
         }
     }
+    ctx.refs = sv.refs.clone();
     Ok(ctx)
 }
 
@@ -403,7 +471,7 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
     let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
     let mut defs = HashMap::new();
     let mut indexed: HashSet<String> = HashSet::new();
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         let bare = lhs_definition(eq);
         let (n, d) = match bare {
             Some(n) => (n, Some(eq.rhs.clone())),
@@ -470,20 +538,6 @@ pub fn view_states(sv: &SysView, obs: &HashMap<String, Expr>) -> Vec<String> {
     out
 }
 
-// An expression whose true dependencies `free_variables` cannot see: a
-// surviving template reference exposes only its bindings. Treated as
-// target-DEPENDENT so it is kept (and loudly rejected by the inliner) rather
-// than silently pruned to zero.
-fn opaque_deps(e: &Expr) -> bool {
-    let Expr::Operator(n) = e else { return false };
-    if n.op == "apply_expression_template" {
-        return true;
-    }
-    let mut found = false;
-    n.for_each_child(&mut |c: &Expr| found = found || opaque_deps(c));
-    found
-}
-
 // Names occurring under an index SUBSCRIPT — `args[1..]` of an `index` node.
 fn index_arg_names(acc: &mut HashSet<String>, e: &Expr) {
     let Expr::Operator(n) = e else { return };
@@ -516,7 +570,7 @@ pub fn inlinable_observed(
     let mut work: Vec<&str> = Vec::new();
     for (n, e) in obs {
         let fv = free_variables(e);
-        if !fv.is_disjoint(targets) || opaque_deps(e) {
+        if !fv.is_disjoint(targets) {
             work.push(n);
         }
         for m in &fv {

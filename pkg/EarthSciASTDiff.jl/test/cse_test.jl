@@ -181,7 +181,7 @@ end
 @testset "minmod limiter: oracle + swell control" begin
     file = fixture("minmod_adv.esm")
     mname = first(keys(file.models))
-    f!, u0, p0, _, _ = build_evaluator(file)
+    f!, u0, p0, _, _ = tw_build(file)
     entries = jacobian_bands(file, mname)
 
     # analytical J matches AD at non-smooth-friendly points; pattern ⊇ AD
@@ -201,12 +201,13 @@ end
     )
     @test nchars < 60_000
 
-    # CSE'd document: templates present, block smaller, round-trip exact
+    # No block-local templates any more, whatever `cse` says: the block
+    # holds the coefficients as produced, and round-trips exactly
     d1 = jacobian_document(file, mname)
-    d0 = jacobian_document(file, mname; cse = false)
+    d0 = (@test_deprecated jacobian_document(file, mname; cse = true))
     b1 = d1["jacobians"][String(mname)]
-    @test haskey(b1, "expression_templates")
-    @test length(stable_json(d1["jacobians"])) < length(stable_json(d0["jacobians"]))
+    @test !haskey(b1, "expression_templates")
+    @test stable_json(d1["jacobians"]) == stable_json(d0["jacobians"])
     _, ents = parse_jacobian_block(b1)
     @test length(ents) == length(entries)
     @test all(

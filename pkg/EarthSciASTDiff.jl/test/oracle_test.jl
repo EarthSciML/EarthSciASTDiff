@@ -4,7 +4,7 @@
 
 @testset "oracle: adv_react_2d (states)" begin
     file = fixture("adv_react_2d.esm")
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     for _ in 1:3
         u = 0.3 .+ rand(length(u0))
         res = doc_jacobian(file; u = u, p = p)
@@ -16,7 +16,7 @@ end
 
 @testset "oracle: adv_react_2d (parameters)" begin
     file = fixture("adv_react_2d.esm")
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     u = 0.3 .+ rand(length(u0))
     res = doc_jacobian(file; wrt = :parameters, u = u, p = p)
     pv = collect(Float64, p)
@@ -30,7 +30,7 @@ end
 
 @testset "oracle: several points" begin
     file = fixture("bd_chem.esm")
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     for _ in 1:3
         u = 0.2 .+ rand(length(u0))
         J = doc_jacobian(file; u = u, p = p).J
@@ -42,7 +42,7 @@ end
 @testset "oracle: coupled document through flatten" begin
     file = fixture("coupled_chem_advection.esm")
     flat = flatten(file)
-    f!, u0, p, _, _ = build_evaluator(flat)
+    f!, u0, p, _, _ = tw_build(flat)
     u = u0 .* (0.5 .+ rand(length(u0)))
     res = doc_jacobian(flat; u = u, p = p)
     Jad = ad_jacobian(f!, u, p, 0.0)
@@ -66,7 +66,7 @@ end
     twin = joinpath(mktempdir(), "twin.esm")
     write(twin, EarthSciASTDiff.JSON3.write(d))
     @test bands(file) == bands(EarthSciAST.load_path(twin))
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     u = 0.2 .+ rand(length(u0))
     res = doc_jacobian(file; u = u, p = p)
     Jad = ad_jacobian(f!, u, p, 0.0)
@@ -82,7 +82,7 @@ end
 # failure reproduces.
 @testset "oracle: Pre is the identity" begin
     file = fixture("pre_operator.esm")
-    f!, u0, p, _, _ = build_evaluator(file)
+    f!, u0, p, _, _ = tw_build(file)
     for s in 1:3
         u = [0.2 + 0.6 * abs(sin(2.3 * i + 0.7 * s)) for i in eachindex(u0)]
         res = doc_jacobian(file; u = u, p = p)

@@ -52,7 +52,7 @@ end
             path = joinpath(dir, "u9.esm")
             open(io -> JSON3.write(io, d), path, "w")
             file = EarthSciAST.load_path(path)
-            f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+            f!, _, p, _, _ = tw_build(file; compiler = :interpreter)
             Jad = ad_jacobian(f!, u, p, 0.0)
             res = doc_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
             @testset "$label" begin
@@ -148,7 +148,7 @@ end
         path = joinpath(dir, "tie.esm")
         open(io -> JSON3.write(io, U.doc(neg(mx(le("j", "i"))))), path, "w")
         file = EarthSciAST.load_path(path)
-        _, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+        _, _, p, _, _ = tw_build(file; compiler = :interpreter)
         J = Matrix(doc_jacobian(file; u = utie, p = p, build_kwargs = (compiler = :interpreter,)).J)
         @test J[4, 2] ≈ -2 * 0.9 && J[4, 4] == 0 && J[5, 2] ≈ -2 * 0.9 && J[5, 4] == 0
     end
@@ -272,7 +272,7 @@ end
         file = EarthSciAST.load_path(path)
         entries = jacobian_bands(file, "U9")
         @test !isempty(entries) && all(en -> en.v == "u", entries)
-        f!, _, p, _, _ = build_evaluator(file; compiler = :interpreter)
+        f!, _, p, _, _ = tw_build(file; compiler = :interpreter)
         u = [0.3, 0.9, 0.2, 0.6, 0.45]
         res = doc_jacobian(file; u = u, p = p, build_kwargs = (compiler = :interpreter,))
         @test Matrix(res.J) ≈ Matrix(ad_jacobian(f!, u, p, 0.0)) atol = 1.0e-13

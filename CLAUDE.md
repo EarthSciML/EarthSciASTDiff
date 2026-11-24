@@ -82,7 +82,7 @@ reference writes the goldens of `recurrence_sweep` and `pbl_rank1` like any
 other. Each binding checks their values against central differences of
 the source right-hand side.
 
-esm 2.0.0 (EarthSciAST 0.11, the floor) removed `fn` (`datetime.*`,
+esm 2.0.0 (EarthSciAST 0.11) removed `fn` (`datetime.*`,
 `interp.*`), `table_lookup` and the `aggregate` spelling: there are no
 rules for them. Their esm:std template replacements expand at load into
 core ops and differentiate through the `index`-of-a-literal-array rule
@@ -101,6 +101,11 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `cse.jl`          — hash-consed repeated-subtree extraction into zero-param
   `expression_templates` (`cse_templates` / `expand_templates`, spec §4.1)
 - `bands.jl`        — array-level band calculus (faq/makearray)
+- `operator_refs.jl` — operator references (`apply_operator`), never
+  expanded: derived definitions `<D>.d_<p>` and the chain rule for scalar
+  definitions, bands `<D>.d_<p>.b<k>` composed at each use for array
+  (stencil) definitions, the `operators` blocks of derived documents. The
+  ONE reference-aware layer (Rust `operator_refs.rs` mirrors it)
 - `clip.jl`         — static region clipping (affine breakpoint splits, exact
   guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
