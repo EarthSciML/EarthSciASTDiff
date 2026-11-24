@@ -14,9 +14,7 @@ SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 # floor only to a published release. 0.15 is the floor: its `operators` block
 # and `apply_operator` references are what derived documents carry, and its
 # flatten keeps references (with bodies closed) instead of expanding them.
-# Until 0.15 is published, 0.14 is admitted so that a [sources] pin to
-# EarthSciAST main (still versioned 0.14.0) resolves; back to "0.15" then.
-EarthSciAST = "0.14, 0.15"
+EarthSciAST = "0.15"
 JSON3 = "1"
 OrderedCollections = "1, 2.0"
 SparseArrays = "1.10"
