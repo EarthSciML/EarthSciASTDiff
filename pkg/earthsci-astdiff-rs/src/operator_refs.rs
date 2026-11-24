@@ -1562,7 +1562,7 @@ impl RefLayer {
         let mut out = serde_json::Map::new();
         for (n, e) in &self.registry {
             if names.contains(n) {
-                out.insert(n.clone(), serialized_entry(e));
+                out.insert(n.clone(), e.clone());
             }
         }
         let mut derived: Vec<&String> = names
@@ -1578,22 +1578,6 @@ impl RefLayer {
         }
         out
     }
-}
-
-/// A registry entry with its `body` written as every expression of a derived
-/// document is, EarthSciAST's serialized expression (an integral number as an
-/// integer): the Rust registry holds a body as the source spelled it (`0.0`),
-/// the reference's as it serializes it (`0`).
-fn serialized_entry(e: &Value) -> Value {
-    let mut e = e.clone();
-    if let Some(body) = e.get_mut("body") {
-        if let Ok(x) = serde_json::from_value::<Expr>(body.clone()) {
-            if let Ok(v) = serde_json::to_value(&x) {
-                *body = v;
-            }
-        }
-    }
-    e
 }
 
 /// Give each top-level model of a derived document that holds an operator
@@ -1643,15 +1627,6 @@ mod name_tests {
         );
         assert_eq!(derived_name("M.adv.d_f.b2"), None);
         assert_eq!(derived_name("rate"), None);
-    }
-
-    #[test]
-    fn registry_bodies_are_written_serialized() {
-        let e = serde_json::json!({"params": ["x"], "body": {"op": "*", "args": [2.0, "x", 0.5]}});
-        assert_eq!(
-            serialized_entry(&e),
-            serde_json::json!({"params": ["x"], "body": {"op": "*", "args": [2, "x", 0.5]}})
-        );
     }
 
     #[test]
