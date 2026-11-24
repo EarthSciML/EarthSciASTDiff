@@ -1294,6 +1294,124 @@ pub(crate) fn is_array_ref(e: &Expr) -> bool {
         .unwrap_or(false)
 }
 
+// ── closing a registry ──────────────────────────────────────────────────────
+//
+// A model's own `operators` bodies may read names of the model freely: the
+// reference's site supplies them (esm-spec §9.6.4 rules 1–2). `flatten`
+// closes them (rule 7): every body's free names (its own, and those of the
+// definitions it references) become trailing parameters, sorted, and every
+// reference binds each to its own name. The view of a single model is closed
+// the same way (operator_refs.jl `_close_registry`), so every analysis meets
+// closed bodies whatever the input. A flattened registry is closed already
+// (a no-op).
+
+/// A definition name → the free names its references must bind.
+pub(crate) type Closing = HashMap<String, Vec<String>>;
+
+/// (closed registry, [`Closing`]; empty when nothing reads a name freely).
+pub(crate) fn close_registry(
+    raw: &IndexMap<String, Value>,
+) -> R<(IndexMap<String, Value>, Closing)> {
+    use earthsci_ast::operator_refs::Definition;
+    let defs: IndexMap<&String, Definition> = raw
+        .iter()
+        .map(|(n, e)| (n, Definition::from_json(n, e)))
+        .filter(|(_, d)| d.body.is_some() && !d.is_rule)
+        .collect();
+    fn fr(
+        n: &str,
+        defs: &IndexMap<&String, earthsci_ast::operator_refs::Definition>,
+        stack: &mut Vec<String>,
+        free: &mut HashMap<String, Vec<String>>,
+    ) -> R<Vec<String>> {
+        if let Some(hit) = free.get(n) {
+            return Ok(hit.clone());
+        }
+        if stack.iter().any(|s| s == n) {
+            return Err(BandError(format!("operator `{n}` references itself")));
+        }
+        let Some(d) = defs.get(&n.to_string()) else {
+            return Ok(Vec::new());
+        };
+        let ps: HashSet<&str> = d.params.iter().map(String::as_str).collect();
+        let mut acc: std::collections::BTreeSet<String> = d
+            .free_names()
+            .iter()
+            .filter(|x| !ps.contains(x.as_str()))
+            .cloned()
+            .collect();
+        stack.push(n.to_string());
+        for c in d.callees() {
+            for x in fr(c, defs, stack, free)? {
+                if !ps.contains(x.as_str()) {
+                    acc.insert(x);
+                }
+            }
+        }
+        stack.pop();
+        let out: Vec<String> = acc.into_iter().collect();
+        free.insert(n.to_string(), out.clone());
+        Ok(out)
+    }
+    let mut free = HashMap::new();
+    let mut closing = HashMap::new();
+    for n in defs.keys() {
+        let c = fr(n, &defs, &mut Vec::new(), &mut free)?;
+        if !c.is_empty() {
+            closing.insert((*n).clone(), c);
+        }
+    }
+    if closing.is_empty() {
+        return Ok((raw.clone(), closing));
+    }
+    let mut out = IndexMap::new();
+    for (n, e) in raw {
+        let Some(d) = defs.get(n) else {
+            out.insert(n.clone(), e.clone());
+            continue;
+        };
+        let mut e = e.clone();
+        let mut params: Vec<Value> = d.params.iter().map(|p| Value::from(p.as_str())).collect();
+        for x in closing.get(n).into_iter().flatten() {
+            if !d.params.contains(x) {
+                params.push(Value::from(x.as_str()));
+            }
+        }
+        let body = d.body.as_ref().expect("a definition with a body");
+        let closed = close_refs(body, &closing);
+        if let Value::Object(m) = &mut e {
+            m.insert("params".into(), Value::Array(params));
+            if closed != *body {
+                m.insert(
+                    "body".into(),
+                    serde_json::to_value(&closed).expect("a body serializes"),
+                );
+            }
+        }
+        out.insert(n.clone(), e);
+    }
+    Ok((out, closing))
+}
+
+/// `e` with every reference binding its definition's closing names to
+/// themselves (a binding already given is kept).
+pub(crate) fn close_refs(e: &Expr, closing: &HashMap<String, Vec<String>>) -> Expr {
+    let Expr::Operator(n) = e else {
+        return e.clone();
+    };
+    let mut n2 = n.map_children(&mut |c| close_refs(c, closing));
+    if REF_OPS.contains(&n2.op.as_str()) {
+        if let Some(names) = n2.name.as_ref().and_then(|d| closing.get(d)) {
+            let b = n2.bindings.get_or_insert_with(HashMap::new);
+            for x in names {
+                b.entry(x.clone())
+                    .or_insert_with(|| Expr::Variable(x.clone()));
+            }
+        }
+    }
+    Expr::Operator(std::sync::Arc::new(n2))
+}
+
 // ── carrying definitions into derived documents ─────────────────────────────
 
 fn raw_refs(x: &Value, acc: &mut Vec<(String, Option<Value>)>) {

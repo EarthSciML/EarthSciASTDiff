@@ -363,7 +363,9 @@ fn carries_the_domain() {
             stable_json(&doc["domain"]),
             r#"{"temporal":{"end":"2024-05-02T06:00:00Z","start":"2024-05-01T06:00:00Z"}}"#
         );
-        assert_eq!(doc["esm"], json!("1.1.0"));
+        // the `hour` definition the document carries holds a unit-bearing
+        // `const` (esm 1.2.0)
+        assert_eq!(doc["esm"], json!("1.2.0"));
         // 13:00 UTC on 2024-05-01, in UTC seconds: -k · 13
         assert_eq!(j1(&doc, 1714568400.0), -6.5);
         let mut bare = doc.clone();
@@ -561,7 +563,7 @@ fn refuses_bad_sources() {
         }
         SysView {
             variables,
-            equations: sv.equations,
+            equations: sv.equations.clone(),
             index_sets: sv.index_sets.clone(),
             domain: sv.domain,
             data_sources: sv.data_sources,

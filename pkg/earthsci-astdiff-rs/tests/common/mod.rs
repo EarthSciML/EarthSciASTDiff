@@ -85,42 +85,9 @@ pub fn cells_env(u: &Value, params: HashMap<String, Value>, t: f64) -> Env {
     Env { states, params, t }
 }
 
-/// The flattened system of fixture `name`, with references kept: where the
-/// reference binding's reference-preserving flatten is recorded
-/// (`<name>.flat-refs.json`: its equations and merged registry), it is laid
-/// over this binding's, whose `load` still expands every reference.
+/// The flattened system of fixture `name`, with references kept (this
+/// binding's `flatten`; tests/operator_refs.rs checks it against the
+/// reference binding's recorded one).
 pub fn flat_refs(name: &str) -> earthsci_ast::FlattenedSystem {
-    let mut flat = earthsci_ast::flatten(&load(name)).unwrap();
-    let path = root()
-        .join("tests/goldens")
-        .join(format!("{name}.flat-refs.json"));
-    let Ok(text) = fs::read_to_string(&path) else {
-        return flat;
-    };
-    let refs: Value = serde_json::from_str(&text).unwrap();
-    flat.equations = refs["equations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| serde_json::from_value(e.clone()).unwrap())
-        .collect();
-    flat.template_registry = refs["template_registry"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    flat
-}
-
-/// Whether a golden written with operator references kept cannot be
-/// reproduced here: EarthSciAST's Rust `load` expands every reference of a
-/// one-model document, so `ours` holds none. Such a comparison waits for a
-/// `load` that keeps them (said on stderr, never silently).
-pub fn awaits_reference_load(golden: &str, ours: &str, what: &str) -> bool {
-    let pending = golden.contains("\"apply_operator\"") && !ours.contains("\"apply_operator\"");
-    if pending {
-        eprintln!("{what}: the golden keeps operator references, which EarthSciAST's Rust load expands; not compared");
-    }
-    pending
+    earthsci_ast::flatten(&load(name)).unwrap()
 }

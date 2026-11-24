@@ -217,9 +217,6 @@ fn axis_band_goldens() {
         }
         let text = stable_json(&Value::Array(entries.iter().map(serialize_band).collect()));
         let want = golden(&format!("{name}.{axis}.bands.json"));
-        if common::awaits_reference_load(&want, &text, &format!("{name}.{axis}")) {
-            continue;
-        }
         assert_eq!(text, want, "{axis} band golden diverges: {name}");
         let block = jacobian_block(&file, None, wrt, true, 12).unwrap();
         // spec §4: a parameters / forcing block carries `columns`, not

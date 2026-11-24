@@ -24,7 +24,10 @@ use crate::bands::{BandError, Ctx};
 /// its grid shape (see [`sysview_flat`]).
 pub struct SysView<'a> {
     pub variables: IndexMap<String, Cow<'a, ModelVariable>>,
-    pub equations: &'a Vec<Equation>,
+    /// The model's (or flattened system's) equations; owned only when a
+    /// reference had to be closed over the names its definition reads freely
+    /// (operator_refs.rs `close_registry`).
+    pub equations: Cow<'a, Vec<Equation>>,
     pub index_sets: IndexMap<String, IndexSet>,
     /// The document's (or flattened system's) domain, `None` when it has
     /// none: the evaluation document carries its time origin (spec §8.1).
@@ -85,19 +88,24 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
     let model: &Model = models(file)?
         .get(&name)
         .ok_or_else(|| BandError(format!("no model `{name}`")))?;
+    let index_sets = file.index_sets.clone().unwrap_or_default();
+    // the model's own `operators` block as load materialized it (esm-spec
+    // §9.6.4 rule 5), closed as `flatten` closes the merged registry
+    let raw = file
+        .component_operators(&format!("models.{name}"))
+        .to_json();
+    let (equations, refs) = closed_refs(&raw, &model.equations, &index_sets)?;
     Ok(SysView {
         variables: model
             .variables
             .iter()
             .map(|(n, v)| (n.clone(), Cow::Borrowed(v)))
             .collect(),
-        equations: &model.equations,
-        index_sets: file.index_sets.clone().unwrap_or_default(),
+        equations,
+        index_sets,
         domain: file.domain.as_ref(),
         data_sources: file.data_sources.as_ref(),
-        // EarthSciAST's Rust `load` expands every reference before a model
-        // reaches here (a model's own block is not on the typed model yet).
-        refs: None,
+        refs,
     })
 }
 
@@ -131,9 +139,9 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
 /// lifted state adds is never matched for the next, and a declared
 /// `_liftdim<d>_<extent>` of another size is refused.
 ///
-/// The reference expands surviving `apply_expression_template` references
-/// first (`expand_flattened_refs`); there is nothing to expand here, since
-/// EarthSciAST's Rust `load` expands every reference before `flatten` runs.
+/// Operator references are kept as they are, never expanded: the view
+/// carries the merged registry `flatten` writes (esm-spec §9.6.4 rule 7,
+/// every body closed; closed here all the same, a no-op on closed bodies).
 pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
     let mut variables: IndexMap<String, Cow<'_, ModelVariable>> = IndexMap::new();
     for (n, v) in flat
@@ -166,10 +174,10 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
             .collect::<Result<Vec<_>, _>>()?;
         var.to_mut().shape = Some(axes);
     }
-    let refs = refs_of(&flat.template_registry, &index_sets);
+    let (equations, refs) = closed_refs(&flat.template_registry, &flat.equations, &index_sets)?;
     Ok(SysView {
         variables,
-        equations: &flat.equations,
+        equations,
         index_sets,
         domain: flat.domain.as_ref(),
         data_sources: None,
@@ -177,8 +185,41 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
     })
 }
 
-// The layer of a flattened system's merged registry (esm-spec §9.6.4 rule
-// 7: every body closed), `None` when it is empty.
+type ClosedRefs<'a> = (
+    Cow<'a, Vec<Equation>>,
+    Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
+);
+
+// The equations and the reference layer of a registry closed as `flatten`
+// closes it: every reference binds the free names of the definitions it
+// reaches (operator_refs.rs `close_registry`).
+fn closed_refs<'a>(
+    raw: &IndexMap<String, serde_json::Value>,
+    eqs: &'a Vec<Equation>,
+    index_sets: &IndexMap<String, IndexSet>,
+) -> Result<ClosedRefs<'a>, BandError> {
+    if raw.is_empty() {
+        return Ok((Cow::Borrowed(eqs), None));
+    }
+    let (reg, closing) = crate::operator_refs::close_registry(raw)?;
+    let eqs = if closing.is_empty() {
+        Cow::Borrowed(eqs)
+    } else {
+        Cow::Owned(
+            eqs.iter()
+                .map(|eq| {
+                    let mut eq = eq.clone();
+                    eq.lhs = crate::operator_refs::close_refs(&eq.lhs, &closing);
+                    eq.rhs = crate::operator_refs::close_refs(&eq.rhs, &closing);
+                    eq
+                })
+                .collect(),
+        )
+    };
+    Ok((eqs, refs_of(&reg, index_sets)))
+}
+
+// The layer of a closed registry, `None` when it is empty.
 fn refs_of(
     reg: &IndexMap<String, serde_json::Value>,
     index_sets: &IndexMap<String, IndexSet>,
@@ -430,7 +471,7 @@ pub fn observed_defs(sv: &SysView) -> Result<HashMap<String, Expr>, BandError> {
     let states: HashSet<String> = sv.equations.iter().filter_map(lhs_state).collect();
     let mut defs = HashMap::new();
     let mut indexed: HashSet<String> = HashSet::new();
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         let bare = lhs_definition(eq);
         let (n, d) = match bare {
             Some(n) => (n, Some(eq.rhs.clone())),

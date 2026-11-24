@@ -140,7 +140,7 @@ fn is_candidate(def: &Expr, v: &str) -> bool {
 /// guesses).
 pub fn recurrences(sv: &SysView, obs: &HashMap<String, Expr>, ctx: &Ctx) -> R<Vec<Recurrence>> {
     let mut out: Vec<Recurrence> = Vec::new();
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         let Some(n) = defined_name(eq) else { continue };
         let Some(def) = obs.get(&n) else { continue };
         if out.iter().any(|r| r.name == n) || !is_candidate(def, &n) {
@@ -553,7 +553,7 @@ pub(crate) fn reversed_read(rec: &Recurrence, target: &str, rho: Vec<Expr>) -> E
 fn source_names(sv: &SysView) -> HashSet<String> {
     let mut t: HashSet<String> = sv.variables.keys().cloned().collect();
     t.extend(sv.index_sets.keys().cloned());
-    for eq in sv.equations {
+    for eq in sv.equations.iter() {
         all_names(&eq.lhs, &mut t);
         all_names(&eq.rhs, &mut t);
     }

@@ -1,11 +1,10 @@
 //! Operator references are differentiated without being expanded
-//! (operator_refs.rs; the reference's operator_refs_test.jl). EarthSciAST's
-//! Rust `load` still expands every reference, so the reference-preserving
-//! flattened system comes from the reference binding's `flatten`
+//! (operator_refs.rs; the reference's operator_refs_test.jl). The flattened
+//! system is EarthSciAST's Rust `flatten`, which keeps references and closes
+//! the merged registry; it is checked against the reference binding's
 //! (`coupled_chem_advection.flat-refs.json`: its equations and merged
-//! registry) laid over this binding's flattened system, whose variables and
-//! index sets are the same. Its bands, structure and evaluation document must
-//! match the reference's goldens byte for byte.
+//! registry, recorded from Julia), and the bands, structure and evaluation
+//! document of both inputs must match the reference's goldens byte for byte.
 
 use std::fs;
 
@@ -25,8 +24,15 @@ fn golden(file: &str) -> String {
     fs::read_to_string(root().join("tests/goldens").join(file)).unwrap()
 }
 
-fn flat_refs() -> FlattenedSystem {
-    let mut flat = earthsci_ast::flatten(&load(NAME)).unwrap();
+/// This binding's `flatten`, references kept.
+fn flat_real() -> FlattenedSystem {
+    earthsci_ast::flatten(&load(NAME)).unwrap()
+}
+
+/// This binding's flattened system with the reference binding's recorded
+/// equations and merged registry laid over it.
+fn flat_recorded() -> FlattenedSystem {
+    let mut flat = flat_real();
     let refs: Value = serde_json::from_str(&golden(&format!("{NAME}.flat-refs.json"))).unwrap();
     flat.equations = refs["equations"]
         .as_array()
@@ -55,48 +61,81 @@ fn count_refs(x: &Value) -> usize {
     }
 }
 
+fn inputs() -> [(FlattenedSystem, &'static str); 2] {
+    [(flat_real(), "flatten"), (flat_recorded(), "recorded")]
+}
+
+/// The Rust `flatten` keeps the references the Julia one keeps, with the
+/// same closed merged registry.
+#[test]
+fn flatten_matches_the_reference() {
+    let (real, rec) = (flat_real(), flat_recorded());
+    assert!(count_refs(&serde_json::to_value(&real.equations).unwrap()) > 0);
+    assert_eq!(
+        stable_json(&serde_json::to_value(&real.equations).unwrap()),
+        stable_json(&serde_json::to_value(&rec.equations).unwrap()),
+        "equations differ"
+    );
+    assert_eq!(
+        stable_json(&serde_json::to_value(&real.template_registry).unwrap()),
+        stable_json(&serde_json::to_value(&rec.template_registry).unwrap()),
+        "merged registries differ"
+    );
+}
+
 #[test]
 fn bands_match_the_reference() {
-    let flat = flat_refs();
-    let sv = sysview_flat(&flat).unwrap();
-    for (wrt, tag) in [(Wrt::States, ""), (Wrt::Parameters, ".parameters")] {
-        let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
-        let ser: Vec<Value> = entries.iter().map(serialize_band).collect();
-        assert!(
-            count_refs(&Value::Array(ser.clone())) > 0,
-            "{wrt:?}: no references kept"
-        );
-        assert_eq!(
-            stable_json(&Value::Array(ser)),
-            golden(&format!("{NAME}{tag}.bands.json")),
-            "{wrt:?} diverges"
-        );
+    for (flat, input) in inputs() {
+        let sv = sysview_flat(&flat).unwrap();
+        for (wrt, tag) in [(Wrt::States, ""), (Wrt::Parameters, ".parameters")] {
+            let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
+            let ser: Vec<Value> = entries.iter().map(serialize_band).collect();
+            assert!(
+                count_refs(&Value::Array(ser.clone())) > 0,
+                "{input} {wrt:?}: no references kept"
+            );
+            assert_eq!(
+                stable_json(&Value::Array(ser)),
+                golden(&format!("{NAME}{tag}.bands.json")),
+                "{input} {wrt:?} diverges"
+            );
+        }
     }
 }
 
 #[test]
 fn structure_matches_the_reference() {
-    let flat = flat_refs();
-    let sv = sysview_flat(&flat).unwrap();
-    let entries = jacobian_structure_view(&sv, Wrt::States, None).unwrap();
-    let text = stable_json(&Value::Array(
-        entries.iter().map(serialize_structure_band).collect(),
-    ));
-    assert_eq!(text, golden(&format!("{NAME}.structure.bands.json")));
+    for (flat, input) in inputs() {
+        let sv = sysview_flat(&flat).unwrap();
+        let entries = jacobian_structure_view(&sv, Wrt::States, None).unwrap();
+        let text = stable_json(&Value::Array(
+            entries.iter().map(serialize_structure_band).collect(),
+        ));
+        assert_eq!(
+            text,
+            golden(&format!("{NAME}.structure.bands.json")),
+            "{input}"
+        );
+    }
 }
 
 #[test]
 fn evaluation_document_carries_definitions() {
-    let flat = flat_refs();
-    let sv = sysview_flat(&flat).unwrap();
-    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
-    let (doc, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
-    let jm = &doc["models"]["JacobianEval"];
-    let ops = jm["operators"].as_object().expect("an operators block");
-    assert!(ops.keys().any(|k| k.contains(".d_f.b")));
-    assert!(ops
-        .iter()
-        .filter(|(k, _)| k.contains(".d_"))
-        .all(|(_, e)| e["reference_only"] == Value::Bool(true)));
-    assert_eq!(stable_json(&doc), golden(&format!("{NAME}.evaldoc.json")));
+    for (flat, input) in inputs() {
+        let sv = sysview_flat(&flat).unwrap();
+        let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+        let (doc, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
+        let jm = &doc["models"]["JacobianEval"];
+        let ops = jm["operators"].as_object().expect("an operators block");
+        assert!(ops.keys().any(|k| k.contains(".d_f.b")));
+        assert!(ops
+            .iter()
+            .filter(|(k, _)| k.contains(".d_"))
+            .all(|(_, e)| e["reference_only"] == Value::Bool(true)));
+        assert_eq!(
+            stable_json(&doc),
+            golden(&format!("{NAME}.evaldoc.json")),
+            "{input}"
+        );
+    }
 }

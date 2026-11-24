@@ -483,11 +483,11 @@ pub(crate) fn extended_pass_in(
         obs
     } else {
         pruned = if seed.is_empty() {
-            inlinable_observed(obs, sv.equations, &tset)
+            inlinable_observed(obs, &sv.equations, &tset)
         } else {
             let mut seeded = tset.clone();
             seeded.extend(seed.iter().cloned());
-            inlinable_observed(obs, sv.equations, &seeded)
+            inlinable_observed(obs, &sv.equations, &seeded)
         };
         &pruned
     };
