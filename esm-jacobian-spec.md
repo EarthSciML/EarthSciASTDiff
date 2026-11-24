@@ -444,8 +444,8 @@ trailing parameters, sorted; each reference binds them to their own names).
   (`6x4`) or its literal, comma-separated (`D.d_f.b2@6x4,3`). Band k at one
   shape and band k at another are different definitions (a band empty at one
   extent shifts the numbering, and a structural literal may reach a
-  coefficient), so a definition used at several binding shapes has derived
-  definitions for each. A use reads the array as an intermediate: the bands of the
+  coefficient), so a definition used at several binding shapes is supported:
+  it has derived definitions for each, and no two of them share a name. A use reads the array as an intermediate: the bands of the
   enclosing expression with respect to that array (whose columns are its
   cells) are composed with its own bands bound to the use's arguments and
   composed with the arguments' bands — inner row names read the outer
@@ -1411,7 +1411,9 @@ The derived model is named `JacobianEval` and holds:
   closure of the definitions its references reach, the source's entries as
   its registry holds them in registry order, then the derived definitions in
   name order, each `{"params", "body", "description", "reference_only":
-  true}`. The coefficients write references, never expanded bodies, and the
+  true}`, named as §3.6 names them (`D.d_p`; `D.d_p.b<k>@<shape>`, so a
+  definition used at several binding shapes carries the derived definitions
+  of each). The coefficients write references, never expanded bodies, and the
   evaluation document is not hoisted (the producer option `cse` no longer
   has an effect; the hoisting below describes earlier documents);
 - with coefficient hoisting, the hoisted observed (`Jcse<n>`, over `jcax<n>`

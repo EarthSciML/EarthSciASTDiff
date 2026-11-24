@@ -1,0 +1,216 @@
+{
+  "esm": "2.4.0",
+  "metadata": {
+    "name": "Stencils"
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 6
+    },
+    "y": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "M": {
+      "operators": {
+        "sq": {
+          "params": [
+            "f",
+            "n"
+          ],
+          "body": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [
+              "f"
+            ],
+            "ranges": {
+              "i": [
+                1,
+                "n"
+              ]
+            },
+            "expr": {
+              "op": "/",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "f",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "f",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                "n"
+              ]
+            }
+          }
+        }
+      },
+      "variables": {
+        "a": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.5
+        },
+        "b": {
+          "type": "unknown",
+          "shape": [
+            "y"
+          ],
+          "default": 1.5
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.3
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "a"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "-",
+                  "args": [
+                    "k"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "apply_operator",
+                      "args": [],
+                      "name": "sq",
+                      "bindings": {
+                        "f": {
+                          "op": "faq",
+                          "output_idx": [
+                            "j"
+                          ],
+                          "args": [
+                            "a"
+                          ],
+                          "ranges": {
+                            "j": {
+                              "from": "x"
+                            }
+                          },
+                          "expr": {
+                            "op": "*",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "a",
+                                  "j"
+                                ]
+                              },
+                              {
+                                "op": "index",
+                                "args": [
+                                  "a",
+                                  "j"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "n": 6
+                      }
+                    },
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "b"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "-",
+                  "args": [
+                    "k"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    {
+                      "op": "apply_operator",
+                      "args": [],
+                      "name": "sq",
+                      "bindings": {
+                        "f": "b",
+                        "n": 2
+                      }
+                    },
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

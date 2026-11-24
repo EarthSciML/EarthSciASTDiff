@@ -221,24 +221,25 @@ fn parse_shape_tag(d: &DefInfo, tag: &str, name: &str) -> R<ShapeKey> {
             d.name
         ))
     };
-    if let Some(p) = d.params.iter().find(|p| d.structural.contains(*p)) {
-        return Err(BandError(format!(
-            "operator `{}`: its parameter `{p}` fills a structural field; an array \
-             definition with one is not supported by this binding yet",
-            d.name
-        )));
-    }
-    let arrays: Vec<&String> = d.params.iter().filter(|p| d.array.contains(*p)).collect();
-    let parts: Vec<&str> = if tag.is_empty() && arrays.is_empty() {
+    let keyed: Vec<&String> = d
+        .params
+        .iter()
+        .filter(|p| d.structural.contains(*p) || d.array.contains(*p))
+        .collect();
+    let parts: Vec<&str> = if tag.is_empty() && keyed.is_empty() {
         vec![]
     } else {
         tag.split(',').collect()
     };
-    if parts.len() != arrays.len() {
+    if parts.len() != keyed.len() {
         return Err(bad());
     }
     let mut key = Vec::new();
-    for (p, x) in arrays.into_iter().zip(parts) {
+    for (p, x) in keyed.into_iter().zip(parts) {
+        if d.structural.contains(p) {
+            key.push((p.clone(), format!("#{x}")));
+            continue;
+        }
         let dims: Vec<i64> = if x.is_empty() {
             vec![]
         } else {
@@ -251,13 +252,16 @@ fn parse_shape_tag(d: &DefInfo, tag: &str, name: &str) -> R<ShapeKey> {
     Ok(key)
 }
 
-/// The binding shape `sk` as a derived band name carries it: per array
-/// parameter, in parameter order, its argument's extents joined by `x`,
-/// comma-separated (operator_refs.jl `_shape_tag`). Band k at one shape and
+/// The binding shape `sk` as a derived band name carries it: per array or
+/// structural parameter, in parameter order, its argument's extents joined
+/// by `x` or its literal, comma-separated (operator_refs.jl `_shape_tag`). Band k at one shape and
 /// band k at another are different definitions.
 fn shape_tag(sk: &ShapeKey) -> String {
     sk.iter()
         .map(|(_, v)| {
+            if let Some(lit) = v.strip_prefix('#') {
+                return lit.to_string();
+            }
             v.trim_matches(|c| c == '[' || c == ']')
                 .split(',')
                 .map(str::trim)
@@ -291,8 +295,7 @@ impl RefLayer {
             )
             .map_err(|e| {
                 BandError(format!(
-                    "operator `{name}`: its body has no typed form here ({e}); a \
-                         parameter in a range bound needs EarthSciAST's typed IR to hold it"
+                    "operator `{name}`: its body has no typed form ({e})"
                 ))
             })?;
             let d = self.roles(name, params, body, entry.clone())?;
@@ -369,10 +372,19 @@ impl RefLayer {
             }
         }
         for r in n.ranges.iter().flat_map(|r| r.values()) {
-            if let RangeSpec::IndexSetRef { from, .. } = r {
-                if ps.contains(from) {
+            match r {
+                RangeSpec::IndexSetRef { from, .. } if ps.contains(from) => {
                     d.structural.insert(from.clone());
                 }
+                // a parameter as a range bound (`[1, "n"]`)
+                RangeSpec::Symbolic(_) => {
+                    for x in bound_names(r) {
+                        if ps.contains(&x) {
+                            d.structural.insert(x);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         if REF_OPS.contains(&n.op.as_str()) {
@@ -569,8 +581,14 @@ fn used_params(body: &Expr, params: &[String]) -> Vec<String> {
                     used.insert(f.clone());
                 }
                 for r in n.ranges.iter().flat_map(|r| r.values()) {
-                    if let RangeSpec::IndexSetRef { from, .. } = r {
-                        used.insert(from.clone());
+                    match r {
+                        RangeSpec::IndexSetRef { from, .. } => {
+                            used.insert(from.clone());
+                        }
+                        RangeSpec::Symbolic(_) => {
+                            used.extend(bound_names(r));
+                        }
+                        _ => {}
                     }
                 }
                 n.for_each_child(&mut |c: &Expr| walk(c, used));
@@ -691,8 +709,8 @@ pub(crate) fn dref_check(
 
 // ── array definitions ───────────────────────────────────────────────────────
 
-/// A binding shape: per array parameter its extents, per structural one its
-/// literal (in parameter order), keyed as text.
+/// A binding shape: per array parameter its extents (`[6, 4]`), per
+/// structural one its literal (`#6`, `#lat`), in parameter order, as text.
 type ShapeKey = Vec<(String, String)>;
 
 fn key_text(sk: &ShapeKey) -> String {
@@ -749,13 +767,19 @@ impl RefLayer {
         let mut key = Vec::new();
         for p in &d.params {
             if d.structural.contains(p) {
-                return Err(BandError(format!(
-                    "operator `{}`: its parameter `{p}` fills a structural field; an array \
-                     definition with one is not supported by this binding yet",
-                    d.name
-                )));
-            }
-            if d.array.contains(p) {
+                let a = b
+                    .get(p)
+                    .ok_or_else(|| BandError(format!("`{}` does not bind `{p}`", d.name)))?;
+                let lit = structural_literal(a).ok_or_else(|| {
+                    BandError(format!(
+                        "operator `{}`: parameter `{p}` fills a structural field and must be \
+                         bound to an integer or a name, not {}",
+                        d.name,
+                        skey(a)
+                    ))
+                })?;
+                key.push((p.clone(), format!("#{lit}")));
+            } else if d.array.contains(p) {
                 let a = b
                     .get(p)
                     .ok_or_else(|| BandError(format!("`{}` does not bind `{p}`", d.name)))?;
@@ -767,7 +791,7 @@ impl RefLayer {
 
     fn def_ctx(&self, sk: &ShapeKey) -> Ctx {
         let mut shapes = HashMap::new();
-        for (p, v) in sk {
+        for (p, v) in sk.iter().filter(|(_, v)| !v.starts_with('#')) {
             let dims: Vec<i64> = v
                 .trim_matches(|c| c == '[' || c == ']')
                 .split(',')
@@ -795,7 +819,8 @@ impl RefLayer {
         if let Some(x) = self.st.borrow().extents.get(&key) {
             return Ok(x.clone());
         }
-        let Expr::Operator(n) = &d.body else {
+        let body = specialized(d, &sk)?;
+        let Expr::Operator(n) = &body else {
             return Err(BandError(format!(
                 "`{}`: an array definition's body is a leaf",
                 d.name
@@ -819,7 +844,8 @@ impl RefLayer {
         let mut ctx = self.def_ctx(sk);
         let me = current_layer();
         ctx.refs = me.clone();
-        let Expr::Operator(n) = &d.body else {
+        let body = specialized(d, sk)?;
+        let Expr::Operator(n) = &body else {
             return Err(BandError(format!(
                 "`{}`: an array definition's body is a leaf",
                 d.name
@@ -827,7 +853,7 @@ impl RefLayer {
         };
         let (ext, _) = body_extents(n, &ctx)?;
         let ps: HashSet<String> = d.params.iter().cloned().collect();
-        let raw = with_defparams(Some(ps), || ref_bands(&d.body, p, &ctx, &ext, co))?;
+        let raw = with_defparams(Some(ps), || ref_bands(&body, p, &ctx, &ext, co))?;
         let bs: Vec<Band> = merge_bands(raw).iter().map(normalize_band).collect();
         let mut out = Vec::new();
         for (k, mut b) in bs.into_iter().enumerate() {
@@ -878,6 +904,86 @@ impl RefLayer {
         )?;
         Ok(self.ref_expr(&name, &params))
     }
+}
+
+/// The names among a symbolic range's bounds (a parameter as a bound,
+/// `[1, "n"]`); its integer bounds are not names.
+fn bound_names(r: &RangeSpec) -> Vec<String> {
+    match serde_json::to_value(r) {
+        Ok(Value::Array(bounds)) => bounds
+            .into_iter()
+            .filter_map(|b| match b {
+                Value::String(s) => Some(s),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// The literal a structural parameter is bound to: an integer (an integral
+/// number) or a name (an index-set name, an axis name).
+fn structural_literal(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Integer(i) => Some(i.to_string()),
+        Expr::Number(x) if x.fract() == 0.0 && x.abs() < 9.0e15 => Some((*x as i64).to_string()),
+        Expr::Variable(v) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+/// The body of `d` at shape key `sk`: its structural parameters replaced by
+/// their literals everywhere they occur (a variable leaf, a scalar field, a
+/// range bound or `from`, a region bound), so the analysis reads its ranges
+/// and regions as numbers (operator_refs.jl `_specialized`). The definition
+/// itself is unchanged. The substitution is made on the wire form, where
+/// each of those is a string equal to the parameter's name; a closed body
+/// binds no loop symbol of a parameter's name.
+fn specialized(d: &DefInfo, sk: &ShapeKey) -> R<Expr> {
+    let lits: HashMap<&str, Value> = sk
+        .iter()
+        .filter_map(|(p, v)| {
+            let lit = v.strip_prefix('#')?;
+            Some((
+                p.as_str(),
+                lit.parse::<i64>()
+                    .map(Value::from)
+                    .unwrap_or_else(|_| Value::from(lit)),
+            ))
+        })
+        .collect();
+    if lits.is_empty() {
+        return Ok(d.body.clone());
+    }
+    fn walk(x: &mut Value, lits: &HashMap<&str, Value>) {
+        match x {
+            Value::String(s) => {
+                if let Some(v) = lits.get(s.as_str()) {
+                    *x = v.clone();
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(|y| walk(y, lits)),
+            Value::Object(m) => {
+                for (k, y) in m.iter_mut() {
+                    // an op, a referenced definition's name, a binding's
+                    // parameter (a key) and a loop symbol are never a read
+                    if !matches!(k.as_str(), "op" | "name" | "output_idx") {
+                        walk(y, lits);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut v = serde_json::to_value(&d.body)
+        .map_err(|e| BandError(format!("`{}`: its body does not serialize: {e}", d.name)))?;
+    walk(&mut v, &lits);
+    serde_json::from_value(v).map_err(|e| {
+        BandError(format!(
+            "`{}`: its body specialized to its structural literals has no typed form: {e}",
+            d.name
+        ))
+    })
 }
 
 /// The extents and origins of an array body: a faq's output ranges, a

@@ -108,6 +108,18 @@ let name = "coupled_chem_advection"
         println("wrote ", path)
     end
 end
+# one stencil definition used at two binding shapes (spec §3.6): derived band
+# definitions named with their shape, `sq.d_f.b<k>@<shape>`, one per shape
+let name = "two_shape_stencil"
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    sv = sysview(flat)
+    entries = jacobian_bands(sv)
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    evpath = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
+    write(evpath, stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries))))
+    println("wrote ", path, ", ", evpath)
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the
