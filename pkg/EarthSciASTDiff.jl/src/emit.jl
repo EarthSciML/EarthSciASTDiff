@@ -245,7 +245,7 @@ end
 # nothing is extracted after the fact (`cse` has no effect).
 function _block(wrt, entries, columns, structure, cse::Bool, cse_min_nodes::Int)
     cse && Base.depwarn(
-        "`cse = true` has no effect: a jacobians block is no longer deduplicated " *
+        "`cse = true` is deprecated and has no effect: a jacobians block is no longer deduplicated " *
             "after the fact (coefficients keep their operator references instead)",
         :jacobian_document
     )
@@ -692,7 +692,7 @@ function _evaluation_document(
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_auxiliary!(m, aux)
     cse && Base.depwarn(
-        "`evaluation_document(...; cse = true)` has no effect: the evaluation " *
+        "`evaluation_document(...; cse = true)` is deprecated and has no effect: the evaluation " *
             "document is no longer deduplicated after the fact (coefficients keep " *
             "their operator references instead)", :evaluation_document
     )
