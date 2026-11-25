@@ -590,8 +590,11 @@ fn row_bands(
     co: bool,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
-    let rhs =
-        inline_observed_cached(rhs, obs, obs_names, &ctx.shapes).map_err(|e| BandError(e.0))?;
+    // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
+    let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
+        inline_observed_cached(rhs, obs, obs_names, &ctx.shapes)
+    })
+    .map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the
     // RHS's free variables with the column set (a per-equation scan of
     // every target is quadratic on scalar-lowered documents). Sorting the

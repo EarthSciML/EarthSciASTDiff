@@ -64,7 +64,7 @@ function inline_observed(
     # ([`sid`](@ref)) re-keys only the subtrees the pass rebuilt, because the
     # index's memo is carried across passes.
     ix = StructIndex()
-    fresh = _Fresh(e, obs, obs_names, nothing, shapes)
+    fresh = _Fresh(e, obs, obs_names, nothing, shapes, Dict{String, Int}())
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
         e2 === e && return e2
@@ -89,6 +89,7 @@ mutable struct _Fresh
     obs_names::Base.RefValue{Union{Nothing, Set{String}}}
     taken::Union{Set{String}, Nothing}
     shapes::AbstractDict
+    ranks::Dict{String, Int}   # observed name → its rank at a cell (`_cell_rank`)
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -413,15 +414,124 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
                 # (site column evaluation, the derived evaluation model) see
                 # a closed `index(const, …)` form.
                 return op("index", def, args()...)
+            elseif def isa VarExpr || def isa OpExpr
+                # An observed declared without a shape whose definition
+                # evaluates to an array (esm-spec §4.3.4, "An undeclared
+                # result takes the union"; the pointwise lift of a 0-D
+                # component coupled to a gridded host), or a shaped observed
+                # defined by an elementwise expression of arrays: its element
+                # is the definition with each array operand read at the same
+                # cell (`_gather_cell`).
+                return _gather_cell(def, args(), fresh, scope, e.args[1].name)
             else
-                throw(
-                    InlineError(
-                        "index into observed `$(e.args[1].name)` whose definition is not a faq, makearray or const"
-                    )
-                )
+                # a number: the same value at every cell
+                return def
             end
         end
         return map_children(x -> _inline_once(x, obs, fresh, scope), e)
     end
     return e
+end
+
+
+# ── elementwise observeds read at a cell ────────────────────────────────────
+#
+# `index(x, i…)` of an observed `x` whose definition is an elementwise
+# expression (arithmetic, elementary, comparison, logical, `ifelse`) of
+# arrays and scalars: the definition with every array operand read at
+# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The
+# array operands must all have the rank of the read; aligning by position
+# is then aligning by index set, as every operand of one rank in a
+# flattened system spans the same index sets in the same order. Anything
+# this cannot decide — an operand whose rank is unknown or differs from
+# the read's, a `faq`/`makearray`/shape op inside the definition, or an
+# elementwise application of a definition (an array bound to a value-role
+# parameter) — is refused, never guessed.
+
+# The rank of `e` in an elementwise position: 0 for a scalar.
+function _cell_rank(e, fresh::_Fresh, scope, seen::Set{String})::Int
+    if e isa VarExpr
+        e.name in scope && return 0
+        haskey(fresh.shapes, e.name) && return length(fresh.shapes[e.name])
+        d = get(fresh.obs, e.name, nothing)
+        d === nothing && return 0
+        haskey(fresh.ranks, e.name) && return fresh.ranks[e.name]
+        e.name in seen && throw(InlineError("cyclic observed `$(e.name)`"))
+        push!(seen, e.name)
+        r = _def_rank(d, fresh, scope, seen, e.name)
+        delete!(seen, e.name)
+        fresh.ranks[e.name] = r
+        return r
+    elseif e isa OpExpr
+        return _def_rank(e, fresh, scope, seen, nothing)
+    end
+    return 0
+end
+
+function _def_rank(d, fresh::_Fresh, scope, seen::Set{String}, name)::Int
+    d isa VarExpr && return _cell_rank(d, fresh, scope, seen)
+    d isa OpExpr || return 0
+    if d.op == "faq"
+        return length(something(d.output_idx, Any[]))
+    elseif d.op == "makearray"
+        (d.regions === nothing || isempty(d.regions)) &&
+            throw(InlineError("makearray with no region read at a cell"))
+        return length(d.regions[1])
+    elseif d.op == "index"
+        return 0
+    elseif _is_ref(d)
+        D = _def!(_layer(), d.name)
+        D.rank > 0 && return D.rank
+        for (q, b) in something(d.bindings, Dict{String, ASTExpr}())
+            if q in D.value && _cell_rank(b, fresh, scope, seen) > 0
+                throw(
+                    InlineError(
+                        "observed $(something(name, "expression")) applies `$(d.name)` " *
+                            "elementwise (an array bound to its value parameter `$q`); " *
+                            "reading such an application at a cell is not supported"
+                    )
+                )
+            end
+        end
+        return 0
+    elseif d.op == "const" && !(d.value isa AbstractVector)
+        return 0   # a scalar literal
+    elseif d.op in ("const", "reshape", "transpose", "concat", "broadcast")
+        throw(
+            InlineError(
+                "observed $(something(name, "expression")) reads `$(d.op)` in an " *
+                    "elementwise definition read at a cell; not supported"
+            )
+        )
+    end
+    r = 0
+    for a in d.args
+        ra = _cell_rank(a, fresh, scope, seen)
+        ra == 0 && continue
+        r == 0 || r == ra || throw(
+            InlineError(
+                "observed $(something(name, "expression")) combines arrays of rank $r and $ra"
+            )
+        )
+        r = ra
+    end
+    return r
+end
+
+# `def` read at the cell `idx`.
+function _gather_cell(def, idx::Vector{ASTExpr}, fresh::_Fresh, scope, name::String)::ASTExpr
+    function g(e)
+        e isa OpExpr || e isa VarExpr || return e
+        r = _cell_rank(e, fresh, scope, Set{String}())
+        r == 0 && return e
+        r == length(idx) || throw(
+            InlineError(
+                "observed `$name`, read with $(length(idx)) indices, has an operand of rank $r"
+            )
+        )
+        (e isa VarExpr || _is_ref(e) || e.op == "faq" || e.op == "makearray") &&
+            return op("index", e, idx...)
+        return map_children(g, e)
+    end
+    return g(def)
 end

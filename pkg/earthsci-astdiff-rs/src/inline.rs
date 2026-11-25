@@ -52,6 +52,7 @@ pub fn inline_observed_cached(
         obs_names,
         taken: None,
         shapes,
+        ranks: HashMap::new(),
     };
     let scope = HashSet::new();
     // The fixpoint test compares the post-inlining right-hand side, the
@@ -82,6 +83,8 @@ struct Fresh<'a> {
     obs_names: &'a mut Option<HashSet<String>>,
     taken: Option<HashSet<String>>,
     shapes: &'a HashMap<String, Vec<i64>>,
+    /// observed name → its rank at a cell (`cell_rank`)
+    ranks: HashMap<String, usize>,
 }
 
 impl Fresh<'_> {
@@ -575,10 +578,20 @@ fn inline_once(
                         return Ok(op("index", a));
                     }
                 }
-                return Err(InlineError(format!(
-                    "index into observed `{name}` whose definition is not an \
-                     faq, makearray or const"
-                )));
+                if matches!(def, Expr::Variable(_) | Expr::Operator(_)) {
+                    // An observed declared without a shape whose definition
+                    // evaluates to an array (esm-spec §4.3.4, "An undeclared
+                    // result takes the union"; the pointwise lift of a 0-D
+                    // component coupled to a gridded host), or a shaped
+                    // observed defined by an elementwise expression of
+                    // arrays: its element is the definition with each array
+                    // operand read at the same cell (`gather_cell`).
+                    let def = def.clone();
+                    let idx = args(fresh)?;
+                    return gather_cell(&def, &idx, fresh, scope, name);
+                }
+                // a number: the same value at every cell
+                return Ok(def.clone());
             }
         }
     }
@@ -601,4 +614,177 @@ fn inline_once(
         return try_map(&node, &mut |x| inline_once(x, obs, fresh, &inner));
     }
     try_map(e, &mut |x| inline_once(x, obs, fresh, scope))
+}
+
+
+// ── elementwise observeds read at a cell (inline.jl `_gather_cell`) ─────────
+//
+// `index(x, i…)` of an observed `x` whose definition is an elementwise
+// expression (arithmetic, elementary, comparison, logical, `ifelse`) of
+// arrays and scalars: the definition with every array operand read at `i…`
+// and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The array
+// operands must all have the rank of the read; aligning by position is then
+// aligning by index set, as every operand of one rank in a flattened system
+// spans the same index sets in the same order. Anything this cannot decide —
+// an operand whose rank differs from the read's, a `faq`/`makearray`/shape op
+// inside the definition, or an elementwise application of a definition (an
+// array bound to a value-role parameter) — is refused, never guessed.
+
+/// The rank of `e` in an elementwise position: 0 for a scalar.
+fn cell_rank(
+    e: &Expr,
+    fresh: &mut Fresh,
+    scope: &HashSet<String>,
+    seen: &mut HashSet<String>,
+) -> Result<usize, InlineError> {
+    match e {
+        Expr::Variable(nm) => {
+            if scope.contains(nm) {
+                return Ok(0);
+            }
+            if let Some(sh) = fresh.shapes.get(nm) {
+                return Ok(sh.len());
+            }
+            let Some(d) = fresh.obs.get(nm) else { return Ok(0) };
+            if let Some(&r) = fresh.ranks.get(nm) {
+                return Ok(r);
+            }
+            if !seen.insert(nm.clone()) {
+                return Err(InlineError(format!("cyclic observed `{nm}`")));
+            }
+            let d = d.clone();
+            let r = def_rank(&d, fresh, scope, seen, Some(nm))?;
+            seen.remove(nm);
+            fresh.ranks.insert(nm.clone(), r);
+            Ok(r)
+        }
+        Expr::Operator(_) => def_rank(e, fresh, scope, seen, None),
+        _ => Ok(0),
+    }
+}
+
+fn def_rank(
+    d: &Expr,
+    fresh: &mut Fresh,
+    scope: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    name: Option<&str>,
+) -> Result<usize, InlineError> {
+    let what = name.unwrap_or("expression");
+    let n = match d {
+        Expr::Variable(_) => return cell_rank(d, fresh, scope, seen),
+        Expr::Operator(n) => n,
+        _ => return Ok(0),
+    };
+    match n.op.as_str() {
+        "faq" => return Ok(n.output_idx.as_ref().map_or(0, |o| o.len())),
+        "makearray" => {
+            return match n.regions.as_ref().and_then(|r| r.first()) {
+                Some(r) => Ok(r.len()),
+                None => Err(InlineError("makearray with no region read at a cell".into())),
+            }
+        }
+        "index" => return Ok(0),
+        "const"
+            if !matches!(
+                serde_json::to_value(n.value.as_ref()),
+                Ok(serde_json::Value::Array(_))
+            ) =>
+        {
+            return Ok(0) // a scalar literal
+        }
+        "const" | "reshape" | "transpose" | "concat" | "broadcast" => {
+            return Err(InlineError(format!(
+                "observed {what} reads `{}` in an elementwise definition read at a cell; \
+                 not supported",
+                n.op
+            )))
+        }
+        _ => {}
+    }
+    if crate::operator_refs::is_ref(d) {
+        let layer = crate::operator_refs::current_layer().ok_or_else(|| {
+            InlineError(format!(
+                "observed {what} reads an operator reference with no registry in scope"
+            ))
+        })?;
+        let dname = n.name.clone().unwrap_or_default();
+        let def = layer.def(&dname).map_err(|e| InlineError(e.0))?;
+        if def.rank > 0 {
+            return Ok(def.rank);
+        }
+        if let Some(b) = &n.bindings {
+            let mut qs: Vec<&String> = b.keys().collect();
+            qs.sort();
+            for q in qs {
+                if def.value.contains(q) && cell_rank(&b[q], fresh, scope, seen)? > 0 {
+                    return Err(InlineError(format!(
+                        "observed {what} applies `{dname}` elementwise (an array bound to \
+                         its value parameter `{q}`); reading such an application at a cell \
+                         is not supported"
+                    )));
+                }
+            }
+        }
+        return Ok(0);
+    }
+    let mut r = 0;
+    for a in &n.args {
+        let ra = cell_rank(a, fresh, scope, seen)?;
+        if ra == 0 {
+            continue;
+        }
+        if r != 0 && r != ra {
+            return Err(InlineError(format!(
+                "observed {what} combines arrays of rank {r} and {ra}"
+            )));
+        }
+        r = ra;
+    }
+    Ok(r)
+}
+
+/// `def` read at the cell `idx`.
+fn gather_cell(
+    def: &Expr,
+    idx: &[Expr],
+    fresh: &mut Fresh,
+    scope: &HashSet<String>,
+    name: &str,
+) -> R {
+    if !matches!(def, Expr::Variable(_) | Expr::Operator(_)) {
+        return Ok(def.clone());
+    }
+    let r = cell_rank(def, fresh, scope, &mut HashSet::new())?;
+    if r == 0 {
+        return Ok(def.clone());
+    }
+    if r != idx.len() {
+        return Err(InlineError(format!(
+            "observed `{name}`, read with {} indices, has an operand of rank {r}",
+            idx.len()
+        )));
+    }
+    let Expr::Operator(n) = def else {
+        let mut a = vec![def.clone()];
+        a.extend(idx.iter().cloned());
+        return Ok(op("index", a));
+    };
+    if crate::operator_refs::is_ref(def) || n.op == "faq" || n.op == "makearray" {
+        let mut a = vec![def.clone()];
+        a.extend(idx.iter().cloned());
+        return Ok(op("index", a));
+    }
+    let mut err = None;
+    let out = map_expr_children(def, &mut |c: &Expr| match gather_cell(c, idx, fresh, scope, name) {
+        Ok(x) => x,
+        Err(e) => {
+            err.get_or_insert(e);
+            c.clone()
+        }
+    });
+    match err {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
