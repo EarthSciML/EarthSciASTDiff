@@ -687,12 +687,38 @@ equation order, and the single column within each equation.
 **Coverage (normative).**
 
 - Every explicit occurrence of `t` in a right-hand side is differentiated,
-  including occurrences inside the observed it reads: a producer MUST inline
-  every observed variable the right-hand side reads, transitively, before
-  differentiating. (The state and parameter axes prune the inlining to the
-  observed that can depend on a target; the time axis does not — an
-  observed's time dependence can also arrive through data its definition
-  reads, so `{t}` is not a sound seed.)
+  including occurrences inside the observed it reads: a producer MUST follow
+  (inline) every observed variable that moves with `t` — one whose
+  definition reads `t`, or reads such an observed, transitively — before
+  differentiating. Like the state and parameter axes, the time axis prunes
+  the rest, from the seed `{t}`: an observed that reads `t` neither directly
+  nor through another observed is constant here, because `f_t` holds every
+  parameter fixed (below), data-fed parameters and forcing buffers
+  included. Its read stays an opaque read and its definition is never
+  differentiated, however it is built (a regrid, a geometry table, a
+  mixed-rank broadcast). Operator references are not expanded: an observed
+  defined by a reference is followed when a binding moves with `t`, and
+  differentiated through the reference by the chain rule (§3.4, §3.6).
+- An observed read at a cell, `index(x, i…)`, whose definition is an
+  elementwise expression of arrays (declared without a shape, its shape
+  inferred, esm-spec §4.3.4) is followed as that definition read at the
+  cell: each array operand indexed at `i…`, scalars unchanged. The array
+  operands MUST all have the read's rank, and an `index` inside the
+  definition MUST select a scalar (its arity is its operand's rank). A
+  producer refuses what it cannot read at a cell rather than guess: mixed
+  ranks, a partial `index`, an array literal, a shape operator, an
+  elementwise application of a definition, a name whose rank it does not
+  know (neither declared, an observed, nor `t`), or a name of the
+  definition that an index bound around the read would capture.
+- **Why data may be held fixed.** A consumer that integrates with `f_t`
+  (a Rosenbrock method) evaluates it within one step, and its runtime keeps
+  one forcing buffer set per data epoch, resident and unchanged for the
+  epoch, and ends a step at every data refresh. Within a step every data
+  value is therefore constant, and the time dependence it carries — a
+  provider refilling a buffer, a record bracket advancing — happens only at
+  step boundaries, where no `f_t` is formed. A blend between two records
+  that the model computes from `t` is an explicit occurrence of `t` and is
+  followed.
 - The esm:std templates of `t` differentiate through their references
   (§3.4, §3.6): the integer calendar fields to 0, `julian_day` to `1/86400`, and
   `linear` / `bilinear` of `t` to the active segment's slope.

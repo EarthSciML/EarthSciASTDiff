@@ -45,11 +45,19 @@ many expressions against one `obs` passes one `Ref` to all of them.
 `shapes` (variable → declared extents, the band context's) gives the rank of
 an array variable used as a `makearray` region value; a variable it does not
 name (nor an observed definition) is read at the region's free rank.
+`rank_obs` (default `obs`) holds every observed definition, including those a
+pruned `obs` leaves out, so that an elementwise observed read at a cell indexes
+each array operand, inlined or not. `scalars` names the variables declared
+without a shape that are not observed (scalar states and parameters); `t` is
+always scalar. Any other name in such a definition has no known rank and is
+refused.
 """
 function inline_observed(
         e::ASTExpr, obs::Dict{String, ASTExpr};
         obs_names = Ref{Union{Nothing, Set{String}}}(nothing),
-        shapes::AbstractDict = Dict{String, Vector{Int}}()
+        shapes::AbstractDict = Dict{String, Vector{Int}}(),
+        rank_obs::AbstractDict = obs,
+        scalars::AbstractSet = Set{String}()
     )::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
     # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
@@ -64,7 +72,10 @@ function inline_observed(
     # ([`sid`](@ref)) re-keys only the subtrees the pass rebuilt, because the
     # index's memo is carried across passes.
     ix = StructIndex()
-    fresh = _Fresh(e, obs, obs_names, nothing, shapes)
+    fresh = _Fresh(
+        e, obs, obs_names, nothing, shapes, Dict{String, Int}(),
+        IdDict{OpExpr, Int}(), rank_obs, scalars
+    )
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
         e2 === e && return e2
@@ -89,6 +100,12 @@ mutable struct _Fresh
     obs_names::Base.RefValue{Union{Nothing, Set{String}}}
     taken::Union{Set{String}, Nothing}
     shapes::AbstractDict
+    ranks::Dict{String, Int}   # observed name → its rank at a cell (`_cell_rank`)
+    op_ranks::IdDict{OpExpr, Int}  # node → its rank at a cell (`_cell_rank`)
+    # every observed definition, the pruned-away ones too: an operand left an
+    # opaque read still has a rank (`_cell_rank`)
+    rank_obs::AbstractDict
+    scalars::AbstractSet       # declared scalars that are not observed
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -413,15 +430,177 @@ function _inline_once(e::ASTExpr, obs, fresh::_Fresh, scope::Set{String})::ASTEx
                 # (site column evaluation, the derived evaluation model) see
                 # a closed `index(const, …)` form.
                 return op("index", def, args()...)
+            elseif def isa VarExpr || def isa OpExpr
+                # An observed declared without a shape whose definition
+                # evaluates to an array (esm-spec §4.3.4, "An undeclared
+                # result takes the union"; the pointwise lift of a 0-D
+                # component coupled to a gridded host), or a shaped observed
+                # defined by an elementwise expression of arrays: its element
+                # is the definition with each array operand read at the same
+                # cell (`_gather_cell`).
+                return _gather_cell(def, args(), fresh, scope, e.args[1].name)
             else
-                throw(
-                    InlineError(
-                        "index into observed `$(e.args[1].name)` whose definition is not a faq, makearray or const"
-                    )
-                )
+                # a number: the same value at every cell
+                return def
             end
         end
         return map_children(x -> _inline_once(x, obs, fresh, scope), e)
     end
     return e
+end
+
+
+# ── elementwise observeds read at a cell ────────────────────────────────────
+#
+# `index(x, i…)` of an observed `x` whose definition is an elementwise
+# expression (arithmetic, elementary, comparison, logical, `ifelse`) of
+# arrays and scalars: the definition with every array operand read at
+# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The
+# array operands must all have the rank of the read; aligning by position
+# is then aligning by index set, as every operand of one rank in a
+# flattened system spans the same index sets in the same order. An array
+# operand that is a variable, a `faq`, a `makearray` or an operator
+# reference is read whole at the cell (`index(operand, i…)`, reduced by the
+# next pass); an `index` inside the definition must select a scalar. Anything
+# this cannot decide is refused, never guessed: a name whose rank is not
+# known (neither declared, an observed, nor `t`), an operand whose rank
+# differs from the read's, a partial `index`, a literal array or shape op
+# (`reshape`, `transpose`, `concat`, `broadcast`) as an operand, an
+# elementwise application of a definition (an array bound to a value-role
+# parameter), or a definition reading a name an index bound around the read
+# site would capture.
+#
+# Ranks are computed on the closed definition (no enclosing scope), so they
+# are memoized per observed name and per node: one bottom-up walk per
+# definition, however many cells read it.
+
+# The rank of `e` in an elementwise position: 0 for a scalar.
+function _cell_rank(e, fresh::_Fresh, seen::Set{String})::Int
+    if e isa VarExpr
+        n = e.name
+        (n == "t" || n in fresh.scalars) && return 0
+        haskey(fresh.shapes, n) && return length(fresh.shapes[n])
+        haskey(fresh.ranks, n) && return fresh.ranks[n]
+        d = get(fresh.rank_obs, n, nothing)
+        d === nothing && throw(
+            InlineError(
+                "`$n`, read in an elementwise observed definition read at a cell, " *
+                    "has no known rank (not a declared variable, nor an observed)"
+            )
+        )
+        n in seen && throw(InlineError("cyclic observed `$n`"))
+        push!(seen, n)
+        r = _def_rank(d, fresh, seen, n)
+        delete!(seen, n)
+        fresh.ranks[n] = r
+        return r
+    elseif e isa OpExpr
+        r = get(fresh.op_ranks, e, -1)
+        r >= 0 && return r
+        r = _def_rank(e, fresh, seen, nothing)
+        fresh.op_ranks[e] = r
+        return r
+    end
+    return 0
+end
+
+# The rank of a literal array value (its nesting depth).
+function _lit_rank(v)::Int
+    r = 0
+    while v isa AbstractVector
+        r += 1
+        isempty(v) && break
+        v = v[1]
+    end
+    return r
+end
+
+function _def_rank(d, fresh::_Fresh, seen::Set{String}, name)::Int
+    d isa VarExpr && return _cell_rank(d, fresh, seen)
+    d isa OpExpr || return 0
+    what = something(name, "expression")
+    if d.op == "faq"
+        return length(something(d.output_idx, Any[]))
+    elseif d.op == "makearray"
+        (d.regions === nothing || isempty(d.regions)) &&
+            throw(InlineError("makearray with no region read at a cell"))
+        return length(d.regions[1])
+    elseif d.op == "index"
+        # an `index` in an elementwise definition selects one element: its
+        # arity is its operand's rank (a partial index is still an array, and
+        # aligning what it leaves by position is not decidable here)
+        a = d.args[1]
+        r0 = a isa OpExpr && a.op == "const" ? _lit_rank(a.value) :
+            _cell_rank(a, fresh, seen)
+        r0 == length(d.args) - 1 || throw(
+            InlineError(
+                "observed $what reads `index` with $(length(d.args) - 1) indices into " *
+                    "an operand of rank $r0 in an elementwise definition read at a cell"
+            )
+        )
+        return 0
+    elseif _is_ref(d)
+        D = _def!(_layer(), d.name)
+        D.rank > 0 && return D.rank
+        for (q, b) in something(d.bindings, Dict{String, ASTExpr}())
+            if q in D.value && _cell_rank(b, fresh, seen) > 0
+                throw(
+                    InlineError(
+                        "observed $what applies `$(d.name)` " *
+                            "elementwise (an array bound to its value parameter `$q`); " *
+                            "reading such an application at a cell is not supported"
+                    )
+                )
+            end
+        end
+        return 0
+    elseif d.op == "const" && !(d.value isa AbstractVector)
+        return 0   # a scalar literal
+    elseif d.op in ("const", "reshape", "transpose", "concat", "broadcast")
+        throw(
+            InlineError(
+                "observed $what reads `$(d.op)` in an " *
+                    "elementwise definition read at a cell; not supported"
+            )
+        )
+    end
+    r = 0
+    for a in d.args
+        ra = _cell_rank(a, fresh, seen)
+        ra == 0 && continue
+        r == 0 || r == ra || throw(
+            InlineError(
+                "observed $what combines arrays of rank $r and $ra"
+            )
+        )
+        r = ra
+    end
+    return r
+end
+
+# `def` read at the cell `idx`, spliced under the indices `scope` binds.
+function _gather_cell(def, idx::Vector{ASTExpr}, fresh::_Fresh, scope, name::String)::ASTExpr
+    # the definition is closed; a name it reads that an index around the
+    # read site binds would be captured by it, and a global cannot be renamed
+    cap = sort!([n for n in free_variables(def) if n in scope])
+    isempty(cap) || throw(
+        InlineError(
+            "observed `$name` reads $(join(("`$n`" for n in cap), ", ")), which an " *
+                "index bound around its read at a cell would capture"
+        )
+    )
+    function g(e)
+        e isa OpExpr || e isa VarExpr || return e
+        r = _cell_rank(e, fresh, Set{String}())
+        r == 0 && return e
+        r == length(idx) || throw(
+            InlineError(
+                "observed `$name`, read with $(length(idx)) indices, has an operand of rank $r"
+            )
+        )
+        (e isa VarExpr || _is_ref(e) || e.op == "faq" || e.op == "makearray") &&
+            return op("index", e, idx...)
+        return map_children(g, e)
+    end
+    return g(def)
 end

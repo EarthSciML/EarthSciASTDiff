@@ -23,6 +23,8 @@ def inline_observed(
     obs: dict[str, Expr],
     obs_names: list | None = None,
     shapes: dict[str, list[int]] | None = None,
+    rank_obs: dict[str, Expr] | None = None,
+    scalars: set[str] | frozenset[str] = frozenset(),
 ) -> Expr:
     """Inline observed reads, lower ``Pre(a)`` to ``a`` (spec §3.2),
     β-reduce `index`-of-`faq`, lower
@@ -33,10 +35,20 @@ def inline_observed(
     filled); pass one to every call against the same ``obs``. ``shapes``
     (variable → declared extents, the band context's) gives the rank of an
     array variable used as a `makearray` region value; a variable it does not
-    name (nor an observed definition) is read at the region's free rank."""
+    name (nor an observed definition) is read at the region's free rank.
+    ``rank_obs`` (default ``obs``) holds every observed definition, including
+    those a pruned ``obs`` leaves out, so that an elementwise observed read at
+    a cell indexes each array operand, inlined or not. ``scalars`` names the
+    variables declared without a shape that are not observed (scalar states
+    and parameters); ``t`` is always scalar. Any other name in such a
+    definition has no known rank and is refused."""
     if not obs and not _needs_inline(e):
         return e
     fresh = _Fresh(e, obs, [None] if obs_names is None else obs_names, shapes or {})
+    # every observed definition, the pruned-away ones too: an operand left an
+    # opaque read still has a rank (``_cell_rank``)
+    fresh.rank_obs = obs if rank_obs is None else rank_obs
+    fresh.scalars = scalars
     for _ in range(MAX_INLINE_PASSES):
         e2 = _inline_once(e, obs, fresh, frozenset())
         if skey(e2) == skey(e):
@@ -67,6 +79,12 @@ class _Fresh:
         self.obs_names = obs_names
         self.shapes = shapes or {}
         self.taken: set[str] | None = None
+        self.ranks: dict[str, int] = {}  # observed name → its rank at a cell
+        # id(node) → (node, its rank at a cell); the node is held so its id
+        # is not reused
+        self.op_ranks: dict[int, tuple] = {}
+        self.rank_obs: dict[str, Expr] = obs
+        self.scalars: set[str] | frozenset[str] = frozenset()
 
     def __call__(self, name: str, avoid) -> str:
         if self.taken is None:
@@ -360,9 +378,13 @@ def _inline_once(e: Expr, obs: dict[str, Expr], fresh: _Fresh, scope: frozenset)
             return _index_makearray(de, args(), obs, fresh, scope)
         if isinstance(de, ExprNode) and de.op == "const":
             return op("index", de, *args())
-        raise InlineError(
-            f"index into observed `{name}` whose definition is not an faq, makearray or const"
-        )
+        if isinstance(de, (str, ExprNode)):
+            # An observed declared without a shape whose definition evaluates
+            # to an array (esm-spec §4.3.4), or a shaped observed defined by
+            # an elementwise expression of arrays: its element is the
+            # definition with each array operand read at the same cell.
+            return _gather_cell(de, args(), fresh, scope, name)
+        return de  # a number: the same value at every cell
     return map_children(e, lambda x: _inline_once(x, obs, fresh, scope))
 
 
@@ -380,3 +402,144 @@ def subst_free(e: Expr, m: dict) -> Expr:
             if not m:
                 return e
     return map_children(e, lambda x: subst_free(x, m))
+
+
+# ── elementwise observeds read at a cell (inline.jl ``_gather_cell``) ────────
+#
+# ``index(x, i…)`` of an observed ``x`` whose definition is an elementwise
+# expression (arithmetic, elementary, comparison, logical, ``ifelse``) of
+# arrays and scalars: the definition with every array operand read at ``i…``
+# and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The array
+# operands must all have the rank of the read. An array operand that is a
+# variable, a ``faq`` or a ``makearray`` is read whole at the cell
+# (``index(operand, i…)``, reduced by the next pass); an ``index`` inside the
+# definition must select a scalar. Anything this cannot decide is refused,
+# never guessed: a name whose rank is not known (neither declared, an
+# observed, nor ``t``), an operand whose rank differs from the read's, a
+# partial ``index``, a literal array or shape op as an operand, or a
+# definition reading a name an index bound around the read site would
+# capture. Ranks are computed on the closed definition (no enclosing scope),
+# so they are memoized per observed name and per node. (This binding's
+# loader expands operator references, so none reach here.)
+
+_NOT_ELEMENTWISE = ("reshape", "transpose", "concat", "broadcast")
+
+
+def _cell_rank(e: Expr, fresh: _Fresh, seen: set) -> int:
+    """The rank of ``e`` in an elementwise position: 0 for a scalar."""
+    if isinstance(e, str):
+        if e == "t" or e in fresh.scalars:
+            return 0
+        if e in fresh.shapes:
+            return len(fresh.shapes[e])
+        if e in fresh.ranks:
+            return fresh.ranks[e]
+        d = fresh.rank_obs.get(e)
+        if d is None:
+            raise InlineError(
+                f"`{e}`, read in an elementwise observed definition read at a cell, "
+                "has no known rank (not a declared variable, nor an observed)"
+            )
+        if e in seen:
+            raise InlineError(f"cyclic observed `{e}`")
+        seen.add(e)
+        r = _def_rank(d, fresh, seen, e)
+        seen.discard(e)
+        fresh.ranks[e] = r
+        return r
+    if isinstance(e, ExprNode):
+        hit = fresh.op_ranks.get(id(e))
+        if hit is not None and hit[0] is e:
+            return hit[1]
+        r = _def_rank(e, fresh, seen, None)
+        fresh.op_ranks[id(e)] = (e, r)
+        return r
+    return 0
+
+
+def _lit_rank(v) -> int:
+    """The rank of a literal array value (its nesting depth)."""
+    r = 0
+    while isinstance(v, list):
+        r += 1
+        if not v:
+            break
+        v = v[0]
+    return r
+
+
+def _def_rank(d: Expr, fresh: _Fresh, seen: set, name) -> int:
+    what = name if name is not None else "expression"
+    if isinstance(d, str):
+        return _cell_rank(d, fresh, seen)
+    if not isinstance(d, ExprNode):
+        return 0
+    if d.op == "faq":
+        return len(d.output_idx or [])
+    if d.op == "makearray":
+        if not d.regions:
+            raise InlineError("makearray with no region read at a cell")
+        return len(d.regions[0])
+    if d.op == "index":
+        # an `index` in an elementwise definition selects one element: its
+        # arity is its operand's rank (a partial index is still an array, and
+        # aligning what it leaves by position is not decidable here)
+        a = d.args[0]
+        if isinstance(a, ExprNode) and a.op == "const":
+            r0 = _lit_rank(a.value)
+        else:
+            r0 = _cell_rank(a, fresh, seen)
+        if r0 != len(d.args) - 1:
+            raise InlineError(
+                f"observed {what} reads `index` with {len(d.args) - 1} indices into an "
+                f"operand of rank {r0} in an elementwise definition read at a cell"
+            )
+        return 0
+    if d.op == "const" and not isinstance(d.value, list):
+        return 0  # a scalar literal
+    if d.op == "const" or d.op in _NOT_ELEMENTWISE:
+        raise InlineError(
+            f"observed {what} reads `{d.op}` in an elementwise definition read at a cell; "
+            "not supported"
+        )
+    r = 0
+    for a in d.args:
+        ra = _cell_rank(a, fresh, seen)
+        if ra == 0:
+            continue
+        if r not in (0, ra):
+            raise InlineError(f"observed {what} combines arrays of rank {r} and {ra}")
+        r = ra
+    return r
+
+
+def _gather_cell(de: Expr, idx: list, fresh: _Fresh, scope, name: str) -> Expr:
+    """``de`` read at the cell ``idx``, spliced under the indices ``scope``
+    binds."""
+    from .recurrence import free_vars
+
+    # the definition is closed; a name it reads that an index around the read
+    # site binds would be captured by it, and a global cannot be renamed
+    cap = sorted(n for n in free_vars(de) if n in scope)
+    if cap:
+        names = ", ".join(f"`{n}`" for n in cap)
+        raise InlineError(
+            f"observed `{name}` reads {names}, which an index bound around its read at "
+            "a cell would capture"
+        )
+
+    def g(e: Expr) -> Expr:
+        if not isinstance(e, (str, ExprNode)):
+            return e
+        r = _cell_rank(e, fresh, set())
+        if r == 0:
+            return e
+        if r != len(idx):
+            raise InlineError(
+                f"observed `{name}`, read with {len(idx)} indices, has an operand of rank {r}"
+            )
+        if isinstance(e, str) or e.op in ("faq", "makearray"):
+            return op("index", e, *idx)
+        return map_children(e, g)
+
+    return g(de)

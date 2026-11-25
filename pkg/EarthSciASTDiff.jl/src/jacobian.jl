@@ -179,9 +179,9 @@ _is_recurrence(ext::ExtendedBands, v::String) = any(r -> r.name == v, ext.recurr
 # seed a second axis adds (`_bands2`); that seed changes nothing when the
 # second axis is the first, so such a pair shares the plain pass's key: a
 # document asking for `:states` and `(:states, :states)` differentiates the
-# system once. On the time axis the seed changes no inlining, so every time
-# pair shares the plain time pass too — unless the view has a recurrence,
-# which the seed can make active (§4.5).
+# system once. Every other pair keeps its own pass, the time axis's included:
+# time is pruned from `{t} ∪ seed` like the other axes, so the second axis's
+# seed can follow an observed the plain time pass leaves an opaque read.
 struct _FirstOrder
     ext::Dict{Tuple{Symbol, Union{Nothing, Symbol}}, ExtendedBands}
     bands::Dict{Tuple{Symbol, Union{Nothing, Symbol}}, Vector{JacEntry}}
@@ -202,7 +202,6 @@ end
 
 function _memo_key(memo::_FirstOrder, sv::SysView, a1::Symbol, a2)
     a2 === a1 && return (a1, nothing)
-    a1 == :time && isempty(_rec_info!(memo, sv).recs) && return (a1, nothing)
     return (a1, a2)
 end
 
@@ -313,6 +312,12 @@ function _extended_pass(
         coefficients::Bool = true, info::_RecInfo = _rec_info(sv, obs, ctx)
     )
     src_obs = obs
+    # declared scalars that are not observed: an elementwise observed read at
+    # a cell reads them unchanged (`_gather_cell`)
+    scalars = Set{String}(
+        String(n) for (n, v) in sv.variables
+            if (v.shape === nothing || isempty(v.shape)) && !haskey(src_obs, String(n))
+    )
     targets = _targets(sv, wrt, forcing, obs)
     tset = Set{String}(targets)
     recs = info.recs
@@ -327,11 +332,11 @@ function _extended_pass(
     # derived evaluation model resolves from their own definitions. Exact, and
     # seeded from THIS `wrt`'s targets — see `inlinable_observed`
     # (system.jl) for why the state and parameter axes must not share a seed.
-    # `wrt = :time` is excluded: time also enters implicitly, through
-    # externally-provided time-varying data, so `{"t"}` is not a sound
-    # over-approximation of the set of time-dependent names.
-    wrt == :time ||
-        (obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed))))
+    # `wrt = :time` is pruned from `{"t"}` like every other axis: `f_t` is the
+    # partial derivative with every parameter, data-fed ones included, held
+    # fixed (spec §4.2), so an observed whose only time dependence comes
+    # through data has a zero partial derivative and is not followed.
+    obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed)))
     if !isempty(recs)
         rn = Set{String}(r.name for r in recs)
         obs = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in rn))
@@ -351,12 +356,12 @@ function _extended_pass(
             )
             continue
         end
-        _row_bands!(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
+        _row_bands!(entries, u, eq.rhs, obs, obs_names, cols, ctx, co; rank_obs = src_obs, scalars = scalars)
         append!(row_eq, fill(q, length(entries) - length(row_eq)))
     end
     rec_rows = JacEntry[]
     for r in act
-        _row_bands!(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
+        _row_bands!(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co; rank_obs = src_obs, scalars = scalars)
     end
     for en in rec_rows
         # every self band is a lag back along the axis, or refused
@@ -389,11 +394,17 @@ end
 # cells. Intersecting the RHS's own free variables with the column SET is
 # O(|free variables|), and re-sorting the hits by name reproduces the target
 # order the downstream pattern/scatter construction (assemble.jl) reads.
-function _row_bands!(out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ctx, co::Bool)
+function _row_bands!(
+        out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ctx, co::Bool;
+        rank_obs = obs, scalars = Set{String}()
+    )
     shape_u = get(ctx.shapes, u, Int[])
     # under the view's layer: inlining reads definitions' ranks
     rhs = _with_layer(ctx.refs) do
-        inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
+        inline_observed(
+            rhs, obs; obs_names = obs_names, shapes = ctx.shapes,
+            rank_obs = rank_obs, scalars = scalars
+        )
     end
     hits = sort!(String[v for v in free_variables(rhs) if v in cols])
     for v in hits

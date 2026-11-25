@@ -376,10 +376,15 @@ end
 # precisely the failure mode the adjoint needs `∂f/∂p` for. Same code, two
 # different seeds; the seed is what makes each case right.
 #
-# `wrt = :time` is deliberately NOT pruned (see `jacobian_bands`): time enters
-# an expression both by the explicit `t` site AND implicitly, through
-# externally-provided time-varying data, so a free-variable seed of `{"t"}` is
-# not a sound over-approximation of time-dependence.
+# `wrt = :time` is pruned from the seed `{"t"}` too. `f_t` is the PARTIAL
+# derivative with every parameter held fixed (spec §4.2), data-fed parameters
+# and forcing buffers included: data is constant within a call, which a
+# consumer arranges by holding one forcing buffer set per epoch and ending a
+# step at every refresh. Time that enters only through data therefore
+# contributes nothing to `f_t`, and an observed that reads `t` neither
+# directly nor through another observed is a constant here. Operator
+# references stay references: an observed defined by one is followed when a
+# binding moves with `t`, and differentiated by the chain rule through it.
 
 # Names occurring in an index-ARGUMENT position — `args[2:end]` of an `index`
 # node, i.e. a subscript rather than a value. `args[1]` (the indexed object) is

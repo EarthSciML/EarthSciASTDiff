@@ -120,6 +120,15 @@ let name = "two_shape_stencil"
     write(evpath, stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries))))
     println("wrote ", path, ", ", evpath)
 end
+# Time bands with data held fixed (spec §4.2): the band list only, which
+# every binding must reproduce byte for byte (tests/README.md).
+let name = "tgrad_data_fixed"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(sysview(file, "Box"); wrt = :time)
+    path = joinpath(root, "tests", "goldens", "$name.time.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

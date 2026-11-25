@@ -258,6 +258,13 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     from .recurrence import ExtendedBands, _lag, active, recurrences, transfer_names
 
     src_obs = obs
+    # declared scalars that are not observed: an elementwise observed read at
+    # a cell reads them unchanged (inline.py `_gather_cell`)
+    scalars = {
+        str(n)
+        for n, v in sv.variables.items()
+        if not getattr(v, "shape", None) and str(n) not in src_obs
+    }
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
     recs = recurrences(sv, obs, ctx)
@@ -269,9 +276,9 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     co = co or bool(act)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
-    # not pruned: it also enters implicitly through time-varying data.
-    if wrt != "time":
-        obs = inlinable_observed(obs, sv.equations, tset | set(seed))
+    # pruned from {"t"} too: f_t is the partial derivative with every
+    # parameter, data-fed ones included, held fixed (spec §4.2).
+    obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     if recs:
         names = {r.name for r in recs}
         obs = {k: v for k, v in obs.items() if k not in names}
@@ -288,11 +295,24 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
                     "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                 )
             continue
-        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
+        _row_bands(
+            entries, u, eq.rhs, obs, obs_names, cols, ctx, co, rank_obs=src_obs, scalars=scalars
+        )
         row_eq.extend([q] * (len(entries) - len(row_eq)))
     rec_rows: list[JacEntry] = []
     for r in act:
-        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
+        _row_bands(
+            rec_rows,
+            r.name,
+            src_obs[r.name],
+            obs,
+            obs_names,
+            cols,
+            ctx,
+            co,
+            rank_obs=src_obs,
+            scalars=scalars,
+        )
     for en in rec_rows:
         if en.u == en.v:
             # every self band is a lag back along the axis, or refused
@@ -307,13 +327,22 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
 
 
 def _row_bands(
-    out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx, co: bool = True
+    out: list,
+    u: str,
+    rhs,
+    obs: dict,
+    obs_names: list,
+    cols: set,
+    ctx,
+    co: bool = True,
+    rank_obs: dict | None = None,
+    scalars: set | frozenset = frozenset(),
 ) -> None:
     # The bands of one row variable `u` (a state, or a recurrence over its
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes)
+    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes, rank_obs, scalars)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
@@ -365,28 +394,19 @@ class _FirstOrder:
     # inlining seed a second axis adds (`_bands2`); that seed changes
     # nothing when the second axis is the first, so such a pair shares the
     # plain pass's key: a block list asking for "states" and ("states",
-    # "states") differentiates the system once. On the time axis the seed
-    # changes no inlining, so every time pair shares the plain time pass
-    # too — unless the view has a recurrence, which the seed can make
-    # active (spec §4.5).
+    # "states") differentiates the system once. Every other pair keeps its
+    # own pass, the time axis's included: time is pruned from {t} ∪ seed
+    # like the other axes, so the second axis's seed can follow an observed
+    # the plain time pass leaves an opaque read.
 
     def __init__(self):
         self._ext: dict = {}
         self._bands: dict = {}
         self._structure: dict = {}
-        self._has_recs: bool | None = None
 
-    def _key(self, sv: SysView, a1, a2):
-        if a2 == a1:
-            return (a1, None)
-        if a1 == "time":
-            if self._has_recs is None:
-                from .recurrence import recurrences
-
-                self._has_recs = bool(recurrences(sv, observed_defs(sv), ctx_of(sv)))
-            if not self._has_recs:
-                return (a1, None)
-        return (a1, a2)
+    @staticmethod
+    def _key(sv: SysView, a1, a2):
+        return (a1, None) if a2 == a1 else (a1, a2)
 
     def ext(self, sv: SysView, a1: str, a2, forcing, seed=()):
         """The extended ``a1`` pass seeded with ``seed``."""

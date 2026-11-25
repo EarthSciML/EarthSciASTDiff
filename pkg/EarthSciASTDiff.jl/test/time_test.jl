@@ -37,6 +37,82 @@ const TIME_FIXTURES = ("tgrad_photolysis",)
     end
 end
 
+@testset "time bands: data held fixed, elementwise observed read at a cell" begin
+    # tgrad_data_fixed: only observed that move with `t` are followed (spec
+    # §4.2), so `src` (parameters only, operands of mixed rank) is never read
+    # at a cell; `jr`, declared without a shape, is (`index(jr, i, j)`).
+    golden = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "tgrad_data_fixed.time.bands.json")
+    file = fixture("tgrad_data_fixed.esm")
+    entries = jacobian_bands(sysview(file, "Box"); wrt = :time)
+    @test length(entries) == 1 && entries[1].u == "c" && entries[1].v == "t"
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) == read(golden, String)
+end
+
+# tgrad_data_fixed with `edit!(model_dict)` applied.
+function _data_fixed_variant(edit!)
+    path = joinpath(FIXTURES, "tgrad_data_fixed.esm")
+    d = EarthSciASTDiff.JSON3.read(read(path, String), Dict{String, Any})
+    edit!(d["models"]["Box"])
+    return EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(d))
+end
+_jrdef!(m, rhs) = (m["equations"][1]["rhs"] = rhs; m)
+const _JR_T = Dict("op" => "*", "args" => Any["J0", Dict("op" => "cos", "args" => Any[Dict("op" => "*", "args" => Any["omega", "t"])])])
+
+@testset "time bands: a time pair follows what its second axis seeds" begin
+    # kc = c·c moves only with the states: the plain time pass leaves
+    # `index(kc, i, j)` an opaque read, the (time, states) pair follows it.
+    # Each pair keeps its own pass, so the order of emission is immaterial.
+    file = _data_fixed_variant() do m
+        m["variables"]["kc"] = Dict{String, Any}("type" => "unknown")
+        push!(m["equations"], Dict("lhs" => "kc", "rhs" => Dict("op" => "*", "args" => Any["c", "c"])))
+        body = m["equations"][4]["rhs"]["expr"]
+        m["equations"][4]["rhs"]["expr"] = Dict(
+            "op" => "+", "args" => Any[
+                body, Dict(
+                    "op" => "*", "args" => Any[
+                        Dict("op" => "index", "args" => Any["kc", "i", "j"]),
+                        Dict("op" => "cos", "args" => Any[Dict("op" => "*", "args" => Any["omega", "t"])]),
+                    ]
+                ),
+            ]
+        )
+    end
+    @test !isempty(jacobian_bands2(sysview(file, "Box"); wrt = :time => :states))
+    pair = jacobian_document(file, "Box"; wrt = :time => :states)["jacobians"]["Box"]
+    both = jacobian_document(file, "Box"; wrt = [:time, :time => :states])["jacobians"]["Box"]
+    @test both[2] == pair
+    @test both[1] == jacobian_document(file, "Box"; wrt = :time)["jacobians"]["Box"]
+end
+
+@testset "time bands: an elementwise observed read at a cell refuses what it cannot read" begin
+    sv = sysview(fixture("tgrad_data_fixed.esm"), "Box")
+    ctx = EarthSciASTDiff._ctx(sv)
+    obs = EarthSciASTDiff._observed_defs(sv)
+    rhs = only(eq.rhs for eq in sv.equations if eq.lhs isa OpExpr && eq.lhs.op == "D")
+    # follow `jr` only (as the time pass does); a name of no known rank in its
+    # definition (here: no declared scalar is named) is refused
+    jr = Dict{String, ASTExpr}("jr" => obs["jr"])
+    @test_throws EarthSciASTDiff.InlineError EarthSciASTDiff.inline_observed(rhs, jr; shapes = ctx.shapes, rank_obs = obs)
+    sc = Set{String}(String(n) for (n, v) in sv.variables if (v.shape === nothing || isempty(v.shape)) && !haskey(obs, String(n)))
+    @test !("jr" in EarthSciASTDiff.free_variables(EarthSciASTDiff.inline_observed(rhs, jr; shapes = ctx.shapes, rank_obs = obs, scalars = sc)))
+    # a partial index (still an array) inside the definition
+    partial = _data_fixed_variant() do m
+        _jrdef!(m, Dict("op" => "+", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1])]))
+    end
+    @test_throws EarthSciASTDiff.InlineError jacobian_bands(sysview(partial, "Box"); wrt = :time)
+    # a global the read site's index `j` would capture
+    capture = _data_fixed_variant() do m
+        m["variables"]["j"] = Dict{String, Any}("type" => "parameter", "default" => 2.0)
+        _jrdef!(m, Dict("op" => "*", "args" => Any[_JR_T, "j"]))
+    end
+    @test_throws EarthSciASTDiff.InlineError jacobian_bands(sysview(capture, "Box"); wrt = :time)
+    # the full index of an array inside the definition is a scalar
+    full = _data_fixed_variant() do m
+        _jrdef!(m, Dict("op" => "*", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1, 2])]))
+    end
+    @test length(jacobian_bands(sysview(full, "Box"); wrt = :time)) == 1
+end
+
 @testset "time bands: empty list for an autonomous model (f_t ≡ 0)" begin
     for name in (
             "bd_chem", "adv_interior", "flux_form_adv", "minmod_adv",
