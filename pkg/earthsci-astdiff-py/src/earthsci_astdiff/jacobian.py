@@ -269,9 +269,9 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     co = co or bool(act)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
-    # not pruned: it also enters implicitly through time-varying data.
-    if wrt != "time":
-        obs = inlinable_observed(obs, sv.equations, tset | set(seed))
+    # pruned from {"t"} too: f_t is the partial derivative with every
+    # parameter, data-fed ones included, held fixed (spec §4.2).
+    obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     if recs:
         names = {r.name for r in recs}
         obs = {k: v for k, v in obs.items() if k not in names}

@@ -476,21 +476,17 @@ pub(crate) fn extended_pass_in(
     let co = co || !act.is_empty();
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
-    // opaque reads. Time is not pruned: it also enters implicitly through
-    // time-varying data.
-    let pruned;
-    let mut obs = if wrt == Wrt::Time {
-        obs
+    // opaque reads. Time is pruned from `{"t"}` too: `f_t` is the partial
+    // derivative with every parameter, data-fed ones included, held fixed
+    // (spec §4.2), so time that enters only through data contributes nothing.
+    let pruned = if seed.is_empty() {
+        inlinable_observed(obs, &sv.equations, &tset)
     } else {
-        pruned = if seed.is_empty() {
-            inlinable_observed(obs, &sv.equations, &tset)
-        } else {
-            let mut seeded = tset.clone();
-            seeded.extend(seed.iter().cloned());
-            inlinable_observed(obs, &sv.equations, &seeded)
-        };
-        &pruned
+        let mut seeded = tset.clone();
+        seeded.extend(seed.iter().cloned());
+        inlinable_observed(obs, &sv.equations, &seeded)
     };
+    let mut obs = &pruned;
     let unrec;
     if !recs.is_empty() {
         let mut m = obs.clone();

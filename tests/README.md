@@ -91,6 +91,12 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     observed, an `hour` factor (piecewise-constant: no time band), a
     `julian_day` source (continuous: `d[t]/86400`), and one autonomous row
     (an esm 2.0.0 document)
+  - `tgrad_data_fixed.esm` — time bands with data held fixed (spec §4.2): a
+    loss rate `jr = J0·max(0, cos(ω t))` declared without a shape and read at
+    a cell (`index(jr, i, j)`), and a source `src = Ea + Eb` of parameters
+    only, with operands of different rank, which the time axis must not
+    follow. Its only golden, `tgrad_data_fixed.time.bands.json`, is checked
+    byte for byte by every binding
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.

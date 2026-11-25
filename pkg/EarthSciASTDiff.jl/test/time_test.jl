@@ -37,6 +37,17 @@ const TIME_FIXTURES = ("tgrad_photolysis",)
     end
 end
 
+@testset "time bands: data held fixed, elementwise observed read at a cell" begin
+    # tgrad_data_fixed: only observed that move with `t` are followed (spec
+    # §4.2), so `src` (parameters only, operands of mixed rank) is never read
+    # at a cell; `jr`, declared without a shape, is (`index(jr, i, j)`).
+    golden = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "tgrad_data_fixed.time.bands.json")
+    file = fixture("tgrad_data_fixed.esm")
+    entries = jacobian_bands(sysview(file, "Box"); wrt = :time)
+    @test length(entries) == 1 && entries[1].u == "c" && entries[1].v == "t"
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) == read(golden, String)
+end
+
 @testset "time bands: empty list for an autonomous model (f_t ≡ 0)" begin
     for name in (
             "bd_chem", "adv_interior", "flux_form_adv", "minmod_adv",

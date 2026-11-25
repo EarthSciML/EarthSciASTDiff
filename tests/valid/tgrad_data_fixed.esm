@@ -1,0 +1,163 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "TGradDataFixed",
+    "description": "Time bands with data held fixed (esm-jacobian-spec.md \u00a74.2): a 3 x 2 grid state c whose loss rate jr = J0 max(0, cos(omega t)) is an observed declared WITHOUT a shape (its definition is elementwise over the [x, y] array J0, so it is read at a cell, index(jr, i, j)), and a source src = Ea + Eb, also declared without a shape, that reads only parameters (data, held fixed within a call) and no t, with operands of different rank ([x] and [x, y]). The time axis follows only observeds that move with t: src is not followed, so its rank-mixing definition is never read at a cell, and jr is. The one time band is row c, from jr."
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "y": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 1.0
+        },
+        "jr": {
+          "type": "unknown"
+        },
+        "src": {
+          "type": "unknown"
+        },
+        "J0": {
+          "type": "parameter",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 0.5
+        },
+        "omega": {
+          "type": "parameter",
+          "default": 1.1
+        },
+        "Ea": {
+          "type": "parameter",
+          "shape": [
+            "x"
+          ],
+          "default": 0.2
+        },
+        "Eb": {
+          "type": "parameter",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 0.1
+        }
+      },
+      "equations": [
+        {
+          "lhs": "jr",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "J0",
+              {
+                "op": "max",
+                "args": [
+                  0,
+                  {
+                    "op": "cos",
+                    "args": [
+                      {
+                        "op": "*",
+                        "args": [
+                          "omega",
+                          "t"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "src",
+          "rhs": {
+            "op": "+",
+            "args": [
+              "Ea",
+              "Eb"
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i",
+              "j"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "j": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "index",
+                      "args": [
+                        "jr",
+                        "i",
+                        "j"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i",
+                        "j"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "src",
+                    "i",
+                    "j"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

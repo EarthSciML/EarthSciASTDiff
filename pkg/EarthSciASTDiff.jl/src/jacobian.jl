@@ -327,11 +327,11 @@ function _extended_pass(
     # derived evaluation model resolves from their own definitions. Exact, and
     # seeded from THIS `wrt`'s targets — see `inlinable_observed`
     # (system.jl) for why the state and parameter axes must not share a seed.
-    # `wrt = :time` is excluded: time also enters implicitly, through
-    # externally-provided time-varying data, so `{"t"}` is not a sound
-    # over-approximation of the set of time-dependent names.
-    wrt == :time ||
-        (obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed))))
+    # `wrt = :time` is pruned from `{"t"}` like every other axis: `f_t` is the
+    # partial derivative with every parameter, data-fed ones included, held
+    # fixed (spec §4.2), so an observed whose only time dependence comes
+    # through data has a zero partial derivative and is not followed.
+    obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed)))
     if !isempty(recs)
         rn = Set{String}(r.name for r in recs)
         obs = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in rn))
