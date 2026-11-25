@@ -23,6 +23,7 @@ def inline_observed(
     obs: dict[str, Expr],
     obs_names: list | None = None,
     shapes: dict[str, list[int]] | None = None,
+    rank_obs: dict[str, Expr] | None = None,
 ) -> Expr:
     """Inline observed reads, lower ``Pre(a)`` to ``a`` (spec §3.2),
     β-reduce `index`-of-`faq`, lower
@@ -37,6 +38,9 @@ def inline_observed(
     if not obs and not _needs_inline(e):
         return e
     fresh = _Fresh(e, obs, [None] if obs_names is None else obs_names, shapes or {})
+    # every observed definition, the pruned-away ones too: an operand left an
+    # opaque read still has a rank (``_cell_rank``)
+    fresh.rank_obs = obs if rank_obs is None else rank_obs
     for _ in range(MAX_INLINE_PASSES):
         e2 = _inline_once(e, obs, fresh, frozenset())
         if skey(e2) == skey(e):
@@ -405,7 +409,7 @@ def _cell_rank(e: Expr, fresh: _Fresh, scope, seen: set) -> int:
             return 0
         if e in fresh.shapes:
             return len(fresh.shapes[e])
-        d = fresh.obs.get(e)
+        d = fresh.rank_obs.get(e)
         if d is None:
             return 0
         if e in fresh.ranks:

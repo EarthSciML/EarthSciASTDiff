@@ -42,6 +42,19 @@ pub fn inline_observed_cached(
     obs_names: &mut Option<HashSet<String>>,
     shapes: &HashMap<String, Vec<i64>>,
 ) -> R {
+    inline_observed_ranked(e, obs, obs_names, shapes, obs)
+}
+
+/// [`inline_observed_cached`] with `rank_obs`, every observed definition,
+/// including those a pruned `obs` leaves out, so that an elementwise
+/// observed read at a cell indexes each array operand, inlined or not.
+pub fn inline_observed_ranked(
+    e: &Expr,
+    obs: &HashMap<String, Expr>,
+    obs_names: &mut Option<HashSet<String>>,
+    shapes: &HashMap<String, Vec<i64>>,
+    rank_obs: &HashMap<String, Expr>,
+) -> R {
     if obs.is_empty() && !needs_inline(e, &HashSet::new()) {
         return Ok(e.clone());
     }
@@ -53,6 +66,7 @@ pub fn inline_observed_cached(
         taken: None,
         shapes,
         ranks: HashMap::new(),
+        rank_obs,
     };
     let scope = HashSet::new();
     // The fixpoint test compares the post-inlining right-hand side, the
@@ -85,6 +99,9 @@ struct Fresh<'a> {
     shapes: &'a HashMap<String, Vec<i64>>,
     /// observed name → its rank at a cell (`cell_rank`)
     ranks: HashMap<String, usize>,
+    /// every observed definition, the pruned-away ones too: an operand left
+    /// an opaque read still has a rank (`cell_rank`)
+    rank_obs: &'a HashMap<String, Expr>,
 }
 
 impl Fresh<'_> {
@@ -616,7 +633,6 @@ fn inline_once(
     try_map(e, &mut |x| inline_once(x, obs, fresh, scope))
 }
 
-
 // ── elementwise observeds read at a cell (inline.jl `_gather_cell`) ─────────
 //
 // `index(x, i…)` of an observed `x` whose definition is an elementwise
@@ -645,7 +661,9 @@ fn cell_rank(
             if let Some(sh) = fresh.shapes.get(nm) {
                 return Ok(sh.len());
             }
-            let Some(d) = fresh.obs.get(nm) else { return Ok(0) };
+            let Some(d) = fresh.rank_obs.get(nm) else {
+                return Ok(0);
+            };
             if let Some(&r) = fresh.ranks.get(nm) {
                 return Ok(r);
             }
@@ -681,7 +699,9 @@ fn def_rank(
         "makearray" => {
             return match n.regions.as_ref().and_then(|r| r.first()) {
                 Some(r) => Ok(r.len()),
-                None => Err(InlineError("makearray with no region read at a cell".into())),
+                None => Err(InlineError(
+                    "makearray with no region read at a cell".into(),
+                )),
             }
         }
         "index" => return Ok(0),
@@ -691,7 +711,7 @@ fn def_rank(
                 Ok(serde_json::Value::Array(_))
             ) =>
         {
-            return Ok(0) // a scalar literal
+            return Ok(0); // a scalar literal
         }
         "const" | "reshape" | "transpose" | "concat" | "broadcast" => {
             return Err(InlineError(format!(
@@ -776,13 +796,16 @@ fn gather_cell(
         return Ok(op("index", a));
     }
     let mut err = None;
-    let out = map_expr_children(def, &mut |c: &Expr| match gather_cell(c, idx, fresh, scope, name) {
-        Ok(x) => x,
-        Err(e) => {
-            err.get_or_insert(e);
-            c.clone()
-        }
-    });
+    let out = map_expr_children(
+        def,
+        &mut |c: &Expr| match gather_cell(c, idx, fresh, scope, name) {
+            Ok(x) => x,
+            Err(e) => {
+                err.get_or_insert(e);
+                c.clone()
+            }
+        },
+    );
     match err {
         Some(e) => Err(e),
         None => Ok(out),

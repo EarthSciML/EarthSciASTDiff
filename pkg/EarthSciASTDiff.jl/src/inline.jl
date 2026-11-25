@@ -45,11 +45,15 @@ many expressions against one `obs` passes one `Ref` to all of them.
 `shapes` (variable → declared extents, the band context's) gives the rank of
 an array variable used as a `makearray` region value; a variable it does not
 name (nor an observed definition) is read at the region's free rank.
+`rank_obs` (default `obs`) holds every observed definition, including those a
+pruned `obs` leaves out, so that an elementwise observed read at a cell indexes
+each array operand, inlined or not.
 """
 function inline_observed(
         e::ASTExpr, obs::Dict{String, ASTExpr};
         obs_names = Ref{Union{Nothing, Set{String}}}(nothing),
-        shapes::AbstractDict = Dict{String, Vector{Int}}()
+        shapes::AbstractDict = Dict{String, Vector{Int}}(),
+        rank_obs::AbstractDict = obs
     )::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
     # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
@@ -64,7 +68,7 @@ function inline_observed(
     # ([`sid`](@ref)) re-keys only the subtrees the pass rebuilt, because the
     # index's memo is carried across passes.
     ix = StructIndex()
-    fresh = _Fresh(e, obs, obs_names, nothing, shapes, Dict{String, Int}())
+    fresh = _Fresh(e, obs, obs_names, nothing, shapes, Dict{String, Int}(), rank_obs)
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
         e2 === e && return e2
@@ -90,6 +94,9 @@ mutable struct _Fresh
     taken::Union{Set{String}, Nothing}
     shapes::AbstractDict
     ranks::Dict{String, Int}   # observed name → its rank at a cell (`_cell_rank`)
+    # every observed definition, the pruned-away ones too: an operand left an
+    # opaque read still has a rank (`_cell_rank`)
+    rank_obs::AbstractDict
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -453,7 +460,7 @@ function _cell_rank(e, fresh::_Fresh, scope, seen::Set{String})::Int
     if e isa VarExpr
         e.name in scope && return 0
         haskey(fresh.shapes, e.name) && return length(fresh.shapes[e.name])
-        d = get(fresh.obs, e.name, nothing)
+        d = get(fresh.rank_obs, e.name, nothing)
         d === nothing && return 0
         haskey(fresh.ranks, e.name) && return fresh.ranks[e.name]
         e.name in seen && throw(InlineError("cyclic observed `$(e.name)`"))

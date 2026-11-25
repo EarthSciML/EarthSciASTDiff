@@ -10,7 +10,7 @@ use earthsci_ast::{EsmFile, Expr, VariableType};
 use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::hashcons::Interner;
-use crate::inline::inline_observed_cached;
+use crate::inline::inline_observed_ranked;
 use crate::recurrence::{
     active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
 };
@@ -517,6 +517,7 @@ pub(crate) fn extended_pass_in(
             &cols,
             ctx,
             co,
+            src_obs,
         )?;
         row_eq.resize(entries.len(), q);
     }
@@ -532,6 +533,7 @@ pub(crate) fn extended_pass_in(
             &cols,
             ctx,
             co,
+            src_obs,
         )?;
     }
     for en in rec_rows.iter().filter(|en| en.u == en.v) {
@@ -584,11 +586,12 @@ fn row_bands(
     cols: &HashSet<String>,
     ctx: &Ctx,
     co: bool,
+    rank_obs: &HashMap<String, Expr>,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
     // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
     let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
-        inline_observed_cached(rhs, obs, obs_names, &ctx.shapes)
+        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs)
     })
     .map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the

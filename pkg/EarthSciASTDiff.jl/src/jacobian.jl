@@ -351,12 +351,12 @@ function _extended_pass(
             )
             continue
         end
-        _row_bands!(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
+        _row_bands!(entries, u, eq.rhs, obs, obs_names, cols, ctx, co; rank_obs = src_obs)
         append!(row_eq, fill(q, length(entries) - length(row_eq)))
     end
     rec_rows = JacEntry[]
     for r in act
-        _row_bands!(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
+        _row_bands!(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co; rank_obs = src_obs)
     end
     for en in rec_rows
         # every self band is a lag back along the axis, or refused
@@ -389,11 +389,11 @@ end
 # cells. Intersecting the RHS's own free variables with the column SET is
 # O(|free variables|), and re-sorting the hits by name reproduces the target
 # order the downstream pattern/scatter construction (assemble.jl) reads.
-function _row_bands!(out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ctx, co::Bool)
+function _row_bands!(out, u::String, rhs::ASTExpr, obs, obs_names, cols, ctx::Ctx, co::Bool; rank_obs = obs)
     shape_u = get(ctx.shapes, u, Int[])
     # under the view's layer: inlining reads definitions' ranks
     rhs = _with_layer(ctx.refs) do
-        inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes)
+        inline_observed(rhs, obs; obs_names = obs_names, shapes = ctx.shapes, rank_obs = rank_obs)
     end
     hits = sort!(String[v for v in free_variables(rhs) if v in cols])
     for v in hits

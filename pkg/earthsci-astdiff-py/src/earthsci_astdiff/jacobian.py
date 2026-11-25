@@ -288,11 +288,13 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
                     "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                 )
             continue
-        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx, co)
+        _row_bands(entries, u, eq.rhs, obs, obs_names, cols, ctx, co, rank_obs=src_obs)
         row_eq.extend([q] * (len(entries) - len(row_eq)))
     rec_rows: list[JacEntry] = []
     for r in act:
-        _row_bands(rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co)
+        _row_bands(
+            rec_rows, r.name, src_obs[r.name], obs, obs_names, cols, ctx, co, rank_obs=src_obs
+        )
     for en in rec_rows:
         if en.u == en.v:
             # every self band is a lag back along the axis, or refused
@@ -307,13 +309,21 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
 
 
 def _row_bands(
-    out: list, u: str, rhs, obs: dict, obs_names: list, cols: set, ctx, co: bool = True
+    out: list,
+    u: str,
+    rhs,
+    obs: dict,
+    obs_names: list,
+    cols: set,
+    ctx,
+    co: bool = True,
+    rank_obs: dict | None = None,
 ) -> None:
     # The bands of one row variable `u` (a state, or a recurrence over its
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes)
+    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes, rank_obs)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
