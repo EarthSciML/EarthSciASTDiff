@@ -463,6 +463,14 @@ pub(crate) fn extended_pass_in(
     co: bool,
 ) -> Result<ExtendedBands, BandError> {
     let src_obs = obs;
+    // declared scalars that are not observed: an elementwise observed read at
+    // a cell reads them unchanged (inline.rs `gather_cell`)
+    let scalars: HashSet<String> = sv
+        .variables
+        .iter()
+        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !src_obs.contains_key(*n))
+        .map(|(n, _)| n.clone())
+        .collect();
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
     let recs = recurrences(sv, obs, ctx)?;
@@ -518,6 +526,7 @@ pub(crate) fn extended_pass_in(
             ctx,
             co,
             src_obs,
+            &scalars,
         )?;
         row_eq.resize(entries.len(), q);
     }
@@ -534,6 +543,7 @@ pub(crate) fn extended_pass_in(
             ctx,
             co,
             src_obs,
+            &scalars,
         )?;
     }
     for en in rec_rows.iter().filter(|en| en.u == en.v) {
@@ -587,11 +597,12 @@ fn row_bands(
     ctx: &Ctx,
     co: bool,
     rank_obs: &HashMap<String, Expr>,
+    scalars: &HashSet<String>,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
     // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
     let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
-        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs)
+        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs, scalars)
     })
     .map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the
@@ -684,38 +695,21 @@ pub(crate) fn expr_json(c: &Expr) -> String {
 /// inlining seed a second axis adds ([`crate::second_order`]); that seed
 /// changes nothing when the second axis is the first, so such a pair shares
 /// the plain pass's key: a block list asking for `States` and `(States,
-/// States)` differentiates the system once. On the time axis the seed
-/// changes no inlining, so every time pair shares the plain time pass too —
-/// unless the view has a recurrence, which the seed can make active (spec
-/// §4.5).
+/// States)` differentiates the system once. Every other pair keeps its own
+/// pass, the time axis's included: time is pruned from `{t} ∪ seed` like the
+/// other axes, so the second axis's seed can follow an observed the plain
+/// time pass leaves an opaque read.
 #[derive(Default)]
 pub(crate) struct FirstOrder {
     ext: HashMap<(Wrt, Option<Wrt>), Rc<ExtendedBands>>,
     bands: HashMap<(Wrt, Option<Wrt>), Rc<Vec<JacEntry>>>,
     structure: HashMap<(Wrt, Option<Wrt>), &'static str>,
-    has_recs: Option<bool>,
 }
 
 impl FirstOrder {
-    fn key(
-        &mut self,
-        sv: &SysView,
-        ctx: &Ctx,
-        obs: &HashMap<String, Expr>,
-        a1: Wrt,
-        a2: Option<Wrt>,
-    ) -> Result<(Wrt, Option<Wrt>), BandError> {
-        if a1 == Wrt::Time && a2.is_some() && self.has_recs.is_none() {
-            self.has_recs = Some(!recurrences(sv, obs, ctx)?.is_empty());
-        }
-        Ok(self.known_key(a1, a2))
-    }
-
-    /// [`Self::key`] once the view's recurrences are known (a time pair
-    /// keeps its own key until then).
-    fn known_key(&self, a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
-        let shared = a2 == Some(a1) || (a1 == Wrt::Time && self.has_recs == Some(false));
-        (a1, if shared { None } else { a2 })
+    /// The memo key of the pass `(a1, a2)`.
+    fn key(a1: Wrt, a2: Option<Wrt>) -> (Wrt, Option<Wrt>) {
+        (a1, if a2 == Some(a1) { None } else { a2 })
     }
 
     /// The extended `a1` pass seeded with `seed`, the targets of `a2`
@@ -731,7 +725,7 @@ impl FirstOrder {
         forcing: Option<&[String]>,
         seed: &[String],
     ) -> Result<Rc<ExtendedBands>, BandError> {
-        let key = self.key(sv, ctx, obs, a1, a2)?;
+        let key = Self::key(a1, a2);
         if let Some(e) = self.ext.get(&key) {
             return Ok(e.clone());
         }
@@ -753,7 +747,7 @@ impl FirstOrder {
         forcing: Option<&[String]>,
         seed: &[String],
     ) -> Result<Rc<Vec<JacEntry>>, BandError> {
-        let key = self.key(sv, ctx, obs, a1, a2)?;
+        let key = Self::key(a1, a2);
         if let Some(e) = self.bands.get(&key) {
             return Ok(e.clone());
         }
@@ -772,7 +766,7 @@ impl FirstOrder {
         e1: &[JacEntry],
         ctx: &Ctx,
     ) -> &'static str {
-        let key = self.known_key(a1, a2);
+        let key = Self::key(a1, a2);
         self.structure
             .entry(key)
             .or_insert_with(|| crate::emit::detect_structure(e1, ctx))

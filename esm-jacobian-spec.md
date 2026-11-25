@@ -703,9 +703,13 @@ equation order, and the single column within each equation.
   elementwise expression of arrays (declared without a shape, its shape
   inferred, esm-spec §4.3.4) is followed as that definition read at the
   cell: each array operand indexed at `i…`, scalars unchanged. The array
-  operands MUST all have the read's rank; a producer refuses one it cannot
-  read at a cell (mixed ranks, an array literal, a shape operator, or an
-  elementwise application of a definition) rather than guess.
+  operands MUST all have the read's rank, and an `index` inside the
+  definition MUST select a scalar (its arity is its operand's rank). A
+  producer refuses what it cannot read at a cell rather than guess: mixed
+  ranks, a partial `index`, an array literal, a shape operator, an
+  elementwise application of a definition, a name whose rank it does not
+  know (neither declared, an observed, nor `t`), or a name of the
+  definition that an index bound around the read would capture.
 - **Why data may be held fixed.** A consumer that integrates with `f_t`
   (a Rosenbrock method) evaluates it within one step, and its runtime keeps
   one forcing buffer set per data epoch, resident and unchanged for the
