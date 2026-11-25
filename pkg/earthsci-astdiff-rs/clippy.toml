@@ -1,0 +1,6 @@
+# `NodeRef` keys hash and compare by the node's address (hashcons.rs). The
+# interior mutability clippy finds inside the node is EarthSciAST's
+# `ConstValue` cache (from 0.15: `OnceLock`s of the arrays a literal reads
+# as, filled on first read), which neither the address nor the literal's
+# equality ever reads.
+ignore-interior-mutability = ["earthsci_astdiff::hashcons::NodeRef"]

@@ -3,6 +3,7 @@
 
 import earthsci_ast as ea
 import pytest
+from conftest import ref_golden
 from earthsci_astdiff import (
     jacobian_bands,
     jacobian_block,
@@ -60,6 +61,7 @@ AXIS_GOLDENS = (
 
 @pytest.mark.parametrize("name,wrt", AXIS_GOLDENS)
 def test_axis_block_golden(name, wrt, valid_dir, golden_dir):
+    want = ref_golden(golden_dir / f"{name}.{wrt}.block.json")
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     mname = next(iter(file.models))
     block = jacobian_block(file, mname, wrt=wrt)
@@ -68,7 +70,7 @@ def test_axis_block_golden(name, wrt, valid_dir, golden_dir):
     # structure class or factorization plan (spec §4)
     rect = wrt in ("parameters", "forcing")
     assert ("columns" in block) == rect and ("structure" in block) != rect
-    assert stable_json(block) == (golden_dir / f"{name}.{wrt}.block.json").read_text()
+    assert stable_json(block) == want
     w, back = parse_jacobian_block(block)
     assert w == wrt and len(back) == len(jacobian_bands(file, mname, wrt=wrt))
 

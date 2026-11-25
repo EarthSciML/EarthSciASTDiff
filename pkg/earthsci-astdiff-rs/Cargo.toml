@@ -13,10 +13,7 @@ description = "Analytical sparse Jacobians for EarthSciAST (.esm) models by symb
 # release. upstream-main.yml tests against EarthSciAST `main` by patching in
 # a sibling checkout, which works locally too:
 #   cargo test --config 'patch.crates-io.earthsci-ast.path="../../../EarthSciAST/pkg/earthsci-ast-rs"'
-# The floor admits 0.14 only while the reference-keeping Rust EarthSciAST
-# is unreleased (its branch is still versioned 0.14.0; see [patch] below).
-# Back to ">=0.15, <0.16" when 0.15 is published.
-earthsci-ast = ">=0.14, <0.16"
+earthsci-ast = ">=0.15, <0.16"
 indexmap = "2"
 # the shortest round-trip digits, as the Julia reference writes them
 # (`canonical_float`); already in the tree through serde_json
@@ -28,11 +25,3 @@ serde_json = "1"
 # written (`p[i][j] = p[i][j] || p[k][j]` reads two rows at once), which an
 # iterator rewrite would obscure.
 needless_range_loop = "allow"
-
-# Unreleased: the Rust EarthSciAST that keeps operator references at load and
-# flatten (EarthSciML/EarthSciAST#772, merged), with its merged registry's
-# bodies in canonical number form (branch rust-canonical-registry-numbers,
-# EarthSciAST main e0f04e334 plus that fix). Pin upstream main once the fix
-# merges; drop when it is released.
-[patch.crates-io]
-earthsci-ast = { git = "https://github.com/ctessum-claude/EarthSciSerialization.git", rev = "3a61fe45496c4d567a9e530d3f853087950c9aac" }

@@ -6,6 +6,7 @@ import struct
 
 import earthsci_ast as ea
 import pytest
+from conftest import ref_golden
 from earthsci_astdiff import jacobian_bands, serialize_band, stable_json
 
 GOLDEN_NAMES = (
@@ -64,13 +65,14 @@ NONAUTONOMOUS = ("forcing_bracket",)
 
 @pytest.mark.parametrize("name", TIME_NAMES)
 def test_time_band_golden(name, valid_dir, golden_dir):
+    want = ref_golden(golden_dir / f"{name}.time.bands.json")
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     entries = jacobian_bands(file, next(iter(file.models)), wrt="time")
     assert entries
     # one scalar column `t`, no contracted dimensions
     assert all(e.v == "t" and not e.band.cidx and not e.band.contracted for e in entries)
     text = stable_json([serialize_band(e) for e in entries])
-    assert text == (golden_dir / f"{name}.time.bands.json").read_text()
+    assert text == want
 
 
 @pytest.mark.parametrize(
@@ -154,6 +156,7 @@ def test_axis_band_golden(name, wrt, valid_dir, golden_dir):
 def test_structure_golden(name, valid_dir, golden_dir):
     from earthsci_astdiff import sysview
 
+    want = ref_golden(golden_dir / f"{name}.structure.bands.json")
     file = ea.load_path(str(valid_dir / f"{name}.esm"))
     if name == "coupled_chem_advection":
         sv = sysview(ea.flatten(file))
@@ -162,7 +165,7 @@ def test_structure_golden(name, valid_dir, golden_dir):
     entries = jacobian_bands(sv, coefficients=False)
     assert all(e.band.coef is None for e in entries)
     text = stable_json([serialize_band(e) for e in entries])
-    assert text == (golden_dir / f"{name}.structure.bands.json").read_text()
+    assert text == want
     # a structure-only entry reads back as it was written
     from earthsci_astdiff import parse_band
 

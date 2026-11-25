@@ -59,7 +59,7 @@ _canon_refuses(e::ASTExpr) = e isa OpExpr && (
     # canonical JSON ignores a reference's bindings (EarthSciAST
     # canonicalize.jl): two different references would key alike
     _is_ref(e) ||
-    any(f -> getfield(e, f) !== nothing, EarthSciAST._NON_EMISSIBLE_FIELDS) ||
+        any(f -> getfield(e, f) !== nothing, EarthSciAST._NON_EMISSIBLE_FIELDS) ||
         any(_canon_refuses, e.args)
 )
 

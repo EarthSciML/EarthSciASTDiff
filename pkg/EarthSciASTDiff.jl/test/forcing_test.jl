@@ -223,10 +223,7 @@ end
     @test col(layout.u0) ≈ -2 * 1.0 * layout.u0[iS]
     # S's row reads F[1,1]²: refill the buffer in place, as a provider does
     bufs["F"][1, 1] = 3.0
-    # EarthSciAST up to 0.14 announces a refill per buffer; `main` announces
-    # it to the problem that reads it, and a bare build reads its buffers live
-    applicable(EarthSciAST.notify_forcing_refresh!, bufs["F"]) &&
-        EarthSciAST.notify_forcing_refresh!(bufs["F"])
+    # a bare build reads its buffers live: no refresh to announce
     @test col(layout.u0) ≈ -2 * 3.0 * layout.u0[iS]
 end
 
