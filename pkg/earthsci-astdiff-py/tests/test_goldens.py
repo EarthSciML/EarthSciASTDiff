@@ -54,6 +54,7 @@ def test_band_roundtrip(name, valid_dir):
 # time (spec §4.2), forcing and parameters (spec §4, §4.3).
 AXIS_GOLDENS = (
     ("tgrad_photolysis", "time"),
+    ("tgrad_named_steps", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
     ("recurrence_sweep", "parameters"),

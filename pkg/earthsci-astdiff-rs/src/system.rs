@@ -566,6 +566,24 @@ pub fn inlinable_observed(
     equations: &[Equation],
     targets: &HashSet<String>,
 ) -> HashMap<String, Expr> {
+    let mut keep = moving_observed(obs, targets);
+    let scan: Vec<String> = keep.iter().cloned().collect();
+    subscript_observed(&mut keep, obs, equations, &scan);
+    keep.into_iter()
+        .map(|n| {
+            let e = obs[&n].clone();
+            (n, e)
+        })
+        .collect()
+}
+
+/// Clause (1) of [`inlinable_observed`]: the observed that can move with a
+/// target, the reflexive-transitive READER closure of those that name a
+/// `targets` member directly.
+pub(crate) fn moving_observed(
+    obs: &HashMap<String, Expr>,
+    targets: &HashSet<String>,
+) -> HashSet<String> {
     let mut readers: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut work: Vec<&str> = Vec::new();
     for (n, e) in obs {
@@ -581,37 +599,45 @@ pub fn inlinable_observed(
     }
     let mut keep: HashSet<&str> = work.iter().copied().collect();
     while let Some(m) = work.pop() {
-        // (1) reader closure
         for &n in readers.get(m).map(|v| v.as_slice()).unwrap_or(&[]) {
             if keep.insert(n) {
                 work.push(n);
             }
         }
     }
-    // (2) subscript fixpoint. The equations are scanned once; each pass then
-    // scans only the bodies it just added, since nothing else can change.
+    keep.into_iter().map(String::from).collect()
+}
+
+/// Clause (2) of [`inlinable_observed`], added to `keep`: the observed a
+/// column index reads, to a fixpoint over the equations plus the bodies of
+/// `scan` and of each observed this clause adds. The equations are scanned
+/// once; each pass then scans only the bodies it just added, since nothing
+/// else can change.
+pub(crate) fn subscript_observed(
+    keep: &mut HashSet<String>,
+    obs: &HashMap<String, Expr>,
+    equations: &[Equation],
+    scan: &[String],
+) {
     let mut acc = HashSet::new();
     for eq in equations {
         index_arg_names(&mut acc, &eq.rhs);
     }
-    let mut added: Vec<&str> = keep.iter().copied().collect();
+    let mut added: Vec<String> = scan.to_vec();
     loop {
         for n in &added {
-            index_arg_names(&mut acc, &obs[*n]);
+            index_arg_names(&mut acc, &obs[n]);
         }
         added = acc
             .iter()
-            .filter_map(|n| obs.get_key_value(n).map(|(k, _)| k.as_str()))
-            .filter(|n| !keep.contains(n))
+            .filter(|n| obs.contains_key(*n) && !keep.contains(*n))
+            .cloned()
             .collect();
         if added.is_empty() {
             break;
         }
-        keep.extend(added.iter().copied());
+        keep.extend(added.iter().cloned());
     }
-    keep.into_iter()
-        .map(|n| (n.to_string(), obs[n].clone()))
-        .collect()
 }
 
 // ── data-fed parameters (spec §4.3, §8.1) ──────────────────────────────────

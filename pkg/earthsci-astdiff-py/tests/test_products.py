@@ -48,6 +48,7 @@ PRODUCT_AXES = (
     ("semiring_reduce", "states"),
     ("pre_operator", "states"),
     ("tgrad_photolysis", "time"),
+    ("tgrad_named_steps", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
     ("recurrence_sweep", "states"),
