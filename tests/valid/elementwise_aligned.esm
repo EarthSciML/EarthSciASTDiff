@@ -1,0 +1,189 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "ElementwiseAligned",
+    "description": "An elementwise observed read at a cell whose array operands are aligned by index-set name (esm-spec \u00a74.3.4): w over [x, y] is c*q + k + r, with c over [x, y], q over [y] (the result's second axis, so aligning by leading position would read it at the wrong index), k over [x] (repeats along y) and r over [y, x] (the result's axes in the other order). The state c reads w at a cell, index(w, i, j), so the band calculus gathers each operand at the cell by name: index(q, j), index(k, i), index(r, j, i). Row c has bands on c (the diagonal), on q (column [j]) and on r (column [j, i])."
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "y": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 1.0
+        },
+        "q": {
+          "type": "unknown",
+          "shape": [
+            "y"
+          ],
+          "default": 2.0
+        },
+        "r": {
+          "type": "unknown",
+          "shape": [
+            "y",
+            "x"
+          ],
+          "default": 0.5
+        },
+        "k": {
+          "type": "parameter",
+          "shape": [
+            "x"
+          ],
+          "default": 0.3
+        },
+        "w": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "y"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "w",
+          "rhs": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  "c",
+                  "q"
+                ]
+              },
+              "k",
+              "r"
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "j": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "w",
+                    "i",
+                    "j"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "j": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -0.1,
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "j"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "r"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j",
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "j": {
+                "from": "y"
+              },
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "r",
+                    "j",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

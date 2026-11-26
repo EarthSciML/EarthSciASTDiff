@@ -52,6 +52,10 @@ pub struct Ctx {
     /// (the placeholder of an array reference whose body is a `faq` over a
     /// shifted range).
     pub origins: HashMap<String, Vec<i64>>,
+    /// The index-set names of each array variable declared over named index
+    /// sets, by which an elementwise observed read at a cell aligns its
+    /// operands (esm-spec §4.3.4).
+    pub axes: HashMap<String, Vec<String>>,
 }
 
 /// An expression has a form the band calculus cannot differentiate (for

@@ -46,6 +46,10 @@ class Ctx:
     index_sets: dict[str, int]
     shapes: dict[str, list[int]]
     params: set[str]
+    # the index-set names of each array variable declared over named index
+    # sets, by which an elementwise observed read at a cell aligns its
+    # operands (esm-spec §4.3.4)
+    axes: dict[str, list[str]] = field(default_factory=dict)
 
 
 class BandError(Exception):

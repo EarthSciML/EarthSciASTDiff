@@ -10,7 +10,7 @@ use earthsci_ast::{EsmFile, Expr, VariableType};
 use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::hashcons::Interner;
-use crate::inline::inline_observed_ranked;
+use crate::inline::inline_observed_aligned;
 use crate::recurrence::{
     active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
 };
@@ -652,7 +652,15 @@ fn row_bands(
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
     // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
     let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
-        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs, scalars)
+        inline_observed_aligned(
+            rhs,
+            obs,
+            obs_names,
+            &ctx.shapes,
+            rank_obs,
+            scalars,
+            &ctx.axes,
+        )
     })
     .map_err(|e| BandError(e.0))?;
     // Structural occurrence gate, driven from the equation: intersect the

@@ -339,6 +339,11 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
                     })
                     .collect();
                 ctx.shapes.insert(n.clone(), dims?);
+                // the index-set names, when every dimension names one
+                // (§4.3.4 aligns an elementwise operand by them)
+                if shape.iter().all(|x| x.parse::<i64>().is_err()) {
+                    ctx.axes.insert(n.clone(), shape.clone());
+                }
             }
         }
         if var.var_type == VariableType::Parameter {
