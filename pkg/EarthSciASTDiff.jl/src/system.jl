@@ -433,6 +433,15 @@ function inlinable_observed(
         obs::Dict{String, ASTExpr}, equations,
         targets::AbstractSet{String}
     )::Dict{String, ASTExpr}
+    keep = _moving_observed(obs, targets)
+    _subscript_observed!(keep, obs, equations, keep)
+    return Dict{String, ASTExpr}(n => obs[n] for n in keep)
+end
+
+# Clause (1) of `inlinable_observed`: the observed that can move with a target,
+# the reflexive-transitive closure over the observed→observed reference graph
+# seeded from those that name a `targets` member directly.
+function _moving_observed(obs::Dict{String, ASTExpr}, targets::AbstractSet{String})::Set{String}
     fvs = Dict{String, Set{String}}(n => free_variables(e) for (n, e) in obs)
     readers = Dict{String, Vector{String}}()      # name → observed that read it
     work = String[]
@@ -443,21 +452,27 @@ function inlinable_observed(
         end
     end
     keep = Set{String}(work)
-    while !isempty(work)                          # (1): closure over the READERS
+    while !isempty(work)                          # closure over the READERS
         for n in get(readers, pop!(work), ())     # of a target-dependent name
             n in keep || (push!(keep, n); push!(work, n))
         end
     end
-    # (2): fixpoint over the BODIES kept so far — the other direction; a
-    # subscripted name does NOT pull in its readers, only what its own body
-    # needs. The equations are scanned once and each pass scans only the
-    # bodies it just added: nothing else can change between passes, and
-    # re-walking every equation per pass is O(chain length × document).
+    return keep
+end
+
+# Clause (2) of `inlinable_observed`, added to `keep`: the observed a column
+# index reads, to a fixpoint over the equations plus the bodies of `scan`
+# (the observed already kept) and of each observed this clause adds — the
+# other direction; a subscripted name does NOT pull in its readers, only what
+# its own body needs. The equations are scanned once and each pass scans only
+# the bodies it just added: nothing else can change between passes, and
+# re-walking every equation per pass is O(chain length × document).
+function _subscript_observed!(keep::Set{String}, obs::Dict{String, ASTExpr}, equations, scan)
     acc = Set{String}()
     for eq in equations
         _index_arg_names!(acc, eq.rhs)
     end
-    added = collect(keep)
+    added = collect(scan)
     while true
         for n in added
             _index_arg_names!(acc, obs[n])
@@ -466,7 +481,7 @@ function inlinable_observed(
         isempty(added) && break
         union!(keep, added)
     end
-    return Dict{String, ASTExpr}(n => obs[n] for n in keep)
+    return keep
 end
 
 # ── data-fed parameters (esm-jacobian-spec.md §4.3, §8.1) ───────────────────

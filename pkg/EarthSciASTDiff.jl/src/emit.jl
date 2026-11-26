@@ -230,6 +230,8 @@ function _jacobian_block(
     )
     aux = _auxiliary(_rec_info!(memo, sv), entries)
     isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
+    comps = _time_companions(sv, entries)
+    isempty(comps) || (block["companions"] = _companions_field(comps))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
             _column_block_plan(cl)
@@ -687,10 +689,13 @@ function _evaluation_document(
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
     aux = _auxiliary(_rec_info(sv, _observed_defs(sv), ctx), entries)
+    comps = _time_companions(sv, entries)
     roots = ASTExpr[en.band.coef for en in entries]
     append!(roots, last.(aux))
+    append!(roots, last.(comps))
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_auxiliary!(m, aux)
+    _add_companions!(m, sv, comps)
     cse && Base.depwarn(
         "`evaluation_document(...; cse = true)` is deprecated and has no effect: the evaluation " *
             "document is no longer deduplicated after the fact (coefficients keep " *

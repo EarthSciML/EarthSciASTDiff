@@ -93,7 +93,10 @@ function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse
         append!(roots, en.band.cidx)
         en.band.guard === nothing || push!(roots, en.band.guard)
     end
+    comps = _time_companions(sv, entries)
+    append!(roots, last.(comps))
     _zero_source_derivatives!(m, sv, ctx, roots)
+    _add_companions!(m, sv, comps)
     return doc, m, ctx, _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
 end
 
@@ -548,7 +551,7 @@ end
 # sweeps need no transfer recurrence); without one its `rows` are
 # `jacobian_bands`'s list.
 _first_pass(sv::SysView, wrt::Symbol, forcing) =
-    _extended_pass(sv, _ctx(sv), _observed_defs(sv), wrt, forcing, String[])
+    _extended_pass(sv, _ctx(sv), _observed_defs(sv), wrt, forcing, String[]; companions = true)
 
 # The two extended systems of a pair with an active recurrence: the first
 # axis's (seeded with the second axis's targets, as `jacobian_bands2`

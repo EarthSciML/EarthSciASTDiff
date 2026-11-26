@@ -1,0 +1,552 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "TGradNamedSteps",
+    "description": "Time companions (esm-jacobian-spec.md \u00a74.2): the time bands keep the chain through the observed that move with t as named steps. A scalar time-interpolation weight w = (t - t0)/dt - floor((t - t0)/dt); an array observed Tb[i,k] = (1 - w) T[1,i,k] + w T[2,i,k] blending two temperature records elementwise; a second-level rate kr[i,k] = A (P[i,k]/p0) exp(-Ea/Tb[i,k]) reading Tb; a state c[i,k] reading kr at its own cell, and a state s[i] reading kr through a contraction over the vertical index k (a boundary-layer mean, sum_k kr[i,k] dz[k] / H). The data-fed parameters P (in kr) and Em (in an emission blend Eb[i] = (1 - wd) Em[1,i] + wd Em[2,i] whose weight wd is a parameter) are held fixed: Eb does not move with t and gets no companion. The time bands read the companions _dt_kr (c, at its cell; s, under a contraction sum), whose definitions read _dt_Tb, whose definition reads _dt_w."
+  },
+  "data_sources": {
+    "MET": {
+      "kind": "grid",
+      "source": {
+        "url_template": "file:///met/{date:%Y%m%d}.nc"
+      }
+    }
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "z": {
+      "kind": "interval",
+      "size": 3
+    },
+    "rec": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Column": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "z"
+          ],
+          "default": 1.0
+        },
+        "s": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.5
+        },
+        "w": {
+          "type": "unknown"
+        },
+        "Tb": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "z"
+          ]
+        },
+        "kr": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "z"
+          ]
+        },
+        "Eb": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ]
+        },
+        "T": {
+          "type": "parameter",
+          "shape": [
+            "rec",
+            "x",
+            "z"
+          ],
+          "default": [
+            [
+              [
+                290.0,
+                285.0,
+                280.0
+              ],
+              [
+                292.0,
+                287.0,
+                281.0
+              ],
+              [
+                288.0,
+                284.0,
+                279.0
+              ]
+            ],
+            [
+              [
+                296.0,
+                288.0,
+                279.0
+              ],
+              [
+                295.0,
+                289.0,
+                283.0
+              ],
+              [
+                291.0,
+                283.0,
+                276.0
+              ]
+            ]
+          ]
+        },
+        "P": {
+          "type": "parameter",
+          "shape": [
+            "x",
+            "z"
+          ],
+          "default": 90000.0,
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "PRES"
+            }
+          }
+        },
+        "Em": {
+          "type": "parameter",
+          "shape": [
+            "rec",
+            "x"
+          ],
+          "default": 0.2,
+          "update": {
+            "kind": "data",
+            "source": "MET",
+            "from": {
+              "file_variable": "EMIS"
+            }
+          }
+        },
+        "dz": {
+          "type": "parameter",
+          "shape": [
+            "z"
+          ],
+          "default": [
+            50.0,
+            150.0,
+            300.0
+          ]
+        },
+        "H": {
+          "type": "parameter",
+          "default": 500.0
+        },
+        "A": {
+          "type": "parameter",
+          "default": 2.0
+        },
+        "Ea": {
+          "type": "parameter",
+          "default": 600.0
+        },
+        "p0": {
+          "type": "parameter",
+          "default": 100000.0
+        },
+        "wd": {
+          "type": "parameter",
+          "default": 0.25
+        },
+        "t0": {
+          "type": "parameter",
+          "default": 0.0
+        },
+        "dt": {
+          "type": "parameter",
+          "default": 3.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": "w",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  {
+                    "op": "-",
+                    "args": [
+                      "t",
+                      "t0"
+                    ]
+                  },
+                  "dt"
+                ]
+              },
+              {
+                "op": "floor",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      {
+                        "op": "-",
+                        "args": [
+                          "t",
+                          "t0"
+                        ]
+                      },
+                      "dt"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "Tb",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i",
+              "k"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "k": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1,
+                        "w"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "T",
+                        1,
+                        "i",
+                        "k"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "w",
+                    {
+                      "op": "index",
+                      "args": [
+                        "T",
+                        2,
+                        "i",
+                        "k"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "kr",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i",
+              "k"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "k": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "A",
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "P",
+                        "i",
+                        "k"
+                      ]
+                    },
+                    "p0"
+                  ]
+                },
+                {
+                  "op": "exp",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        {
+                          "op": "/",
+                          "args": [
+                            "Ea",
+                            {
+                              "op": "index",
+                              "args": [
+                                "Tb",
+                                "i",
+                                "k"
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "Eb",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        1,
+                        "wd"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "Em",
+                        1,
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "wd",
+                    {
+                      "op": "index",
+                      "args": [
+                        "Em",
+                        2,
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i",
+              "k"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "k": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "index",
+                      "args": [
+                        "kr",
+                        "i",
+                        "k"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i",
+                        "k"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.1,
+                    {
+                      "op": "index",
+                      "args": [
+                        "Eb",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "s"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -1,
+                    {
+                      "op": "index",
+                      "args": [
+                        "s",
+                        "i"
+                      ]
+                    },
+                    {
+                      "op": "/",
+                      "args": [
+                        {
+                          "op": "faq",
+                          "args": [],
+                          "output_idx": [],
+                          "ranges": {
+                            "k": {
+                              "from": "z"
+                            }
+                          },
+                          "reduce": "+",
+                          "expr": {
+                            "op": "*",
+                            "args": [
+                              {
+                                "op": "index",
+                                "args": [
+                                  "kr",
+                                  "i",
+                                  "k"
+                                ]
+                              },
+                              {
+                                "op": "index",
+                                "args": [
+                                  "dz",
+                                  "k"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        "H"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "Eb",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

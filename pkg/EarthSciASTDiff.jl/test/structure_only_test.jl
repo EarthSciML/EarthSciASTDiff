@@ -51,7 +51,7 @@ end
 
 @testset "structure-only entries: other axes" begin
     for (name, wrt) in (
-            ("tgrad_photolysis", :time), ("forcing_bracket", :forcing),
+            ("tgrad_photolysis", :time), ("tgrad_named_steps", :time), ("forcing_bracket", :forcing),
             ("forcing_bracket", :parameters),
         )
         sv = _so_view(name)

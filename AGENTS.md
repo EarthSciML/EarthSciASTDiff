@@ -68,6 +68,10 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `clip.jl`         — static region clipping (affine breakpoint splits, exact
   guard decision, equal-coefficient band re-merge)
 - `inline.jl`       — observed inlining + index-of-makearray lowering
+- `companions.jl`   — time companions (spec §4.2): the time pass keeps each
+  observed that moves with `t` as a column and composes its bands with that
+  observed's companion `_dt_<o>`, whose definition is built once from the
+  observed's own (Rust `companions.rs`, Python `companions.py`)
 - `eval_cse.jl`     — evaluation-model CSE (`hoist_observed`): repeated
   coefficient subtrees become observed-array buffers of the derived eval
   model (compile-time / per-call duplicate-work control)

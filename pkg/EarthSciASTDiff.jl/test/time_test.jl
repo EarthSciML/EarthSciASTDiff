@@ -5,7 +5,7 @@
 
 using EarthSciASTDiff: _evaluation_document
 
-const TIME_FIXTURES = ("tgrad_photolysis",)
+const TIME_FIXTURES = ("tgrad_photolysis", "tgrad_named_steps")
 
 @testset "time bands: goldens" begin
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
@@ -46,6 +46,68 @@ end
     entries = jacobian_bands(sysview(file, "Box"); wrt = :time)
     @test length(entries) == 1 && entries[1].u == "c" && entries[1].v == "t"
     @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) == read(golden, String)
+end
+
+@testset "time bands: companions keep the chain as named steps" begin
+    # tgrad_named_steps (spec §4.2): w(t) → Tb (elementwise blend) → kr (a
+    # rate of Tb) → c (at its cell) and s (under a sum over k). Each moving
+    # observed gets one companion `_dt_<o>`, the bands read `_dt_kr`, and each
+    # definition reads only the next companion down the chain. Eb (data and a
+    # parameter weight only) does not move with t: no companion.
+    file = fixture("tgrad_named_steps.esm")
+    sv = sysview(file, "Column")
+    entries = jacobian_bands(sv; wrt = :time)
+    @test [(en.u, en.v) for en in entries] == [("c", "t"), ("s", "t")]
+    reads(e) = sort!([n for n in EarthSciASTDiff.free_variables(e) if startswith(n, "_dt_")])
+    @test reads(entries[1].band.coef) == ["_dt_kr"]
+    @test entries[2].band.coef isa OpExpr && entries[2].band.coef.op == "faq"
+    @test isempty(entries[2].band.coef.output_idx)
+    comps = EarthSciASTDiff._time_companions(sv, entries)
+    @test [(n, o) for (n, o, _) in comps] == [("_dt_Tb", "Tb"), ("_dt_kr", "kr"), ("_dt_w", "w")]
+    defs = Dict(n => d for (n, _, d) in comps)
+    @test reads(defs["_dt_kr"]) == ["_dt_Tb"]
+    @test reads(defs["_dt_Tb"]) == ["_dt_w"]
+    @test isempty(reads(defs["_dt_w"]))
+    block = jacobian_document(file, "Column"; wrt = :time)["jacobians"]["Column"]
+    @test [c["name"] for c in block["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    @test [c["of"] for c in block["companions"]] == ["Tb", "kr", "w"]
+    # the evaluation document declares each like its observed
+    doc, _ = _evaluation_document(sv, entries)
+    vars = doc["models"]["JacobianEval"]["variables"]
+    @test vars["_dt_Tb"]["shape"] == Any["x", "z"] && !haskey(vars["_dt_w"], "shape")
+    @test !haskey(vars, "_dt_Eb")
+    # a time pair differentiates its coefficients again: it inlines, as before
+    e2 = jacobian_bands2(sv; wrt = :time => :states)
+    @test !isempty(e2) && all(en -> isempty(reads(en.band.coef)), e2)
+    # structure-only entries: the same points
+    so = jacobian_bands(sv; wrt = :time, coefficients = false)
+    @test [(en.u, en.band.rows) for en in so] == [(en.u, en.band.rows) for en in entries]
+end
+
+@testset "time bands: a companion name is clear of the source's names" begin
+    d = EarthSciASTDiff.JSON3.read(read(joinpath(FIXTURES, "tgrad_named_steps.esm"), String), Dict{String, Any})
+    d["models"]["Column"]["variables"]["_dt_w"] = Dict{String, Any}("type" => "parameter", "default" => 1.0)
+    file = EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(d))
+    sv = sysview(file, "Column")
+    comps = EarthSciASTDiff._time_companions(sv, jacobian_bands(sv; wrt = :time))
+    @test [n for (n, _, _) in comps] == ["_dt_Tb", "_dt_kr", "_dt_w_"]
+    @test EarthSciASTDiff._companion_names(sv, ["P.v", "w"]) == Dict("P.v" => "P._dt_v", "w" => "_dt_w_")
+end
+
+@testset "time bands: companions against a central difference in t" begin
+    # The composed f_t equals the derivative of the source right-hand side,
+    # through the chain w → Tb → kr and the contraction over k, with the
+    # data-fed P held at its value. Away from the floor kinks of w (dt = 3).
+    file = fixture("tgrad_named_steps.esm")
+    f!, u0, p, _, vm = tw_build(file)
+    for (s, τ) in enumerate((0.3, 1.7, 4.4))
+        u = [0.2 + 0.6 * abs(sin(2.3 * i + s)) for i in eachindex(u0)]
+        dT = Vector(doc_jacobian(file; wrt = :time, u = u, t = τ).J[:, 1])
+        h = 1.0e-5; up = similar(u); um = similar(u)
+        f!(up, u, p, τ + h); f!(um, u, p, τ - h)
+        @test dT ≈ (up .- um) ./ 2h rtol = 1.0e-6
+        @test all(!iszero, dT)
+    end
 end
 
 # tgrad_data_fixed with `edit!(model_dict)` applied.
@@ -100,12 +162,18 @@ end
         _jrdef!(m, Dict("op" => "+", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1])]))
     end
     @test_throws EarthSciASTDiff.InlineError jacobian_bands(sysview(partial, "Box"); wrt = :time)
-    # a global the read site's index `j` would capture
+    # a global named like the read site's index `j`: the read is a column
+    # (spec §4.2, companions), not inlined, and the companion row of `jr`
+    # names its own indices clear of `j`, so nothing is captured
     capture = _data_fixed_variant() do m
         m["variables"]["j"] = Dict{String, Any}("type" => "parameter", "default" => 2.0)
         _jrdef!(m, Dict("op" => "*", "args" => Any[_JR_T, "j"]))
     end
-    @test_throws EarthSciASTDiff.InlineError jacobian_bands(sysview(capture, "Box"); wrt = :time)
+    svc = sysview(capture, "Box")
+    ec = jacobian_bands(svc; wrt = :time)
+    @test length(ec) == 1
+    (_, _, dc), = EarthSciASTDiff._time_companions(svc, ec)
+    @test dc.output_idx == Any["_r1", "_r2"] && "j" in EarthSciASTDiff.free_variables(dc)
     # the full index of an array inside the definition is a scalar
     full = _data_fixed_variant() do m
         _jrdef!(m, Dict("op" => "*", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1, 2])]))

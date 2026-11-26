@@ -8,6 +8,9 @@
 using Pkg
 using EarthSciAST, EarthSciASTDiff, OrderedCollections, SparseArrays
 root = normpath(joinpath(@__DIR__, ".."))
+# EarthSciAST's tree-walk right-hand side, as the test suite builds it
+# (runtests.jl): EarthSciAST `main` removed the `build_evaluator` alias.
+tw_build(input; kw...) = EarthSciASTDiff._tree_walk_build(input; kw...)
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "docvals.jl"))
 # `<name>.<axis>.jvals.json` for the other axes: wrt = :time (the single
 # column `t`) at the same pinned point, and the forcing / parameter axes of
@@ -29,7 +32,7 @@ const INTERPRETED = ("contracted_ops", "contracting_observed", "filtered_scan", 
 for (name, wrt, t, tag) in Iterators.flatten(
         (
             ((n, :states, 0.7, "") for n in STATE_NAMES),
-            (("tgrad_photolysis", :time, 0.7, ".time"),),
+            (("tgrad_photolysis", :time, 0.7, ".time"), ("tgrad_named_steps", :time, 0.7, ".time")),
             (("recurrence_sweep", :parameters, 0.7, ".parameters"),),
             (
                 ("forcing_bracket", w, t, ".$w$sfx") for w in (:forcing, :parameters)
@@ -40,7 +43,7 @@ for (name, wrt, t, tag) in Iterators.flatten(
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     mname = first(keys(file.models))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()
-    f!, u0, p0, _, vm = build_evaluator(file; bkw...)
+    f!, u0, p0, _, vm = tw_build(file; bkw...)
     n = length(u0)
     u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in 1:n]
     res = doc_jacobian(file; wrt = wrt, u = u, t = t, build_kwargs = bkw)

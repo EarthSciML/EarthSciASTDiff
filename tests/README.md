@@ -97,6 +97,16 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     only, with operands of different rank, which the time axis must not
     follow. Its only golden, `tgrad_data_fixed.time.bands.json`, is checked
     byte for byte by every binding
+  - `tgrad_named_steps.esm` — time companions (spec §4.2): a scalar
+    time-interpolation weight `w`, an array blend `Tb` of two temperature
+    records by `w`, a rate `kr` of `Tb`, a state `c` reading `kr` at its
+    cell and a state `s` reading it through a sum over the vertical index,
+    and data-fed parameters held fixed. Its time bands read `_dt_kr`, whose
+    definition reads `_dt_Tb`, whose definition reads `_dt_w`; its
+    `.time.{bands,block,evaldoc,jvp.evaldoc,vjp.evaldoc,jvals}.json` goldens
+    are checked byte for byte (values to 1e-10) by every binding, and each
+    checks `f_t` against a central difference in `t` of the source
+    right-hand side
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
@@ -158,7 +168,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   change; the diff is the review surface.
 - `goldens/` — `<fixture>.time.{bands,block,evaldoc,evaldoc-nocse,jvals}.json`:
   the same goldens for `wrt: "time"` (spec §4.2), present only for a fixture
-  whose right-hand side reads `t` (currently `tgrad_photolysis`). A fixture
+  whose right-hand side reads `t` (`tgrad_photolysis`, `tgrad_named_steps`). A fixture
   without them is autonomous: its time band list MUST be empty.
 - `goldens/canonical_floats.json`: `[bits, text]` pairs — a double's IEEE
   bit pattern in hex and the text every binding's `stable_json` writes for it,
