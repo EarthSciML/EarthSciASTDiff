@@ -172,14 +172,18 @@ function _ctx(sv::SysView)
         s.size === nothing || (isets[String(n)] = s.size)
     end
     shapes = Dict{String, Vector{Int}}(); params = Set{String}()
+    axes = Dict{String, Vector{String}}()
     for (n, var) in sv.variables
         if var.shape !== nothing && !isempty(var.shape)
             shapes[String(n)] =
                 [x isa Integer ? Int(x) : isets[String(x)] for x in var.shape]
+            # the index-set names, when every dimension names one (§4.3.4
+            # aligns an elementwise operand by them)
+            all(x -> !(x isa Integer), var.shape) && (axes[String(n)] = String[String(x) for x in var.shape])
         end
         var.type == EarthSciAST.ParameterVariable && push!(params, String(n))
     end
-    return Ctx(isets, shapes, params, sv.refs)
+    return Ctx(isets, shapes, params, sv.refs, Dict{String, Vector{Int}}(), axes)
 end
 
 """

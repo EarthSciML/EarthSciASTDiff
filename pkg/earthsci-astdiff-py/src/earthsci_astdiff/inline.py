@@ -25,6 +25,7 @@ def inline_observed(
     shapes: dict[str, list[int]] | None = None,
     rank_obs: dict[str, Expr] | None = None,
     scalars: set[str] | frozenset[str] = frozenset(),
+    axes: dict[str, list[str]] | None = None,
 ) -> Expr:
     """Inline observed reads, lower ``Pre(a)`` to ``a`` (spec §3.2),
     β-reduce `index`-of-`faq`, lower
@@ -41,7 +42,11 @@ def inline_observed(
     a cell indexes each array operand, inlined or not. ``scalars`` names the
     variables declared without a shape that are not observed (scalar states
     and parameters); ``t`` is always scalar. Any other name in such a
-    definition has no known rank and is refused."""
+    definition has no known rank and is refused. ``axes`` (variable → its
+    declared index-set names) aligns the operands of an elementwise observed
+    read at a cell by name (esm-spec §4.3.4): an operand over a subset of the
+    observed's index sets is read at those of the cell's indices and repeats
+    along the others."""
     if not obs and not _needs_inline(e):
         return e
     fresh = _Fresh(e, obs, [None] if obs_names is None else obs_names, shapes or {})
@@ -49,6 +54,7 @@ def inline_observed(
     # opaque read still has a rank (``_cell_rank``)
     fresh.rank_obs = obs if rank_obs is None else rank_obs
     fresh.scalars = scalars
+    fresh.axes = axes or {}
     for _ in range(MAX_INLINE_PASSES):
         e2 = _inline_once(e, obs, fresh, frozenset())
         if skey(e2) == skey(e):
@@ -502,15 +508,42 @@ def _def_rank(d: Expr, fresh: _Fresh, seen: set, name) -> int:
             f"observed {what} reads `{d.op}` in an elementwise definition read at a cell; "
             "not supported"
         )
+    # Operands of different ranks are aligned by index-set name where the
+    # definition is read (``_gather_cell``); a node's rank is then its widest
+    # operand's. A named observed reaches here only when it is declared
+    # without a shape, and its shape is the union of its operands' index sets
+    # (esm-spec §4.3.4), which ranks alone cannot give: refused.
     r = 0
     for a in d.args:
         ra = _cell_rank(a, fresh, seen)
         if ra == 0:
             continue
-        if r not in (0, ra):
-            raise InlineError(f"observed {what} combines arrays of rank {r} and {ra}")
-        r = ra
+        if r not in (0, ra) and name is not None:
+            raise InlineError(
+                f"observed {what}, declared without a shape, combines arrays of rank {r} "
+                f"and {ra}; declare its shape so its operands can be aligned by index set"
+            )
+        r = max(r, ra)
     return r
+
+
+def _aligned_idx(oax: list, tax: list, idx: list, name: str, operand: str) -> list:
+    """The cell indices at which an operand over the index sets ``oax`` is
+    read inside a read of observed ``name`` over ``tax`` at ``idx`` (esm-spec
+    §4.3.4): the k-th dimension of the operand on index set X takes the index
+    of the k-th dimension of the observed on X. An index set the observed does
+    not have (or has fewer times) is refused."""
+    out = []
+    for d, x in enumerate(oax):
+        k = oax[: d + 1].count(x)
+        hits = [i for i, y in enumerate(tax) if y == x]
+        if k > len(hits):
+            raise InlineError(
+                f"observed `{name}` over ({', '.join(tax)}) reads `{operand}` over "
+                f"({', '.join(oax)}), whose index set `{x}` it is not shaped over"
+            )
+        out.append(idx[hits[k - 1]])
+    return out
 
 
 def _gather_cell(de: Expr, idx: list, fresh: _Fresh, scope, name: str) -> Expr:
@@ -528,18 +561,32 @@ def _gather_cell(de: Expr, idx: list, fresh: _Fresh, scope, name: str) -> Expr:
             "a cell would capture"
         )
 
+    tax = getattr(fresh, "axes", {}).get(name)
+
     def g(e: Expr) -> Expr:
         if not isinstance(e, (str, ExprNode)):
             return e
         r = _cell_rank(e, fresh, set())
         if r == 0:
             return e
+        if not (isinstance(e, str) or e.op in ("faq", "makearray")):
+            return map_children(e, g)
+        oax = getattr(fresh, "axes", {}).get(e) if isinstance(e, str) else None
+        if tax is not None and oax is not None:
+            return op("index", e, *_aligned_idx(oax, tax, idx, name, e))
         if r != len(idx):
+            if r >= len(idx):
+                why = ""
+            elif tax is None:
+                why = (
+                    "; the observed is declared without a shape, so the operand cannot be "
+                    "aligned by index set"
+                )
+            else:
+                why = " whose index sets are not known, so it cannot be aligned by index set"
             raise InlineError(
-                f"observed `{name}`, read with {len(idx)} indices, has an operand of rank {r}"
+                f"observed `{name}`, read with {len(idx)} indices, has an operand of rank {r}{why}"
             )
-        if isinstance(e, str) or e.op in ("faq", "makearray"):
-            return op("index", e, *idx)
-        return map_children(e, g)
+        return op("index", e, *idx)
 
     return g(de)

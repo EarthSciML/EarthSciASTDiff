@@ -58,7 +58,9 @@ Differentiation context: index-set sizes, array-variable shapes, parameter
 names, the system's operator-reference layer (`refs`, `nothing` without
 definitions) and the first index value of each array whose cells do not
 start at 1 (`origins`: the placeholder of an array reference whose body is a
-`faq` over a shifted range; operator_refs.jl).
+`faq` over a shifted range; operator_refs.jl), and the index-set names of each
+array variable declared over named index sets (`axes`), by which an
+elementwise observed read at a cell aligns its operands (esm-spec §4.3.4).
 """
 struct Ctx
     index_sets::Dict{String, Int}
@@ -66,10 +68,13 @@ struct Ctx
     params::Set{String}
     refs::Any
     origins::Dict{String, Vector{Int}}
+    axes::Dict{String, Vector{String}}
 end
 Ctx(index_sets, shapes, params) = Ctx(index_sets, shapes, params, nothing)
 Ctx(index_sets, shapes, params, refs) =
     Ctx(index_sets, shapes, params, refs, Dict{String, Vector{Int}}())
+Ctx(index_sets, shapes, params, refs, origins) =
+    Ctx(index_sets, shapes, params, refs, origins, Dict{String, Vector{String}}())
 is_array(ctx::Ctx, name) = haskey(ctx.shapes, name)
 
 """

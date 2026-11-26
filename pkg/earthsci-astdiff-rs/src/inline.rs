@@ -59,6 +59,31 @@ pub fn inline_observed_ranked(
     rank_obs: &HashMap<String, Expr>,
     scalars: &HashSet<String>,
 ) -> R {
+    inline_observed_aligned(
+        e,
+        obs,
+        obs_names,
+        shapes,
+        rank_obs,
+        scalars,
+        &HashMap::new(),
+    )
+}
+
+/// [`inline_observed_ranked`] with `axes` (variable → its declared
+/// index-set names), which aligns the operands of an elementwise observed
+/// read at a cell by name (esm-spec §4.3.4): an operand over a subset of the
+/// observed's index sets is read at those of the cell's indices and repeats
+/// along the others.
+pub fn inline_observed_aligned(
+    e: &Expr,
+    obs: &HashMap<String, Expr>,
+    obs_names: &mut Option<HashSet<String>>,
+    shapes: &HashMap<String, Vec<i64>>,
+    rank_obs: &HashMap<String, Expr>,
+    scalars: &HashSet<String>,
+    axes: &HashMap<String, Vec<String>>,
+) -> R {
     if obs.is_empty() && !needs_inline(e, &HashSet::new()) {
         return Ok(e.clone());
     }
@@ -73,6 +98,7 @@ pub fn inline_observed_ranked(
         op_ranks: HashMap::new(),
         rank_obs,
         scalars,
+        axes,
     };
     let scope = HashSet::new();
     // The fixpoint test compares the post-inlining right-hand side, the
@@ -113,6 +139,8 @@ struct Fresh<'a> {
     rank_obs: &'a HashMap<String, Expr>,
     /// declared scalars that are not observed
     scalars: &'a HashSet<String>,
+    /// variable → its declared index-set names (esm-spec §4.3.4)
+    axes: &'a HashMap<String, Vec<String>>,
 }
 
 impl Fresh<'_> {
@@ -812,20 +840,60 @@ fn def_rank<'a>(
         }
         return Ok(0);
     }
+    // Operands of different ranks are aligned by index-set name where the
+    // definition is read (`gather`); a node's rank is then its widest
+    // operand's. A named observed reaches here only when it is declared
+    // without a shape, and its shape is the union of its operands' index
+    // sets (esm-spec §4.3.4), which ranks alone cannot give: refused.
     let mut r = 0;
     for a in &n.args {
         let ra = cell_rank(a, fresh, seen)?;
         if ra == 0 {
             continue;
         }
-        if r != 0 && r != ra {
+        if r != 0 && r != ra && name.is_some() {
             return Err(InlineError(format!(
-                "observed {what} combines arrays of rank {r} and {ra}"
+                "observed {what}, declared without a shape, combines arrays of rank {r} and {ra}; \
+                 declare its shape so its operands can be aligned by index set"
             )));
         }
-        r = ra;
+        r = r.max(ra);
     }
     Ok(r)
+}
+
+/// The cell indices at which an operand over the index sets `oax` is read
+/// inside a read of observed `name` over `tax` at `idx` (esm-spec §4.3.4):
+/// the k-th dimension of the operand on index set X takes the index of the
+/// k-th dimension of the observed on X. An index set the observed does not
+/// have (or has fewer times) is refused.
+fn aligned_idx(
+    oax: &[String],
+    tax: &[String],
+    idx: &[Expr],
+    name: &str,
+    operand: &str,
+) -> Result<Vec<Expr>, InlineError> {
+    let mut out = Vec::with_capacity(oax.len());
+    for (d, x) in oax.iter().enumerate() {
+        let k = oax[..=d].iter().filter(|y| *y == x).count();
+        let hits: Vec<usize> = tax
+            .iter()
+            .enumerate()
+            .filter(|(_, y)| *y == x)
+            .map(|(i, _)| i)
+            .collect();
+        if k > hits.len() {
+            return Err(InlineError(format!(
+                "observed `{name}` over ({}) reads `{operand}` over ({}), whose index set \
+                 `{x}` it is not shaped over",
+                tax.join(", "),
+                oax.join(", ")
+            )));
+        }
+        out.push(idx[hits[k - 1]].clone());
+    }
+    Ok(out)
 }
 
 /// `def` (an observed definition of `fresh.obs`) read at the cell `idx`,
@@ -863,22 +931,44 @@ fn gather<'a>(e: &'a Expr, idx: &[Expr], fresh: &mut Fresh<'a>, name: &str) -> R
     if r == 0 {
         return Ok(e.clone());
     }
-    if r != idx.len() {
-        return Err(InlineError(format!(
-            "observed `{name}`, read with {} indices, has an operand of rank {r}",
-            idx.len()
-        )));
+    let leaf = match e {
+        Expr::Variable(_) => true,
+        Expr::Operator(n) => {
+            crate::operator_refs::is_ref(e) || n.op == "faq" || n.op == "makearray"
+        }
+        _ => false,
+    };
+    if leaf {
+        let tax = fresh.axes.get(name);
+        let oax = match e {
+            Expr::Variable(v) => fresh.axes.get(v).map(|a| (v, a)),
+            _ => None,
+        };
+        let mut a = vec![e.clone()];
+        if let (Some(tax), Some((v, oax))) = (tax, oax) {
+            a.extend(aligned_idx(oax, tax, idx, name, v)?);
+            return Ok(op("index", a));
+        }
+        if r != idx.len() {
+            let why = if r >= idx.len() {
+                ""
+            } else if tax.is_none() {
+                "; the observed is declared without a shape, so the operand cannot be aligned by \
+                 index set"
+            } else {
+                " whose index sets are not known, so it cannot be aligned by index set"
+            };
+            return Err(InlineError(format!(
+                "observed `{name}`, read with {} indices, has an operand of rank {r}{why}",
+                idx.len()
+            )));
+        }
+        a.extend(idx.iter().cloned());
+        return Ok(op("index", a));
     }
     let Expr::Operator(n) = e else {
-        let mut a = vec![e.clone()];
-        a.extend(idx.iter().cloned());
-        return Ok(op("index", a));
+        return Ok(e.clone());
     };
-    if crate::operator_refs::is_ref(e) || n.op == "faq" || n.op == "makearray" {
-        let mut a = vec![e.clone()];
-        a.extend(idx.iter().cloned());
-        return Ok(op("index", a));
-    }
     // the children by reference (their addresses key the rank memo), then
     // the node rebuilt around the gathered ones
     let mut kids: Vec<&'a Expr> = Vec::new();

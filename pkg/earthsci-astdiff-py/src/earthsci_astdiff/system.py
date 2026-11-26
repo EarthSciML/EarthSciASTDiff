@@ -177,13 +177,18 @@ def ctx_of(sv: SysView) -> Ctx:
             isets[str(n)] = int(sz)
     shapes: dict[str, list[int]] = {}
     params: set[str] = set()
+    axes: dict[str, list[str]] = {}
     for n, var in sv.variables.items():
         shape = getattr(var, "shape", None)
         if shape:
             shapes[str(n)] = [int(x) if isinstance(x, int) else isets[str(x)] for x in shape]
+            # the index-set names, when every dimension names one (§4.3.4
+            # aligns an elementwise operand by them)
+            if all(not isinstance(x, int) for x in shape):
+                axes[str(n)] = [str(x) for x in shape]
         if _var_type(var) == "parameter":
             params.add(str(n))
-    return Ctx(isets, shapes, params)
+    return Ctx(isets, shapes, params, axes)
 
 
 def lhs_state(eq) -> str | None:

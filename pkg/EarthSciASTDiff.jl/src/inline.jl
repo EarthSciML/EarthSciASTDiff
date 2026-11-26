@@ -50,14 +50,18 @@ pruned `obs` leaves out, so that an elementwise observed read at a cell indexes
 each array operand, inlined or not. `scalars` names the variables declared
 without a shape that are not observed (scalar states and parameters); `t` is
 always scalar. Any other name in such a definition has no known rank and is
-refused.
+refused. `axes` (variable → its declared index-set names) aligns the operands
+of an elementwise observed read at a cell by name (esm-spec §4.3.4): an
+operand over a subset of the observed's index sets is read at those of the
+cell's indices and repeats along the others.
 """
 function inline_observed(
         e::ASTExpr, obs::Dict{String, ASTExpr};
         obs_names = Ref{Union{Nothing, Set{String}}}(nothing),
         shapes::AbstractDict = Dict{String, Vector{Int}}(),
         rank_obs::AbstractDict = obs,
-        scalars::AbstractSet = Set{String}()
+        scalars::AbstractSet = Set{String}(),
+        axes::AbstractDict = Dict{String, Vector{String}}()
     )::ASTExpr
     isempty(obs) && !_needs_inline(e) && return e
     # FIXPOINT TEST, AT A COST THAT DOES NOT GROW WITH THE TREE. The test is
@@ -74,7 +78,7 @@ function inline_observed(
     ix = StructIndex()
     fresh = _Fresh(
         e, obs, obs_names, nothing, shapes, Dict{String, Int}(),
-        IdDict{OpExpr, Int}(), rank_obs, scalars
+        IdDict{OpExpr, Int}(), rank_obs, scalars, axes
     )
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
@@ -106,6 +110,7 @@ mutable struct _Fresh
     # opaque read still has a rank (`_cell_rank`)
     rank_obs::AbstractDict
     scalars::AbstractSet       # declared scalars that are not observed
+    axes::AbstractDict         # variable → its declared index-set names (§4.3.4)
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -455,10 +460,15 @@ end
 # `index(x, i…)` of an observed `x` whose definition is an elementwise
 # expression (arithmetic, elementary, comparison, logical, `ifelse`) of
 # arrays and scalars: the definition with every array operand read at
-# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The
-# array operands must all have the rank of the read; aligning by position
-# is then aligning by index set, as every operand of one rank in a
-# flattened system spans the same index sets in the same order. An array
+# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). An
+# array operand is aligned with the read observed by index-set name when
+# both declare theirs (`axes`): an operand over a subset of the observed's
+# index sets is read at those of the cell's indices and repeats along the
+# others, as §4.3.4 aligns an array-level expression, and one over an index
+# set the observed does not have is refused. Without names, an operand must
+# have the rank of the read and is aligned by position, as every operand of
+# one rank in a flattened system spans the same index sets in the same
+# order. An array
 # operand that is a variable, a `faq`, a `makearray` or an operator
 # reference is read whole at the cell (`index(operand, i…)`, reduced by the
 # next pass); an `index` inside the definition must select a scalar. Anything
@@ -564,18 +574,45 @@ function _def_rank(d, fresh::_Fresh, seen::Set{String}, name)::Int
             )
         )
     end
+    # Operands of different ranks are aligned by index-set name where the
+    # definition is read (`_gather_cell`); a node's rank is then its widest
+    # operand's. A named observed reaches here only when it is declared
+    # without a shape, and its shape is the union of its operands' index
+    # sets (esm-spec §4.3.4), which ranks alone cannot give: refused.
     r = 0
     for a in d.args
         ra = _cell_rank(a, fresh, seen)
         ra == 0 && continue
-        r == 0 || r == ra || throw(
+        r == 0 || r == ra || name === nothing || throw(
             InlineError(
-                "observed $what combines arrays of rank $r and $ra"
+                "observed $what, declared without a shape, combines arrays of rank $r and $ra; " *
+                    "declare its shape so its operands can be aligned by index set"
             )
         )
-        r = ra
+        r = max(r, ra)
     end
     return r
+end
+
+# The cell indices at which an operand over the index sets `oax` is read
+# inside a read of observed `name` over `tax` at `idx` (esm-spec §4.3.4): the
+# k-th dimension of the operand on index set X takes the index of the k-th
+# dimension of the observed on X. An index set the observed does not have
+# (or has fewer times) is refused.
+function _aligned_idx(oax, tax, idx, name::String, operand::String)
+    out = ASTExpr[]
+    for (d, X) in enumerate(oax)
+        k = count(==(X), oax[1:d])
+        hits = findall(==(X), tax)
+        k <= length(hits) || throw(
+            InlineError(
+                "observed `$name` over ($(join(tax, ", "))) reads `$operand` over " *
+                    "($(join(oax, ", "))), whose index set `$X` it is not shaped over"
+            )
+        )
+        push!(out, idx[hits[k]])
+    end
+    return out
 end
 
 # `def` read at the cell `idx`, spliced under the indices `scope` binds.
@@ -589,18 +626,26 @@ function _gather_cell(def, idx::Vector{ASTExpr}, fresh::_Fresh, scope, name::Str
                 "index bound around its read at a cell would capture"
         )
     )
+    tax = get(fresh.axes, name, nothing)
     function g(e)
         e isa OpExpr || e isa VarExpr || return e
         r = _cell_rank(e, fresh, Set{String}())
         r == 0 && return e
+        leaf = e isa VarExpr || _is_ref(e) || e.op == "faq" || e.op == "makearray"
+        leaf || return map_children(g, e)
+        oax = e isa VarExpr ? get(fresh.axes, e.name, nothing) : nothing
+        tax === nothing || oax === nothing ||
+            return op("index", e, _aligned_idx(oax, tax, idx, name, e.name)...)
         r == length(idx) || throw(
             InlineError(
-                "observed `$name`, read with $(length(idx)) indices, has an operand of rank $r"
+                "observed `$name`, read with $(length(idx)) indices, has an operand of rank $r" * (
+                    r >= length(idx) ? "" : tax === nothing ?
+                        "; the observed is declared without a shape, so the operand cannot be aligned by index set" :
+                        " whose index sets are not known, so it cannot be aligned by index set"
+                )
             )
         )
-        (e isa VarExpr || _is_ref(e) || e.op == "faq" || e.op == "makearray") &&
-            return op("index", e, idx...)
-        return map_children(g, e)
+        return op("index", e, idx...)
     end
     return g(def)
 end

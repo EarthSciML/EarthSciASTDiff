@@ -439,7 +439,7 @@ function _row_bands!(
     # under the view's layer: inlining reads definitions' ranks
     rhs = _with_layer(ctx.refs) do
         inline_observed(
-            rhs, obs; obs_names = obs_names, shapes = ctx.shapes,
+            rhs, obs; obs_names = obs_names, shapes = ctx.shapes, axes = ctx.axes,
             rank_obs = rank_obs, scalars = scalars
         )
     end

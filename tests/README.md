@@ -107,6 +107,15 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     are checked byte for byte (values to 1e-10) by every binding, and each
     checks `f_t` against a central difference in `t` of the source
     right-hand side
+  - `elementwise_aligned.esm` — an elementwise observed read at a cell whose
+    array operands are aligned by index-set name (esm-spec §4.3.4): `w` over
+    `[x, y]` is `c·q + k + r`, with `q` over `[y]` (the second axis, so
+    aligning by leading position would be wrong), `k` over `[x]` (repeated
+    along `y`) and `r` over `[y, x]` (the axes in the other order). Its only
+    golden, `elementwise_aligned.bands.json` (the state bands), is checked
+    byte for byte by every binding, and each binding checks that an operand
+    over an index set the observed is not shaped over, and an observed
+    declared without a shape that mixes ranks, are refused
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
