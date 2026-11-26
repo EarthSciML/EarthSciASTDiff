@@ -76,9 +76,12 @@ end
     vars = doc["models"]["JacobianEval"]["variables"]
     @test vars["_dt_Tb"]["shape"] == Any["x", "z"] && !haskey(vars["_dt_w"], "shape")
     @test !haskey(vars, "_dt_Eb")
-    # a time pair differentiates its coefficients again: it inlines, as before
+    # a time pair takes `t` second (spec §4.4): the time bands of each state
+    # entry's coefficient, through the same companions, never inlined
     e2 = jacobian_bands2(sv; wrt = :time => :states)
-    @test !isempty(e2) && all(en -> isempty(reads(en.band.coef)), e2)
+    @test !isempty(e2) && all(en -> en.v == "t" && !isempty(reads(en.band.coef)), e2)
+    pblk = jacobian_document(file, "Column"; wrt = :time => :states)["jacobians"]["Column"]
+    @test [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
     # structure-only entries: the same points
     so = jacobian_bands(sv; wrt = :time, coefficients = false)
     @test [(en.u, en.band.rows) for en in so] == [(en.u, en.band.rows) for en in entries]

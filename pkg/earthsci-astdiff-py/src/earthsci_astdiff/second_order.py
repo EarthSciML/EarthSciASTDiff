@@ -106,7 +106,20 @@ def _bands2(sv: SysView, a1: str, a2: str, forcing, memo: _FirstOrder | None = N
     # blocks of one emission.
     ctx = ctx_of(sv)
     t2 = _targets(sv, a2, forcing, observed_defs(sv))
-    e1 = (memo or _FirstOrder()).ext(sv, a1, a2, forcing, seed=t2)
+    memo = memo or _FirstOrder()
+    # A time pair takes `t` second, through the companions (companions.py);
+    # through an active recurrence it inlines, as below.
+    if a1 == "time":
+        from .companions import time_pair_bands
+        from .recurrence import ExtendedBands
+
+        tp = time_pair_bands(sv, a2, forcing, memo, t2)
+        if tp is not None:
+            if a2 in ("parameters", "forcing"):
+                for en in tp:
+                    _check_closed_col2(en)
+            return ExtendedBands(), tp
+    e1 = memo.ext(sv, a1, a2, forcing, seed=t2)
     tset = set(t2) | {r.name for r in e1.recurrences}
     out: list[JacEntry2] = []
     for en in e1.rows + e1.rec_rows:
@@ -243,6 +256,11 @@ def jacobian_block2(
     )
     if e1.recurrences:
         block["recurrences"] = recurrences_field(e1.recurrences)
+    from .companions import companions_field, time_companions
+
+    comps = time_companions(sv, [en.band for en in entries])
+    if comps:
+        block["companions"] = companions_field(comps)
     return block
 
 

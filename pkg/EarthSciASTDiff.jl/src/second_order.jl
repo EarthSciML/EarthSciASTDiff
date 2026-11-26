@@ -53,6 +53,12 @@ over the entry's rows with region clipping and re-merging. No new rules: the
 non-smooth policy (spec §3.2) applies again, and the pattern is the global
 structural union over branches.
 
+A time pair `(:time, a2)` with no active recurrence takes `t` second
+(spec §4.4: with branches frozen the mixed partials commute): the time bands
+of each first-order `a2` entry's coefficient, through the time companions
+(spec §4.2), so the chain through the observed that move with `t` is written
+once rather than inlined into every row.
+
 `(r, c, s)` and `(r, s, c)` come out independently, from distinct first-order
 entries; consumers must not assume either is deduplicated. On the
 `:parameters` and `:forcing` second axes every `col2_idx` must be closed at
@@ -75,6 +81,17 @@ jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing) =
 function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder = _FirstOrder())
     ctx = _ctx(sv)
     t2 = _targets(sv, a2, forcing, a2 == :states ? _observed_defs(sv) : nothing)
+    # A time pair takes `t` second, through the companions (companions.jl);
+    # through an active recurrence it inlines, as below.
+    if a1 == :time
+        tp = _time_pair_bands(sv, a2, forcing, memo, t2)
+        if tp !== nothing
+            a2 in (:parameters, :forcing) && foreach(_check_closed_col2, tp)
+            t = _Interner()
+            tp = JacEntry2[JacEntry2(en.u, en.v, en.w, _intern_band(t, en.band), en.ncol) for en in tp]
+            return ExtendedBands(Recurrence[], JacEntry[], JacEntry[], Int[], Dict{String, String}()), tp
+        end
+    end
     e1 = _first_order_ext!(memo, sv, a1, a2, forcing, t2)
     tset = union(Set{String}(t2), Set{String}(r.name for r in e1.recurrences))
     out = JacEntry2[]
@@ -247,6 +264,8 @@ function _jacobian_block(
         through ? nothing : _structure2(e1.rows, entries, sv, a1, memo), cse, cse_min_nodes
     )
     through && (block["recurrences"] = _recurrences_field(e1.recurrences))
+    comps = _time_companions(sv, entries; info = _rec_info!(memo, sv))
+    isempty(comps) || (block["companions"] = _companions_field(comps))
     return block
 end
 

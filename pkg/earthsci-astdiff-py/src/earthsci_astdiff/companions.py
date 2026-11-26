@@ -481,3 +481,125 @@ def add_companions(m: dict, sv, comps: list) -> None:
 def companions_field(comps: list) -> list:
     """The block's ``companions`` field (spec §4.2): ``[{name, of, rhs}]``."""
     return [{"name": n, "of": o, "rhs": ser_expr(d)} for n, o, d in comps]
+
+
+# ── second-order pairs ``["time", a2]`` (spec §4.4) ──────────────────────────
+
+
+def time_pair_bands(sv, a2: str, forcing, memo, t2) -> list | None:
+    """A time pair taken with ``t`` SECOND (companions.jl
+    ``_time_pair_bands``). With every branch frozen (spec §3.2) each branch
+    is smooth, so the mixed partials commute: ∂²f/∂t∂x = ∂/∂t (∂f/∂x). Each
+    first-order entry of the ``a2`` axis has its coefficient's time bands
+    taken by the time pass's own rule — the observed that move with ``t``
+    are columns composed with their companions, never inlined. The ``a2``
+    pass already inlines the observed that move with ``a2``; one that moves
+    only with ``t`` stays an opaque read there and is reached through its
+    companion. ``None`` when a recurrence is active on either axis: that
+    pair keeps the inlining path, as the time axis does."""
+    from .recurrence import active, recurrences
+    from .second_order import JacEntry2
+    from .system import ctx_of, observed_defs
+
+    ctx = ctx_of(sv)
+    obs = observed_defs(sv)
+    recs = recurrences(sv, obs, ctx)
+    if recs and active(recs, obs, set(t2) | {"t"}):
+        return None
+    e2 = memo.bands(sv, a2, None, forcing)
+    names = {r.name for r in recs}
+    cs = companion_setup(
+        sv,
+        ctx,
+        {k: v for k, v in obs.items() if k not in names},
+        declared_scalars(sv, obs),
+        True,
+        rank_obs=obs,
+    )
+    out = []
+    for en in e2:
+        for b in _time_coef_bands(cs, en.band):
+            out.append(JacEntry2(en.u, "t", en.v, b, 0))
+    return out
+
+
+def _time_coef_bands(cs: Companions, b: Band) -> list[Band]:
+    """The time bands of a first-order band's coefficient, broadcast over its
+    rows (its contracted names bound too): :func:`time_row_bands` on a
+    coefficient. Every band keeps the first-order column indices, which
+    become the pair's ``col2_idx``; a companion read whose index is not
+    provably inside the observed's extent is gated as on the time axis. A
+    site under a nested sum adds contracted dimensions (spec §4.4), which
+    stay contracted."""
+    from .second_order import _coef_bands
+
+    ctx = cs.ctx
+    coef = inline_observed(b.coef, cs.inline, [None], ctx.shapes, cs.rank_obs, cs.scalars)
+    b0 = replace(b, coef=coef)
+    n = len(b.cidx)
+    out: list[Band] = []
+    for v in sorted(x for x in free_variables(coef) if x == "t" or x in cs.cols):
+        bs = [normalize_band(x) for x in merge_bands(_coef_bands(b0, v, ctx))]
+        if v == "t":
+            out.extend(bs)
+            continue
+        if not companion_bands(cs, v):
+            continue
+        shape_v = ctx.shapes.get(v, [])
+        for x in bs:
+            out.append(_pair_through_companion(x, n, v, cs.names[v], shape_v))
+    return [normalize_band(x) for x in merge_bands(_sum_same_box2(out))]
+
+
+def _pair_through_companion(x: Band, n: int, o: str, name: str, shape: list) -> Band:
+    """Band ``x`` of a coefficient (column indices: the first-order ones,
+    then the moving observed's ``φ``) composed with that observed's
+    companion ``name``: coefficient ``coef · name[φ…]``, gated by
+    ``1 <= φ_d <= n_d`` where ``φ_d`` is not provably in extent over the
+    band's box, column indices back to the first ``n``."""
+    phi = list(x.cidx[n:])
+    if len(phi) != len(shape):
+        raise BandError(
+            f"observed `{o}` of rank {len(shape)} is read with {len(phi)} indices; declare its shape"
+        )
+    read = name if not phi else op("index", name, *phi)
+    term = simp(mul(x.coef, read))
+    box = _index_box(x)
+    conds = []
+    for d, c in enumerate(phi):
+        bd = _index_bounds(c, box)
+        if bd is not None and bd[0] >= 1 and bd[1] <= shape[d]:
+            continue
+        conds.append(op(">=", c, 1))
+        conds.append(op("<=", c, shape[d]))
+    g = conj_list(conds)
+    if g is not None:
+        term = op("ifelse", g, term, 0)
+    return replace(x, cidx=list(x.cidx[:n]), coef=term)
+
+
+def _sum_same_box2(bs: list[Band]) -> list[Band]:
+    """:func:`_sum_same_box` for pair bands: the box also holds the column
+    indices and the contracted dimensions."""
+    order: list = []
+    groups: dict = {}
+    for i, b in enumerate(bs):
+        k = (
+            tuple(tuple(r) for r in b.rows),
+            tuple(b.ridx),
+            tuple(skey(c) for c in b.cidx),
+            tuple(tuple(c) for c in b.contracted),
+            None if b.guard is None else skey(b.guard),
+        )
+        if k not in groups:
+            order.append(k)
+            groups[k] = []
+        groups[k].append(i)
+    out = []
+    for k in order:
+        idx = groups[k]
+        b = bs[idx[0]]
+        if len(idx) > 1:
+            b = replace(b, coef=op("+", *(bs[i].coef for i in idx)))
+        out.append(b)
+    return out

@@ -134,11 +134,15 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
     assert _companion_reads(comps[1]["rhs"]) == ["_dt_Tb"]
     assert _companion_reads(comps[0]["rhs"]) == ["_dt_w"]
     assert _companion_reads(comps[2]["rhs"]) == []
-    # a time pair differentiates its coefficients again: it inlines
+    # a time pair takes `t` second (spec §4.4): the time bands of each state
+    # entry's coefficient, through the same companions, never inlined
     e2 = jacobian_bands2(file, "Column", ("time", "states"))
     assert e2
     for en in e2:
-        assert _companion_reads(ser_expr(en.band.coef)) == []
+        assert en.v == "t"
+        assert _companion_reads(ser_expr(en.band.coef)) != []
+    (pblk,) = jacobian_block(file, "Column", wrt=[("time", "states")])
+    assert [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
 
 
 def test_companion_extents_are_read_or_refused(valid_dir):
