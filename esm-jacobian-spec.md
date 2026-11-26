@@ -574,8 +574,8 @@ names). A consumer evaluates them, with the source document's own observed
 and esm-spec §4.3.1.1's recurrence semantics, before any coefficient.
 `recurrences` (a pair block through a recurrence, §4.5): `[{"name": …,
 "dim": d}]`.
-`companions` (present only on a `"time"` block whose coefficients read a
-time companion, §4.2): `[{"name": …, "of": …, "rhs": <Expression>}]`, one
+`companions` (present only on a `"time"` block, or a pair block whose first
+axis is `"time"` (§4.4), whose coefficients read a time companion, §4.2): `[{"name": …, "of": …, "rhs": <Expression>}]`, one
 per companion some coefficient reads, directly or through another
 companion's `rhs`, in the code-point order of `of` — each the definition
 `name ~ rhs` of the companion of observed `of`, which has `of`'s shape. A
@@ -808,10 +808,11 @@ differentiated again in each of them.
   (§9.1) declare them as observed. The band list itself (an entries list,
   §5) carries no definitions: a producer regenerates them from the source.
 - *Scope.* Companions are used on a single `"time"` axis whose pass has no
-  active recurrence. The first pass of a pair `["time", a2]` (§4.4)
-  differentiates its coefficients again with respect to `a2`, and a pass
-  through an active recurrence composes them with a transfer (§4.5): both
-  follow the observed that move with `t` by inlining, as before.
+  active recurrence, and on a pair `["time", a2]` (§4.4) through no active
+  recurrence, which takes `t` second, by this same rule. A pass through an
+  active recurrence composes its coefficients with a transfer (§4.5), and so
+  does a time pair through one: both follow the observed that move with `t`
+  by inlining.
 
 Example (`tgrad_named_steps`, abridged): `w = (t − t0)/dt − floor(…)`,
 `Tb[i,k] = (1 − w)·T[1,i,k] + w·T[2,i,k]`, `kr[i,k] = A·(P[i,k]/p0)·exp(−Ea/Tb[i,k])`
@@ -950,6 +951,34 @@ differentiates branch-wise with the condition's Dirac term dropped, ties of
 global union over branches (§2). A piecewise-linear limiter therefore has an
 empty second-order block.
 
+**Time pairs take `t` second.** With every branch frozen (§3.2) each branch
+of `f` is a smooth function, so on it the mixed partials commute:
+`∂²f/∂t∂x = ∂/∂t (∂f/∂x)`. The policy freezes the same branches whichever
+derivative is taken first (an `ifelse` keeps its condition, a `max`/`min` its
+tie rule), so both orders give the same tensor. A pair `["time", a2]` with
+no recurrence active on either axis is therefore produced with the time
+derivative second: for each first-order entry `e'` of the `a2` axis (§4.3's
+inlining, seeded from the `a2` targets only), in entry order, the producer
+takes the time bands of `e'.coef`, broadcast over `e'.rows` with its
+contracted names bound, by §4.2's rule: `t` and every observed that moves
+with `t` and is not inlined are columns, in code-point order, each observed
+band composed with its time companion (coefficient `coef · _dt_o[φ…]`,
+gated where `φ` is not provably in `o`'s extent), the observed a column
+index needs inlined into `e'.coef` first. An observed that moves with `a2`
+is already inlined in `e'.coef`; one that moves only with `t` (a photolysis
+rate, a blend weight) stays an opaque read there and is reached through its
+companion, so the chain through it is written once, not in every row.
+Contracted dimensions a site under a nested sum adds (§3.5) stay
+`contracted`, not summed into the coefficient: `col2_idx` may read them.
+The bands of one `e'` with the same rows, row names, `col2_idx`,
+`contracted` and `where` are summed into the first of them (an n-ary `+`
+in order), and the list is re-merged and normalized. Each band is an entry
+with `col` `"t"`, `col_idx` `[]`, `col2` `e'.col` and `col2_idx`
+`e'.col_idx`. A time pair through an active recurrence is produced by the
+general rule (the first pass inlining every observed that moves with either
+axis), since the composition with the transfer (§4.5) reads the
+coefficients.
+
 **Entries** carry §4's fields with the same meaning, plus:
 
 - `col2` — the second axis's variable: a state, a parameter outside the
@@ -958,7 +987,8 @@ empty second-order block.
   names, one per dimension of `col2`; `[]` for a scalar.
 
 `col` and `col_idx` are inherited from `e` (`"t"` and `[]` on a time pair),
-and so is `contracted`. A second site inside a scalar `reduce: "+"`
+and so is `contracted`; on a time pair taken `t` second, `col2_idx` and
+`contracted` are `e'`'s (above). A second site inside a scalar `reduce: "+"`
 coefficient whose index the column reads adds contracted dimensions by the
 rule of §3.5.
 
@@ -1254,8 +1284,12 @@ Fixture corpus in `tests/` of this repository:
    NOx–O₃ chemistry whose rates are Arrhenius observed of a temperature
    parameter `T[z]`, opaque on the state pair) and `minmod_adv.esm` (a
    limiter kink: empty); `["states", "parameters"]` on `arrhenius_chem.esm`;
-   `["states", "forcing"]` and `["time", "states"]` on
-   `forcing_bracket.esm`; `["states", "states"]` on `filtered_scan.esm` and
+   `["states", "forcing"]`, `["time", "states"]`, `["time", "parameters"]`
+   and `["time", "forcing"]` on `forcing_bracket.esm`; `["time", "states"]`,
+   `["time", "parameters"]` and `["time", "forcing"]` on
+   `tgrad_named_steps.esm` (time pairs read the companions, §4.4) and
+   `["time", "states"]` on `tgrad_photolysis.esm` (operator references
+   under a time pair); `["states", "states"]` on `filtered_scan.esm` and
    `semiring_reduce.esm` (below). The §3.5 window fixtures: `filtered_scan.esm`
    (inclusive forward and exclusive reverse scans, a filtered contracting
    observed read through a nested sum, a window with an index conjunct and
@@ -1681,8 +1715,7 @@ for a lifted system.
 
 **Status: PROPOSED. Produced by the Julia reference (`jvp_document`,
 `vjp_document`, `hvp_document`) and, byte-identically, by the Rust and
-Python bindings, with goldens (§9.6); through a recurrence (§9.7) by the
-Rust and Python bindings until the reference runs recurrences.** Any change to the text below lands with its goldens.
+Python bindings, with goldens (§9.6), through a recurrence (§9.7) included.** Any change to the text below lands with its goldens.
 
 A consumer needs more than the coefficients: an implicit integrator applies
 `J` and `Jᵀ` to vectors, and an adjoint contracts the second-order bands
@@ -1699,8 +1732,8 @@ A product document is built like the §8.1 evaluation document: the source
 model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
-evaluation document does), and, on the time axis, the time companions the
-coefficients read (§4.2), declared as the evaluation document declares them
+evaluation document does), and, on the time axis and on a pair whose first
+axis is time, the time companions the coefficients read (§4.2), declared as the evaluation document declares them
 (§8.1). Like the evaluation document it carries the
 source's `domain` and its data-fed parameters' `data` rules with the
 `data_sources` they name (§8.1), and a flattened source is laid out as its component tree

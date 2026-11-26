@@ -33,6 +33,13 @@ use crate::inline::{all_names, inline_observed_ranked};
 use crate::operator_refs::{ref_node, with_layer};
 use crate::reductions::{conj_list, conjuncts, fresh};
 use crate::system::{moving_observed, subscript_observed, SysView};
+use std::cell::RefCell;
+
+use crate::branches::SimpMemo;
+use crate::helpers::OccIndex;
+use crate::jacobian::{FirstOrder, Wrt};
+use crate::recurrence::{active, recurrences};
+use crate::second_order::{coef_bands, JacEntry2};
 
 type R<T> = Result<T, BandError>;
 
@@ -667,4 +674,181 @@ pub(crate) fn companions_field(comps: &[(String, String, Expr)]) -> Value {
             .map(|(n, o, d)| json!({"name": n, "of": o, "rhs": ser_expr(d)}))
             .collect(),
     )
+}
+
+// ── second-order pairs `["time", a2]` (spec §4.4) ───────────────────────────
+
+/// A time pair taken with `t` SECOND (companions.jl `_time_pair_bands`).
+/// With every branch frozen (spec §3.2) each branch is smooth, so the mixed
+/// partials commute: ∂²f/∂t∂x = ∂/∂t (∂f/∂x). Each first-order entry of the
+/// `a2` axis has its coefficient's time bands taken by the time pass's own
+/// rule — the observed that move with `t` are columns composed with their
+/// companions, never inlined. The `a2` pass already inlines the observed
+/// that move with `a2`; one that moves only with `t` stays an opaque read
+/// there and is reached through its companion. `None` when a recurrence is
+/// active on either axis: that pair keeps the inlining path, as the time
+/// axis does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn time_pair_bands(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    a2: Wrt,
+    forcing: Option<&[String]>,
+    memo: &mut FirstOrder,
+    t2: &[String],
+) -> R<Option<Vec<JacEntry2>>> {
+    let recs = recurrences(sv, obs, ctx)?;
+    if !recs.is_empty() {
+        let mut s: HashSet<String> = t2.iter().cloned().collect();
+        s.insert("t".to_string());
+        if !active(&recs, obs, &s).is_empty() {
+            return Ok(None);
+        }
+    }
+    let e2 = memo.bands(sv, ctx, obs, a2, None, forcing, &[])?;
+    let mut nr = obs.clone();
+    for r in &recs {
+        nr.remove(&r.name);
+    }
+    let mut cs = companion_setup(sv, ctx, nr, &declared_scalars(sv, obs), true)?;
+    let mut out = Vec::new();
+    for en in e2.iter() {
+        for b in time_coef_bands(&mut cs, &en.band)? {
+            out.push(JacEntry2 {
+                u: en.u.clone(),
+                v: "t".to_string(),
+                w: en.v.clone(),
+                band: b,
+                ncol: 0,
+            });
+        }
+    }
+    Ok(Some(out))
+}
+
+/// The time bands of a first-order band's coefficient, broadcast over its
+/// rows (its contracted names bound too): [`time_row_bands`] on a
+/// coefficient. Every band keeps the first-order column indices, which
+/// become the pair's `col2_idx`; a companion read whose index is not
+/// provably inside the observed's extent is gated as on the time axis. A
+/// site under a nested sum adds contracted dimensions (spec §4.4), which
+/// stay contracted.
+fn time_coef_bands(cs: &mut Companions, b: &Band) -> R<Vec<Band>> {
+    let mut obs_names = None;
+    let coef = with_layer(&cs.ctx.refs, || {
+        inline_observed_ranked(
+            &b.coef,
+            &cs.inline,
+            &mut obs_names,
+            &cs.ctx.shapes,
+            &cs.obs,
+            &cs.scalars,
+        )
+    })
+    .map_err(|e| BandError(e.0))?;
+    let mut b0 = b.clone();
+    b0.coef = coef;
+    let n = b.cidx.len();
+    let mut hits: Vec<String> = free_variables(&b0.coef)
+        .into_iter()
+        .filter(|v| v == "t" || cs.cols.contains(v))
+        .collect();
+    hits.sort();
+    let mut out = Vec::new();
+    for v in &hits {
+        let occ = RefCell::new(OccIndex::new(v));
+        let mut sm = SimpMemo::default();
+        let ctx = cs.ctx.clone();
+        let bs: Vec<Band> = merge_bands(coef_bands(&b0, v, &ctx, &occ, &mut sm)?)
+            .iter()
+            .map(normalize_band)
+            .collect();
+        if v == "t" {
+            out.extend(bs);
+            continue;
+        }
+        if companion_bands(cs, v)?.is_empty() {
+            continue;
+        }
+        let shape_v = cs.ctx.shapes.get(v).cloned().unwrap_or_default();
+        let name = cs.names[v].clone();
+        for x in &bs {
+            out.push(pair_through_companion(x, n, &name, &shape_v));
+        }
+    }
+    Ok(merge_bands(sum_same_box2(out))
+        .iter()
+        .map(normalize_band)
+        .collect())
+}
+
+/// Band `x` of a coefficient (column indices: the first-order ones, then the
+/// moving observed's `φ`) composed with that observed's companion `name`:
+/// coefficient `coef · name[φ…]`, gated by `1 <= φ_d <= n_d` where `φ_d` is
+/// not provably in extent over the band's box, column indices back to the
+/// first `n`.
+fn pair_through_companion(x: &Band, n: usize, name: &str, shape: &[i64]) -> Band {
+    let phi = &x.cidx[n..];
+    let read = if phi.is_empty() {
+        Expr::Variable(name.to_string())
+    } else {
+        index_of(name, phi.to_vec())
+    };
+    let mut term = simp(&mul(vec![x.coef.clone(), read]));
+    let bx = index_box(x);
+    let mut conds = Vec::new();
+    for (d, c) in phi.iter().enumerate() {
+        if let Some((lo, hi, _, _)) = index_bounds(c, &bx) {
+            if lo >= 1 && hi <= shape[d] {
+                continue;
+            }
+        }
+        conds.push(op(">=", vec![c.clone(), Expr::Integer(1)]));
+        conds.push(op("<=", vec![c.clone(), Expr::Integer(shape[d])]));
+    }
+    if let Some(g) = conj_list(conds) {
+        term = op("ifelse", vec![g, term, Expr::Integer(0)]);
+    }
+    let mut out = x.clone();
+    out.cidx = x.cidx[..n].to_vec();
+    out.coef = term;
+    out
+}
+
+/// [`sum_same_box`] for pair bands: the box also holds the column indices
+/// and the contracted dimensions.
+fn sum_same_box2(bs: Vec<Band>) -> Vec<Band> {
+    type Key = (
+        Vec<(i64, i64)>,
+        Vec<RIdx>,
+        Vec<String>,
+        Vec<(String, i64, i64)>,
+        Option<String>,
+    );
+    let mut order: Vec<Key> = Vec::new();
+    let mut groups: BTreeMap<Key, Vec<usize>> = BTreeMap::new();
+    for (i, b) in bs.iter().enumerate() {
+        let k = (
+            b.rows.clone(),
+            b.ridx.clone(),
+            b.cidx.iter().map(skey).collect(),
+            b.contracted.clone(),
+            b.guard.as_ref().map(skey),
+        );
+        if !groups.contains_key(&k) {
+            order.push(k.clone());
+        }
+        groups.entry(k).or_default().push(i);
+    }
+    let mut out = Vec::new();
+    for k in order {
+        let idx = &groups[&k];
+        let mut b = bs[idx[0]].clone();
+        if idx.len() > 1 {
+            b.coef = op("+", idx.iter().map(|&i| bs[i].coef.clone()).collect());
+        }
+        out.push(b);
+    }
+    out
 }

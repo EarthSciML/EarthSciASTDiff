@@ -119,7 +119,9 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
 - `companions.jl`   — time companions (spec §4.2): the time pass keeps each
   observed that moves with `t` as a column and composes its bands with that
   observed's companion `_dt_<o>`, whose definition is built once from the
-  observed's own (Rust `companions.rs`, Python `companions.py`)
+  observed's own; a pair `["time", a2]` takes `t` second, as the time bands
+  of each `a2` entry's coefficient by the same rule (spec §4.4) (Rust
+  `companions.rs`, Python `companions.py`)
 - `recurrence.jl`   — causal recurrences (spec §4.5): recognition, the
   transfer recurrence `T = (I − G)⁻¹`, `materialize` (the chain rule
   through `T`) and the tangent/adjoint sweeps products.jl's §9.7 documents

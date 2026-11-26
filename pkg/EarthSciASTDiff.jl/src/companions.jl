@@ -383,3 +383,106 @@ _companions_field(comps) = Any[
     OrderedDict{String, Any}("name" => n, "of" => o, "rhs" => _ser_expr(d))
         for (n, o, d) in comps
 ]
+
+# ── second-order pairs `["time", a2]` (spec §4.4) ───────────────────────────
+#
+# With every branch frozen (spec §3.2) each branch is smooth, so the mixed
+# partials commute: ∂²f/∂t∂x = ∂/∂t (∂f/∂x). A time pair is therefore built
+# with `t` differentiated SECOND: each first-order entry of the `a2` axis has
+# its coefficient's time bands taken by the time pass's own rule — the
+# observed that move with `t` are columns composed with their companions,
+# never inlined. The `a2` pass already inlines the observed that move with
+# `a2`; one that moves only with `t` stays an opaque read there and is
+# reached through its companion. `nothing` when a recurrence is active on
+# either axis: that pair keeps the inlining path, as the time axis does.
+function _time_pair_bands(sv::SysView, a2::Symbol, forcing, memo, t2)
+    info = _rec_info!(memo, sv)
+    isempty(info.recs) ||
+        isempty(_active(info.recs, info.obs, union(Set{String}(["t"]), t2))) || return nothing
+    e2 = _first_order!(memo, sv, a2, nothing, forcing)
+    rn = Set{String}(r.name for r in info.recs)
+    obs = Dict{String, ASTExpr}(k => v for (k, v) in info.obs if !(k in rn))
+    cs = _companion_setup(sv, info.ctx, obs, _declared_scalars(sv, info.obs), true)
+    out = JacEntry2[]
+    for en in e2
+        for b in _time_coef_bands(cs, en.band)
+            push!(out, JacEntry2(en.u, "t", en.v, b, 0))
+        end
+    end
+    return out
+end
+
+# The time bands of a first-order band's coefficient, broadcast over its
+# rows (its contracted names bound too): `_time_row_bands` on a coefficient.
+# Every band keeps the first-order column indices, which become the pair's
+# `col2_idx`; a companion read whose index is not provably inside the
+# observed's extent is gated as on the time axis. A site under a nested sum
+# adds contracted dimensions (spec §4.4), which stay contracted.
+function _time_coef_bands(cs::_Companions, b::Band)
+    ctx = cs.ctx
+    coef = _with_layer(ctx.refs) do
+        inline_observed(
+            b.coef, cs.inline; shapes = ctx.shapes, rank_obs = cs.obs, scalars = cs.scalars
+        )
+    end
+    b0 = _rebuild(b; coef = coef)
+    n = length(b.cidx)
+    out = Band[]
+    for v in sort!(String[x for x in free_variables(coef) if x == "t" || x in cs.cols])
+        bs = Band[normalize_band(x) for x in merge_bands(_coef_bands(b0, v, ctx))]
+        if v == "t"
+            append!(out, bs)
+            continue
+        end
+        isempty(_companion_bands!(cs, v)) && continue
+        shape = get(ctx.shapes, v, Int[])
+        for x in bs
+            push!(out, _pair_through_companion(x, n, cs.names[v], shape))
+        end
+    end
+    return Band[normalize_band(x) for x in merge_bands(_sum_same_box2(out))]
+end
+
+# Band `x` of a coefficient (column indices: the first-order ones, then the
+# moving observed's `φ`) composed with that observed's companion `name`:
+# coefficient `coef · name[φ…]`, gated by `1 <= φ_d <= n_d` where `φ_d` is
+# not provably in extent over the band's box, column indices back to the
+# first `n`.
+function _pair_through_companion(x::Band, n::Int, name::String, shape::Vector{Int})
+    φ = x.cidx[(n + 1):end]
+    read = isempty(φ) ? VarExpr(name) : op("index", VarExpr(name), φ...)
+    term = _simp(mul(x.coef, read))
+    box = _index_box(x)
+    conds = ASTExpr[]
+    for (d, c) in enumerate(φ)
+        bd = _index_bounds(c, box)
+        bd !== nothing && bd[1] >= 1 && bd[2] <= shape[d] && continue
+        push!(conds, op(">=", c, lit(1)))
+        push!(conds, op("<=", c, lit(shape[d])))
+    end
+    isempty(conds) || (term = op("ifelse", _conj(conds), term, lit(0)))
+    return _rebuild(x; cidx = x.cidx[1:n], coef = term)
+end
+
+# `_sum_same_box` for pair bands: the box also holds the column indices and
+# the contracted dimensions.
+function _sum_same_box2(bs::Vector{Band})
+    keys_ = Any[]
+    groups = Dict{Any, Vector{Int}}()
+    for (i, b) in enumerate(bs)
+        k = (
+            b.rows, b.ridx, String[skey(c) for c in b.cidx], b.contracted,
+            b.guard === nothing ? nothing : skey(b.guard),
+        )
+        haskey(groups, k) || push!(keys_, k)
+        push!(get!(groups, k, Int[]), i)
+    end
+    out = Band[]
+    for k in keys_
+        idx = groups[k]
+        b = bs[idx[1]]
+        length(idx) == 1 && (push!(out, b); continue)
+        push!(out, _rebuild(b; coef = op("+", ASTExpr[bs[i].coef for i in idx]...)))
+    end
+    return out
+end

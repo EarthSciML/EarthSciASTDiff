@@ -8,8 +8,8 @@
 use std::fs;
 
 use earthsci_astdiff::{
-    jacobian_bands, jacobian_bands2, jacobian_block, jacobian_blocks, serialize_band, stable_json,
-    BlockWrt, Wrt,
+    jacobian_bands, jacobian_bands2, jacobian_block, jacobian_block2, jacobian_blocks,
+    serialize_band, stable_json, BlockWrt, Wrt,
 };
 use serde_json::{json, Value};
 
@@ -170,12 +170,30 @@ fn companions_keep_the_chain_as_named_steps() {
     assert_eq!(companion_reads(&comps[1]["rhs"]), ["_dt_Tb"]);
     assert_eq!(companion_reads(&comps[0]["rhs"]), ["_dt_w"]);
     assert!(companion_reads(&comps[2]["rhs"]).is_empty());
-    // a time pair differentiates its coefficients again: it inlines
+    // a time pair takes `t` second (spec §4.4): the time bands of each state
+    // entry's coefficient, through the same companions, never inlined
     let e2 = jacobian_bands2(&file, Some("Column"), (Wrt::Time, Wrt::States)).unwrap();
     assert!(!e2.is_empty());
     for en in &e2 {
-        assert!(companion_reads(&serde_json::to_value(&en.band.coef).unwrap()).is_empty());
+        assert_eq!(en.v, "t");
+        assert!(!companion_reads(&serde_json::to_value(&en.band.coef).unwrap()).is_empty());
     }
+    let pblk = jacobian_block2(
+        &file,
+        Some("Column"),
+        (Wrt::Time, Wrt::States),
+        None,
+        true,
+        12,
+    )
+    .unwrap();
+    let pnames: Vec<&str> = pblk["companions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(pnames, ["_dt_Tb", "_dt_kr", "_dt_w"]);
 }
 
 #[test]
