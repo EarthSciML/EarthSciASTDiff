@@ -205,6 +205,9 @@ end
 # ranges, the band's `where` its filter, so a time band keeps the row's
 # shape.
 function _through_companion(b::Band, name::String, shape::Vector{Int}, co::Bool)
+    b.join === nothing || throw(
+        BandError("a time companion read through a joined faq node is not supported")
+    )
     if !co
         return Band(
             b.rows, b.ridx, ASTExpr[], nothing, Tuple{String, Int, Int}[],

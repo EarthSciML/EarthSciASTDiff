@@ -35,11 +35,16 @@ use crate::inline::all_names;
 /// or a value-invention node has no rule. The error is the bare message; the
 /// caller wraps it in its own error type.
 pub fn reduce_op(n: &ExpressionNode) -> Result<&'static str, String> {
-    if n.join.is_some() {
-        return Err("joined faq nodes are not differentiated".into());
-    }
     if n.distinct == Some(true) || n.key.is_some() {
         return Err("value-invention faq nodes (`distinct`, `key`) are not differentiated".into());
+    }
+    // a join (§3.5) is a build-time gate on the node's tuples: the bands
+    // carry it; only a `+` reduction over it is differentiated
+    if n.join.is_some()
+        && !(matches!(n.semiring.as_deref(), None | Some("sum_product"))
+            && n.reduce.as_deref().unwrap_or("+") == "+")
+    {
+        return Err("a joined faq node is differentiated only under a `+` reduction".into());
     }
     match n.semiring.as_deref() {
         None => match n.reduce.as_deref().unwrap_or("+") {

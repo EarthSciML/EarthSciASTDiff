@@ -106,7 +106,7 @@ end
 # side does (§3.5), so the structure passes see the same form.
 function _steps_sum_free(b::Band, co::Bool)
     isempty(b.contracted) && return b
-    read = Set{String}()
+    read = Set{String}(_join_names(b))      # a joined name is never summed away
     for c in b.cidx
         union!(read, free_variables(c))
     end
@@ -126,7 +126,7 @@ function _steps_sum_free(b::Band, co::Bool)
             filter = isempty(filt) ? nothing : _conj(filt)
         ) : nothing
     return normalize_band(
-        Band(b.rows, b.ridx, b.cidx, coef, con, isempty(keep) ? nothing : _conj(keep))
+        Band(b.rows, b.ridx, b.cidx, coef, con, isempty(keep) ? nothing : _conj(keep), b.join)
     )
 end
 
@@ -142,7 +142,7 @@ function _steps_combine(bs::Vector{Band}, co::Bool)
     for (i, b) in enumerate(bs)
         k = (
             b.rows, b.ridx, String[skey(c) for c in b.cidx], b.contracted,
-            b.guard === nothing ? nothing : skey(b.guard),
+            b.guard === nothing ? nothing : skey(b.guard), b.join,
         )
         haskey(groups, k) || push!(keys_, k)
         push!(get!(groups, k, Int[]), i)
@@ -179,7 +179,14 @@ function _steps_composed!(st::_Steps, o::String)::Vector{JacEntry}
         )
     end
     inl = copy(st.inline)
-    inl[o] = def
+    if def isa OpExpr && def.op == "faq" && def.join !== nothing &&
+            rhs isa OpExpr && Any[rhs.output_idx...] == Any[def.output_idx...]
+        # a joined definition over its own row names is its row (a joined
+        # node is never read through β-reduction, §3.5)
+        rhs = def
+    else
+        inl[o] = def
+    end
     out = try
         _steps_row(st, o, rhs, inl, shape)
     finally

@@ -153,7 +153,15 @@ def _coef_bands(b: Band, w: str, ctx: Ctx) -> list[Band]:
                 continue
             c2, coef, contracted = one_hot(c2, coef, list(b.contracted) + extra, b.ridx, w, ctx)
             out.append(
-                Band(rows2, list(b.ridx), list(b.cidx) + c2, coef, contracted, conj(b.guard, g))
+                Band(
+                    rows2,
+                    list(b.ridx),
+                    list(b.cidx) + c2,
+                    coef,
+                    contracted,
+                    conj(b.guard, g),
+                    b.join,
+                )
             )
     return out
 

@@ -66,5 +66,6 @@ end
     include("source_layout_test.jl")
     include("operator_refs_test.jl")
     include("steps_test.jl")
+    include("join_test.jl")
     include("makearray_of_reads_test.jl")
 end

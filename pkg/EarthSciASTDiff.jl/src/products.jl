@@ -272,7 +272,7 @@ end
 # The `faq` of one entry's term: `ranges` (the output names first, then the
 # row names, then the contracted names), the `filter` conjunction, and `body`
 # under §9.1's `ifelse` guard when a reduced name would not occur in it.
-function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{String})
+function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{String}; ctx = nothing)
     ranges = OrderedDict{String, Any}(n => Any[lo, hi] for (n, lo, hi) in outranges)
     for (k, r) in enumerate(b.ridx)
         r isa String && (ranges[r] = Any[b.rows[k][1], b.rows[k][2]])
@@ -280,6 +280,7 @@ function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{St
     for (n, lo, hi) in b.contracted
         ranges[n] = Any[lo, hi]
     end
+    _join_ranges!(ranges, b, ctx)
     outnames = Set{String}(x for x in output_idx if x isa String)
     miss = [n for n in keys(ranges) if !(n in outnames) && !(n in bodynames)]
     expr = body
@@ -298,8 +299,25 @@ function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{St
         "ranges" => ranges
     )
     isempty(conj) || (f["filter"] = _sand(first.(conj)))
+    b.join === nothing || (f["join"] = b.join[1])
     f["expr"] = expr
     return f
+end
+
+# A joined band's names take their join ranges (`{"from": set}`, through
+# which the join resolves its sides, §3.5) in place of the band's box, which
+# must be that whole set: a narrower box on a joined name is refused.
+function _join_ranges!(ranges, b::Band, ctx)
+    b.join === nothing && return ranges
+    for (n, spec) in b.join[2]
+        haskey(ranges, n) || throw(BandError("a join reads `$n`, no index name of its band"))
+        lo, hi = ranges[n]
+        ctx === nothing || (lo, hi) == _range_of(spec, ctx) || throw(
+            BandError("a joined band narrower than its join's index set on `$n` is not supported")
+        )
+        ranges[n] = spec
+    end
+    return ranges
 end
 
 _row_names(b::Band) = Set{String}(r for r in b.ridx if r isa String)
@@ -332,7 +350,7 @@ function _jvp_term(en::JacEntry, coef::ASTExpr, vin::String, ctx, wrt::Symbol)
         conj = vcat(_where_conj(b), _ghost_conjuncts(b, en.v, b.cidx, shape_v, wrt))
         bodynames = union(_names_of((coef, b.cidx...)), _row_names(b))
         out = isempty(shape_u) ? Any[] : Any[r isa String ? r : 1 for r in b.ridx]
-        _term_faq(b, out, (), conj, body, bodynames)
+        _term_faq(b, out, (), conj, body, bodynames; ctx = ctx)
     else
         # no index names: `where` and the column are closed, decided here
         _point_in_extent(b, en.v, b.cidx, shape_v, wrt) || return nothing
@@ -353,7 +371,7 @@ end
 # extra filter conjuncts `conj`.
 function _scatter_term(
         b::Band, coef::ASTExpr, out::String, ci::Vector{ASTExpr}, shape_o::Vector{Int},
-        wrt::Symbol, conj, body, bodynames::Set{String}, taken::Set{String}
+        wrt::Symbol, conj, body, bodynames::Set{String}, taken::Set{String}; ctx = nothing
     )
     # the equality drops every ghost, but on the forcing axis a dropped
     # point is a lost gradient
@@ -366,7 +384,7 @@ function _scatter_term(
     ]
     return _term_faq(
         b, j, ((j[d], 1, shape_o[d]) for d in eachindex(j)),
-        vcat(_where_conj(b), conj, eqs), body, bodynames
+        vcat(_where_conj(b), conj, eqs), body, bodynames; ctx = ctx
     )
 end
 
@@ -382,7 +400,7 @@ function _vjp_term_read(en::JacEntry, coef::ASTExpr, lam, ctx, wrt::Symbol, take
     body = _sop("*", _ser_expr(coef), lam)
     return _scatter_term(
         b, coef, en.v, b.cidx, get(ctx.shapes, en.v, Int[]), wrt,
-        Tuple{Any, Set{String}}[], body, union(_names_of((coef,)), _row_names(b)), taken
+        Tuple{Any, Set{String}}[], body, union(_names_of((coef,)), _row_names(b)), taken; ctx = ctx
     )
 end
 
@@ -408,7 +426,7 @@ function _hvp_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, a1::Symbol, a2::Sym
     return _scatter_term(
         b, coef, en.w, c2, get(ctx.shapes, en.w, Int[]), a2, g,
         _sop("*", _ser_expr(coef), m),
-        union(_names_of((coef, ci...)), _row_names(b)), taken
+        union(_names_of((coef, ci...)), _row_names(b)), taken; ctx = ctx
     )
 end
 
@@ -433,7 +451,7 @@ function _hvp_sym_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, taken)
     end
     return _scatter_term(
         b, coef, en.v, ci, get(ctx.shapes, en.v, Int[]), :states, g, body,
-        union(_names_of((coef, c2...)), _row_names(b)), taken
+        union(_names_of((coef, c2...)), _row_names(b)), taken; ctx = ctx
     )
 end
 

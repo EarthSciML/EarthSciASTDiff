@@ -299,9 +299,38 @@ column indices are independent of every contracted name yields an ordinary
 band whose `coef` is the scalar `reduce: "+"` of the site derivative over
 the contraction; a site whose column indices reference a contracted name (a
 gathered column) yields a band with `contracted` dimensions (§4), whose
-points accumulate. Relational joins and value-invention nodes (`distinct`,
-`key`) and the `bool_and_or` semiring are NOT differentiated — producers MUST
-fail. A faq node's reduction ⊕ is its `semiring`'s when it has one
+points accumulate. Value-invention nodes (`distinct`, `key`) and the
+`bool_and_or` semiring are NOT differentiated — producers MUST fail.
+
+A **relational join** (`join`: `on` key equalities, an `overlap` envelope
+gate) is a build-time gate on the node's tuples: its truth reads only
+build-time data (esm-spec §4.3.1), never a target, so it differentiates
+like a filter whose Dirac term is dropped — the derivative of a joined `+`
+reduction (`reduce: "+"` or `semiring: "sum_product"`) is the body's,
+restricted to the joined tuples; a joined node under any other reduction is
+refused. A producer cannot decide the join, so it is carried: every band
+read off a joined node keeps the node's contracted names as `contracted`
+dimensions (a joined sum is never folded into a coefficient, the join reads
+those names) and carries the entry fields `join` — the node's clauses,
+verbatim — and `join_ranges` — the node's range of each of its index names,
+an `{"from": <set>}` range kept as such, through which the join resolves its
+sides (esm-spec CONFORMANCE §5.5.6, §5.5.8). The band's box on a joined name
+is that whole range; a name a join reads is never pinned (§4). Composition
+(§3.6, §4.5, §4.6) carries the join with the band it gates, its names
+renamed as the composite reads them; a joined row name the composite reads
+at an index that is not a bare name stays a contracted name of the
+composite, tied to that index by an `==` conjunct of its `where`. A join
+clause naming a definition's parameter takes the name of the variable its
+reference binds there (a parameter bound to anything but a variable is
+refused). A band through two joins, through a recurrence, or read by a time
+companion is refused.
+
+Patterns, structure classes and scatter plans (§2, §6, §8) treat a joined
+band as its whole box: a structural superset of its joined points. That is
+what the parameters and forcing axes need; a states-axis regrid may later
+want the exact join pattern, which only an evaluator of the join can give.
+Fixture: `join_regrid.esm` (§5), six points binned into four cells by an
+`overlap` join that is the sum's only gate. A faq node's reduction ⊕ is its `semiring`'s when it has one
 (`sum_product` → `+`, `max_product` and `max_sum` → `max`, `min_sum` →
 `min`; its ⊗ is already written out in the body), otherwise its `reduce`
 (absent → `+`).
@@ -395,8 +424,8 @@ variable, its index expression moves into the coefficient as
 cell of the axis. A level search's own derivative needs no rule: its body is
 an index name, and its filter's Dirac term is dropped.
 
-Reserved (producers MUST fail rather than guess): joins, value-invention
-`faq` nodes, the `bool_and_or` semiring, `argmin`/`argmax`, a `max` or `min`
+Reserved (producers MUST fail rather than guess): value-invention
+`faq` nodes, a join under a reduction other than `+`, the `bool_and_or` semiring, `argmin`/`argmax`, a `max` or `min`
 over more than one contracted index, singleton `1` output indices,
 `reshape`/`transpose`/`concat` operands. A causal self-reference recurrence
 (esm-spec §4.3.1.1) is never inlined (it has no fixpoint); it is
@@ -526,6 +555,12 @@ row)/∂(col)`:
   no affine breakpoint: it always stays in `where`, and a consumer folds the
   gather at each point as it does in `col_idx`. Absent for every other
   entry.
+- `join`, `join_ranges` (optional, together) — the relational join of the
+  faq node the entry was read off (§3.5): `join` its clauses verbatim,
+  `join_ranges` an object from each of the entry's row or contracted names
+  the join reads to its range in that node (`{"from": <set>}` kept). A
+  point contributes iff it holds AND the join admits the tuple of its
+  names. The box on a joined name is that range's whole extent.
 
 **Meaning.** For every index point `r` in `rows` AND every point `c` of the
 `contracted` box (the empty product when absent) at which `where(r, c)`
@@ -1734,7 +1769,10 @@ The derived model is named `JacobianEval` and holds:
   `0.0` (and, for an array row or an entry with `contracted` dimensions, the
   field `shape` above: the row variable's index sets, then one `jcax<n>`
   index set per contracted dimension), whose `D` equation is the entry's
-  coefficient over its region and `0.0` elsewhere.
+  coefficient over its region and `0.0` elsewhere. For a joined entry
+  (§3.5) the region's value is a `faq` over the entry's names that carries
+  the entry's `join`, each joined name ranging over its `join_ranges`
+  range: the coefficient on the joined tuples, `0.0` on every other.
 
 **Data-fed parameters.** A parameter whose `update` has a `data` rule is an
 input that a provider fills from a data source (esm-spec §8.5), not a
@@ -1893,7 +1931,10 @@ source's `domain` and its data-fed parameters' `data` rules with the
   A zero right-hand side is `0.0`, or for an array a `makearray` of `0.0`
   over the whole shape, as for the zeroed source derivatives. A `faq` below
   omits `reduce` (its default is `"+"`); its `ranges` list the output names,
-  then the row names, then the contracted names. A `filter` with one
+  then the row names, then the contracted names. For a joined entry (§3.5)
+  the `faq` carries the entry's `join`, and each joined name ranges over its
+  `join_ranges` range in place of its box, so an evaluator runs the term
+  over the joined tuples only. A `filter` with one
   conjunct is that conjunct, with several an `and` of them in the order
   written; with none the field is omitted. A `+` over terms is a nest of
   binary `+` folded from the left.

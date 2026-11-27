@@ -15,7 +15,7 @@ from functools import reduce
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError
+from .bands import Band, BandError, join_ranges_into
 from .clip import _index_bounds, _index_box
 from .emit import (
     _base_document,
@@ -306,7 +306,9 @@ def _jnames(taken: set[str], b: Band, coef, n: int) -> list[str]:
     return out
 
 
-def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames: set[str]):
+def _term_faq(
+    b: Band, output_idx: list, outranges, conj: list, body, bodynames: set[str], ctx=None
+):
     """The ``faq`` of one entry's term: ``ranges`` (the output names first,
     then the row names, then the contracted names), the ``filter``
     conjunction, and ``body`` under §9.1's ``ifelse`` guard when a reduced
@@ -317,6 +319,7 @@ def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames:
             ranges[r] = [b.rows[k][0], b.rows[k][1]]
     for n, lo, hi in b.contracted:
         ranges[n] = [lo, hi]
+    join_ranges_into(ranges, b, ctx)
     outnames = {x for x in output_idx if isinstance(x, str)}
     miss = [n for n in ranges if n not in outnames and n not in bodynames]
     expr = body
@@ -331,6 +334,8 @@ def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames:
     f = {"op": "faq", "args": [], "output_idx": list(output_idx), "ranges": ranges}
     if conj:
         f["filter"] = _sand([c for c, _ in conj])
+    if b.join is not None:
+        f["join"] = list(b.join[0])
     f["expr"] = expr
     return f
 
@@ -347,7 +352,7 @@ def _jvp_term(en: JacEntry, coef, vin: str, ctx, wrt: str):
         conj = _where_conj(b) + _ghost_conjuncts(b, en.v, b.cidx, shape_v, wrt)
         bodynames = _names_of((coef, *b.cidx)) | _row_names(b)
         out = [] if not shape_u else [r if isinstance(r, str) else 1 for r in b.ridx]
-        val = _term_faq(b, out, (), conj, body, bodynames)
+        val = _term_faq(b, out, (), conj, body, bodynames, ctx)
     else:
         # no index names: `where` and the column are closed, decided here
         if not _point_in_extent(b, en.v, b.cidx, shape_v, wrt):
@@ -377,6 +382,7 @@ def _scatter_term(
     body,
     bodynames: set[str],
     taken: set[str],
+    ctx=None,
 ):
     """One entry's term landing in output variable ``out`` (shape
     ``shape_o``) at column index ``ci``: Σ over the points with ``ci == j``
@@ -396,6 +402,7 @@ def _scatter_term(
         _where_conj(b) + conj + eqs,
         body,
         bodynames,
+        ctx,
     )
 
 
@@ -419,6 +426,7 @@ def _vjp_term_read(en: JacEntry, coef, lam, ctx, wrt: str, taken: set[str]):
         body,
         _names_of((coef,)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 
@@ -454,6 +462,7 @@ def _hvp_term(en: JacEntry2, coef, mu, w, ctx, a1: str, a2: str, taken: set[str]
         _sop("*", ser_expr(coef), m),
         _names_of((coef, *ci)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 
@@ -491,6 +500,7 @@ def _hvp_sym_term(en: JacEntry2, coef, mu, w, ctx, taken: set[str]):
         body,
         _names_of((coef, *c2)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 

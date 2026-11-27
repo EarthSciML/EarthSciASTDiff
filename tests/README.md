@@ -115,6 +115,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     vjp.evaldoc,jvals}.json` goldens are checked byte for byte by every
     binding, and the Julia reference checks `f_t` against a central
     difference in `t`
+  - `join_regrid.esm` — a regrid through a spatial overlap join (spec
+    §3.5): six points binned into four cells, the join of the points'
+    (X, Y) and the cells' envelopes the sum's only gate, reading a state
+    and an array parameter. Its `.{bands,block,evaldoc,jvp.evaldoc,
+    vjp.evaldoc}.json` and `.parameters.*` goldens are checked byte for byte
+    by every binding; the Julia reference checks the values against central
+    differences of the source and Jᵀλ against them
   - `diamond_chain.esm` — named steps (spec §4.6): twelve levels of two
     observed, each reading both of the level below (2^12 paths when
     inlined). Its structure-only golden, `diamond_chain.structure.bands.json`,

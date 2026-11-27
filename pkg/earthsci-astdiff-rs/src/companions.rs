@@ -348,6 +348,11 @@ pub(crate) fn time_row_bands(
         let shape_v = cs.ctx.shapes.get(v).cloned().unwrap_or_default();
         let name = cs.names[v].clone();
         for b in &bs {
+            if b.join.is_some() {
+                return Err(BandError(
+                    "a time companion read through a joined faq node is not supported".into(),
+                ));
+            }
             out.push(through_companion(b, &name, &shape_v, cs.co));
         }
     }
@@ -377,6 +382,7 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
             } else {
                 None
             },
+            join: None,
         };
     }
     let read = if b.cidx.is_empty() {
@@ -407,6 +413,7 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
             coef: term,
             contracted: Vec::new(),
             guard: b.guard.clone(),
+            join: None,
         };
     }
     let ranges: HashMap<String, RangeSpec> = b
@@ -430,6 +437,7 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
         coef: sum,
         contracted: Vec::new(),
         guard: None,
+        join: None,
     }
 }
 

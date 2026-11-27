@@ -42,10 +42,14 @@ def reduce_op(e: ExprNode, E) -> str:
     ``semiring`` supersedes ``reduce``, and its ⊗ is already written out in
     the body. A join or a value-invention node has no rule. ``E`` is the
     caller's error type."""
-    if e.join is not None:
-        raise E("joined faq nodes are not differentiated")
     if e.distinct is True or e.key is not None:
         raise E("value-invention faq nodes (`distinct`, `key`) are not differentiated")
+    # a join (§3.5) is a build-time gate on the node's tuples: the bands
+    # carry it; only a `+` reduction over it is differentiated
+    if e.join is not None and not (
+        e.semiring in (None, "sum_product") and (e.reduce or "+") == "+"
+    ):
+        raise E("a joined faq node is differentiated only under a `+` reduction")
     if e.semiring is None:
         r = "+" if e.reduce is None else e.reduce
         if r in ("+", "*", "max", "min"):

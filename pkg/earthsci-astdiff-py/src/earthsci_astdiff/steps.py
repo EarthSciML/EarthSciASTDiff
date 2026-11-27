@@ -17,7 +17,17 @@ from dataclasses import replace
 from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError, Ctx, bands_in, merge_bands, normalize_band
+from .bands import (
+    Band,
+    BandError,
+    Ctx,
+    bands_in,
+    join_key,
+    join_names,
+    merge_bands,
+    normalize_band,
+    rename_join,
+)
 from .companions import _faq_over, _obs_extents, _row_names_of, region_array
 from .expr_helpers import is_zero, mul, op, skey, stable_json
 from .inline import all_names, inline_observed, subst_free
@@ -124,7 +134,7 @@ def _steps_sum_free(b: Band, co: bool) -> Band:
     ``_steps_sum_free``)."""
     if not b.contracted:
         return b
-    read: set = set()
+    read: set = set(join_names(b))  # a joined name is never summed away
     for c in b.cidx:
         read |= set(free_variables(c))
     free = {n for n, _, _ in b.contracted if n not in read}
@@ -147,7 +157,7 @@ def _steps_sum_free(b: Band, co: bool) -> Band:
             filter=conj_list(filt),
         )
     return normalize_band(
-        Band(list(b.rows), list(b.ridx), list(b.cidx), coef, con, conj_list(keep))
+        Band(list(b.rows), list(b.ridx), list(b.cidx), coef, con, conj_list(keep), b.join)
     )
 
 
@@ -166,6 +176,7 @@ def _steps_combine(bs: list, co: bool) -> list:
             tuple(skey(c) for c in b.cidx),
             tuple(tuple(c) for c in b.contracted),
             None if b.guard is None else skey(b.guard),
+            join_key(b.join),
         )
         if k not in groups:
             order.append(k)
@@ -199,7 +210,18 @@ def steps_composed(st: Steps, o: str) -> list:
         names = _row_names_of(d, len(shape))
         rhs = _faq_over(names, shape, op("index", o, *names))
     inl = dict(st.inline)
-    inl[o] = d
+    if (
+        isinstance(d, ExprNode)
+        and d.op == "faq"
+        and d.join is not None
+        and isinstance(rhs, ExprNode)
+        and list(rhs.output_idx or []) == list(d.output_idx or [])
+    ):
+        # a joined definition over its own row names is its row (a joined
+        # node is never read through beta-reduction, §3.5)
+        rhs = d
+    else:
+        inl[o] = d
     try:
         out = steps_row(st, o, rhs, inl, shape)
     finally:
@@ -415,9 +437,23 @@ def compose(outer: list, inner: list, co: bool) -> list:
                 bcon.append((f, lo, hi))
             conds = []
             dead = False
+            jnames = join_names(b)
+            tie = []
             for d, r in enumerate(b.ridx):
                 lo, hi = b.rows[d]
-                if isinstance(r, str):
+                if isinstance(r, str) and r in jnames and not isinstance(o.cidx[d], str):
+                    # a joined row name read at a non-bare index stays a name
+                    # of the composite (the join reads it): contracted over
+                    # its row range, tied to the index by an equality (§3.5)
+                    if r in taken:
+                        f = fresh(taken, r + "_c", "_c")
+                    else:
+                        taken.add(r)
+                        f = r
+                    sigma[r] = f
+                    bcon.append((f, lo, hi))
+                    tie.append(op("==", f, o.cidx[d]))
+                elif isinstance(r, str):
                     sigma[r] = o.cidx[d]
                 x = _int_lit(o.cidx[d])
                 for cmp, bound in ((">=", lo), ("<=", hi)):
@@ -435,9 +471,26 @@ def compose(outer: list, inner: list, co: bool) -> list:
             def sub(x, sigma=sigma):
                 return x if x is None or not sigma else subst_free(x, sigma)
 
+            # a join travels with the band it gates (§3.5): the inner's names
+            # renamed as the composite reads them; two joins are refused
+            jn = o.join
+            if b.join is not None:
+                if o.join is not None:
+                    raise BandError("a band through two joined faq nodes is not supported")
+                jm = {}
+                for n in join_names(b):
+                    x = sigma.get(n, n)
+                    if not isinstance(x, str):
+                        raise BandError(
+                            "a joined band composed at a non-bare index is not supported"
+                        )
+                    jm[n] = x
+                jn = rename_join(b.join, jm)
             g = conj(o.guard, sub(b.guard))
             if conds:
                 g = conj(g, conj_list(conds))
+            if tie:
+                g = conj(g, conj_list(tie))
             cidx = [canon_lits(simplify_jl(sub(c))) for c in b.cidx]
             coef = simp(mul(o.coef, sub(b.coef))) if co else None
             if co and is_zero(coef):
@@ -457,5 +510,5 @@ def compose(outer: list, inner: list, co: bool) -> list:
                         rows[k] = cell[j]
                         j += 1
                 con = [(n, *cell[nr + i]) for i, (n, _, _) in enumerate(contracted)]
-                out.append(normalize_band(Band(rows, list(o.ridx), cidx, coef, con, g2)))
+                out.append(normalize_band(Band(rows, list(o.ridx), cidx, coef, con, g2, jn)))
     return out

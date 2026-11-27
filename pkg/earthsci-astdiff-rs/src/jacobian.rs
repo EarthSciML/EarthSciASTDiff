@@ -252,6 +252,8 @@ pub struct StructureBand {
     pub cidx: Vec<Expr>,
     pub contracted: Vec<(String, i64, i64)>,
     pub guard: Option<Expr>,
+    /// The band's join (spec §3.5), as in a full band.
+    pub join: Option<crate::bands::BandJoin>,
 }
 
 impl From<JacEntry> for StructureEntry {
@@ -266,6 +268,7 @@ impl From<JacEntry> for StructureEntry {
                 cidx: b.cidx,
                 contracted: b.contracted,
                 guard: b.guard,
+                join: b.join,
             },
         }
     }

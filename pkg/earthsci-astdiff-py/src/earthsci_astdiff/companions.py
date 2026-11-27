@@ -223,6 +223,8 @@ def time_row_bands(cs: Companions, rhs, inl: dict, shape_u: list) -> list[Band]:
             continue
         shape_v = ctx.shapes.get(v, [])
         for b in bs:
+            if b.join is not None:
+                raise BandError("a time companion read through a joined faq node is not supported")
             out.append(_through_companion(b, cs.names[v], shape_v, cs.co))
     return [normalize_band(b) for b in merge_bands(_sum_same_box(out, cs.co))]
 

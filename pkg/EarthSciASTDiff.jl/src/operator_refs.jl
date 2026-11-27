@@ -581,6 +581,13 @@ function _body_extents(e::OpExpr, ctx::Ctx)
             hi[k] = max(hi[k], _region_bound(r[2]))
         end
         return hi, ones(Int, n)
+    elseif _is_ref(e) && ctx.refs !== nothing
+        # a body that is itself a reference to an array definition: that
+        # definition's extents at the reference's bindings
+        L = ctx.refs
+        D2 = _def!(L, e.name)
+        D2.rank > 0 || throw(BandError("an array definition's body is a scalar reference"))
+        return _ref_extents(L, D2, e.bindings, ctx)
     end
     throw(BandError("an array definition's body is a `$(e.op)`, not a faq or makearray"))
 end
@@ -860,14 +867,34 @@ function _bind_band(b::Band, B::AbstractDict, D::_DefInfo)
             ASTExpr[_subst_names(c, ren) for c in b.cidx],
             b.coef === nothing ? nothing : _bind(b.coef, ren),
             Tuple{String, Int, Int}[(rn(n), lo, hi) for (n, lo, hi) in b.contracted],
-            b.guard === nothing ? nothing : _subst_names(b.guard, ren)
+            b.guard === nothing ? nothing : _subst_names(b.guard, ren),
+            _rename_join(b.join, Dict{String, String}(k => v.name for (k, v) in ren))
         )
     end
     Bs = Dict{String, ASTExpr}(String(k) => x for (k, x) in B)
+    # a join clause names the definition's parameters (envelope factors, key
+    # columns) as strings: each is the name its argument binds, which must be
+    # a variable (§3.5, §3.6)
+    jm = Dict{String, String}()
+    if b.join !== nothing
+        for (p, x) in Bs
+            x isa VarExpr ? (jm[p] = x.name) : (jm[p] = "")
+        end
+    end
+    j = _rename_join(b.join, filter(kv -> kv[2] != "", jm))
+    if j !== nothing
+        bad = [p for (p, n) in jm if n == "" && occursin("\"$p\"", JSON3.write(j[1]))]
+        isempty(bad) || throw(
+            BandError(
+                "a join of `$(D.name)` names parameter `$(bad[1])`, bound to an " *
+                    "expression: a join reads variables only"
+            )
+        )
+    end
     return _rebuild(
         b; cidx = ASTExpr[_subst_names(c, Bs) for c in b.cidx],
         coef = b.coef === nothing ? nothing : _bind(b.coef, Bs),
-        guard = b.guard === nothing ? nothing : _subst_names(b.guard, Bs)
+        guard = b.guard === nothing ? nothing : _subst_names(b.guard, Bs), join = j
     )
 end
 
@@ -918,9 +945,21 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
         end
         conds = ASTExpr[]
         dead = false
+        jnames = _join_names(b)
+        tie = ASTExpr[]
         for (d, r) in enumerate(b.ridx)
             lo, hi = b.rows[d]
-            r isa String && (sigma[r] = o.cidx[d])
+            if r isa String && r in jnames && !(o.cidx[d] isa VarExpr)
+                # a joined row name read at a non-bare index stays a name of
+                # the composite (the join reads it): contracted over its
+                # row range, tied to the index by an equality (§3.5)
+                f = r in taken ? _fresh!(taken, r * "_c", "_c") : (push!(taken, r); r)
+                sigma[r] = VarExpr(f)
+                push!(bcon, (f, lo, hi))
+                push!(tie, op("==", VarExpr(f), o.cidx[d]))
+            elseif r isa String
+                sigma[r] = o.cidx[d]
+            end
             for c in (op(">=", o.cidx[d], lit(lo)), op("<=", o.cidx[d], lit(hi)))
                 t = _fold_cmp(c)
                 t === true && continue
@@ -931,8 +970,25 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
         end
         dead && continue
         sub(x) = x === nothing ? nothing : _subst_names(x, sigma)
+        # a join travels with the band it gates (§3.5): the inner's names
+        # renamed as the composite reads them (a row name must land on a
+        # bare name); two joins in one composite are refused
+        jn = o.join
+        if b.join !== nothing
+            o.join === nothing || throw(BandError("a band through two joined faq nodes is not supported"))
+            jm = Dict{String, String}()
+            for n in _join_names(b)
+                x = get(sigma, n, VarExpr(n))
+                x isa VarExpr || throw(
+                    BandError("a joined band composed at a non-bare index ($(_json(x))) is not supported")
+                )
+                jm[n] = x.name
+            end
+            jn = _rename_join(b.join, jm)
+        end
         g = _conj(o.guard, sub(b.guard))
         isempty(conds) || (g = _conj(g, _conj(conds)))
+        isempty(tie) || (g = _conj(g, _conj(tie)))
         cidx = ASTExpr[_canon_lits(simplify(sub(c))) for c in b.cidx]
         # The inner coefficient is any expression (an argument's band, or a
         # composed band `ref * argcoef`), not only a generic leaf: substitute
@@ -958,7 +1014,7 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
             con = Tuple{String, Int, Int}[
                 (n, cell[nr + i]...) for (i, (n, _, _)) in enumerate(contracted)
             ]
-            push!(out, normalize_band(Band(rows, o.ridx, cidx, c, con, g2)))
+            push!(out, normalize_band(Band(rows, o.ridx, cidx, c, con, g2, jn)))
         end
     end
     return out

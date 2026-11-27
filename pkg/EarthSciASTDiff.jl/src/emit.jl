@@ -68,6 +68,10 @@ function serialize_band(en::JacEntry)
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
     b.guard === nothing || (d["where"] = _ser_expr(b.guard))
+    if b.join !== nothing
+        d["join"] = b.join[1]
+        d["join_ranges"] = OrderedDict{String, Any}(b.join[2]...)
+    end
     return d
 end
 
@@ -88,6 +92,10 @@ function parse_band(d::AbstractDict)::JacEntry
             ] :
             Tuple{String, Int, Int}[],
         haskey(d, "where") ? expression_from_json(d["where"]) : nothing,
+        haskey(d, "join") ? (
+                Any[_plain(c) for c in d["join"]],
+                Pair{String, Any}[String(k) => _plain(v) for (k, v) in sort!(collect(pairs(d["join_ranges"])); by = x -> String(first(x)))],
+            ) : nothing,
     )
     return JacEntry(String(d["row"]), String(d["col"]), band)
 end
@@ -740,12 +748,17 @@ function _evaluation_document(
                 for (n, lo, hi) in cr
                     rngs[n] = Any[lo, hi]
                 end
-                OrderedDict{String, Any}(
+                # a joined band's field is its coefficient on the joined
+                # tuples and 0 elsewhere: the faq carries the join (§3.5)
+                _join_ranges!(rngs, b, ctx)
+                fq = OrderedDict{String, Any}(
                     "op" => "faq", "args" => Any[],
                     "output_idx" => aggnames,
                     "ranges" => rngs,
-                    "expr" => _ser_expr(coefs[k])
                 )
+                b.join === nothing || (fq["join"] = b.join[1])
+                fq["expr"] = _ser_expr(coefs[k])
+                fq
             end
             rhs = OrderedDict{String, Any}(
                 "op" => "makearray", "args" => Any[],

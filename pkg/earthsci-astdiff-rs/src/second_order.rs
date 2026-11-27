@@ -327,6 +327,7 @@ fn coef_site_bands(
                 coef,
                 contracted,
                 guard: conj(b.guard.clone(), g),
+                join: b.join.clone(),
             });
         }
     }

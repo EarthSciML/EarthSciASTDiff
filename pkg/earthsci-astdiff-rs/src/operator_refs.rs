@@ -1021,6 +1021,19 @@ fn body_extents(n: &ExpressionNode, ctx: &Ctx) -> R<(Vec<i64>, Vec<i64>)> {
             }
             Ok((hi, vec![1; k]))
         }
+        _ if ref_node(&Expr::operator(n.clone())).is_some() && ctx.refs.is_some() => {
+            // a body that is itself a reference to an array definition: that
+            // definition's extents at the reference's bindings
+            let l = ctx.refs.clone().unwrap();
+            let d2 = l.def(n.name.as_deref().unwrap_or(""))?;
+            if d2.rank == 0 {
+                return Err(BandError(
+                    "an array definition's body is a scalar reference".into(),
+                ));
+            }
+            let empty = HashMap::new();
+            l.ref_extents(&d2, n.bindings.as_ref().unwrap_or(&empty), ctx)
+        }
         o => Err(BandError(format!(
             "an array definition's body is a `{o}`, not a faq or makearray"
         ))),
@@ -1187,13 +1200,16 @@ pub(crate) fn ref_value_bands(
         if inner.is_empty() {
             continue;
         }
-        let bound: Vec<Band> = db.iter().map(|x| bind_band(x, b, &d.params)).collect();
+        let bound: Vec<Band> = db
+            .iter()
+            .map(|x| bind_band(x, b, &d.params, &d.name))
+            .collect::<R<_>>()?;
         out.extend(compose(&bound, &inner, co)?);
     }
     Ok(out)
 }
 
-fn bind_band(b: &Band, args: &HashMap<String, Expr>, params: &[String]) -> Band {
+fn bind_band(b: &Band, args: &HashMap<String, Expr>, params: &[String], dname: &str) -> R<Band> {
     let mut argnames = HashSet::new();
     for x in args.values() {
         argnames.extend(free_vars(x));
@@ -1239,11 +1255,39 @@ fn bind_band(b: &Band, args: &HashMap<String, Expr>, params: &[String]) -> Band 
             .map(|(n, lo, hi)| (rn(n), *lo, *hi))
             .collect();
         b.guard = b.guard.as_ref().map(|g| subst_names(g, &ren));
+        let rm: HashMap<String, String> = ren
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Expr::Variable(f) => Some((k.clone(), f.clone())),
+                _ => None,
+            })
+            .collect();
+        b.join = b.join.as_ref().map(|j| j.renamed(&rm));
     }
     b.cidx = b.cidx.iter().map(|c| subst_names(c, args)).collect();
     b.coef = bind(&b.coef, args);
     b.guard = b.guard.as_ref().map(|g| subst_names(g, args));
-    b
+    // a join clause names the definition's parameters (envelope factors, key
+    // columns) as strings: each is the variable its argument binds (§3.5)
+    if let Some(j) = &b.join {
+        let text = crate::helpers::stable_json(&serde_json::Value::Array(j.clauses.clone()));
+        let mut jm = HashMap::new();
+        for (p, x) in args {
+            match x {
+                Expr::Variable(v) => {
+                    jm.insert(p.clone(), v.clone());
+                }
+                _ if text.contains(&format!("\"{p}\"")) => {
+                    return Err(BandError(format!(
+                        "a join of `{dname}` names parameter `{p}`, bound to an expression: a join reads variables only"
+                    )))
+                }
+                _ => {}
+            }
+        }
+        b.join = Some(j.renamed(&jm));
+    }
+    Ok(b)
 }
 
 fn int_lit(e: &Expr) -> Option<i64> {
@@ -1295,10 +1339,28 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
             }
             let mut conds = Vec::new();
             let mut dead = false;
+            let jnames = crate::bands::join_names(b);
+            let mut tie = Vec::new();
             for (d, r) in b.ridx.iter().enumerate() {
                 let (lo, hi) = b.rows[d];
                 if let RIdx::Name(n) = r {
-                    sigma.insert(n.clone(), o.cidx[d].clone());
+                    if jnames.contains(n) && !matches!(o.cidx[d], Expr::Variable(_)) {
+                        // a joined row name read at a non-bare index stays a
+                        // name of the composite (the join reads it):
+                        // contracted over its row range, tied to the index by
+                        // an equality (§3.5)
+                        let f = if taken.contains(n) {
+                            fresh(&mut taken, &format!("{n}_c"), "_c")
+                        } else {
+                            taken.insert(n.clone());
+                            n.clone()
+                        };
+                        sigma.insert(n.clone(), Expr::Variable(f.clone()));
+                        bcon.push((f.clone(), lo, hi));
+                        tie.push(op("==", vec![Expr::Variable(f), o.cidx[d].clone()]));
+                    } else {
+                        sigma.insert(n.clone(), o.cidx[d].clone());
+                    }
                 }
                 for (cmp, bound) in [(">=", lo), ("<=", hi)] {
                     if let Some(x) = int_lit(&o.cidx[d]) {
@@ -1318,9 +1380,38 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
                 continue;
             }
             let sub = |x: &Expr| subst_names(x, &sigma);
+            // a join travels with the band it gates (§3.5): the inner's names
+            // renamed as the composite reads them; two joins are refused
+            let mut jn = o.join.clone();
+            if let Some(bj) = &b.join {
+                if o.join.is_some() {
+                    return Err(BandError(
+                        "a band through two joined faq nodes is not supported".into(),
+                    ));
+                }
+                let mut jm = HashMap::new();
+                for n in bj.names() {
+                    match sigma.get(&n) {
+                        None => {}
+                        Some(Expr::Variable(x)) => {
+                            jm.insert(n.clone(), x.clone());
+                        }
+                        Some(x) => {
+                            return Err(BandError(format!(
+                                "a joined band composed at a non-bare index ({}) is not supported",
+                                serde_json::to_string(&ser_expr(x)).unwrap_or_default()
+                            )))
+                        }
+                    }
+                }
+                jn = Some(bj.renamed(&jm));
+            }
             let mut g = conj(o.guard.clone(), b.guard.as_ref().map(sub));
             if !conds.is_empty() {
                 g = conj(g, conj_list(conds));
+            }
+            if !tie.is_empty() {
+                g = conj(g, conj_list(tie));
             }
             let cidx: Vec<Expr> = b
                 .cidx
@@ -1383,6 +1474,7 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
                     coef: coef.clone(),
                     contracted: con,
                     guard: g2,
+                    join: jn.clone(),
                 }));
             }
         }

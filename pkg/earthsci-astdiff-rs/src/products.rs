@@ -361,6 +361,7 @@ fn walk_band(b: &Band, ci: &[Expr], guard: Option<Expr>) -> Band {
         coef: Expr::Integer(0),
         contracted: b.contracted.clone(),
         guard,
+        join: None,
     }
 }
 
@@ -581,6 +582,7 @@ fn term_faq(
     conj: Vec<Conj>,
     body: Value,
     bodynames: &HashSet<String>,
+    ctx: Option<&Ctx>,
 ) -> R<Value> {
     let mut ranges: IndexMap<String, (i64, i64)> = IndexMap::new();
     for (n, lo, hi) in outranges {
@@ -621,20 +623,20 @@ fn term_faq(
     f.insert("op".into(), json!("faq"));
     f.insert("args".into(), json!([]));
     f.insert("output_idx".into(), Value::Array(output_idx));
-    f.insert(
-        "ranges".into(),
-        Value::Object(
-            ranges
-                .into_iter()
-                .map(|(n, (lo, hi))| (n, json!([lo, hi])))
-                .collect(),
-        ),
-    );
+    let mut rmap: Map<String, Value> = ranges
+        .into_iter()
+        .map(|(n, (lo, hi))| (n, json!([lo, hi])))
+        .collect();
+    crate::bands::join_ranges_into(&mut rmap, b, ctx)?;
+    f.insert("ranges".into(), Value::Object(rmap));
     if !conj.is_empty() {
         f.insert(
             "filter".into(),
             sand(conj.into_iter().map(|(c, _)| c).collect()),
         );
+    }
+    if let Some(j) = &b.join {
+        f.insert("join".into(), Value::Array(j.clauses.clone()));
     }
     f.insert("expr".into(), expr);
     Ok(Value::Object(f))
@@ -663,7 +665,7 @@ fn jvp_term(en: &JacEntry, coef: &Expr, vin: &str, ctx: &Ctx, wrt: Wrt) -> R<Opt
                 })
                 .collect()
         };
-        term_faq(b, out, &[], conj, body, &bodynames)?
+        term_faq(b, out, &[], conj, body, &bodynames, Some(ctx))?
     } else {
         // no index names: `where` and the column are closed, decided here
         if !point_in_extent(b, &en.v, &b.cidx, &shape_v, wrt)? {
@@ -699,6 +701,7 @@ fn scatter_term(
     body: Value,
     bodynames: &HashSet<String>,
     taken: &HashSet<String>,
+    ctx: Option<&Ctx>,
 ) -> R<Option<Value>> {
     // the equality drops every ghost, but on the forcing axis a dropped
     // point is a lost gradient
@@ -722,7 +725,7 @@ fn scatter_term(
         .map(|(n, s)| (n.clone(), 1, *s))
         .collect();
     let output_idx = j.iter().map(|n| json!(n)).collect();
-    term_faq(b, output_idx, &outranges, all, body, bodynames).map(Some)
+    term_faq(b, output_idx, &outranges, all, body, bodynames, ctx).map(Some)
 }
 
 fn vjp_term(
@@ -761,6 +764,7 @@ fn vjp_term_read(
         body,
         &bodynames,
         taken,
+        Some(ctx),
     )
 }
 
@@ -820,6 +824,7 @@ fn hvp_term(
         sop("*", vec![ser_expr(coef), m]),
         &bodynames,
         taken,
+        Some(ctx),
     )
 }
 
@@ -871,6 +876,7 @@ fn hvp_sym_term(
         body,
         &bodynames,
         taken,
+        Some(ctx),
     )
 }
 
@@ -1633,6 +1639,7 @@ fn hvp_sweeps(
                     sop("*", vec![ser_expr(coef), m]),
                     &bodynames,
                     &taken,
+                    Some(ctx),
                 )
             }
             HvpForm::Symmetric => {
@@ -1666,6 +1673,7 @@ fn hvp_sweeps(
                     body,
                     &bodynames,
                     &taken,
+                    Some(ctx),
                 )
             }
         }
@@ -1756,6 +1764,7 @@ mod tests {
             coef: Expr::Number(1.0),
             contracted: Vec::new(),
             guard: None,
+            join: None,
         }
     }
     /// One point (row 3), reading its column at the literal index `ci`.
@@ -1767,6 +1776,7 @@ mod tests {
             coef: Expr::Number(1.0),
             contracted: Vec::new(),
             guard: None,
+            join: None,
         }
     }
     fn walk(b: &Band, ci: &[Expr], n: i64) -> bool {

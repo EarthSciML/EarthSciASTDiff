@@ -202,7 +202,21 @@ pub(crate) fn steps_composed(st: &mut Steps, o: &str) -> R<Vec<JacEntry>> {
         )
     };
     let mut inl = st.inline.clone();
-    inl.insert(o.to_string(), def);
+    let same_names = |a: &Expr, b: &Expr| match (a, b) {
+        (Expr::Operator(x), Expr::Operator(y)) => x.output_idx == y.output_idx,
+        _ => false,
+    };
+    let rhs = match &def {
+        Expr::Operator(dn) if dn.op == "faq" && dn.join.is_some() && same_names(&rhs, &def) => {
+            // a joined definition over its own row names is its row (a joined
+            // node is never read through beta-reduction, §3.5)
+            def.clone()
+        }
+        _ => {
+            inl.insert(o.to_string(), def);
+            rhs
+        }
+    };
     let out = steps_row(st, o, &rhs, &inl, &shape);
     st.busy.remove(o);
     let mut out = out?;
@@ -461,7 +475,8 @@ fn steps_sum_free(b: &Band, co: bool) -> Band {
     if b.contracted.is_empty() {
         return b.clone();
     }
-    let mut read = HashSet::new();
+    // a joined name is never summed away
+    let mut read: HashSet<String> = crate::bands::join_names(b).into_iter().collect();
     for c in &b.cidx {
         read.extend(free_variables(c));
     }
@@ -517,6 +532,7 @@ fn steps_sum_free(b: &Band, co: bool) -> Band {
         coef,
         contracted: con,
         guard: conj_list(keep),
+        join: b.join.clone(),
     })
 }
 
@@ -532,6 +548,7 @@ fn steps_combine(bs: Vec<Band>, co: bool) -> Vec<Band> {
         Vec<String>,
         Vec<(String, i64, i64)>,
         Option<String>,
+        Option<String>,
     );
     let mut order: Vec<Key> = Vec::new();
     let mut groups: BTreeMap<Key, Vec<usize>> = BTreeMap::new();
@@ -542,6 +559,7 @@ fn steps_combine(bs: Vec<Band>, co: bool) -> Vec<Band> {
             b.cidx.iter().map(skey).collect(),
             b.contracted.clone(),
             b.guard.as_ref().map(skey),
+            b.join.as_ref().map(|j| j.key()),
         );
         if !groups.contains_key(&k) {
             order.push(k.clone());

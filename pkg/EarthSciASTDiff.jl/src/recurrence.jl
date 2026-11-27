@@ -507,7 +507,7 @@ function _rename_apart(outer::Band, inner::Band, taken::Set{String})
         copy(outer.rows), Union{String, Int}[nm(r) for r in outer.ridx],
         ASTExpr[sub(c) for c in outer.cidx], sub(outer.coef),
         Tuple{String, Int, Int}[(nm(n), lo, hi) for (n, lo, hi) in outer.contracted],
-        sub(outer.guard)
+        sub(outer.guard), _rename_join(outer.join, Dict{String, String}(k => v.name for (k, v) in m))
     )
 end
 
@@ -584,6 +584,9 @@ function _compose(outer::Band, inner::Band, shape_v::Vector{Int})
     guard = _conj(
         _conj(outer.guard, _conj(conds)),
         inner.guard === nothing ? nothing : _subst_free(inner.guard, sigma)
+    )
+    inner.join === nothing && outer.join === nothing || throw(
+        BandError("a joined faq node through a recurrence is not supported")
     )
     b = Band(
         rows, copy(outer.ridx), ASTExpr[_subst_free(c, sigma) for c in inner.cidx],

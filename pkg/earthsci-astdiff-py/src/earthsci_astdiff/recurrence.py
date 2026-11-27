@@ -576,6 +576,8 @@ def compose(outer: Band, inner: Band, shape_v: list) -> Band | None:
         conj(outer.guard, _and_all(conds)),
         None if inner.guard is None else subst_free(inner.guard, sigma),
     )
+    if inner.join is not None or outer.join is not None:
+        raise BandError("a joined faq node through a recurrence is not supported")
     b = Band(
         rows,
         list(outer.ridx),

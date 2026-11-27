@@ -13,7 +13,7 @@ from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
 from earthsci_ast.serialize import _serialize_domain
 
-from .bands import Band, BandError
+from .bands import Band, BandError, join_ranges_into
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
@@ -41,6 +41,9 @@ def serialize_band(en: JacEntry | JacEntry2) -> dict:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
     if b.guard is not None:
         d["where"] = ser_expr(b.guard)
+    if b.join is not None:
+        d["join"] = list(b.join[0])
+        d["join_ranges"] = dict(b.join[1])
     return d
 
 
@@ -53,6 +56,7 @@ def parse_band(d: dict) -> JacEntry:
         parse_expression(d["coef"]) if "coef" in d else None,
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
         parse_expression(d["where"]) if "where" in d else None,
+        (list(d["join"]), sorted(d["join_ranges"].items())) if "join" in d else None,
     )
     return JacEntry(str(d["row"]), str(d["col"]), band)
 
@@ -773,6 +777,9 @@ def _evaluation_document(
                 rngs = {r: [b.rows[k2][0], b.rows[k2][1]] for k2, r in free}
                 for n, lo, hi in cr:
                     rngs[n] = [lo, hi]
+                # a joined band's field is its coefficient on the joined
+                # tuples and 0 elsewhere: the faq carries the join (§3.5)
+                join_ranges_into(rngs, b, ctx)
                 val = {
                     "op": "faq",
                     "args": [],
@@ -780,6 +787,8 @@ def _evaluation_document(
                     "ranges": rngs,
                     "expr": ser_expr(coefs[k]),
                 }
+                if b.join is not None:
+                    val["join"] = list(b.join[0])
             rhs = {
                 "op": "makearray",
                 "args": [],

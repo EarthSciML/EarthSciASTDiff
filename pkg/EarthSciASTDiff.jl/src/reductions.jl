@@ -21,10 +21,13 @@
 # `reduce`, and its ⊗ is already written out in the body. A join or a
 # value-invention node has no rule. `E` is the caller's error type.
 function _reduce_op(e::OpExpr, E = BandError)::String
-    e.join === nothing || throw(E("joined faq nodes are not differentiated"))
     (e.distinct === true || e.key !== nothing) && throw(
         E("value-invention faq nodes (`distinct`, `key`) are not differentiated")
     )
+    # a join (§3.5) is a build-time gate on the node's tuples: the bands
+    # carry it; only a `+` reduction over it is differentiated
+    e.join === nothing || e.semiring in (nothing, "sum_product") && something(e.reduce, "+") == "+" ||
+        throw(E("a joined faq node is differentiated only under a `+` reduction"))
     if e.semiring === nothing
         r = something(e.reduce, "+")
         r in ("+", "*", "max", "min") && return r

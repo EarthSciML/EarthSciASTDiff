@@ -42,16 +42,42 @@ struct Band
     coef::Union{Nothing, ASTExpr}
     contracted::Vector{Tuple{String, Int, Int}}
     guard::Union{Nothing, ASTExpr}
+    # The relational join of the faq node the band was read off (spec §3.5):
+    # `nothing`, or `(clauses, ranges)` with the node's `join` clauses as
+    # serialized and the range of each of the node's index names that is a
+    # row or contracted name of the band (an `{"from": set}` range kept as
+    # such, the join resolves its sides through it).
+    join::Union{Nothing, Tuple{Vector{Any}, Vector{Pair{String, Any}}}}
 end
 Band(rows, ridx, cidx, coef) = Band(rows, ridx, cidx, coef, Tuple{String, Int, Int}[])
 Band(rows, ridx, cidx, coef, contracted) = Band(rows, ridx, cidx, coef, contracted, nothing)
+Band(rows, ridx, cidx, coef, contracted, guard) = Band(rows, ridx, cidx, coef, contracted, guard, nothing)
 
 # A copy of `b` with some fields replaced; the guard travels unless replaced,
 # so no rebuild can drop it silently.
 _rebuild(
     b::Band; rows = b.rows, ridx = b.ridx, cidx = b.cidx, coef = b.coef,
-    contracted = b.contracted, guard = b.guard
-) = Band(rows, ridx, cidx, coef, contracted, guard)
+    contracted = b.contracted, guard = b.guard, join = b.join
+) = Band(rows, ridx, cidx, coef, contracted, guard, join)
+
+# A JSON value as plain `Dict{String, Any}` / `Vector{Any}` / `String`
+# (joins compare and hash by content whatever read them).
+_plain(x) = x isa AbstractDict ? Dict{String, Any}(String(k) => _plain(v) for (k, v) in pairs(x)) :
+    x isa AbstractVector ? Any[_plain(y) for y in x] :
+    x isa AbstractString ? String(x) : x
+
+# The index names a band's join reads (none without a join).
+_join_names(b::Band) = b.join === nothing ? String[] : String[first(p) for p in b.join[2]]
+
+# A join with its index names renamed by `m` (old => new name).
+function _rename_join(j, m::AbstractDict)
+    j === nothing && return nothing
+    isempty(m) && return j
+    ren(x) = x isa AbstractString ? String(get(m, String(x), x)) : x
+    walk(x) = x isa AbstractDict ? Dict{String, Any}(String(k) => walk(v) for (k, v) in x) :
+        x isa AbstractVector ? Any[walk(y) for y in x] : ren(x)
+    return (Any[walk(c) for c in j[1]], Pair{String, Any}[String(get(m, k, k)) => v for (k, v) in j[2]])
+end
 
 """
 Differentiation context: index-set sizes, array-variable shapes, parameter
@@ -357,11 +383,24 @@ function _bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co::Boo
 end
 
 # Push one band, its value-reading column dimensions made one-hot first.
-function _push_band!(out, rows, ridx, cidx, coef, contracted, guard, v::String, ctx::Ctx)
+function _push_band!(out, rows, ridx, cidx, coef, contracted, guard, v::String, ctx::Ctx; join = nothing)
     ridx = collect(Union{String, Int}, ridx)
     cidx, coef, contracted = _one_hot(cidx, coef, contracted, ridx, v, ctx)
-    push!(out, Band(collect(Tuple{Int, Int}, rows), ridx, cidx, coef, contracted, guard))
+    push!(out, Band(collect(Tuple{Int, Int}, rows), ridx, cidx, coef, contracted, guard, join))
     return
+end
+
+# The join a band read off faq node `e` carries (spec §3.5): its clauses and
+# the range of each of its index names, as serialized; `nothing` without a
+# join.
+function _node_join(e::OpExpr)
+    e.join === nothing && return nothing
+    d = EarthSciAST.serialize_expression(e)
+    rs = d["ranges"]
+    return (
+        Any[_plain(c) for c in d["join"]],
+        Pair{String, Any}[String(n) => _plain(rs[n]) for n in sort!(collect(String, keys(rs)))],
+    )
 end
 
 # Emit one band per site of a scalar-valued expression broadcast over `rows`,
@@ -584,11 +623,12 @@ function _faq_region!(
         elseif nz
             _check_window(red, cnames, BandError)   # what `_window_weight` refuses
         end
+        jn = _node_join(e)
         if isempty(crange)
             coef = co ? _simp(mul(d, scale...), sm) : _ONE
             iszero_lit(coef) && continue
-            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx)
-        elseif !any(
+            _push_band!(out, rows2, oidx, cidx, coef, extra, _conj(guard, g), v, ctx; join = jn)
+        elseif jn === nothing && !any(
                 n -> any(c -> n in free_variables(c), cidx),
                 first.(crange)
             )
@@ -621,10 +661,11 @@ function _faq_region!(
         else
             # A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a band
             # with free contracted column dimensions; entries landing on
-            # one column accumulate at assembly.
+            # one column accumulate at assembly. A joined node always takes
+            # this form: its join reads every contracted name (§3.5).
             coef = co ? _simp(mul(d, scale...), sm) : _ONE
             iszero_lit(coef) && continue
-            _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx)
+            _push_band!(out, rows2, oidx, cidx, coef, vcat(crange, extra), _conj(guard, g), v, ctx; join = jn)
         end
     end
     return
@@ -702,7 +743,10 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
                     ASTExpr[substitute(c, subst) for c in b.cidx]
                 guard = isempty(subst) || b.guard === nothing ? b.guard :
                     substitute(b.guard, subst)
-                push!(out, Band(rows2, ridx, cidx, coef, b.contracted, guard))
+                b.join === nothing || isdisjoint(keys(subst), _join_names(b)) || throw(
+                    BandError("a joined faq value shifted inside a makearray region is not supported")
+                )
+                push!(out, Band(rows2, ridx, cidx, coef, b.contracted, guard, b.join))
             end
         else
             # Scalar value broadcast over the region.
@@ -741,9 +785,11 @@ a one-cell boundary face) to that constant, substituting it through `cidx`,
 """
 function normalize_band(b::Band)::Band
     subst = Dict{String, ASTExpr}(); ridx = Union{String, Int}[]
+    # a name the band's join reads is never pinned: the join reads it
+    jn = _join_names(b)
     for (k, r) in enumerate(b.ridx)
         lo, hi = b.rows[k]
-        if r isa String && lo == hi
+        if r isa String && lo == hi && !(r in jn)
             subst[r] = lit(lo); push!(ridx, lo)
         else
             push!(ridx, r)
@@ -751,13 +797,14 @@ function normalize_band(b::Band)::Band
     end
     contracted = Tuple{String, Int, Int}[]
     for (n, lo, hi) in b.contracted           # a one-value contraction pins too
-        lo == hi ? (subst[n] = lit(lo)) : push!(contracted, (n, lo, hi))
+        lo == hi && !(n in jn) ? (subst[n] = lit(lo)) : push!(contracted, (n, lo, hi))
     end
     isempty(subst) && return b
     return Band(
         b.rows, ridx,
         ASTExpr[_canon_lits(simplify(substitute(c, subst))) for c in b.cidx],
         b.coef === nothing ? nothing : _simp(substitute(b.coef, subst)), contracted,
-        b.guard === nothing ? nothing : _canon_lits(simplify(substitute(b.guard, subst)))
+        b.guard === nothing ? nothing : _canon_lits(simplify(substitute(b.guard, subst))),
+        b.join
     )
 end

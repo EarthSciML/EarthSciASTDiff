@@ -32,14 +32,26 @@ pub fn serialize_band(en: &JacEntry) -> Value {
         b.guard.as_ref(),
     );
     d.insert("coef".into(), ser_expr(&b.coef));
+    ser_join(&mut d, b.join.as_ref());
     Value::Object(d)
+}
+
+/// A joined band's `join` and `join_ranges` fields (spec §3.5, §4).
+pub(crate) fn ser_join(d: &mut Map<String, Value>, j: Option<&crate::bands::BandJoin>) {
+    if let Some(j) = j {
+        d.insert("join".into(), Value::Array(j.clauses.clone()));
+        d.insert(
+            "join_ranges".into(),
+            Value::Object(j.ranges.iter().cloned().collect()),
+        );
+    }
 }
 
 /// A structure-only entry (spec §2.1) as JSON: the fields of
 /// [`serialize_band`] without `coef`.
 pub fn serialize_structure_band(en: &StructureEntry) -> Value {
     let b = &en.band;
-    Value::Object(ser_fields(
+    let mut d = ser_fields(
         &en.u,
         &en.v,
         &b.rows,
@@ -47,7 +59,9 @@ pub fn serialize_structure_band(en: &StructureEntry) -> Value {
         &b.cidx,
         &b.contracted,
         b.guard.as_ref(),
-    ))
+    );
+    ser_join(&mut d, b.join.as_ref());
+    Value::Object(d)
 }
 
 /// Every field of an entry but `coef`.
@@ -1290,6 +1304,18 @@ pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
             coef: parse_expr(d.get("coef").ok_or_else(|| perr("band without `coef`"))?)?,
             contracted,
             guard: d.get("where").map(parse_expr).transpose()?,
+            join: match (d.get("join"), d.get("join_ranges")) {
+                (Some(Value::Array(c)), Some(Value::Object(r))) => {
+                    let mut ranges: Vec<(String, Value)> =
+                        r.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    ranges.sort_by(|a, b| a.0.cmp(&b.0));
+                    Some(crate::bands::BandJoin {
+                        clauses: c.clone(),
+                        ranges,
+                    })
+                }
+                _ => None,
+            },
         },
     })
 }
@@ -1818,8 +1844,15 @@ pub fn evaluation_document_with_forcing(
                 for (n, lo, hi) in cr {
                     rngs.insert(n.clone(), json!([lo, hi]));
                 }
-                json!({"op": "faq", "args": [], "output_idx": aggnames,
-                       "ranges": rngs, "expr": ser_expr(&coefs[k])})
+                // a joined band's field is its coefficient on the joined
+                // tuples and 0 elsewhere: the faq carries the join (§3.5)
+                crate::bands::join_ranges_into(&mut rngs, b, Some(&ctx))?;
+                let mut fq = json!({"op": "faq", "args": [], "output_idx": aggnames,
+                       "ranges": rngs, "expr": ser_expr(&coefs[k])});
+                if let Some(j) = &b.join {
+                    fq["join"] = Value::Array(j.clauses.clone());
+                }
+                fq
             };
             let mut full: Vec<Value> = shape_u.iter().map(|n| json!([1, n])).collect();
             full.extend(cr.iter().map(|(_, _, hi)| json!([1, hi])));

@@ -404,7 +404,7 @@ function merge_bands(bs::Vector{Band})::Vector{Band}
     hkey(b) = (
         b.ridx, UInt[shash(hx, c) for c in b.cidx],
         b.coef === nothing ? nothing : shash(hx, b.coef), b.contracted,
-        b.guard === nothing ? nothing : shash(hx, b.guard),
+        b.guard === nothing ? nothing : shash(hx, b.guard), b.join,
     )
     groups = Dict{Any, Vector{Int}}()
     for (i, b) in enumerate(bs)
