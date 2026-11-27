@@ -99,6 +99,7 @@ pub fn inline_observed_aligned(
         rank_obs,
         scalars,
         axes,
+        mixed: HashMap::new(),
     };
     let scope = HashSet::new();
     // The fixpoint test compares the post-inlining right-hand side, the
@@ -141,6 +142,9 @@ struct Fresh<'a> {
     scalars: &'a HashSet<String>,
     /// variable → its declared index-set names (esm-spec §4.3.4)
     axes: &'a HashMap<String, Vec<String>>,
+    /// node → the two ranks some elementwise node in its subtree combines
+    /// (`def_rank`): refused inside an observed declared without a shape
+    mixed: HashMap<*const Expr, (usize, usize)>,
 }
 
 impl Fresh<'_> {
@@ -842,22 +846,34 @@ fn def_rank<'a>(
     }
     // Operands of different ranks are aligned by index-set name where the
     // definition is read (`gather`); a node's rank is then its widest
-    // operand's. A named observed reaches here only when it is declared
-    // without a shape, and its shape is the union of its operands' index
-    // sets (esm-spec §4.3.4), which ranks alone cannot give: refused.
+    // operand's, and the node is recorded as mixing ranks (`fresh.mixed`, as
+    // is every node above one). A named observed reaches here only when it
+    // is declared without a shape, and its shape is the union of its
+    // operands' index sets (esm-spec §4.3.4), which ranks alone cannot give:
+    // mixed ranks anywhere in its definition are refused.
     let mut r = 0;
+    let mut mix: Option<(usize, usize)> = None;
     for a in &n.args {
         let ra = cell_rank(a, fresh, seen)?;
+        if mix.is_none() && matches!(a, Expr::Operator(_)) {
+            mix = fresh.mixed.get(&(a as *const Expr)).copied();
+        }
         if ra == 0 {
             continue;
         }
-        if r != 0 && r != ra && name.is_some() {
-            return Err(InlineError(format!(
-                "observed {what}, declared without a shape, combines arrays of rank {r} and {ra}; \
-                 declare its shape so its operands can be aligned by index set"
-            )));
+        if mix.is_none() && r != 0 && r != ra {
+            mix = Some((r, ra));
         }
         r = r.max(ra);
+    }
+    if let Some((r0, r1)) = mix {
+        if name.is_some() {
+            return Err(InlineError(format!(
+                "observed {what}, declared without a shape, combines arrays of rank {r0} and \
+                 {r1}; declare its shape so its operands can be aligned by index set"
+            )));
+        }
+        fresh.mixed.insert(d as *const Expr, (r0, r1));
     }
     Ok(r)
 }
@@ -920,6 +936,16 @@ fn gather_cell<'a>(
             names.join(", ")
         )));
     }
+    // the read selects one element of the observed: one index per dimension
+    if let Some(sh) = fresh.shapes.get(name) {
+        if sh.len() != idx.len() {
+            return Err(InlineError(format!(
+                "observed `{name}` of rank {} is read at a cell with {} indices",
+                sh.len(),
+                idx.len()
+            )));
+        }
+    }
     gather(def, idx, fresh, name)
 }
 
@@ -952,9 +978,12 @@ fn gather<'a>(e: &'a Expr, idx: &[Expr], fresh: &mut Fresh<'a>, name: &str) -> R
         if r != idx.len() {
             let why = if r >= idx.len() {
                 ""
-            } else if tax.is_none() {
+            } else if !fresh.shapes.contains_key(name) {
                 "; the observed is declared without a shape, so the operand cannot be aligned by \
                  index set"
+            } else if tax.is_none() {
+                "; the observed is shaped over a dimension that is not a declared index set, so \
+                 the operand cannot be aligned by index set"
             } else {
                 " whose index sets are not known, so it cannot be aligned by index set"
             };

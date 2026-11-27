@@ -643,7 +643,7 @@ fn bands_array(
                         RIdx::Fixed(i) => Expr::Integer(*i),
                     })
                     .collect();
-                let body = push_index(e, &idx, ctx)?;
+                let body = push_index(e, &idx, ctx, &|_| Ok(None))?;
                 let mut ranges = HashMap::new();
                 let mut oidx = Vec::new();
                 for (k, r) in names.iter().enumerate() {
@@ -1064,11 +1064,21 @@ fn bands_makearray(
     Ok(())
 }
 
-fn push_index(e: &Expr, idx: &[Expr], ctx: &Ctx) -> R<Expr> {
+/// The indices of an operand aligned by index-set name (`align_whole`;
+/// `None` reads it at the row's indices).
+type AtFn<'f> = dyn Fn(&str) -> R<Option<Vec<Expr>>> + 'f;
+
+/// Index-pushdown for bare elementwise array expressions: A ↦ index(A,
+/// idx…), or A ↦ index(A, at(A)…) where `at` gives the indices of an
+/// operand aligned by index-set name.
+fn push_index(e: &Expr, idx: &[Expr], ctx: &Ctx, at: &AtFn) -> R<Expr> {
     match e {
         Expr::Variable(nm) if is_array(ctx, nm) => {
             let mut args = vec![e.clone()];
-            args.extend(idx.iter().cloned());
+            match at(nm)? {
+                Some(ix) => args.extend(ix),
+                None => args.extend(idx.iter().cloned()),
+            }
             Ok(op("index", args))
         }
         Expr::Operator(n) => {
@@ -1079,23 +1089,168 @@ fn push_index(e: &Expr, idx: &[Expr], ctx: &Ctx) -> R<Expr> {
                     n.op
                 )));
             }
-            let mut err = None;
-            let out = map_expr_children(e, &mut |x| match push_index(x, idx, ctx) {
-                Ok(v) => v,
-                Err(er) => {
-                    if err.is_none() {
-                        err = Some(er);
-                    }
-                    x.clone()
-                }
-            });
-            match err {
-                Some(er) => Err(er),
-                None => Ok(out),
-            }
+            try_map_children(e, &mut |x| push_index(x, idx, ctx, at))
         }
         _ => Ok(e.clone()),
     }
+}
+
+/// `e` with `f` applied to each child, the first error returned.
+fn try_map_children(e: &Expr, f: &mut dyn FnMut(&Expr) -> R<Expr>) -> R<Expr> {
+    let mut err = None;
+    let out = map_expr_children(e, &mut |x| match f(x) {
+        Ok(v) => v,
+        Err(er) => {
+            if err.is_none() {
+                err = Some(er);
+            }
+            x.clone()
+        }
+    });
+    match err {
+        Some(er) => Err(er),
+        None => Ok(out),
+    }
+}
+
+/// The right-hand side of row variable `u` with the array operands of its
+/// whole-array (array-level) terms aligned with `u` by index-set name
+/// (esm-spec §4.3.4; bands.jl `align_whole`): an operand over a subset of
+/// `u`'s index sets is read at those of the row's indices and repeats along
+/// the others, and one over `u`'s index sets in another order is read in its
+/// own order. Such an operand, alone or under an elementwise op, becomes the
+/// `faq` over `u`'s cells (`_r1…`) the calculus would build for it; an
+/// operand already over `u`'s index sets in `u`'s order is left as it is, so
+/// a right-hand side needing no alignment is returned unchanged. An operand
+/// over an index set `u` is not shaped over is refused, and so is one of
+/// another rank when either side's index-set names are not known
+/// (`ctx.axes`). A `faq`, `makearray`, `index` or operator reference indexes
+/// its operands itself and is left as it is.
+pub fn align_whole(rhs: &Expr, u: &str, ctx: &Ctx) -> R<Expr> {
+    let Some(shape_u) = ctx.shapes.get(u).filter(|s| !s.is_empty()) else {
+        return Ok(rhs.clone());
+    };
+    let axu = ctx.axes.get(u);
+    let names: Vec<String> = (1..=shape_u.len()).map(|k| format!("_r{k}")).collect();
+    let rvars: Vec<Expr> = names.iter().map(|n| Expr::Variable(n.clone())).collect();
+    let at = |n: &str| -> R<Option<Vec<Expr>>> {
+        let oax = ctx.axes.get(n);
+        if let (Some(axu), Some(oax)) = (axu, oax) {
+            if oax == axu {
+                return Ok(None);
+            }
+            return aligned_row_idx(oax, axu, &rvars, u, n).map(Some);
+        }
+        let r = ctx.shapes[n].len();
+        if r == shape_u.len() {
+            return Ok(None);
+        }
+        let who = if axu.is_none() { u } else { n };
+        Err(BandError(format!(
+            "`{n}` of rank {r} is read at array level in the equation for `{u}` of rank {}, \
+             and the index sets of `{who}` are not known, so it cannot be aligned by index set",
+            shape_u.len()
+        )))
+    };
+    let leafop = |e: &Expr| match e {
+        Expr::Operator(n) => {
+            matches!(n.op.as_str(), "faq" | "makearray" | "index")
+                || crate::operator_refs::is_ref(e)
+        }
+        _ => false,
+    };
+    fn needs(e: &Expr, ctx: &Ctx, at: &AtFn, leafop: &dyn Fn(&Expr) -> bool) -> R<bool> {
+        match e {
+            Expr::Variable(nm) => Ok(is_array(ctx, nm) && at(nm)?.is_some()),
+            Expr::Operator(n) if !leafop(e) => {
+                for a in &n.args {
+                    if needs(a, ctx, at, leafop)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+    let cells = |body: Expr| -> Expr {
+        let ranges: HashMap<String, RangeSpec> = names
+            .iter()
+            .enumerate()
+            .map(|(k, n)| (n.clone(), RangeSpec::Interval([1, shape_u[k]])))
+            .collect();
+        Expr::operator(ExpressionNode {
+            op: "faq".into(),
+            output_idx: Some(names.clone()),
+            expr: Some(Box::new(body)),
+            ranges: Some(ranges),
+            ..Default::default()
+        })
+    };
+    fn walk(
+        e: &Expr,
+        ctx: &Ctx,
+        at: &AtFn,
+        leafop: &dyn Fn(&Expr) -> bool,
+        cells: &dyn Fn(Expr) -> Expr,
+        rvars: &[Expr],
+    ) -> R<Expr> {
+        match e {
+            Expr::Variable(nm) if is_array(ctx, nm) => match at(nm)? {
+                None => Ok(e.clone()),
+                Some(ix) => {
+                    let mut args = vec![e.clone()];
+                    args.extend(ix);
+                    Ok(cells(op("index", args)))
+                }
+            },
+            Expr::Operator(n) if !leafop(e) => {
+                if matches!(n.op.as_str(), "+" | "-" | "neg" | "*" | "/") {
+                    return try_map_children(e, &mut |x| walk(x, ctx, at, leafop, cells, rvars));
+                }
+                if !needs(e, ctx, at, leafop)? {
+                    return Ok(e.clone());
+                }
+                Ok(cells(push_index(e, rvars, ctx, at)?))
+            }
+            _ => Ok(e.clone()),
+        }
+    }
+    walk(rhs, ctx, &at, &leafop, &cells, &rvars)
+}
+
+/// The row indices (`rvars`, one per dimension of the row variable `u` over
+/// `axu`) at which an operand `n` over `oax` is read (esm-spec §4.3.4): the
+/// k-th dimension of the operand on index set X takes the row index of the
+/// k-th dimension of `u` on X. An index set `u` does not have (or has fewer
+/// times) is refused.
+fn aligned_row_idx(
+    oax: &[String],
+    axu: &[String],
+    rvars: &[Expr],
+    u: &str,
+    n: &str,
+) -> R<Vec<Expr>> {
+    let mut out = Vec::with_capacity(oax.len());
+    for (d, x) in oax.iter().enumerate() {
+        let k = oax[..=d].iter().filter(|y| *y == x).count();
+        let hits: Vec<usize> = axu
+            .iter()
+            .enumerate()
+            .filter(|(_, y)| *y == x)
+            .map(|(i, _)| i)
+            .collect();
+        if k > hits.len() {
+            return Err(BandError(format!(
+                "the equation for `{u}` over ({}) reads `{n}` over ({}) at array level, whose \
+                 index set `{x}` `{u}` is not shaped over",
+                axu.join(", "),
+                oax.join(", ")
+            )));
+        }
+        out.push(rvars[hits[k - 1]].clone());
+    }
+    Ok(out)
 }
 
 pub fn normalize_band(b: &Band) -> Band {

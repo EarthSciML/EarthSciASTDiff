@@ -293,6 +293,25 @@ bands: a document's bands MUST equal those of the same document with every
 `faq` operand list emptied. A whole-array reference in a scalar position of
 `expr` itself (a bare array name, not under `index`) remains an error.
 
+**A whole-array right-hand side aligns its operands by index-set name.** A
+state's right-hand side written over whole arrays (`D(s) = -(s + q + r)`,
+not a `faq` over its cells) reads each array operand as esm-spec §4.3.4
+aligns an array-level expression with its result, the state: the operand's
+k-th dimension on index set X is read at the state's k-th row index on X,
+so an operand over a subset of the state's index sets repeats along the
+others and one over them in another order is read in its own order (with
+`s` over `[x, y]`, `q` over `[y]` and `r` over `[y, x]`, the bands of row `s`
+read `q` at column `[_r2]` and `r` at `[_r2, _r1]`). This holds for an
+operand standing alone in a sum and for one under an elementwise op
+(`exp(q)`), and after observed inlining, with each inlined operand's own
+index sets. An operand over the state's index sets in the state's order is
+read at the row's indices, as before. A producer refuses an operand over an
+index set the state is not shaped over, and an operand whose rank differs
+from the state's when either one's index sets are not known (a dimension
+given by an integer extent, or a synthetic lift index set, §4.2): those
+align by position, which needs equal rank. A `faq`, `makearray`, `index` or
+operator reference indexes its operands itself and is read as written.
+
 Contracted (reduced) `faq` indices with `reduce: "+"` (explicit or
 the default) differentiate per site of the faq body: a site whose
 column indices are independent of every contracted name yields an ordinary
@@ -719,14 +738,20 @@ equation order, and the single column within each equation.
   the observed's index sets in another order is read in its own order
   (`w[i, j] = c[i, j]·q[j] + k[i] + r[j, i]`). An operand whose index sets
   are not known (a `faq`, a `makearray`, an operator reference, an observed
-  declared without a shape) MUST have the read's rank and is aligned by
-  position, and an `index` inside the definition MUST select a scalar (its
-  arity is its operand's rank). A producer refuses what it cannot read at a
-  cell rather than guess: an operand over an index set the observed is not
-  shaped over, an operand of lower rank whose index sets, or the observed's,
-  are not known, so that an observed declared without a shape whose
-  operands differ in rank is refused (its shape, the union of its operands'
-  index sets, is not given by ranks), a partial `index`, an array literal,
+  declared without a shape, a variable with a dimension given by an integer
+  extent) MUST have the read's rank and is aligned by position, and an
+  `index` inside the definition MUST select a scalar (its arity is its
+  operand's rank). A synthetic index set of the pointwise lift
+  (`_liftdim<d>_<extent>`, esm-spec §10.5) names an anonymous dimension of
+  known extent, not one shared by name with the rest of the document: a
+  variable over one is treated as having unknown index sets and aligns by
+  position. A producer refuses what it cannot read at a cell rather than
+  guess: a read whose arity is not the rank of the observed's declared
+  shape, an operand over an index set the observed is not shaped over, an
+  operand of lower rank whose index sets, or the observed's, are not known,
+  an observed declared without a shape whose operands differ in rank
+  anywhere in its definition (its shape, the union of its operands' index
+  sets, is not given by ranks), a partial `index`, an array literal,
   a shape operator, an elementwise application of a definition, a name whose
   rank it does not know (neither declared, an observed, nor `t`), or a name
   of the definition that an index bound around the read would capture.

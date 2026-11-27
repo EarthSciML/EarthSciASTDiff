@@ -78,7 +78,8 @@ function inline_observed(
     ix = StructIndex()
     fresh = _Fresh(
         e, obs, obs_names, nothing, shapes, Dict{String, Int}(),
-        IdDict{OpExpr, Int}(), rank_obs, scalars, axes
+        IdDict{OpExpr, Int}(), rank_obs, scalars, axes,
+        IdDict{OpExpr, Tuple{Int, Int}}()
     )
     for _ in 1:MAX_INLINE_PASSES
         e2 = _inline_once(e, obs, fresh, Set{String}())
@@ -111,6 +112,9 @@ mutable struct _Fresh
     rank_obs::AbstractDict
     scalars::AbstractSet       # declared scalars that are not observed
     axes::AbstractDict         # variable → its declared index-set names (§4.3.4)
+    # node → the two ranks some elementwise node in its subtree combines
+    # (`_def_rank`): refused inside an observed declared without a shape
+    mixed::IdDict{OpExpr, Tuple{Int, Int}}
 end
 
 function (f::_Fresh)(name::String, avoid)::String
@@ -460,7 +464,8 @@ end
 # `index(x, i…)` of an observed `x` whose definition is an elementwise
 # expression (arithmetic, elementary, comparison, logical, `ifelse`) of
 # arrays and scalars: the definition with every array operand read at
-# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). An
+# `i…` and every scalar operand unchanged (esm-spec §4.3.4, §9.6.11). The
+# read's arity must be the rank of the observed's declared shape. An
 # array operand is aligned with the read observed by index-set name when
 # both declare theirs (`axes`): an operand over a subset of the observed's
 # index sets is read at those of the cell's indices and repeats along the
@@ -474,7 +479,8 @@ end
 # next pass); an `index` inside the definition must select a scalar. Anything
 # this cannot decide is refused, never guessed: a name whose rank is not
 # known (neither declared, an observed, nor `t`), an operand whose rank
-# differs from the read's, a partial `index`, a literal array or shape op
+# differs from the read's where names cannot align it, an observed declared
+# without a shape that mixes ranks anywhere, a partial `index`, a literal array or shape op
 # (`reshape`, `transpose`, `concat`, `broadcast`) as an operand, an
 # elementwise application of a definition (an array bound to a value-role
 # parameter), or a definition reading a name an index bound around the read
@@ -576,20 +582,29 @@ function _def_rank(d, fresh::_Fresh, seen::Set{String}, name)::Int
     end
     # Operands of different ranks are aligned by index-set name where the
     # definition is read (`_gather_cell`); a node's rank is then its widest
-    # operand's. A named observed reaches here only when it is declared
-    # without a shape, and its shape is the union of its operands' index
-    # sets (esm-spec §4.3.4), which ranks alone cannot give: refused.
+    # operand's, and the node is recorded as mixing ranks (`fresh.mixed`, as
+    # is every node above one). A named observed reaches here only when it is
+    # declared without a shape, and its shape is the union of its operands'
+    # index sets (esm-spec §4.3.4), which ranks alone cannot give: mixed
+    # ranks anywhere in its definition are refused.
     r = 0
+    mix = nothing
     for a in d.args
         ra = _cell_rank(a, fresh, seen)
+        mix === nothing && a isa OpExpr && (mix = get(fresh.mixed, a, nothing))
         ra == 0 && continue
-        r == 0 || r == ra || name === nothing || throw(
+        mix === nothing && r != 0 && r != ra && (mix = (r, ra))
+        r = max(r, ra)
+    end
+    if mix !== nothing
+        name === nothing || throw(
             InlineError(
-                "observed $what, declared without a shape, combines arrays of rank $r and $ra; " *
-                    "declare its shape so its operands can be aligned by index set"
+                "observed $what, declared without a shape, combines arrays of rank " *
+                    "$(mix[1]) and $(mix[2]); declare its shape so its operands can be " *
+                    "aligned by index set"
             )
         )
-        r = max(r, ra)
+        fresh.mixed[d] = mix
     end
     return r
 end
@@ -627,6 +642,14 @@ function _gather_cell(def, idx::Vector{ASTExpr}, fresh::_Fresh, scope, name::Str
         )
     )
     tax = get(fresh.axes, name, nothing)
+    # the read selects one element of the observed: one index per dimension
+    sh = get(fresh.shapes, name, nothing)
+    sh === nothing || length(sh) == length(idx) || throw(
+        InlineError(
+            "observed `$name` of rank $(length(sh)) is read at a cell with " *
+                "$(length(idx)) indices"
+        )
+    )
     function g(e)
         e isa OpExpr || e isa VarExpr || return e
         r = _cell_rank(e, fresh, Set{String}())
@@ -639,8 +662,10 @@ function _gather_cell(def, idx::Vector{ASTExpr}, fresh::_Fresh, scope, name::Str
         r == length(idx) || throw(
             InlineError(
                 "observed `$name`, read with $(length(idx)) indices, has an operand of rank $r" * (
-                    r >= length(idx) ? "" : tax === nothing ?
+                    r >= length(idx) ? "" : sh === nothing ?
                         "; the observed is declared without a shape, so the operand cannot be aligned by index set" :
+                        tax === nothing ?
+                        "; the observed is shaped over a dimension that is not a declared index set, so the operand cannot be aligned by index set" :
                         " whose index sets are not known, so it cannot be aligned by index set"
                 )
             )

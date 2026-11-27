@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError, bands_in, merge_bands, normalize_band
+from .bands import Band, BandError, align_whole, bands_in, merge_bands, normalize_band
 from .expr_helpers import ser_expr
 from .inline import inline_observed
 from .system import (
@@ -262,11 +262,7 @@ def _extended_pass(
     src_obs = obs
     # declared scalars that are not observed: an elementwise observed read at
     # a cell reads them unchanged (inline.py `_gather_cell`)
-    scalars = {
-        str(n)
-        for n, v in sv.variables.items()
-        if not getattr(v, "shape", None) and str(n) not in src_obs
-    }
+    scalars = declared_scalars(sv, src_obs)
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
     recs = recurrences(sv, obs, ctx)
@@ -361,6 +357,42 @@ def _extended_pass(
     return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
 
 
+def declared_scalars(sv, obs: dict) -> set:
+    """The variables declared without a shape that have no observed
+    definition in ``obs``: an elementwise observed read at a cell reads them
+    unchanged (inline.py ``_gather_cell``)."""
+    return {
+        str(n)
+        for n, v in sv.variables.items()
+        if not getattr(v, "shape", None) and str(n) not in obs
+    }
+
+
+def inline_row(
+    rhs,
+    u: str,
+    obs: dict,
+    ctx,
+    obs_names: list | None = None,
+    rank_obs: dict | None = None,
+    scalars: set | frozenset = frozenset(),
+):
+    """The right-hand side ``rhs`` of row variable ``u`` ready for the band
+    calculus (jacobian.jl ``_inline_row``): observed inlined, an elementwise
+    observed read at a cell aligned by index-set name, and the operands of
+    its whole-array terms aligned with ``u`` (``align_whole``)."""
+    e = inline_observed(
+        rhs,
+        obs,
+        [None] if obs_names is None else obs_names,
+        ctx.shapes,
+        rank_obs,
+        scalars,
+        ctx.axes,
+    )
+    return align_whole(e, u, ctx)
+
+
 def _row_bands(
     out: list,
     u: str,
@@ -377,7 +409,7 @@ def _row_bands(
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes, rank_obs, scalars, ctx.axes)
+    rhs = inline_row(rhs, u, obs, ctx, obs_names, rank_obs, scalars)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)

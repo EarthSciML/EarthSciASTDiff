@@ -169,6 +169,12 @@ def _var_type(var) -> str:
     return t.value if hasattr(t, "value") else str(t)
 
 
+def _is_liftdim(x) -> bool:
+    """A synthetic index set the pointwise lift names (esm-spec §10.5,
+    esm-libraries-spec §4.7.5): ``_liftdim<d>_<extent>``."""
+    return str(x).startswith("_liftdim")
+
+
 def ctx_of(sv: SysView) -> Ctx:
     isets: dict[str, int] = {}
     for n, s in sv.index_sets.items():
@@ -182,9 +188,11 @@ def ctx_of(sv: SysView) -> Ctx:
         shape = getattr(var, "shape", None)
         if shape:
             shapes[str(n)] = [int(x) if isinstance(x, int) else isets[str(x)] for x in shape]
-            # the index-set names, when every dimension names one (§4.3.4
-            # aligns an elementwise operand by them)
-            if all(not isinstance(x, int) for x in shape):
+            # the index-set names, when every dimension names a declared one
+            # (§4.3.4 aligns an elementwise operand by them); a synthetic
+            # `_liftdim<d>_<extent>` set of the pointwise lift is an anonymous
+            # dimension of known extent, so such a variable aligns by position
+            if all(not isinstance(x, int) and not _is_liftdim(x) for x in shape):
                 axes[str(n)] = [str(x) for x in shape]
         if _var_type(var) == "parameter":
             params.add(str(n))

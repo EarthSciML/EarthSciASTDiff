@@ -715,10 +715,14 @@ function _bands_makearray!(out, e::OpExpr, v::String, ctx::Ctx, scale, co::Bool)
     return
 end
 
-# Index-pushdown for bare elementwise array expressions: A ↦ index(A, idx…).
-function _push_index(e::ASTExpr, idx::Vector{ASTExpr}, ctx::Ctx)::ASTExpr
+# Index-pushdown for bare elementwise array expressions: A ↦ index(A, idx…),
+# or A ↦ index(A, at(A)…) where `at` gives the indices of an operand aligned
+# by index-set name (`align_whole`; `nothing` reads it at `idx`).
+function _push_index(e::ASTExpr, idx::Vector{ASTExpr}, ctx::Ctx, at = _ -> nothing)::ASTExpr
     if e isa VarExpr
-        return is_array(ctx, e.name) ? op("index", e, idx...) : e
+        is_array(ctx, e.name) || return e
+        ix = at(e.name)
+        return op("index", e, (ix === nothing ? idx : ix)...)
     elseif e isa OpExpr
         e.op in ("faq", "makearray", "index") &&
             throw(
@@ -727,9 +731,97 @@ function _push_index(e::ASTExpr, idx::Vector{ASTExpr}, ctx::Ctx)::ASTExpr
                     "nested under an elementwise op"
             )
         )
-        return map_children(x -> _push_index(x, idx, ctx), e)
+        return map_children(x -> _push_index(x, idx, ctx, at), e)
     end
     return e
+end
+
+"""
+    align_whole(rhs, u, ctx) -> ASTExpr
+
+The right-hand side of row variable `u` with the array operands of its
+whole-array (array-level) terms aligned with `u` by index-set name (esm-spec
+§4.3.4): an operand over a subset of `u`'s index sets is read at those of the
+row's indices and repeats along the others, and one over `u`'s index sets in
+another order is read in its own order. Such an operand, alone or under an
+elementwise op, becomes the `faq` over `u`'s cells (`_r1…`) the calculus
+would build for it, its read indexed by name; an operand already over `u`'s
+index sets in `u`'s order is left as it is, so a right-hand side needing no
+alignment is returned unchanged. An operand over an index set `u` is not
+shaped over is refused, and so is one of another rank when either side's
+index-set names are not known (`ctx.axes`): those align by position, which
+needs equal rank. A `faq`, `makearray`, `index` or operator reference indexes
+its operands itself and is left as it is.
+"""
+function align_whole(rhs::ASTExpr, u::String, ctx::Ctx)::ASTExpr
+    shape_u = get(ctx.shapes, u, nothing)
+    (shape_u === nothing || isempty(shape_u)) && return rhs
+    axu = get(ctx.axes, u, nothing)
+    names = ["_r$k" for k in 1:length(shape_u)]
+    rvars = ASTExpr[VarExpr(n) for n in names]
+    # the row indices at which array `n` is read, `nothing` for `rvars`
+    function at(n::String)
+        oax = get(ctx.axes, n, nothing)
+        if axu !== nothing && oax !== nothing
+            oax == axu && return nothing
+            return _aligned_row_idx(oax, axu, rvars, u, n)
+        end
+        r = length(ctx.shapes[n])
+        r == length(shape_u) && return nothing
+        throw(
+            BandError(
+                "`$n` of rank $r is read at array level in the equation for `$u` of rank " *
+                    "$(length(shape_u)), and the index sets of " *
+                    (axu === nothing ? "`$u`" : "`$n`") *
+                    " are not known, so it cannot be aligned by index set"
+            )
+        )
+    end
+    leafop(e) = e.op in ("faq", "makearray", "index") || _is_ref(e)
+    needs(e) = e isa VarExpr ? (is_array(ctx, e.name) && at(e.name) !== nothing) :
+        e isa OpExpr && !leafop(e) && any(needs, e.args)
+    cells(body) = OpExpr(
+        "faq", ASTExpr[];
+        output_idx = Any[names...], expr_body = body,
+        ranges = Dict{String, Any}(n => Any[1, shape_u[k]] for (k, n) in enumerate(names))
+    )
+    function walk(e)
+        if e isa VarExpr
+            is_array(ctx, e.name) || return e
+            ix = at(e.name)
+            ix === nothing && return e
+            return cells(op("index", e, ix...))
+        elseif e isa OpExpr
+            leafop(e) && return e
+            e.op in ("+", "-", "neg", "*", "/") && return map_children(walk, e)
+            needs(e) || return e
+            return cells(_push_index(e, rvars, ctx, at))
+        end
+        return e
+    end
+    return walk(rhs)
+end
+
+# The row indices (`rvars`, one per dimension of the row variable `u` over
+# `axu`) at which an operand `n` over `oax` is read (esm-spec §4.3.4): the
+# k-th dimension of the operand on index set X takes the row index of the
+# k-th dimension of `u` on X. An index set `u` does not have (or has fewer
+# times) is refused.
+function _aligned_row_idx(oax, axu, rvars, u::String, n::String)
+    out = ASTExpr[]
+    for (d, X) in enumerate(oax)
+        k = count(==(X), oax[1:d])
+        hits = findall(==(X), axu)
+        k <= length(hits) || throw(
+            BandError(
+                "the equation for `$u` over ($(join(axu, ", "))) reads `$n` over " *
+                    "($(join(oax, ", "))) at array level, whose index set `$X` `$u` " *
+                    "is not shaped over"
+            )
+        )
+        push!(out, rvars[hits[k]])
+    end
+    return out
 end
 
 """

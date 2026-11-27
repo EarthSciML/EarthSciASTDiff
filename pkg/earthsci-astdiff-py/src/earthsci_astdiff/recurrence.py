@@ -20,7 +20,7 @@ from earthsci_ast.expr_walk import map_children
 from .bands import Band, BandError, _range_of, bands, merge_bands, normalize_band
 from .clip import _index_bounds, _index_box
 from .expr_helpers import add, mul, op, skey
-from .inline import all_names, binders, inline_observed, subst_free
+from .inline import all_names, binders, subst_free
 from .reductions import conj, conjuncts
 from .simplify_branches import canon_lits, simp
 
@@ -428,12 +428,18 @@ def transfer_names(sv, recs: list[Recurrence]) -> dict[str, str]:
     return out
 
 
-def _self_bands(rec: Recurrence, obs: dict, recs: list[Recurrence], ctx) -> list[Band]:
+def _self_bands(
+    rec: Recurrence, obs: dict, recs: list[Recurrence], ctx, scalars=frozenset()
+) -> list[Band]:
     # The self bands of `rec`, from its definition with every other observed
     # inlined (no recurrence): the line operator `G`, independent of the axis
-    # a pass differentiates for.
+    # a pass differentiates for. Inlined as a row's right-hand side is
+    # (`inline_row`), so a cell read in it aligns by index-set name; `scalars`
+    # are the view's declared scalars that are not observed.
+    from .jacobian import inline_row
+
     m = {k: v for k, v in obs.items() if k not in {r.name for r in recs}}
-    d = inline_observed(obs[rec.name], m, [None])
+    d = inline_row(obs[rec.name], rec.name, m, ctx, rank_obs=obs, scalars=scalars)
     shape = list(ctx.shapes.get(rec.name, []))
     return [normalize_band(b) for b in merge_bands(bands(d, rec.name, ctx, shape_u=shape))]
 
@@ -449,12 +455,15 @@ def _transfer_j(rec: Recurrence, bs: list[Band]) -> str:
     return j
 
 
-def transfer_definition(rec: Recurrence, obs: dict, recs: list[Recurrence], ctx, tname: str):
+def transfer_definition(
+    rec: Recurrence, obs: dict, recs: list[Recurrence], ctx, tname: str, scalars=frozenset()
+):
     """The transfer recurrence ``T`` of ``rec`` (spec §4.5): over the frame
     plus one output index ``j`` on the axis, ``T[o, k, j] = [k == j] +
     Σ_{self bands} coef · T[o, k − lag, j]``, so ``T[o, ·, ·] = (I − G)⁻¹``
-    on each line. Lower triangular on each line."""
-    bs = _self_bands(rec, obs, recs, ctx)
+    on each line. Lower triangular on each line. ``scalars`` names the view's
+    variables declared without a shape that are not observed."""
+    bs = _self_bands(rec, obs, recs, ctx, scalars)
     j = _transfer_j(rec, bs)
     d = rec.dim
     at = list(rec.frame)
@@ -801,7 +810,10 @@ def auxiliary(sv, obs: dict, ctx, entries: list) -> list:
     recs = recurrences(sv, obs, ctx)
     if not recs:
         return []
+    from .jacobian import declared_scalars
+
     names = transfer_names(sv, recs)
+    scalars = declared_scalars(sv, obs)
     read: set = set()
     for en in entries:
         read |= free_vars(en.band.coef)
@@ -811,6 +823,10 @@ def auxiliary(sv, obs: dict, ctx, entries: list) -> list:
         if t not in read:
             continue
         out.append(
-            (t, [*rec.shape, rec.shape[rec.dim]], transfer_definition(rec, obs, recs, ctx, t))
+            (
+                t,
+                [*rec.shape, rec.shape[rec.dim]],
+                transfer_definition(rec, obs, recs, ctx, t, scalars),
+            )
         )
     return out

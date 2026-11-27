@@ -55,6 +55,10 @@ def inline_observed(
     fresh.rank_obs = obs if rank_obs is None else rank_obs
     fresh.scalars = scalars
     fresh.axes = axes or {}
+    # node id → (node, the two ranks some elementwise node in its subtree
+    # combines) (``_def_rank``): refused inside an observed declared without a
+    # shape
+    fresh.mixed = {}
     for _ in range(MAX_INLINE_PASSES):
         e2 = _inline_once(e, obs, fresh, frozenset())
         if skey(e2) == skey(e):
@@ -510,20 +514,33 @@ def _def_rank(d: Expr, fresh: _Fresh, seen: set, name) -> int:
         )
     # Operands of different ranks are aligned by index-set name where the
     # definition is read (``_gather_cell``); a node's rank is then its widest
-    # operand's. A named observed reaches here only when it is declared
-    # without a shape, and its shape is the union of its operands' index sets
-    # (esm-spec §4.3.4), which ranks alone cannot give: refused.
+    # operand's, and the node is recorded as mixing ranks (``fresh.mixed``, as
+    # is every node above one). A named observed reaches here only when it is
+    # declared without a shape, and its shape is the union of its operands'
+    # index sets (esm-spec §4.3.4), which ranks alone cannot give: mixed ranks
+    # anywhere in its definition are refused.
+    mixed = fresh.mixed
     r = 0
+    mix = None
     for a in d.args:
         ra = _cell_rank(a, fresh, seen)
+        if mix is None and isinstance(a, ExprNode):
+            hit = mixed.get(id(a))
+            if hit is not None and hit[0] is a:
+                mix = hit[1]
         if ra == 0:
             continue
-        if r not in (0, ra) and name is not None:
-            raise InlineError(
-                f"observed {what}, declared without a shape, combines arrays of rank {r} "
-                f"and {ra}; declare its shape so its operands can be aligned by index set"
-            )
+        if mix is None and r not in (0, ra):
+            mix = (r, ra)
         r = max(r, ra)
+    if mix is not None:
+        if name is not None:
+            raise InlineError(
+                f"observed {what}, declared without a shape, combines arrays of rank "
+                f"{mix[0]} and {mix[1]}; declare its shape so its operands can be "
+                "aligned by index set"
+            )
+        mixed[id(d)] = (d, mix)
     return r
 
 
@@ -562,6 +579,12 @@ def _gather_cell(de: Expr, idx: list, fresh: _Fresh, scope, name: str) -> Expr:
         )
 
     tax = getattr(fresh, "axes", {}).get(name)
+    # the read selects one element of the observed: one index per dimension
+    sh = fresh.shapes.get(name)
+    if sh is not None and len(sh) != len(idx):
+        raise InlineError(
+            f"observed `{name}` of rank {len(sh)} is read at a cell with {len(idx)} indices"
+        )
 
     def g(e: Expr) -> Expr:
         if not isinstance(e, (str, ExprNode)):
@@ -577,10 +600,15 @@ def _gather_cell(de: Expr, idx: list, fresh: _Fresh, scope, name: str) -> Expr:
         if r != len(idx):
             if r >= len(idx):
                 why = ""
-            elif tax is None:
+            elif sh is None:
                 why = (
                     "; the observed is declared without a shape, so the operand cannot be "
                     "aligned by index set"
+                )
+            elif tax is None:
+                why = (
+                    "; the observed is shaped over a dimension that is not a declared index "
+                    "set, so the operand cannot be aligned by index set"
                 )
             else:
                 why = " whose index sets are not known, so it cannot be aligned by index set"
