@@ -160,6 +160,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
+  - `zero_power_product.esm` — a product over ions of `m^stoich` with a
+    parameter exponent (spec §3, `^`) at a state where one ion is absent
+    (`m[1] = 0`) and some exponents are 0, where `x·b^(x−1)` would be
+    `0·0^(−1)`. Its golden, `zero_power_product.points.json`, holds the
+    exact derivatives at that point and at one away from it (where they
+    match central differences); every binding checks them, and that every
+    entry is finite
   - `makearray_of_reads.esm` — an observed `m[k, i]` read from a
     `makearray` at `i` whose region values are cell reads of states (`u[k]`
     on region 1, `v[k]` broadcast over regions 2–3). Each value is a scalar
