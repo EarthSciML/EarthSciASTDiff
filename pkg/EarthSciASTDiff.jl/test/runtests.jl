@@ -55,6 +55,7 @@ end
     include("roundtrip_test.jl")
     include("structure_only_test.jl")
     include("time_test.jl")
+    include("elementwise_aligned_test.jl")
     include("forcing_test.jl")
     include("second_order_test.jl")
     include("products_test.jl")

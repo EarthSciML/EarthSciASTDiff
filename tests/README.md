@@ -97,6 +97,31 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     only, with operands of different rank, which the time axis must not
     follow. Its only golden, `tgrad_data_fixed.time.bands.json`, is checked
     byte for byte by every binding
+  - `tgrad_named_steps.esm` — time companions (spec §4.2): a scalar
+    time-interpolation weight `w`, an array blend `Tb` of two temperature
+    records by `w`, a rate `kr` of `Tb`, a state `c` reading `kr` at its
+    cell and a state `s` reading it through a sum over the vertical index,
+    and data-fed parameters held fixed. Its time bands read `_dt_kr`, whose
+    definition reads `_dt_Tb`, whose definition reads `_dt_w`; its
+    `.time.{bands,block,evaldoc,jvp.evaldoc,vjp.evaldoc,jvals}.json` goldens
+    are checked byte for byte (values to 1e-10) by every binding, and each
+    checks `f_t` against a central difference in `t` of the source
+    right-hand side
+  - `elementwise_aligned.esm` — an elementwise observed read at a cell whose
+    array operands are aligned by index-set name (esm-spec §4.3.4): `w` over
+    `[x, y]` is `c·q + k + r`, with `q` over `[y]` (the second axis, so
+    aligning by leading position would be wrong), `k` over `[x]` (repeated
+    along `y`) and `r` over `[y, x]` (the axes in the other order); and a
+    state `s` over `[x, y]` with the whole-array right-hand side
+    `-(s + q + r + 0.1·exp(q))`, whose operands align with `s` the same way
+    (`q` at column `[_r2]`, `r` at `[_r2, _r1]`). Its only golden,
+    `elementwise_aligned.bands.json` (the state bands), is checked byte for
+    byte by every binding. Each binding also checks, on variants of it, that
+    what cannot be aligned is refused (an operand over an index set the
+    observed, or the whole-array row, is not shaped over; an observed
+    declared without a shape that mixes ranks, at its top node or below it;
+    a cell read whose arity is not the observed's rank), and that a variable
+    over a synthetic lift index set `_liftdim1_3` is aligned by position
 - `goldens/` — `<fixture>.block.json`: the emitted `jacobians` block
   (template-CSE'd entries + structure + `expression_templates`, plus the
   `factorization` plan where one exists); bindings compare byte-exactly.
@@ -169,7 +194,7 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   change; the diff is the review surface.
 - `goldens/` — `<fixture>.time.{bands,block,evaldoc,evaldoc-nocse,jvals}.json`:
   the same goldens for `wrt: "time"` (spec §4.2), present only for a fixture
-  whose right-hand side reads `t` (currently `tgrad_photolysis`). A fixture
+  whose right-hand side reads `t` (`tgrad_photolysis`, `tgrad_named_steps`). A fixture
   without them is autonomous: its time band list MUST be empty.
 - `goldens/canonical_floats.json`: `[bits, text]` pairs — a double's IEEE
   bit pattern in hex and the text every binding's `stable_json` writes for it,

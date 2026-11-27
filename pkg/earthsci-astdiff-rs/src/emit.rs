@@ -1378,6 +1378,14 @@ fn axis_block(
     if !aux.is_empty() {
         block.insert("auxiliary".into(), auxiliary_field(&aux));
     }
+    let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let comps = crate::companions::time_companions(sv, &eb)?;
+    if !comps.is_empty() {
+        block.insert(
+            "companions".into(),
+            crate::companions::companions_field(&comps),
+        );
+    }
     if let Some(cl) = lines {
         // The plan from the point walk above, not a second one.
         let plan = FactorizationPlan::ColumnBlock(cl);
@@ -1969,10 +1977,14 @@ pub fn evaluation_document(
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
     let obs = crate::system::observed_defs(sv)?;
     let aux = crate::recurrence::auxiliary(sv, &obs, &ctx, entries)?;
+    let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let comps = crate::companions::time_companions(sv, &eb)?;
     let mut roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
     roots.extend(aux.iter().map(|(_, _, d)| d));
+    roots.extend(comps.iter().map(|(_, _, d)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     add_auxiliary(&mut model, &aux);
+    crate::companions::add_companions(&mut model, sv, &comps);
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     // Nothing is deduplicated after the fact: the coefficients are written
     // as the band calculus produced them, with operator references where the

@@ -7,10 +7,10 @@ use std::rc::Rc;
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, VariableType};
 
-use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
+use crate::bands::{align_whole, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::hashcons::Interner;
-use crate::inline::inline_observed_ranked;
+use crate::inline::inline_observed_aligned;
 use crate::recurrence::{
     active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
 };
@@ -343,7 +343,7 @@ fn bands_seeded_in(
     seed: &[String],
     co: bool,
 ) -> Result<Vec<JacEntry>, BandError> {
-    let ext = extended_pass_in(sv, ctx, obs, wrt, forcing, seed, co)?;
+    let ext = extended_pass_in(sv, ctx, obs, wrt, forcing, seed, co, seed.is_empty())?;
     if ext.recurrences.is_empty() {
         return Ok(ext.rows);
     }
@@ -425,7 +425,8 @@ pub fn extended_bands(
         Some(a2) if a2 != wrt => targets(sv, a2, forcing, &obs)?,
         _ => Vec::new(),
     };
-    extended_pass(sv, &ctx, &obs, wrt, forcing, &seed)
+    let companions = seed.is_empty();
+    extended_pass(sv, &ctx, &obs, wrt, forcing, &seed, companions)
 }
 
 /// The extended first-order system of one pass (spec §4.5): the bands of
@@ -436,6 +437,10 @@ pub fn extended_bands(
 /// fixpoint exists), so an inactive one stays an opaque read, constant with
 /// respect to every target. Without an active recurrence `rows` is exactly
 /// [`bands_of_view`]'s list.
+///
+/// `companions` lets a single time axis keep the chain through the observed
+/// that move with `t` as named steps (spec §4.2, [`crate::companions`]); a
+/// pair's first pass passes `false`.
 pub(crate) fn extended_pass(
     sv: &SysView,
     ctx: &Ctx,
@@ -443,8 +448,9 @@ pub(crate) fn extended_pass(
     wrt: Wrt,
     forcing: Option<&[String]>,
     seed: &[String],
+    companions: bool,
 ) -> Result<ExtendedBands, BandError> {
-    extended_pass_in(sv, ctx, obs, wrt, forcing, seed, true)
+    extended_pass_in(sv, ctx, obs, wrt, forcing, seed, true, companions)
 }
 
 /// [`extended_pass`], or with `co = false` its structure-only bands (spec
@@ -461,16 +467,12 @@ pub(crate) fn extended_pass_in(
     forcing: Option<&[String]>,
     seed: &[String],
     co: bool,
+    companions: bool,
 ) -> Result<ExtendedBands, BandError> {
     let src_obs = obs;
     // declared scalars that are not observed: an elementwise observed read at
     // a cell reads them unchanged (inline.rs `gather_cell`)
-    let scalars: HashSet<String> = sv
-        .variables
-        .iter()
-        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !src_obs.contains_key(*n))
-        .map(|(n, _)| n.clone())
-        .collect();
+    let scalars = declared_scalars(sv, src_obs);
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
     let recs = recurrences(sv, obs, ctx)?;
@@ -482,6 +484,50 @@ pub(crate) fn extended_pass_in(
         active(&recs, obs, &s)
     };
     let co = co || !act.is_empty();
+    // A single time axis keeps the chain through the observed that move with
+    // `t` as named steps (spec §4.2, companions.rs): each is a column of the
+    // pass, composed with its companion `_dt_<o>`, rather than inlined into
+    // every row. A pair's first pass (`seed`) and a pass through an active
+    // recurrence differentiate its coefficients again or compose them with
+    // a transfer, so they follow those observed by inlining.
+    if companions && wrt == Wrt::Time && act.is_empty() && seed.is_empty() {
+        let mut nr = src_obs.clone();
+        for r in &recs {
+            nr.remove(&r.name);
+        }
+        let mut cs =
+            crate::companions::companion_setup(sv, ctx, nr, src_obs.clone(), &scalars, co)?;
+        let mut entries = Vec::new();
+        let mut row_eq = Vec::new();
+        for (q, eq) in sv.equations.iter().enumerate() {
+            let Some(u) = lhs_state(eq) else {
+                if is_derivative(eq) {
+                    return Err(unsupported_derivative(eq));
+                }
+                continue;
+            };
+            let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
+            let inl = cs.inline.clone();
+            for b in crate::companions::time_row_bands(&mut cs, &eq.rhs, &u, &inl, &shape_u)? {
+                entries.push(JacEntry {
+                    u: u.clone(),
+                    v: "t".to_string(),
+                    band: b,
+                });
+                row_eq.push(q);
+            }
+        }
+        if co {
+            intern_entries(entries.iter_mut().map(|en| &mut en.band));
+        }
+        return Ok(ExtendedBands {
+            recurrences: Vec::new(),
+            rows: entries,
+            rec_rows: Vec::new(),
+            row_eq,
+            transfer: HashMap::new(),
+        });
+    }
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
     // opaque reads. Time is pruned from `{"t"}` too: `f_t` is the partial
@@ -582,6 +628,46 @@ pub(crate) fn extended_pass_in(
     })
 }
 
+/// The right-hand side `rhs` of row variable `u` ready for the band calculus
+/// (jacobian.jl `_inline_row`): observed inlined under the view's layer
+/// (inlining reads definitions' ranks), an elementwise observed read at a
+/// cell aligned by index-set name, and the operands of its whole-array terms
+/// aligned with `u` (`align_whole`).
+pub(crate) fn inline_row(
+    rhs: &Expr,
+    u: &str,
+    obs: &HashMap<String, Expr>,
+    obs_names: &mut Option<HashSet<String>>,
+    ctx: &Ctx,
+    rank_obs: &HashMap<String, Expr>,
+    scalars: &HashSet<String>,
+) -> Result<Expr, BandError> {
+    let e = crate::operator_refs::with_layer(&ctx.refs, || {
+        inline_observed_aligned(
+            rhs,
+            obs,
+            obs_names,
+            &ctx.shapes,
+            rank_obs,
+            scalars,
+            &ctx.axes,
+        )
+    })
+    .map_err(|e| BandError(e.0))?;
+    align_whole(&e, u, ctx)
+}
+
+/// The variables declared without a shape that have no observed definition
+/// in `obs`: an elementwise observed read at a cell reads them unchanged
+/// (inline.rs `gather_cell`).
+pub(crate) fn declared_scalars(sv: &SysView, obs: &HashMap<String, Expr>) -> HashSet<String> {
+    sv.variables
+        .iter()
+        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !obs.contains_key(*n))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
 /// The bands of one row variable `u` (a state, or a recurrence over its
 /// own definition) with respect to every column in `cols` its inlined
 /// right-hand side reads, in sorted column order; structure-only (spec
@@ -600,11 +686,7 @@ fn row_bands(
     scalars: &HashSet<String>,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
-    // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
-    let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
-        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs, scalars)
-    })
-    .map_err(|e| BandError(e.0))?;
+    let rhs = inline_row(rhs, u, obs, obs_names, ctx, rank_obs, scalars)?;
     // Structural occurrence gate, driven from the equation: intersect the
     // RHS's free variables with the column set (a per-equation scan of
     // every target is quadratic on scalar-lowered documents). Sorting the
@@ -729,7 +811,15 @@ impl FirstOrder {
         if let Some(e) = self.ext.get(&key) {
             return Ok(e.clone());
         }
-        let e = Rc::new(extended_pass(sv, ctx, obs, a1, forcing, seed)?);
+        let e = Rc::new(extended_pass(
+            sv,
+            ctx,
+            obs,
+            a1,
+            forcing,
+            seed,
+            a2.is_none(),
+        )?);
         self.ext.insert(key, e.clone());
         Ok(e)
     }
@@ -834,14 +924,14 @@ mod tests {
             .bands(&sv, &ctx, &obs, Wrt::States, None, None, &[])
             .unwrap();
         assert!(one_per_subtree(e.iter().map(|en| &en.band)));
-        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[], true).unwrap();
         assert!(one_per_subtree(ext.rows.iter().map(|en| &en.band)));
         // through an active recurrence: the extended rows and the
         // materialized composition
         let file = load("recurrence_sweep");
         let sv = sv_of(&file);
         let (ctx, obs) = (ctx_of(&sv).unwrap(), observed_defs(&sv).unwrap());
-        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[]).unwrap();
+        let ext = extended_pass(&sv, &ctx, &obs, Wrt::States, None, &[], true).unwrap();
         assert!(!ext.recurrences.is_empty());
         assert!(one_per_subtree(
             ext.rows.iter().chain(&ext.rec_rows).map(|en| &en.band)

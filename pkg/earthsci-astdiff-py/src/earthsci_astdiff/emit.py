@@ -309,6 +309,11 @@ def _jacobian_block(
     aux = auxiliary(sv, observed_defs(sv), ctx_of(sv), entries)
     if aux:
         block["auxiliary"] = _auxiliary_field(aux)
+    from .companions import companions_field, time_companions
+
+    comps = time_companions(sv, [en.band for en in entries])
+    if comps:
+        block["companions"] = companions_field(comps)
     if not rect:
         from .factorization import _column_block_plan, plan_factorization, serialize_plan
 
@@ -719,9 +724,13 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     m = doc["models"]["JacobianEval"]
     ctx = ctx_of(sv)
     aux = auxiliary(sv, observed_defs(sv), ctx, entries)
-    roots = [en.band.coef for en in entries] + [d for _, _, d in aux]
+    from .companions import add_companions, time_companions
+
+    comps = time_companions(sv, [en.band for en in entries])
+    roots = [en.band.coef for en in entries] + [d for _, _, d in aux] + [d for _, _, d in comps]
     _zero_source_derivatives(m, sv, ctx, roots)
     _add_auxiliary(m, aux)
+    add_companions(m, sv, comps)
     # Nothing is deduplicated after the fact (the reference's evaluation
     # document no longer hoists): `cse` and `cse_min_nodes` have no effect.
     coefs = [en.band.coef for en in entries]

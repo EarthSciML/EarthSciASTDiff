@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError, bands_in, merge_bands, normalize_band
+from .bands import Band, BandError, align_whole, bands_in, merge_bands, normalize_band
 from .expr_helpers import ser_expr
 from .inline import inline_observed
 from .system import (
@@ -197,7 +197,7 @@ def _jacobian_bands(
     # Through a recurrence the extended system is materialized (spec §4.5).
     from .recurrence import materialize
 
-    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co)
+    ext = _extended_pass(sv, ctx, obs, wrt, forcing, seed, co, companions=not seed)
     if not ext.recurrences:
         return ext.rows
     if co:
@@ -244,10 +244,12 @@ def extended_bands(
     sv = sysview(obj, model_name)
     obs = observed_defs(sv)
     seed = _targets(sv, second, forcing, obs) if second is not None and second != wrt else []
-    return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed)
+    return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed, companions=not seed)
 
 
-def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True):
+def _extended_pass(
+    sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(), co: bool = True, companions=False
+):
     # The extended first-order system of one pass (spec §4.5): the bands of
     # every state equation with respect to the axis's targets AND the active
     # recurrences, and the bands of each active recurrence's own definition
@@ -260,11 +262,7 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     src_obs = obs
     # declared scalars that are not observed: an elementwise observed read at
     # a cell reads them unchanged (inline.py `_gather_cell`)
-    scalars = {
-        str(n)
-        for n, v in sv.variables.items()
-        if not getattr(v, "shape", None) and str(n) not in src_obs
-    }
+    scalars = declared_scalars(sv, src_obs)
     targets = _targets(sv, wrt, forcing, obs)
     tset = set(targets)
     recs = recurrences(sv, obs, ctx)
@@ -274,6 +272,39 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     # through the transfer (§4.5) reads the coefficients, so that pass runs
     # in full and only the caller drops them.
     co = co or bool(act)
+    # A single time axis keeps the chain through the observed that move with
+    # `t` as named steps (spec §4.2, companions.py): each is a column of the
+    # pass, composed with its companion `_dt_<o>`, rather than inlined into
+    # every row. A pair's first pass (`seed`) and a pass through an active
+    # recurrence differentiate its coefficients again or compose them with a
+    # transfer, so they follow those observed by inlining.
+    if companions and wrt == "time" and not act and not seed:
+        from .companions import companion_setup, time_row_bands
+
+        names = {r.name for r in recs}
+        cs = companion_setup(
+            sv,
+            ctx,
+            {k: v for k, v in src_obs.items() if k not in names},
+            scalars,
+            co,
+            rank_obs=src_obs,
+        )
+        entries: list[JacEntry] = []
+        row_eq: list[int] = []
+        for q, eq in enumerate(sv.equations):
+            u = lhs_state(eq)
+            if u is None:
+                if is_derivative(eq):
+                    raise BandError(
+                        f"unsupported derivative LHS {eq.lhs!r} (a state's derivative "
+                        "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                    )
+                continue
+            for b in time_row_bands(cs, eq.rhs, u, cs.inline, ctx.shapes.get(u, [])):
+                entries.append(JacEntry(u, "t", b))
+                row_eq.append(q)
+        return ExtendedBands([], entries, [], row_eq)
     # Inline only the observed that can move with THIS wrt's targets; the
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # pruned from {"t"} too: f_t is the partial derivative with every
@@ -326,6 +357,42 @@ def _extended_pass(sv: SysView, ctx, obs: dict, wrt: str, forcing=None, seed=(),
     return ExtendedBands(act, entries, rec_rows, row_eq, transfer_names(sv, recs))
 
 
+def declared_scalars(sv, obs: dict) -> set:
+    """The variables declared without a shape that have no observed
+    definition in ``obs``: an elementwise observed read at a cell reads them
+    unchanged (inline.py ``_gather_cell``)."""
+    return {
+        str(n)
+        for n, v in sv.variables.items()
+        if not getattr(v, "shape", None) and str(n) not in obs
+    }
+
+
+def inline_row(
+    rhs,
+    u: str,
+    obs: dict,
+    ctx,
+    obs_names: list | None = None,
+    rank_obs: dict | None = None,
+    scalars: set | frozenset = frozenset(),
+):
+    """The right-hand side ``rhs`` of row variable ``u`` ready for the band
+    calculus (jacobian.jl ``_inline_row``): observed inlined, an elementwise
+    observed read at a cell aligned by index-set name, and the operands of
+    its whole-array terms aligned with ``u`` (``align_whole``)."""
+    e = inline_observed(
+        rhs,
+        obs,
+        [None] if obs_names is None else obs_names,
+        ctx.shapes,
+        rank_obs,
+        scalars,
+        ctx.axes,
+    )
+    return align_whole(e, u, ctx)
+
+
 def _row_bands(
     out: list,
     u: str,
@@ -342,7 +409,7 @@ def _row_bands(
     # own definition) with respect to every column in `cols` its inlined
     # right-hand side reads, in sorted column order.
     shape_u = ctx.shapes.get(u, [])
-    rhs = inline_observed(rhs, obs, obs_names, ctx.shapes, rank_obs, scalars)
+    rhs = inline_row(rhs, u, obs, ctx, obs_names, rank_obs, scalars)
     # Structural occurrence gate, driven from the equation: intersect the
     # RHS's free variables with the column set (sorted = target order).
     hits = sorted(free_variables(rhs) & cols)
@@ -412,7 +479,9 @@ class _FirstOrder:
         """The extended ``a1`` pass seeded with ``seed``."""
         key = self._key(sv, a1, a2)
         if key not in self._ext:
-            self._ext[key] = _extended_pass(sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed)
+            self._ext[key] = _extended_pass(
+                sv, ctx_of(sv), observed_defs(sv), a1, forcing, seed, companions=a2 is None
+            )
         return self._ext[key]
 
     def bands(self, sv: SysView, a1: str, a2, forcing, seed=()) -> list[JacEntry]:

@@ -19,7 +19,7 @@ use crate::bands::{merge_bands, normalize_band, range_of, subst_free, Band, Band
 use crate::branches::{canon_lits, simp};
 use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{free_vars, mul, op};
-use crate::inline::{all_names, binders, inline_observed};
+use crate::inline::{all_names, binders};
 use crate::jacobian::JacEntry;
 use crate::system::{defined_name, SysView};
 
@@ -578,18 +578,29 @@ pub(crate) fn transfer_names(sv: &SysView, recs: &[Recurrence]) -> HashMap<Strin
 
 /// The self bands of `rec`, from its definition with every other observed
 /// inlined (no recurrence): the line operator `G`, independent of the axis
-/// a pass differentiates for.
+/// a pass differentiates for. Inlined as a row's right-hand side is
+/// (`inline_row`), so a cell read in it aligns by index-set name; `scalars`
+/// are the view's declared scalars that are not observed.
 fn self_bands(
     rec: &Recurrence,
     obs: &HashMap<String, Expr>,
     recs: &[Recurrence],
     ctx: &Ctx,
+    scalars: &HashSet<String>,
 ) -> R<Vec<Band>> {
     let mut map = obs.clone();
     for r in recs {
         map.remove(&r.name);
     }
-    let def = inline_observed(&obs[&rec.name], &map).map_err(|e| BandError(e.0))?;
+    let def = crate::jacobian::inline_row(
+        &obs[&rec.name],
+        &rec.name,
+        &map,
+        &mut None,
+        ctx,
+        obs,
+        scalars,
+    )?;
     let shape = ctx.shapes.get(&rec.name).cloned().unwrap_or_default();
     // through `ref_bands`: the definition may hold operator references
     Ok(merge_bands(crate::operator_refs::ref_bands(
@@ -623,15 +634,19 @@ fn transfer_j(rec: &Recurrence, bs: &[Band]) -> String {
 /// ```
 ///
 /// so `T[o, ·, ·] = (I − G)⁻¹` on each line: `∂V[o, k] / ∂(source at [o, j])`.
-/// Lower triangular on each line (zero for `j > k`).
+/// Lower triangular on each line (zero for `j > k`). `scalars` names the
+/// view's variables declared without a shape that are not observed (an
+/// elementwise observed read at a cell in the definition reads them
+/// unchanged).
 pub fn transfer_definition(
     rec: &Recurrence,
     obs: &HashMap<String, Expr>,
     recs: &[Recurrence],
     ctx: &Ctx,
     tname: &str,
+    scalars: &HashSet<String>,
 ) -> R<Expr> {
-    let bs = self_bands(rec, obs, recs, ctx)?;
+    let bs = self_bands(rec, obs, recs, ctx, scalars)?;
     let j = transfer_j(rec, &bs);
     let d = rec.dim;
     let at: Vec<Expr> = rec.frame.iter().map(|f| var(f)).collect();
@@ -1100,6 +1115,7 @@ pub fn auxiliary(
         return Ok(Vec::new());
     }
     let names = transfer_names(sv, &recs);
+    let scalars = crate::jacobian::declared_scalars(sv, obs);
     let read: HashSet<String> = entries
         .iter()
         .flat_map(|en| free_vars(&en.band.coef))
@@ -1115,7 +1131,7 @@ pub fn auxiliary(
         out.push((
             t.clone(),
             shape,
-            transfer_definition(rec, obs, &recs, ctx, t)?,
+            transfer_definition(rec, obs, &recs, ctx, t, &scalars)?,
         ));
     }
     Ok(out)

@@ -46,6 +46,10 @@ class Ctx:
     index_sets: dict[str, int]
     shapes: dict[str, list[int]]
     params: set[str]
+    # the index-set names of each array variable declared over named index
+    # sets, by which an elementwise observed read at a cell aligns its
+    # operands (esm-spec §4.3.4)
+    axes: dict[str, list[str]] = field(default_factory=dict)
 
 
 class BandError(Exception):
@@ -561,14 +565,112 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale, co: bool) -> Non
             _scalar_bands(out, val, v, ctx, rows, [lo for lo, _ in rows], scale, co)
 
 
-def _push_index(e: Expr, idx: list, ctx: Ctx) -> Expr:
+def _push_index(e: Expr, idx: list, ctx: Ctx, at=lambda _n: None) -> Expr:
+    """Index-pushdown for bare elementwise array expressions: A ↦ index(A,
+    idx…), or A ↦ index(A, at(A)…) where ``at`` gives the indices of an
+    operand aligned by index-set name (``align_whole``; ``None`` reads it at
+    ``idx``)."""
     if isinstance(e, str):
-        return op("index", e, *idx) if is_array(ctx, e) else e
+        if not is_array(ctx, e):
+            return e
+        ix = at(e)
+        return op("index", e, *(idx if ix is None else ix))
     if isinstance(e, ExprNode):
         if e.op in ("faq", "makearray", "index"):
             raise BandError(f"cannot push an index into `{e.op}` nested under an elementwise op")
-        return map_children(e, lambda x: _push_index(x, idx, ctx))
+        return map_children(e, lambda x: _push_index(x, idx, ctx, at))
     return e
+
+
+def align_whole(rhs: Expr, u: str, ctx: Ctx) -> Expr:
+    """The right-hand side of row variable ``u`` with the array operands of
+    its whole-array (array-level) terms aligned with ``u`` by index-set name
+    (esm-spec §4.3.4; bands.jl ``align_whole``): an operand over a subset of
+    ``u``'s index sets is read at those of the row's indices and repeats
+    along the others, and one over ``u``'s index sets in another order is
+    read in its own order. Such an operand, alone or under an elementwise op,
+    becomes the ``faq`` over ``u``'s cells (``_r1…``) the calculus would
+    build for it; an operand already over ``u``'s index sets in ``u``'s order
+    is left as it is. An operand over an index set ``u`` is not shaped over
+    is refused, and so is one of another rank when either side's index-set
+    names are not known. A ``faq``, ``makearray`` or ``index`` indexes its
+    operands itself and is left as it is."""
+    shape_u = ctx.shapes.get(u)
+    if not shape_u:
+        return rhs
+    axu = ctx.axes.get(u)
+    names = [f"_r{k + 1}" for k in range(len(shape_u))]
+
+    def at(n: str):
+        oax = ctx.axes.get(n)
+        if axu is not None and oax is not None:
+            if list(oax) == list(axu):
+                return None
+            return _aligned_row_idx(oax, axu, names, u, n)
+        r = len(ctx.shapes[n])
+        if r == len(shape_u):
+            return None
+        who = f"`{u}`" if axu is None else f"`{n}`"
+        raise BandError(
+            f"`{n}` of rank {r} is read at array level in the equation for `{u}` of rank "
+            f"{len(shape_u)}, and the index sets of {who} are not known, so it cannot be "
+            "aligned by index set"
+        )
+
+    def leafop(e: ExprNode) -> bool:
+        return e.op in ("faq", "makearray", "index")
+
+    def needs(e) -> bool:
+        if isinstance(e, str):
+            return is_array(ctx, e) and at(e) is not None
+        return isinstance(e, ExprNode) and not leafop(e) and any(needs(a) for a in e.args)
+
+    def cells(body: Expr) -> Expr:
+        return ExprNode(
+            op="faq",
+            args=[],
+            output_idx=list(names),
+            expr=body,
+            ranges={n: [1, shape_u[k]] for k, n in enumerate(names)},
+        )
+
+    def walk(e: Expr) -> Expr:
+        if isinstance(e, str):
+            if not is_array(ctx, e):
+                return e
+            ix = at(e)
+            return e if ix is None else cells(op("index", e, *ix))
+        if isinstance(e, ExprNode):
+            if leafop(e):
+                return e
+            if e.op in ("+", "-", "neg", "*", "/"):
+                return map_children(e, walk)
+            if not needs(e):
+                return e
+            return cells(_push_index(e, names, ctx, at))
+        return e
+
+    return walk(rhs)
+
+
+def _aligned_row_idx(oax: list, axu: list, rvars: list, u: str, n: str) -> list:
+    """The row indices (``rvars``, one per dimension of the row variable
+    ``u`` over ``axu``) at which an operand ``n`` over ``oax`` is read
+    (esm-spec §4.3.4): the k-th dimension of the operand on index set X takes
+    the row index of the k-th dimension of ``u`` on X. An index set ``u``
+    does not have (or has fewer times) is refused."""
+    out = []
+    for d, x in enumerate(oax):
+        k = list(oax[: d + 1]).count(x)
+        hits = [i for i, y in enumerate(axu) if y == x]
+        if k > len(hits):
+            raise BandError(
+                f"the equation for `{u}` over ({', '.join(axu)}) reads `{n}` over "
+                f"({', '.join(oax)}) at array level, whose index set `{x}` `{u}` is not "
+                "shaped over"
+            )
+        out.append(rvars[hits[k - 1]])
+    return out
 
 
 def normalize_band(b: Band) -> Band:

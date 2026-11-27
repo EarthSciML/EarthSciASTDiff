@@ -129,6 +129,15 @@ let name = "tgrad_data_fixed"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
+# An elementwise observed read at a cell, its operands aligned by index-set
+# name (esm-spec §4.3.4): the band list only (tests/README.md).
+let name = "elementwise_aligned"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(sysview(file, "Box"))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the
@@ -136,6 +145,7 @@ end
 # scatter plan: plans cover the state Jacobian only (spec §8).
 for (name, wrt) in (
         ("tgrad_photolysis", :time),
+        ("tgrad_named_steps", :time),
         ("forcing_bracket", :forcing),
         ("forcing_bracket", :parameters),
         ("recurrence_sweep", :parameters),
@@ -167,6 +177,12 @@ for (name, wrt) in (
         ("arrhenius_chem", (:states, :parameters)),
         ("forcing_bracket", (:states, :forcing)),
         ("forcing_bracket", (:time, :states)),
+        ("forcing_bracket", (:time, :parameters)),
+        ("forcing_bracket", (:time, :forcing)),
+        ("tgrad_named_steps", (:time, :states)),
+        ("tgrad_named_steps", (:time, :parameters)),
+        ("tgrad_named_steps", (:time, :forcing)),
+        ("tgrad_photolysis", (:time, :states)),
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),
@@ -195,6 +211,7 @@ for (name, wrt) in (
         ("contracting_observed", :states), ("tgrad_photolysis", :states),
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
+        ("tgrad_named_steps", :time),
         ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
         ("recurrence_sweep", :states), ("recurrence_sweep", :parameters),
@@ -215,6 +232,12 @@ for (name, wrt) in (
         ("arrhenius_chem", (:states, :parameters)),
         ("forcing_bracket", (:states, :forcing)),
         ("forcing_bracket", (:time, :states)),
+        ("forcing_bracket", (:time, :parameters)),
+        ("forcing_bracket", (:time, :forcing)),
+        ("tgrad_named_steps", (:time, :states)),
+        ("tgrad_named_steps", (:time, :parameters)),
+        ("tgrad_named_steps", (:time, :forcing)),
+        ("tgrad_photolysis", (:time, :states)),
         ("minmod_adv", (:states, :states)),
         ("filtered_scan", (:states, :states)),
         ("semiring_reduce", (:states, :states)),

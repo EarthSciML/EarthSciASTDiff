@@ -782,7 +782,7 @@ function _ref_bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co:
         for (n, (_, ext, org)) in ps
             shapes[n] = ext; origins[n] = org
         end
-        ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins)
+        ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins, ctx.axes)
         out = Band[]
         fv = free_variables(rhs2)
         v in fv && append!(out, bands(rhs2, v, ctx2; shape_u = shape_u, coefficients = co))

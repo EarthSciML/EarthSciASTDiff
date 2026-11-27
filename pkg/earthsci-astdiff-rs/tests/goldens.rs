@@ -34,15 +34,17 @@ const NAMES: [&str; 14] = [
 ];
 /// Per-(fixture, axis) goldens beyond the states axis: `<name>.<axis>.*`
 /// (`wrt = time`, spec §4.2; `wrt = forcing` / `parameters`, spec §4.3).
-const AXES: [(&str, Wrt); 4] = [
+const AXES: [(&str, Wrt); 5] = [
     ("tgrad_photolysis", Wrt::Time),
+    ("tgrad_named_steps", Wrt::Time),
     ("forcing_bracket", Wrt::Forcing),
     ("forcing_bracket", Wrt::Parameters),
     ("recurrence_sweep", Wrt::Parameters),
 ];
 /// Extra value-golden points per (fixture, axis): `<name>.<axis><sfx>.jvals.json`.
-const VALUE_POINTS: [(&str, Wrt, &[&str]); 4] = [
+const VALUE_POINTS: [(&str, Wrt, &[&str]); 5] = [
     ("tgrad_photolysis", Wrt::Time, &[""]),
+    ("tgrad_named_steps", Wrt::Time, &[""]),
     ("forcing_bracket", Wrt::Forcing, &["", ".w0"]),
     ("forcing_bracket", Wrt::Parameters, &["", ".w0"]),
     ("recurrence_sweep", Wrt::Parameters, &[""]),

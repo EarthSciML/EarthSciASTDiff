@@ -23,12 +23,18 @@ use common::{cells_env, load, root};
 
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 11] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 17] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
     ("forcing_bracket", (Wrt::States, Wrt::Forcing)),
     ("forcing_bracket", (Wrt::Time, Wrt::States)),
+    ("forcing_bracket", (Wrt::Time, Wrt::Parameters)),
+    ("forcing_bracket", (Wrt::Time, Wrt::Forcing)),
+    ("tgrad_named_steps", (Wrt::Time, Wrt::States)),
+    ("tgrad_named_steps", (Wrt::Time, Wrt::Parameters)),
+    ("tgrad_named_steps", (Wrt::Time, Wrt::Forcing)),
+    ("tgrad_photolysis", (Wrt::Time, Wrt::States)),
     ("minmod_adv", SS),
     ("filtered_scan", SS),
     ("semiring_reduce", SS),

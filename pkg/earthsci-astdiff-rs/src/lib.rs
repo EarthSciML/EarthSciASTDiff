@@ -6,6 +6,7 @@
 pub mod bands;
 pub mod branches;
 pub mod clip;
+pub(crate) mod companions;
 pub mod emit;
 pub mod eval_cse;
 pub(crate) mod hashcons;
