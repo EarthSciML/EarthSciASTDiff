@@ -1046,6 +1046,30 @@ indices, the coefficients multiply, contractions concatenate (the inner's
 renamed apart), and the row-box membership joins the guard, decided over
 the outer box as far as it can be (`_split_guard`).
 """
+# Whether `e` is an `ifelse` with a literal-zero branch: a guard.
+_is_guard(e) = e isa OpExpr && e.op == "ifelse" && length(e.args) == 3 &&
+    (iszero_lit(e.args[2]) || iszero_lit(e.args[3]))
+
+# `outer · inner`, with a guard of `outer` (an `ifelse` with a literal-zero
+# branch, `outer` itself or the first such factor of a product) kept outside
+# the product: `ifelse(c, a, 0) · y` is `ifelse(c, a · y, 0)`. The guard of a
+# definition (`ifelse(s > 0, …/s, …)`) then also guards its composed
+# derivative where the inner derivative `y` is NaN (spec §3.6).
+function guarded_mul(outer::ASTExpr, inner::ASTExpr)
+    if _is_guard(outer)
+        return op("ifelse", outer.args[1], guarded_mul(outer.args[2], inner), guarded_mul(outer.args[3], inner))
+    end
+    if outer isa OpExpr && outer.op == "*"
+        k = findfirst(_is_guard, outer.args)
+        if k !== nothing
+            g = outer.args[k]
+            branch(x) = guarded_mul(mul(outer.args[1:(k - 1)]..., x, outer.args[(k + 1):end]...), inner)
+            return op("ifelse", g.args[1], branch(g.args[2]), branch(g.args[3]))
+        end
+    end
+    return mul(outer, inner)
+end
+
 function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx, co::Bool)
     out = Band[]
     for o in outer, b in inner
@@ -1120,7 +1144,7 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
         # The inner coefficient is any expression (an argument's band, or a
         # composed band `ref * argcoef`), not only a generic leaf: substitute
         # its row and contracted names everywhere, references' bindings included.
-        coef = co ? mul(o.coef, _subst_names(b.coef, sigma)) : nothing
+        coef = co ? guarded_mul(o.coef, _subst_names(b.coef, sigma)) : nothing
         contracted = vcat(o.contracted, bcon)
         names = String[r for r in o.ridx if r isa String]
         append!(names, String[n for (n, _, _) in contracted])

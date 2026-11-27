@@ -1541,6 +1541,50 @@ fn int_lit(e: &Expr) -> Option<i64> {
 /// The chain rule through an intermediate array `W`: `outer` are bands
 /// w.r.t. `W` (columns: cells of `W`), `inner` the bands of `W` (rows: cells
 /// of `W`); see operator_refs.jl `_compose`.
+/// Whether `e` is an `ifelse` with a literal-zero branch: a guard.
+fn is_guard(e: &Expr) -> bool {
+    matches!(e, Expr::Operator(n) if n.op == "ifelse" && n.args.len() == 3
+        && (is_zero(&n.args[1]) || is_zero(&n.args[2])))
+}
+
+/// `outer · inner`, with a guard of `outer` (an `ifelse` with a literal-zero
+/// branch, `outer` itself or the first such factor of a product) kept
+/// outside the product: `ifelse(c, a, 0) · y` is `ifelse(c, a · y, 0)`. The
+/// guard of a definition (`ifelse(s > 0, …/s, …)`) then also guards its
+/// composed derivative where the inner derivative `y` is NaN (spec §3.6).
+pub(crate) fn guarded_mul(outer: &Expr, inner: Expr) -> Expr {
+    if let Expr::Operator(n) = outer {
+        if is_guard(outer) {
+            return op(
+                "ifelse",
+                vec![
+                    n.args[0].clone(),
+                    guarded_mul(&n.args[1], inner.clone()),
+                    guarded_mul(&n.args[2], inner),
+                ],
+            );
+        }
+        if n.op == "*" {
+            if let Some(k) = n.args.iter().position(is_guard) {
+                let Expr::Operator(g) = &n.args[k] else {
+                    unreachable!("a guard is an operator")
+                };
+                let branch = |x: &Expr| {
+                    let mut f: Vec<Expr> = n.args[..k].to_vec();
+                    f.push(x.clone());
+                    f.extend(n.args[k + 1..].iter().cloned());
+                    guarded_mul(&mul(f), inner.clone())
+                };
+                return op(
+                    "ifelse",
+                    vec![g.args[0].clone(), branch(&g.args[1]), branch(&g.args[2])],
+                );
+            }
+        }
+    }
+    mul(vec![outer.clone(), inner])
+}
+
 pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> {
     let mut out = Vec::new();
     for o in outer {
@@ -1662,7 +1706,7 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
                 // The inner coefficient is any expression (an argument's
                 // band, or a composed band `ref * argcoef`), not only a
                 // generic leaf: substitute everywhere, bindings included.
-                simp(&mul(vec![o.coef.clone(), sub(&b.coef)]))
+                simp(&guarded_mul(&o.coef, sub(&b.coef)))
             } else {
                 placeholder()
             };
