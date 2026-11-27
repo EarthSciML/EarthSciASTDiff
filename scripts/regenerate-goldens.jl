@@ -146,6 +146,7 @@ end
 for (name, wrt) in (
         ("tgrad_photolysis", :time),
         ("tgrad_named_steps", :time),
+        ("tgrad_surface", :time),
         ("forcing_bracket", :forcing),
         ("forcing_bracket", :parameters),
         ("recurrence_sweep", :parameters),
@@ -212,6 +213,7 @@ for (name, wrt) in (
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
         ("tgrad_named_steps", :time),
+        ("tgrad_surface", :time),
         ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
         ("recurrence_sweep", :states), ("recurrence_sweep", :parameters),

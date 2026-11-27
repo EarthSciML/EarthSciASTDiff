@@ -373,16 +373,13 @@ function _extended_pass(
     # partial derivative with every parameter, data-fed ones included, held
     # fixed (spec §4.2), so an observed whose only time dependence comes
     # through data has a zero partial derivative and is not followed.
-    # Structure-only passes on the other axes compose their bands through the
-    # observed graph (named steps, spec §4.6, steps.jl): each observed that
-    # moves with a target is a column, its bands composed once. A pair's first
-    # pass (`seed`) and a pass through an active recurrence inline, as below.
-    if steps && !co && isempty(seed)
-        rn = Set{String}(r.name for r in recs)
-        st = _steps_setup(
-            sv, ctx, Dict{String, ASTExpr}(k => v for (k, v) in src_obs if !(k in rn)),
-            targets, scalars, co
-        )
+    # The other axes compose their bands through the observed graph (named
+    # steps, spec §4.6, steps.jl): each observed that moves with a target is a
+    # column, its bands composed once, and (full mode) each of its bands'
+    # coefficients a named intermediate. A pair's first pass (`seed`) and a
+    # pass through an active recurrence inline, as below.
+    if steps && isempty(seed) && isempty(act) && wrt != :time
+        st = _steps_pass(sv, ctx, src_obs, recs, wrt, forcing, targets, scalars, co)
         entries = JacEntry[]
         row_eq = Int[]
         for (q, eq) in enumerate(sv.equations)
@@ -403,6 +400,7 @@ function _extended_pass(
         if _closed_axis(wrt)
             foreach(_check_closed_columns, entries)
         end
+        co && (entries = _intern_entries(entries, _Interner()))
         return ExtendedBands(Recurrence[], entries, JacEntry[], row_eq, Dict{String, String}())
     end
     obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed)))

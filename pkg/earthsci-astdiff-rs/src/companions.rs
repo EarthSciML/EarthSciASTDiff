@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::free_variables;
+use earthsci_ast::RegionBound;
 use earthsci_ast::{Expr, ExpressionNode};
 use serde_json::{json, Map, Value};
 
@@ -525,26 +526,22 @@ fn companion_definition(bs: &[Band], shape: &[i64]) -> Expr {
                 .collect()
         }
     };
-    let mut ts = Vec::new();
+    // each band: its box over the shape and its term (row names unified,
+    // gated by its `where` only)
+    let mut boxes: Vec<Vec<(i64, i64)>> = Vec::new();
+    let mut terms: Vec<Expr> = Vec::new();
     for b in bs {
         let mut m = HashMap::new();
-        let mut conds = Vec::new();
+        let mut bx = Vec::new();
         for d in 0..k {
-            let (lo, hi) = b.rows[d];
-            let x = Expr::Variable(names[d].clone());
             match &b.ridx[d] {
                 RIdx::Name(r) => {
                     if *r != names[d] {
-                        m.insert(r.clone(), x.clone());
+                        m.insert(r.clone(), Expr::Variable(names[d].clone()));
                     }
-                    if lo > 1 {
-                        conds.push(op(">=", vec![x.clone(), Expr::Integer(lo)]));
-                    }
-                    if hi < shape[d] {
-                        conds.push(op("<=", vec![x.clone(), Expr::Integer(hi)]));
-                    }
+                    bx.push(b.rows[d]);
                 }
-                RIdx::Fixed(c) => conds.push(op("==", vec![x.clone(), Expr::Integer(*c)])),
+                RIdx::Fixed(c) => bx.push((*c, *c)),
             }
         }
         let coef = if m.is_empty() {
@@ -552,17 +549,116 @@ fn companion_definition(bs: &[Band], shape: &[i64]) -> Expr {
         } else {
             subst_free(&b.coef, &m)
         };
-        if let Some(g) = &b.guard {
-            let g = if m.is_empty() {
-                g.clone()
-            } else {
-                subst_free(g, &m)
-            };
-            conds.extend(conjuncts(&g));
-        }
-        ts.push(gate(coef, conds));
+        let conds = match &b.guard {
+            None => Vec::new(),
+            Some(g) => {
+                let g = if m.is_empty() {
+                    g.clone()
+                } else {
+                    subst_free(g, &m)
+                };
+                conjuncts(&g)
+            }
+        };
+        boxes.push(bx);
+        terms.push(gate(coef, conds));
     }
-    faq_over(&names, shape, sum(ts))
+    let faq_box = |bx: &[(i64, i64)], body: Expr| -> Expr {
+        let ranges: HashMap<String, RangeSpec> = names
+            .iter()
+            .zip(bx)
+            .map(|(n, (lo, hi))| (n.clone(), RangeSpec::Interval([*lo, *hi])))
+            .collect();
+        Expr::operator(ExpressionNode {
+            op: "faq".into(),
+            output_idx: Some(names.clone()),
+            expr: Some(Box::new(body)),
+            ranges: Some(ranges),
+            ..Default::default()
+        })
+    };
+    let full: Vec<(i64, i64)> = shape.iter().map(|n| (1, *n)).collect();
+    if boxes.iter().all(|bx| *bx == full) {
+        return faq_box(&full, sum(terms));
+    }
+    // A region narrower than the shape: a `makearray`, never a whole-shape
+    // gate (a reader built per cell, a lane program, needs the region). The
+    // boxes are cut at every box's bounds into disjoint cells, each the sum
+    // of the bands that cover it, over zero where none does
+    // (companions.jl `_companion_definition`).
+    let cuts: Vec<Vec<i64>> = (0..k)
+        .map(|d| {
+            let mut c = vec![1, shape[d] + 1];
+            for bx in &boxes {
+                c.push(bx[d].0);
+                c.push(bx[d].1 + 1);
+            }
+            c.sort();
+            c.dedup();
+            c
+        })
+        .collect();
+    let mut regions = Vec::new();
+    let mut values = Vec::new();
+    let mut ncells: i64 = 0;
+    // cells in lexicographic order, the first dimension slowest
+    let mut pos = vec![0usize; k];
+    'cells: loop {
+        let cell: Vec<(i64, i64)> = (0..k)
+            .map(|d| (cuts[d][pos[d]], cuts[d][pos[d] + 1] - 1))
+            .collect();
+        let cover: Vec<usize> = boxes
+            .iter()
+            .enumerate()
+            .filter(|(_, bx)| (0..k).all(|d| bx[d].0 <= cell[d].0 && cell[d].1 <= bx[d].1))
+            .map(|(i, _)| i)
+            .collect();
+        if !cover.is_empty() {
+            ncells += cell.iter().map(|(lo, hi)| hi - lo + 1).product::<i64>();
+            regions.push(cell.iter().map(|(lo, hi)| [*lo, *hi]).collect::<Vec<_>>());
+            values.push(faq_box(
+                &cell,
+                sum(cover.iter().map(|&i| terms[i].clone()).collect()),
+            ));
+        }
+        let mut d = k;
+        loop {
+            if d == 0 {
+                break 'cells;
+            }
+            d -= 1;
+            pos[d] += 1;
+            if pos[d] + 1 < cuts[d].len() {
+                break;
+            }
+            pos[d] = 0;
+        }
+    }
+    if ncells < shape.iter().product::<i64>() {
+        regions.insert(0, shape.iter().map(|n| [1, *n]).collect());
+        values.insert(0, Expr::Integer(0));
+    }
+    region_array(regions, values, shape)
+}
+
+/// An array over `shape` given by `makearray` regions: one `faq` over the
+/// whole extent whose body reads the `makearray` at its own cell, so the
+/// definition stays an array aggregate (a lane program builds an observed
+/// only from one) while each region keeps its own box. Its names are
+/// `_m<d>`, `_` appended until clear of every name of the regions' values
+/// (companions.jl `_region_array`).
+pub(crate) fn region_array(regions: Vec<Vec<[i64; 2]>>, values: Vec<Expr>, shape: &[i64]) -> Expr {
+    let mut taken = HashSet::new();
+    for v in &values {
+        all_names(v, &mut taken);
+    }
+    let names: Vec<String> = (1..=shape.len())
+        .map(|d| fresh(&mut taken, &format!("_m{d}"), "_"))
+        .collect();
+    let ma = makearray_of(regions, values);
+    let mut args = vec![ma];
+    args.extend(names.iter().map(|n| Expr::Variable(n.clone())));
+    faq_over(&names, shape, op("index", args))
 }
 
 /// The companions the band list `bands` reads, directly or through other
@@ -648,31 +744,41 @@ pub(crate) fn declared_scalars(sv: &SysView, obs: &HashMap<String, Expr>) -> Has
 pub(crate) fn add_companions(
     model: &mut Map<String, Value>,
     sv: &SysView,
-    comps: &[(String, String, Expr)],
+    comps: &[(String, String, Expr, usize)],
 ) {
     if let Some(Value::Object(vars)) = model.get_mut("variables") {
-        for (n, o, _) in comps {
+        for (n, o, _, extra) in comps {
             let mut d = Map::new();
             d.insert("type".into(), json!("unknown"));
-            if let Some(shp) = sv.variables[o].shape.as_ref().filter(|s| !s.is_empty()) {
-                d.insert("shape".into(), json!(shp));
+            // a named step of another axis (§4.6) is declared without a
+            // shape: its definition gives its extents
+            if *extra == 0 {
+                if let Some(shp) = sv
+                    .variables
+                    .get(o)
+                    .and_then(|v| v.shape.as_ref())
+                    .filter(|s| !s.is_empty())
+                {
+                    d.insert("shape".into(), json!(shp));
+                }
             }
             vars.insert(n.clone(), Value::Object(d));
         }
     }
     if let Some(Value::Array(eqs)) = model.get_mut("equations") {
-        for (n, _, d) in comps {
+        for (n, _, d, _) in comps {
             eqs.push(json!({"lhs": n, "rhs": ser_expr(d)}));
         }
     }
 }
 
-/// The block's `companions` field (spec §4.2): `[{name, of, rhs}]`.
-pub(crate) fn companions_field(comps: &[(String, String, Expr)]) -> Value {
+/// The block's `intermediates` field (spec §4, §4.2, §4.6): `[{name, of,
+/// rhs}]`.
+pub(crate) fn companions_field(comps: &[(String, String, Expr, usize)]) -> Value {
     Value::Array(
         comps
             .iter()
-            .map(|(n, o, d)| json!({"name": n, "of": o, "rhs": ser_expr(d)}))
+            .map(|(n, o, d, _)| json!({"name": n, "of": o, "rhs": ser_expr(d)}))
             .collect(),
     )
 }
@@ -707,7 +813,10 @@ pub(crate) fn time_pair_bands(
             return Ok(None);
         }
     }
-    let e2 = memo.bands(sv, ctx, obs, a2, None, forcing, &[])?;
+    // the a2 pass inlining the observed that move with a2 (not its named
+    // steps, §4.6): its coefficients are then differentiated in `t` here
+    let _ = &memo;
+    let e2 = crate::jacobian::extended_pass(sv, ctx, obs, a2, forcing, &[], false)?.rows;
     let mut nr = obs.clone();
     for r in &recs {
         nr.remove(&r.name);
@@ -853,4 +962,24 @@ fn sum_same_box2(bs: Vec<Band>) -> Vec<Band> {
         out.push(b);
     }
     out
+}
+
+/// A `makearray` node of integer regions (`[lo, hi]` per dimension) and
+/// their values.
+pub(crate) fn makearray_of(regions: Vec<Vec<[i64; 2]>>, values: Vec<Expr>) -> Expr {
+    Expr::operator(ExpressionNode {
+        op: "makearray".into(),
+        regions: Some(
+            regions
+                .into_iter()
+                .map(|r| {
+                    r.into_iter()
+                        .map(|[lo, hi]| [RegionBound::Int(lo), RegionBound::Int(hi)])
+                        .collect()
+                })
+                .collect(),
+        ),
+        values: Some(values),
+        ..Default::default()
+    })
 }

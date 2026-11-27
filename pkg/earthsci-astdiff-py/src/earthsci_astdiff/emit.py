@@ -309,9 +309,10 @@ def _jacobian_block(
     aux = auxiliary(sv, observed_defs(sv), ctx_of(sv), entries)
     if aux:
         block["auxiliary"] = _auxiliary_field(aux)
-    from .companions import companions_field, time_companions
+    from .companions import companions_field
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
+    comps = intermediates(sv, [en.band for en in entries], forcing)
     if comps:
         block["intermediates"] = companions_field(comps)
     if not rect:
@@ -709,10 +710,12 @@ def evaluation_document(
     that is not found raises :class:`BandError`."""
     sv = sysview(obj, model_name, data_sources)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
-    return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes)
+    return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes, forcing=forcing)
 
 
-def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int = 12):
+def _evaluation_document(
+    sv, entries: list, cse: bool = True, cse_min_nodes: int = 12, forcing=None
+):
     # The source's observed definitions that the coefficients read, its state
     # derivatives zeroed, then one state per band whose RHS is the band's
     # coefficient field, after the optional hoisting. Returns (document,
@@ -724,10 +727,11 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     m = doc["models"]["JacobianEval"]
     ctx = ctx_of(sv)
     aux = auxiliary(sv, observed_defs(sv), ctx, entries)
-    from .companions import add_companions, time_companions
+    from .companions import add_companions
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
-    roots = [en.band.coef for en in entries] + [d for _, _, d in aux] + [d for _, _, d in comps]
+    comps = intermediates(sv, [en.band for en in entries], forcing)
+    roots = [en.band.coef for en in entries] + [d for _, _, d in aux] + [c[2] for c in comps]
     _zero_source_derivatives(m, sv, ctx, roots)
     _add_auxiliary(m, aux)
     add_companions(m, sv, comps)

@@ -18,7 +18,7 @@ const PRODUCT_AXES = (
     ("contracting_observed", :states), ("tgrad_photolysis", :states),
     ("forcing_bracket", :states), ("filtered_scan", :states),
     ("semiring_reduce", :states), ("tgrad_photolysis", :time),
-    ("tgrad_named_steps", :time), ("pre_operator", :states),
+    ("tgrad_named_steps", :time), ("tgrad_surface", :time), ("pre_operator", :states),
     ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
 )
 _axistag(wrt::Symbol) = wrt == :states ? "" : ".$wrt"

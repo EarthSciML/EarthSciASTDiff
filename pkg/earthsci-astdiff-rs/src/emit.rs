@@ -1123,7 +1123,7 @@ fn axis_block(
         block.insert("auxiliary".into(), auxiliary_field(&aux));
     }
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     if !comps.is_empty() {
         block.insert(
             "intermediates".into(),
@@ -1717,15 +1717,28 @@ pub fn evaluation_document(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<(Value, Vec<String>), crate::bands::BandError> {
+    evaluation_document_with_forcing(sv, entries, cse, cse_min_nodes, None)
+}
+
+/// [`evaluation_document`] for bands of a parameters or forcing axis
+/// computed with an explicit forcing set (`None` infers it): the named
+/// intermediates of those bands (spec §4.6) are found under the same set.
+pub fn evaluation_document_with_forcing(
+    sv: &SysView,
+    entries: &[JacEntry],
+    cse: bool,
+    cse_min_nodes: usize,
+    forcing: Option<&[String]>,
+) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
     let obs = crate::system::observed_defs(sv)?;
     let aux = crate::recurrence::auxiliary(sv, &obs, &ctx, entries)?;
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     let mut roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
     roots.extend(aux.iter().map(|(_, _, d)| d));
-    roots.extend(comps.iter().map(|(_, _, d)| d));
+    roots.extend(comps.iter().map(|(_, _, d, _)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     add_auxiliary(&mut model, &aux);
     crate::companions::add_companions(&mut model, sv, &comps);

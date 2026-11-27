@@ -279,30 +279,77 @@ function _companion_definition(bs::Vector{Band}, shape::Vector{Int})::ASTExpr
         end
         String[_fresh!(taken, "_r$d", "_") for d in 1:k]
     end
-    ts = ASTExpr[]
+    # each band: its box over the shape and its term (row names unified,
+    # gated by its `where` only)
+    boxes = Vector{Tuple{Int, Int}}[]
+    terms = ASTExpr[]
     for b in bs
         m = Dict{String, ASTExpr}()
-        conds = ASTExpr[]
+        box = Tuple{Int, Int}[]
         for d in 1:k
-            r = b.ridx[d]; lo, hi = b.rows[d]; x = VarExpr(names[d])
+            r = b.ridx[d]
             if r isa String
-                r == names[d] || (m[r] = x)
-                lo > 1 && push!(conds, op(">=", x, lit(lo)))
-                hi < shape[d] && push!(conds, op("<=", x, lit(hi)))
+                r == names[d] || (m[r] = VarExpr(names[d]))
+                push!(box, b.rows[d])
             else
-                push!(conds, op("==", x, lit(r)))
+                push!(box, (r, r))
             end
         end
         coef = isempty(m) ? b.coef : _subst_free(b.coef, m)
-        if b.guard !== nothing
-            append!(conds, _conjuncts(isempty(m) ? b.guard : _subst_free(b.guard, m)))
-        end
-        push!(ts, isempty(conds) ? coef : op("ifelse", _conj(conds), coef, lit(0)))
+        conds = b.guard === nothing ? ASTExpr[] :
+            _conjuncts(isempty(m) ? b.guard : _subst_free(b.guard, m))
+        push!(boxes, box)
+        push!(terms, isempty(conds) ? coef : op("ifelse", _conj(conds), coef, lit(0)))
     end
+    sumof(ts) = length(ts) == 1 ? ts[1] : op("+", ts...)
+    faq(box, body) = OpExpr(
+        "faq", ASTExpr[];
+        output_idx = Any[names...], expr_body = body,
+        ranges = Dict{String, Any}(n => Any[box[d][1], box[d][2]] for (d, n) in enumerate(names))
+    )
+    full = Tuple{Int, Int}[(1, n) for n in shape]
+    all(==(full), boxes) && return faq(full, sumof(terms))
+    # A region narrower than the shape: a `makearray`, never a whole-shape
+    # gate (a reader built per cell, a lane program, needs the region). The
+    # boxes are cut at every box's bounds into disjoint cells, each the sum
+    # of the bands that cover it, over zero where none does.
+    cuts = [sort!(unique!(vcat(1, shape[d] + 1, [bx[d][1] for bx in boxes], [bx[d][2] + 1 for bx in boxes]))) for d in 1:k]
+    regions = Vector{Vector{Any}}[]
+    values = ASTExpr[]
+    ncells = 0
+    for c in Iterators.product((1:(length(cuts[d]) - 1) for d in k:-1:1)...)
+        cell = Tuple{Int, Int}[(cuts[d][c[k - d + 1]], cuts[d][c[k - d + 1] + 1] - 1) for d in 1:k]
+        cover = [i for (i, bx) in enumerate(boxes) if all(bx[d][1] <= cell[d][1] && cell[d][2] <= bx[d][2] for d in 1:k)]
+        isempty(cover) && continue
+        ncells += prod(cell[d][2] - cell[d][1] + 1 for d in 1:k)
+        push!(regions, Vector{Any}[Any[lo, hi] for (lo, hi) in cell])
+        push!(values, faq(cell, sumof(terms[cover])))
+    end
+    if ncells < prod(shape)
+        pushfirst!(regions, Vector{Any}[Any[1, n] for n in shape])
+        pushfirst!(values, lit(0))
+    end
+    return _region_array(regions, values, shape)
+end
+
+# An array over `shape` (row dimensions, then any contracted ones) given by
+# `makearray` regions: one `faq` over the whole extent whose body reads the
+# `makearray` at its own cell. The definition stays an array aggregate (a
+# lane program builds an observed only from one) while each region keeps its
+# own box, so a read inside a region one cell thick along a lane set stays
+# on the lane's cell. The `faq`'s names are `_m<d>`, `_` appended until clear
+# of every name of the regions' values.
+function _region_array(regions, values, shape)
+    taken = Set{String}()
+    for v in values
+        _all_names!(taken, v)
+    end
+    names = String[_fresh!(taken, "_m$d", "_") for d in eachindex(shape)]
+    ma = OpExpr("makearray", ASTExpr[]; regions = regions, values = values)
     return OpExpr(
         "faq", ASTExpr[];
         output_idx = Any[names...],
-        expr_body = length(ts) == 1 ? ts[1] : op("+", ts...),
+        expr_body = op("index", ma, ASTExpr[VarExpr(n) for n in names]...),
         ranges = Dict{String, Any}(n => Any[1, shape[d]] for (d, n) in enumerate(names))
     )
 end
@@ -366,22 +413,27 @@ _declared_scalars(sv::SysView, obs) = Set{String}(
 # `shape` when it has one) and defined by a bare-LHS equation, after the
 # source's equations.
 function _add_companions!(m, sv::SysView, comps)
-    for (n, o, _) in comps
+    for c in comps
+        n, o = c[1], c[2]
         d = OrderedDict{String, Any}("type" => "unknown")
         shp = sv.variables[o].shape
-        shp === nothing || isempty(shp) || (d["shape"] = Any[x for x in shp])
+        # a named step of another axis (§4.6) is declared without a shape:
+        # its definition gives its extents
+        noshape = length(c) >= 4 && c[4] != 0
+        noshape || shp === nothing || isempty(shp) || (d["shape"] = Any[x for x in shp])
         m["variables"][n] = d
     end
-    for (n, _, d) in comps
-        push!(m["equations"], OrderedDict{String, Any}("lhs" => n, "rhs" => _ser_expr(d)))
+    for c in comps
+        push!(m["equations"], OrderedDict{String, Any}("lhs" => c[1], "rhs" => _ser_expr(c[3])))
     end
     return
 end
 
-# The block's `companions` field (spec §4.2): `[{name, of, rhs}]`.
+# The block's `intermediates` field (spec §4, §4.2, §4.6): `[{name, of,
+# rhs}]`.
 _companions_field(comps) = Any[
-    OrderedDict{String, Any}("name" => n, "of" => o, "rhs" => _ser_expr(d))
-        for (n, o, d) in comps
+    OrderedDict{String, Any}("name" => c[1], "of" => c[2], "rhs" => _ser_expr(c[3]))
+        for c in comps
 ]
 
 # ── second-order pairs `["time", a2]` (spec §4.4) ───────────────────────────
@@ -399,7 +451,9 @@ function _time_pair_bands(sv::SysView, a2::Symbol, forcing, memo, t2)
     info = _rec_info!(memo, sv)
     isempty(info.recs) ||
         isempty(_active(info.recs, info.obs, union(Set{String}(["t"]), t2))) || return nothing
-    e2 = _first_order!(memo, sv, a2, nothing, forcing)
+    # the a2 pass inlining the observed that move with a2 (not its named
+    # steps, §4.6): its coefficients are then differentiated in `t` here
+    e2 = _extended_pass(sv, info.ctx, info.obs, a2, forcing, String[]; info = info, steps = false).rows
     rn = Set{String}(r.name for r in info.recs)
     obs = Dict{String, ASTExpr}(k => v for (k, v) in info.obs if !(k in rn))
     cs = _companion_setup(sv, info.ctx, obs, _declared_scalars(sv, info.obs), true)

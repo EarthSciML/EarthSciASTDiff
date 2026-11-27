@@ -83,7 +83,10 @@ end
 # the observed kept that the coefficients, column indices and `where` guards
 # read, and the coefficients optionally hoisted. Returns (doc, model, ctx,
 # coefficients).
-function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int)
+function _product_base(
+        sv::SysView, name::String, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int;
+        forcing = nothing
+    )
     doc = _base_document(sv, name)
     m = doc["models"][name]
     ctx = _ctx(sv)
@@ -93,8 +96,8 @@ function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse
         append!(roots, en.band.cidx)
         en.band.guard === nothing || push!(roots, en.band.guard)
     end
-    comps = _time_companions(sv, entries)
-    append!(roots, last.(comps))
+    comps = _intermediates(sv, entries; forcing = forcing)
+    append!(roots, ASTExpr[c[3] for c in comps])
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_companions!(m, sv, comps)
     return doc, m, ctx, _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
@@ -458,7 +461,7 @@ function _jvp_document(
         sv::SysView, entries::Vector{JacEntry}, wrt::Symbol, forcing;
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     vin = OrderedDict{String, String}(c => _iofresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
     out = OrderedDict{String, String}(r => _iofresh!(taken, "_jvp_$r") for r in view_states(sv))
@@ -476,7 +479,7 @@ function _vjp_document(
         sv::SysView, entries::Vector{JacEntry}, wrt::Symbol, forcing;
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     lam = OrderedDict{String, String}(r => _iofresh!(taken, "_lam_$r") for r in view_states(sv))
     out = OrderedDict{String, String}(c => _iofresh!(taken, "_vjp_$c") for c in _column_vars(sv, wrt, forcing))
@@ -509,7 +512,8 @@ function _hvp_document(
     # the coefficients only: a second-order entry rides through the base and
     # the hoisting as a first-order one (its `cidx` holds both columns)
     doc, m, ctx, coefs = _product_base(
-        sv, model, JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes
+        sv, model, JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes;
+        forcing = forcing
     )
     taken = _doc_names(doc)
     states = view_states(sv)
@@ -650,7 +654,7 @@ _rec_names(taken::Set{String}, ext::ExtendedBands, tag::String) = OrderedDict{St
 
 function _jvp_sweeps(sv::SysView, ext::ExtendedBands, wrt::Symbol, forcing, cse::Bool, cse_min_nodes::Int)
     every = vcat(ext.rows, ext.rec_rows)
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     vin = OrderedDict{String, String}(c => _iofresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
     vdot = _rec_names(taken, ext, "vdot")
@@ -676,7 +680,7 @@ end
 
 function _vjp_sweeps(sv::SysView, ext::ExtendedBands, wrt::Symbol, forcing, cse::Bool, cse_min_nodes::Int)
     every = vcat(ext.rows, ext.rec_rows)
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     lam = OrderedDict{String, String}(r => _iofresh!(taken, "_lam_$r") for r in view_states(sv))
     vbar = _rec_names(taken, ext, "vbar")
@@ -725,7 +729,7 @@ function _hvp_sweeps(
     doc, m, ctx, coefs = _product_base(
         sv, model,
         vcat(JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], first_, shared ? JacEntry[] : back),
-        cse, cse_min
+        cse, cse_min; forcing = forcing
     )
     c2s = coefs[1:n2]
     c1s = coefs[(n2 + 1):(n2 + nf)]

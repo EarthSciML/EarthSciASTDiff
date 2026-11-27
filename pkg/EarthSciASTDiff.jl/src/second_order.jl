@@ -264,7 +264,7 @@ function _jacobian_block(
         through ? nothing : _structure2(e1.rows, entries, sv, a1, memo), cse, cse_min_nodes
     )
     through && (block["recurrences"] = _recurrences_field(e1.recurrences))
-    comps = _time_companions(sv, entries)
+    comps = _intermediates(sv, entries; forcing = forcing)
     isempty(comps) || (block["intermediates"] = _companions_field(comps))
     return block
 end

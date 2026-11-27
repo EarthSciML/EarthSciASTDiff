@@ -498,7 +498,7 @@ pub(crate) fn pair_block(
         block.insert("recurrences".into(), recurrences_field(&e1.recurrences));
     }
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     if !comps.is_empty() {
         block.insert(
             "intermediates".into(),

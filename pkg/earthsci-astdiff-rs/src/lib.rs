@@ -30,9 +30,10 @@ pub use branches::{canon_lits, simp, simplify_branches};
 pub use clip::{clip_regions, clip_summands, RIdx};
 pub use emit::{
     block_diagonal_lu, block_diagonal_plan, column_block_plan, column_lines, cse_templates,
-    detect_structure, detect_structure_along, evaluation_document, jacobian_block,
-    jacobian_block_with, jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with,
-    lu_fill, markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
+    detect_structure, detect_structure_along, evaluation_document,
+    evaluation_document_with_forcing, jacobian_block, jacobian_block_with,
+    jacobian_block_with_forcing, jacobian_blocks, jacobian_blocks_with, lu_fill,
+    markowitz_ordering, parse_band, parse_jacobian_block, parse_jacobian_block2,
     parse_jacobian_blocks, plan_factorization, plan_factorization_along, serialize_band,
     serialize_plan, serialize_structure_band, BlockLu, BlockOptions, BlockWrt, ColumnLines,
     FactorizationPlan, ParsedBlock, Rank1, STRUCTURE_CLASSES,

@@ -308,15 +308,24 @@ def _extended_pass(
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # pruned from {"t"} too: f_t is the partial derivative with every
     # parameter, data-fed ones included, held fixed (spec §4.2).
-    # Structure-only passes on the other axes compose their bands through the
-    # observed graph (named steps, spec §4.6, steps.py). A pair's first pass
-    # (`seed`) and a pass through an active recurrence inline, as below.
-    if not co and not seed:
+    # The other axes compose their bands through the observed graph (named
+    # steps, spec §4.6, steps.py): each observed that moves with a target is a
+    # column, its bands composed once, and (full mode) each of its bands'
+    # coefficients a named intermediate. A pair's first pass (`seed`) and a
+    # pass through an active recurrence inline, as below.
+    if companions and not seed and not act and wrt != "time":
         from .steps import steps_row, steps_setup
 
         names = {r.name for r in recs}
+        letter = {"states": "u", "parameters": "p", "forcing": "f"}[wrt]
         st = steps_setup(
-            sv, ctx, {k: v for k, v in src_obs.items() if k not in names}, targets, scalars, co
+            sv,
+            ctx,
+            {k: v for k, v in src_obs.items() if k not in names},
+            targets,
+            scalars,
+            co,
+            letter,
         )
         entries: list[JacEntry] = []
         row_eq: list[int] = []

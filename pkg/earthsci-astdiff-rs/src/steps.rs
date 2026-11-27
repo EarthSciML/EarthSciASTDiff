@@ -13,12 +13,19 @@ use earthsci_ast::{free_variables, Expr};
 
 use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
-use crate::companions::{faq_over, index_of, obs_extents, row_names_of};
+use crate::companions::{faq_over, index_of, obs_extents, region_array, row_names_of};
+use crate::emit::serialize_band;
+use crate::helpers::stable_json;
 use crate::helpers::{op, skey};
 use crate::inline::inline_observed_aligned;
 use crate::jacobian::JacEntry;
+use crate::jacobian::Wrt;
 use crate::operator_refs::{compose, ref_bands, with_layer};
+use crate::reductions::{conj_list, conjuncts, fresh};
 use crate::system::{moving_observed, subscript_observed, SysView};
+use earthsci_ast::extension::types::RangeSpec;
+use earthsci_ast::ExpressionNode;
+use serde_json::Value;
 
 type R<T> = Result<T, BandError>;
 
@@ -27,8 +34,15 @@ type R<T> = Result<T, BandError>;
 /// (those a column index does not need inlined); `inline` the pass's
 /// inlining map (the observed a column index reads); `ctx` the band context
 /// with every column's extents; `composed[o]` the bands of observed `o` onto
-/// the targets once composed.
+/// the targets once composed, each coefficient (full mode) a read of the
+/// band's named intermediate; `letter` the axis letter of the intermediates'
+/// names; `inters` every intermediate named so far, name → (observed,
+/// definition, contracted dimensions added); `taken` the names an
+/// intermediate's name must be clear of.
 pub(crate) struct Steps {
+    letter: String,
+    taken: HashSet<String>,
+    pub(crate) inters: HashMap<String, (String, Expr, usize)>,
     targets: HashSet<String>,
     cols: HashSet<String>,
     pub(crate) inline: HashMap<String, Expr>,
@@ -50,7 +64,10 @@ pub(crate) fn steps_setup(
     targets: &HashSet<String>,
     scalars: &HashSet<String>,
     co: bool,
+    letter: &str,
 ) -> R<Steps> {
+    let mut taken: HashSet<String> = sv.variables.keys().cloned().collect();
+    taken.extend(sv.index_sets.keys().cloned());
     let moving = moving_observed(&obs, targets);
     let mut sub = HashSet::new();
     let mut scan: Vec<String> = moving.iter().cloned().collect();
@@ -69,6 +86,9 @@ pub(crate) fn steps_setup(
     }
     let inline = sub.iter().map(|n| (n.clone(), obs[n].clone())).collect();
     Ok(Steps {
+        letter: letter.to_string(),
+        taken,
+        inters: HashMap::new(),
         targets: targets.clone(),
         cols,
         inline,
@@ -137,7 +157,10 @@ pub(crate) fn steps_row(
                 .map(|e| e.band.clone())
                 .collect();
             let got = compose(&bs, &ib, st.co)?;
-            bycol.entry(w).or_default().extend(got);
+            bycol
+                .entry(w)
+                .or_default()
+                .extend(got.iter().map(|x| steps_sum_free(x, st.co)));
         }
     }
     let mut out = Vec::new();
@@ -182,9 +205,319 @@ pub(crate) fn steps_composed(st: &mut Steps, o: &str) -> R<Vec<JacEntry>> {
     inl.insert(o.to_string(), def);
     let out = steps_row(st, o, &rhs, &inl, &shape);
     st.busy.remove(o);
-    let out = out?;
+    let mut out = out?;
+    if st.co {
+        out = steps_name(st, o, &shape, out);
+    }
     st.composed.insert(o.to_string(), out.clone());
     Ok(out)
+}
+
+// ── named intermediates (full mode) ─────────────────────────────────────────
+
+/// The composed bands of observed `o` in their canonical order (the
+/// code-point order of each band's structure-only entry written as stable
+/// JSON), each coefficient that is not a literal written once as a named
+/// intermediate `_d<letter>_<o>_<k>` (k its 1-based position) and replaced
+/// by a read of it at the band's row and contracted names. One intermediate
+/// per BAND, never one per (column, column index): two bands of one column
+/// index may overlap with different `where`, and a summed definition read by
+/// each would count the overlap twice (steps.jl `_steps_name!`).
+fn steps_name(st: &mut Steps, o: &str, shape: &[i64], bands: Vec<JacEntry>) -> Vec<JacEntry> {
+    let key = |en: &JacEntry| {
+        let mut v = serialize_band(en);
+        if let Value::Object(m) = &mut v {
+            m.remove("coef");
+        }
+        stable_json(&v)
+    };
+    let mut keyed: Vec<(String, JacEntry)> = bands.into_iter().map(|en| (key(&en), en)).collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = Vec::new();
+    for (k, (_, en)) in keyed.into_iter().enumerate() {
+        if matches!(en.band.coef, Expr::Integer(_) | Expr::Number(_)) {
+            out.push(en);
+            continue;
+        }
+        let name = inter_name(st, o, k + 1);
+        let dims = inter_dims(&en.band, shape);
+        let def = inter_definition(&en.band, &dims);
+        st.inters.insert(name.clone(), (o.to_string(), def, 1));
+        let mut b = en.band.clone();
+        b.coef = inter_read(&name, &dims);
+        out.push(JacEntry {
+            u: en.u,
+            v: en.v,
+            band: b,
+        });
+    }
+    out
+}
+
+/// `_d<letter>_<o>_<k>`; for a scoped `P.v`, `P._d<letter>_<v>_<k>`; `_`
+/// appended until clear of every variable and index-set name of the source.
+fn inter_name(st: &mut Steps, o: &str, k: usize) -> String {
+    let base = match o.rfind('.') {
+        None => format!("_d{}_{o}_{k}", st.letter),
+        Some(i) => format!("{}._d{}_{}_{k}", &o[..i], st.letter, &o[i + 1..]),
+    };
+    fresh(&mut st.taken, &base, "_")
+}
+
+/// One dimension of an intermediate: its name, box and whole extent.
+type Dim = (String, (i64, i64), i64);
+
+/// The dimensions of a band's intermediate: the band's row names (in row
+/// order) and then contracted names that its coefficient or `where` reads,
+/// each with its box and its whole extent. Only those: an intermediate
+/// depends on what its coefficient depends on (steps.jl `_inter_dims`).
+fn inter_dims(b: &Band, shape: &[i64]) -> Vec<Dim> {
+    let mut fv: HashSet<String> = free_variables(&b.coef).into_iter().collect();
+    if let Some(g) = &b.guard {
+        fv.extend(free_variables(g));
+    }
+    let mut dims = Vec::new();
+    for (d, r) in b.ridx.iter().enumerate() {
+        if let RIdx::Name(n) = r {
+            if fv.contains(n) {
+                dims.push((n.clone(), b.rows[d], shape[d]));
+            }
+        }
+    }
+    for (n, lo, hi) in &b.contracted {
+        if fv.contains(n) {
+            dims.push((n.clone(), (*lo, *hi), *hi));
+        }
+    }
+    dims
+}
+
+/// The read of intermediate `name` at its dimensions' names.
+fn inter_read(name: &str, dims: &[Dim]) -> Expr {
+    if dims.is_empty() {
+        Expr::Variable(name.to_string())
+    } else {
+        index_of(
+            name,
+            dims.iter()
+                .map(|(n, _, _)| Expr::Variable(n.clone()))
+                .collect(),
+        )
+    }
+}
+
+/// The definition of a band's intermediate over its dimensions: one `faq`
+/// when the box is the whole extent, else the `makearray` of zero over the
+/// whole extent and the box over it, read at each cell (steps.jl
+/// `_inter_definition`).
+fn inter_definition(b: &Band, dims: &[Dim]) -> Expr {
+    let body = match &b.guard {
+        None => b.coef.clone(),
+        Some(g) => op("ifelse", vec![g.clone(), b.coef.clone(), Expr::Integer(0)]),
+    };
+    if dims.is_empty() {
+        return body;
+    }
+    let names: Vec<String> = dims.iter().map(|(n, _, _)| n.clone()).collect();
+    let bx: Vec<(i64, i64)> = dims.iter().map(|(_, b, _)| *b).collect();
+    let full: Vec<i64> = dims.iter().map(|(_, _, n)| *n).collect();
+    let faq = |bx: &[(i64, i64)]| -> Expr {
+        let ranges: HashMap<String, RangeSpec> = names
+            .iter()
+            .zip(bx)
+            .map(|(n, (lo, hi))| (n.clone(), RangeSpec::Interval([*lo, *hi])))
+            .collect();
+        Expr::operator(ExpressionNode {
+            op: "faq".into(),
+            output_idx: Some(names.clone()),
+            expr: Some(Box::new(body.clone())),
+            ranges: Some(ranges),
+            ..Default::default()
+        })
+    };
+    if bx
+        .iter()
+        .zip(&full)
+        .all(|((lo, hi), n)| *lo == 1 && hi == n)
+    {
+        return faq(&bx);
+    }
+    region_array(
+        vec![
+            full.iter().map(|n| [1, *n]).collect(),
+            bx.iter().map(|(lo, hi)| [*lo, *hi]).collect(),
+        ],
+        vec![Expr::Integer(0), faq(&bx)],
+        &full,
+    )
+}
+
+// ── the intermediates a band list reads ─────────────────────────────────────
+
+/// The axis and observed of intermediate name `n`, or `None` (steps.jl
+/// `_inter_parse`).
+pub(crate) fn inter_parse(n: &str) -> Option<(Wrt, String)> {
+    let (scope, base) = match n.rfind('.') {
+        None => ("", n),
+        Some(i) => (&n[..=i], &n[i + 1..]),
+    };
+    let wrt = match base.get(..4)? {
+        "_du_" => Wrt::States,
+        "_dp_" => Wrt::Parameters,
+        "_df_" => Wrt::Forcing,
+        _ => return None,
+    };
+    let rest = base[4..].trim_end_matches('_');
+    let (mid, k) = rest.rsplit_once('_')?;
+    if k.is_empty() || !k.bytes().all(|c| c.is_ascii_digit()) || mid.is_empty() {
+        return None;
+    }
+    Some((wrt, format!("{scope}{mid}")))
+}
+
+/// Every named intermediate the coefficients and `where` of `bands` read,
+/// directly or through another intermediate's definition, as `(name,
+/// observed, definition, added contracted dimensions)`, in the code-point
+/// order of the observed, then of the name: the time companions (§4.2) and
+/// the named steps of the other axes (§4.6) (steps.jl `_intermediates`).
+pub(crate) fn intermediates(
+    sv: &SysView,
+    bands: &[&Band],
+    forcing: Option<&[String]>,
+) -> R<Vec<(String, String, Expr, usize)>> {
+    let mut out: Vec<(String, String, Expr, usize)> =
+        crate::companions::time_companions(sv, bands)?
+            .into_iter()
+            .map(|(n, o, d)| (n, o, d, 0))
+            .collect();
+    let mut work: Vec<String> = Vec::new();
+    for b in bands {
+        for x in std::iter::once(&b.coef).chain(b.guard.iter()) {
+            for n in free_variables(x) {
+                if inter_parse(&n).is_some() {
+                    work.push(n);
+                }
+            }
+        }
+    }
+    if work.is_empty() {
+        return Ok(out);
+    }
+    let ctx = crate::system::ctx_of(sv)?;
+    let obs = crate::system::observed_defs(sv)?;
+    let recs = crate::recurrence::recurrences(sv, &obs, &ctx)?;
+    let scalars = crate::companions::declared_scalars(sv, &obs);
+    let mut passes: HashMap<Wrt, Steps> = HashMap::new();
+    let mut defs: BTreeMap<String, (String, Expr, usize)> = BTreeMap::new();
+    while let Some(n) = work.pop() {
+        if defs.contains_key(&n) {
+            continue;
+        }
+        let (wrt, o) = inter_parse(&n).expect("parsed above");
+        let st = match passes.entry(wrt) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let mut nr = obs.clone();
+                for r in &recs {
+                    nr.remove(&r.name);
+                }
+                let tset: HashSet<String> = crate::jacobian::targets(sv, wrt, forcing, &obs)?
+                    .into_iter()
+                    .collect();
+                let letter = match wrt {
+                    Wrt::States => "u",
+                    Wrt::Parameters => "p",
+                    _ => "f",
+                };
+                e.insert(steps_setup(sv, &ctx, nr, &tset, &scalars, true, letter)?)
+            }
+        };
+        if !st.inters.contains_key(&n) {
+            steps_composed(st, &o)?;
+        }
+        let hit =
+            st.inters.get(&n).cloned().ok_or_else(|| {
+                BandError(format!("no named intermediate `{n}` (observed `{o}`)"))
+            })?;
+        for m in free_variables(&hit.1) {
+            if inter_parse(&m).is_some() && !defs.contains_key(&m) {
+                work.push(m);
+            }
+        }
+        defs.insert(n, hit);
+    }
+    for (n, (o, d, c)) in defs {
+        out.push((n, o, d, c));
+    }
+    out.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    Ok(out)
+}
+
+/// A composite's contracted names that its column indices do not read are
+/// summed into its coefficient: a scalar `faq` (reduce `+`) over their
+/// ranges whose filter is the `where` conjuncts that read them (in order);
+/// the other conjuncts stay the band's `where` (steps.jl `_steps_sum_free`).
+fn steps_sum_free(b: &Band, co: bool) -> Band {
+    if b.contracted.is_empty() {
+        return b.clone();
+    }
+    let mut read = HashSet::new();
+    for c in &b.cidx {
+        read.extend(free_variables(c));
+    }
+    let free: HashSet<String> = b
+        .contracted
+        .iter()
+        .filter(|(n, _, _)| !read.contains(n))
+        .map(|(n, _, _)| n.clone())
+        .collect();
+    if free.is_empty() {
+        return b.clone();
+    }
+    let mut keep = Vec::new();
+    let mut filt = Vec::new();
+    if let Some(g) = &b.guard {
+        for c in conjuncts(g) {
+            if free_variables(&c).iter().any(|n| free.contains(n)) {
+                filt.push(c);
+            } else {
+                keep.push(c);
+            }
+        }
+    }
+    let con: Vec<(String, i64, i64)> = b
+        .contracted
+        .iter()
+        .filter(|(n, _, _)| !free.contains(n))
+        .cloned()
+        .collect();
+    let coef = if co {
+        let ranges: HashMap<String, RangeSpec> = b
+            .contracted
+            .iter()
+            .filter(|(n, _, _)| free.contains(n))
+            .map(|(n, lo, hi)| (n.clone(), RangeSpec::Interval([*lo, *hi])))
+            .collect();
+        Expr::operator(ExpressionNode {
+            op: "faq".into(),
+            output_idx: Some(Vec::new()),
+            reduce: Some("+".into()),
+            expr: Some(Box::new(b.coef.clone())),
+            ranges: Some(ranges),
+            filter: conj_list(filt).map(Box::new),
+            ..Default::default()
+        })
+    } else {
+        placeholder()
+    };
+    normalize_band(&Band {
+        rows: b.rows.clone(),
+        ridx: b.ridx.clone(),
+        cidx: b.cidx.clone(),
+        coef,
+        contracted: con,
+        guard: conj_list(keep),
+    })
 }
 
 /// Bands of one column with the same structure (rows, row names, column

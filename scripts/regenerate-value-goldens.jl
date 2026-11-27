@@ -32,7 +32,7 @@ const INTERPRETED = ("contracted_ops", "contracting_observed", "filtered_scan", 
 for (name, wrt, t, tag) in Iterators.flatten(
         (
             ((n, :states, 0.7, "") for n in STATE_NAMES),
-            (("tgrad_photolysis", :time, 0.7, ".time"), ("tgrad_named_steps", :time, 0.7, ".time")),
+            (("tgrad_photolysis", :time, 0.7, ".time"), ("tgrad_named_steps", :time, 0.7, ".time"), ("tgrad_surface", :time, 0.7, ".time")),
             (("recurrence_sweep", :parameters, 0.7, ".parameters"),),
             (
                 ("forcing_bracket", w, t, ".$w$sfx") for w in (:forcing, :parameters)

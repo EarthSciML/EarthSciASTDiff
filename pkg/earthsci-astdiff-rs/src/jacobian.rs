@@ -532,15 +532,22 @@ pub(crate) fn extended_pass_in(
             transfer: HashMap::new(),
         });
     }
-    // Structure-only passes on the other axes compose their bands through
-    // the observed graph (named steps, spec §4.6, steps.rs). A pair's first
-    // pass (`seed`) and a pass through an active recurrence inline, as below.
-    if !co && seed.is_empty() {
+    // The other axes compose their bands through the observed graph (named
+    // steps, spec §4.6, steps.rs): each observed that moves with a target is
+    // a column, its bands composed once, and (full mode) each of its bands'
+    // coefficients a named intermediate. A pair's first pass (`seed`) and a
+    // pass through an active recurrence inline, as below.
+    if companions && seed.is_empty() && act.is_empty() && wrt != Wrt::Time {
         let mut nr = src_obs.clone();
         for r in &recs {
             nr.remove(&r.name);
         }
-        let mut st = crate::steps::steps_setup(sv, ctx, nr, &tset, &scalars, co)?;
+        let letter = match wrt {
+            Wrt::States => "u",
+            Wrt::Parameters => "p",
+            _ => "f",
+        };
+        let mut st = crate::steps::steps_setup(sv, ctx, nr, &tset, &scalars, co, letter)?;
         let mut entries = Vec::new();
         let mut row_eq = Vec::new();
         for (q, eq) in sv.equations.iter().enumerate() {
@@ -560,6 +567,9 @@ pub(crate) fn extended_pass_in(
             for en in &entries {
                 check_closed_columns(en)?;
             }
+        }
+        if co {
+            intern_entries(entries.iter_mut().map(|en| &mut en.band));
         }
         return Ok(ExtendedBands {
             recurrences: Vec::new(),

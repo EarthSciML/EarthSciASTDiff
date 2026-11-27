@@ -230,7 +230,7 @@ function _jacobian_block(
     )
     aux = _auxiliary(_rec_info!(memo, sv), entries)
     isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
-    comps = _time_companions(sv, entries)
+    comps = _intermediates(sv, entries; forcing = forcing)
     isempty(comps) || (block["intermediates"] = _companions_field(comps))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
@@ -582,7 +582,7 @@ function evaluation_document(
     )
     sv, _ = _sv_src(input, model_name; data_sources = data_sources)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
-    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
+    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing)
 end
 
 """
@@ -600,7 +600,7 @@ passed with one. `fields[k]` names `entries[k]`'s field.
 """
 function evaluation_document(
         input, entries::AbstractVector{JacEntry}; model_name = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, forcing = nothing
     )
     any(en -> en.band.coef === nothing, entries) && throw(
         ArgumentError(
@@ -610,7 +610,7 @@ function evaluation_document(
     )
     sv = _bands_sysview(input, model_name, data_sources)
     return _evaluation_document(
-        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes
+        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing
     )
 end
 
@@ -683,16 +683,16 @@ _auxiliary_field(aux) = Any[
 # is the band's coefficient field. Returns (document, band-state names).
 function _evaluation_document(
         sv::SysView, entries::Vector{JacEntry};
-        cse::Bool = false, cse_min_nodes::Int = 12
+        cse::Bool = false, cse_min_nodes::Int = 12, forcing = nothing
     )
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
     aux = _auxiliary(_rec_info(sv, _observed_defs(sv), ctx), entries)
-    comps = _time_companions(sv, entries)
+    comps = _intermediates(sv, entries; forcing = forcing)
     roots = ASTExpr[en.band.coef for en in entries]
     append!(roots, last.(aux))
-    append!(roots, last.(comps))
+    append!(roots, ASTExpr[c[3] for c in comps])
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_auxiliary!(m, aux)
     _add_companions!(m, sv, comps)

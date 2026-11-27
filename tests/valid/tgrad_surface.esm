@@ -1,0 +1,271 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "TgradSurface",
+    "description": "A time-dependent source that exists only at the surface (a makearray region one cell thick along lev), divided by the bottom layer's pressure thickness delP, an observed computed per level (as a regridded emission over the surface layer's air mass): its time companion reads delP at level 1, so it is a makearray over that region, never a whole-shape faq gated by the level (spec \u00a74.2)."
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "lev": {
+      "kind": "interval",
+      "size": 4
+    }
+  },
+  "models": {
+    "Box": {
+      "variables": {
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "lev"
+          ],
+          "default": 1.0
+        },
+        "w": {
+          "type": "unknown"
+        },
+        "emis": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "lev"
+          ]
+        },
+        "F": {
+          "type": "parameter",
+          "shape": [
+            "x"
+          ],
+          "default": 2.0
+        },
+        "delP": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "lev"
+          ]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.1
+        },
+        "dt": {
+          "type": "parameter",
+          "default": 3600.0
+        },
+        "ps": {
+          "type": "parameter",
+          "shape": [
+            "x"
+          ],
+          "default": 1000.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": "w",
+          "rhs": {
+            "op": "-",
+            "args": [
+              {
+                "op": "/",
+                "args": [
+                  "t",
+                  "dt"
+                ]
+              },
+              {
+                "op": "floor",
+                "args": [
+                  {
+                    "op": "/",
+                    "args": [
+                      "t",
+                      "dt"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "delP",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "l"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "l": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "ps",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "/",
+                  "args": [
+                    0.05,
+                    "l"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "emis",
+          "rhs": {
+            "op": "makearray",
+            "args": [],
+            "regions": [
+              [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  4
+                ]
+              ],
+              [
+                [
+                  1,
+                  3
+                ],
+                [
+                  1,
+                  1
+                ]
+              ]
+            ],
+            "values": [
+              0.0,
+              {
+                "op": "faq",
+                "output_idx": [
+                  "i",
+                  "l"
+                ],
+                "args": [],
+                "ranges": {
+                  "i": [
+                    1,
+                    3
+                  ],
+                  "l": [
+                    1,
+                    1
+                  ]
+                },
+                "expr": {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "F",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "+",
+                          "args": [
+                            1,
+                            "w"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "delP",
+                        "i",
+                        "l"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "l"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "l": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "emis",
+                    "i",
+                    "l"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "k",
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i",
+                        "l"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

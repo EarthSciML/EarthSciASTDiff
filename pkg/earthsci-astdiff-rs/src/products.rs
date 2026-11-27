@@ -328,8 +328,8 @@ fn product_base<'s, 'a>(
         roots.extend(&b.cidx);
         roots.extend(&b.guard);
     }
-    let comps = crate::companions::time_companions(sv, bands)?;
-    roots.extend(comps.iter().map(|(_, _, d)| d));
+    let comps = crate::steps::intermediates(sv, bands, opts.forcing)?;
+    roots.extend(comps.iter().map(|(_, _, d, _)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     crate::companions::add_companions(&mut model, sv, &comps);
     let coefs = hoist(
@@ -907,6 +907,13 @@ pub fn jvp_document(
         check_sweep_columns(sv, &ext, entries, wrt, opts)?;
         return jvp_sweeps(sv, &ext, wrt, opts);
     }
+    // the entries' columns first: bands of another forcing set name
+    // intermediates no pass of this one has
+    let pre: IoMap = column_vars(sv, wrt, opts.forcing)?
+        .into_iter()
+        .map(|c| (c.clone(), c))
+        .collect();
+    check_columns(&pre, entries.iter().map(|en| en.v.as_str()), wrt)?;
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);
@@ -964,6 +971,13 @@ pub fn vjp_document(
         check_sweep_columns(sv, &ext, entries, wrt, opts)?;
         return vjp_sweeps(sv, &ext, wrt, opts);
     }
+    // the entries' columns first: bands of another forcing set name
+    // intermediates no pass of this one has
+    let pre: IoMap = column_vars(sv, wrt, opts.forcing)?
+        .into_iter()
+        .map(|c| (c.clone(), c))
+        .collect();
+    check_columns(&pre, entries.iter().map(|en| en.v.as_str()), wrt)?;
     let bands: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
     let (mut d, coefs) = product_base(sv, model, &bands, opts)?;
     let mut taken = doc_names(&d.doc, &d.model);

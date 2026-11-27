@@ -107,6 +107,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     are checked byte for byte (values to 1e-10) by every binding, and each
     checks `f_t` against a central difference in `t` of the source
     right-hand side
+  - `tgrad_surface.esm` — a time-dependent source that exists only at the
+    surface (a `makearray` region one cell thick along `lev`) divided by an
+    observed pressure thickness read at level 1: its time companion is one
+    `faq` over the shape reading a `makearray` of that region, never a
+    whole-shape gate. Its `.time.{bands,block,evaldoc,jvp.evaldoc,
+    vjp.evaldoc,jvals}.json` goldens are checked byte for byte by every
+    binding, and the Julia reference checks `f_t` against a central
+    difference in `t`
   - `diamond_chain.esm` — named steps (spec §4.6): twelve levels of two
     observed, each reading both of the level below (2^12 paths when
     inlined). Its structure-only golden, `diamond_chain.structure.bands.json`,

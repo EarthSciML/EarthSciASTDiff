@@ -112,7 +112,9 @@ def _declare(m: dict, sv: SysView, ctx, name: str, like: str, rhs) -> None:
     m["equations"].append({"lhs": {"op": "D", "args": [name], "wrt": "t"}, "rhs": rhs})
 
 
-def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cse_min_nodes: int):
+def _product_base(
+    sv: SysView, name: str, entries: list[JacEntry], cse: bool, cse_min_nodes: int, forcing=None
+):
     """Base of every product document (§9.1): the evaluation document's base,
     with the observed kept that the coefficients, column indices and
     ``where`` guards read, and the coefficients optionally hoisted. Returns
@@ -126,10 +128,11 @@ def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cs
         roots.extend(en.band.cidx)
         if en.band.guard is not None:
             roots.append(en.band.guard)
-    from .companions import add_companions, time_companions
+    from .companions import add_companions
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
-    roots.extend(d for _, _, d in comps)
+    comps = intermediates(sv, [en.band for en in entries], forcing)
+    roots.extend(c[2] for c in comps)
     _zero_source_derivatives(m, sv, ctx, roots)
     add_companions(m, sv, comps)
     return doc, m, ctx, _hoist(doc, m, sv, entries, cse, cse_min_nodes)
@@ -517,7 +520,7 @@ def _jvp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
 ):
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     vin = {c: _fresh(taken, f"_v_{c}") for c in _column_vars(sv, wrt, forcing)}
     out = {r: _fresh(taken, f"_jvp_{r}") for r in view_states(sv)}
@@ -542,7 +545,7 @@ def _vjp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
 ):
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     lam = {r: _fresh(taken, f"_lam_{r}") for r in view_states(sv)}
     out = {c: _fresh(taken, f"_vjp_{c}") for c in _column_vars(sv, wrt, forcing)}
@@ -586,7 +589,7 @@ def _hvp_document(
     # the coefficients only: a second-order entry rides through the base and
     # the hoisting as a first-order one (its `cidx` holds both columns)
     doc, m, ctx, coefs = _product_base(
-        sv, model, [JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes
+        sv, model, [JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes, forcing
     )
     taken = _doc_names(doc)
     states = view_states(sv)
@@ -756,7 +759,7 @@ def _rec_names(taken: set[str], ext, tag: str) -> dict:
 
 def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
     every = ext.rows + ext.rec_rows
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     vin = {c: _fresh(taken, f"_v_{c}") for c in _column_vars(sv, wrt, forcing)}
     vdot = _rec_names(taken, ext, "vdot")
@@ -780,7 +783,7 @@ def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: i
 
 def _vjp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
     every = ext.rows + ext.rec_rows
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     lam = {r: _fresh(taken, f"_lam_{r}") for r in view_states(sv)}
     vbar = _rec_names(taken, ext, "vbar")
@@ -827,6 +830,7 @@ def _hvp_sweeps(
         [JacEntry(en.u, en.v, en.band) for en in entries] + first + ([] if shared else back),
         cse,
         cse_min,
+        forcing,
     )
     c2s, c1s = coefs[:n2], coefs[n2 : n2 + len(first)]
     cbs = c1s[nrow:] if shared else coefs[n2 + len(first) :]

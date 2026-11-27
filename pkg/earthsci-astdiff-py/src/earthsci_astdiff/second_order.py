@@ -256,9 +256,10 @@ def jacobian_block2(
     )
     if e1.recurrences:
         block["recurrences"] = recurrences_field(e1.recurrences)
-    from .companions import companions_field, time_companions
+    from .companions import companions_field
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
+    comps = intermediates(sv, [en.band for en in entries], forcing)
     if comps:
         block["intermediates"] = companions_field(comps)
     return block

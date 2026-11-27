@@ -574,13 +574,15 @@ names). A consumer evaluates them, with the source document's own observed
 and esm-spec §4.3.1.1's recurrence semantics, before any coefficient.
 `recurrences` (a pair block through a recurrence, §4.5): `[{"name": …,
 "dim": d}]`.
-`intermediates` (present only on a `"time"` block, or a pair block whose first
-axis is `"time"` (§4.4), whose coefficients read a time companion, §4.2): `[{"name": …, "of": …, "rhs": <Expression>}]`, one
-per companion some coefficient reads, directly or through another
-companion's `rhs`, in the code-point order of `of` — each the definition
-`name ~ rhs` of the companion of observed `of`, which has `of`'s shape. A
-consumer evaluates them, with the source document's own observed, before any
-coefficient.
+`intermediates` (present only on a block whose coefficients read a named
+intermediate: a time companion, §4.2, or a named step of another axis,
+§4.6): `[{"name": …, "of": …, "rhs": <Expression>}]`, one per intermediate
+some coefficient or `where` reads, directly or through another
+intermediate's `rhs`, in the code-point order of `of`, then of `name` — each
+the definition `name ~ rhs` of an intermediate of observed `of`: a time
+companion has `of`'s shape; a named step of another axis has the
+dimensions its definition gives (§4.6). A consumer evaluates them, with the
+source document's own observed, before any coefficient.
 
 **Several axes per model.** `jacobians.<ModelName>` MAY be an ARRAY of
 blocks with pairwise-distinct `wrt` instead of one block, so a producer
@@ -802,17 +804,30 @@ differentiated again in each of them.
   names `i…` are the output indices of `o`'s definition when it is a `faq`
   with one distinct name per dimension, else `_r<d>` clear of every name of
   the definition. So `_dt_o` is `o`'s direct derivative in `t` plus, for
-  each companion-bearing `o′` it reads, `∂def_o/∂o′ · _dt_o′`. Its `rhs` is,
-  for a scalar `o`, the sum of its bands' coefficients (each
-  `ifelse(where, coef, 0)` when it has one); for an array `o`, one
-  `faq{output_idx: [r…], ranges: {r_d: [1, n_d]}, expr: <sum>}` over the
-  whole shape. The row names `r…` are the bands' own when every band has
-  the same, all named; else `_r<d>`, `_` appended until clear of every name
-  the bands hold. Each band's term is its coefficient (row names
-  substituted), gated by `ifelse(and(…), coef, 0)` with its region's
-  membership — `r_d >= lo` where `lo > 1`, `r_d <= hi` where `hi < n_d`,
-  `r_d == c` for a pinned dimension — and its `where`, unless none applies.
-  A sum of one term is the term; otherwise an n-ary `+` in band order.
+  each companion-bearing `o′` it reads, `∂def_o/∂o′ · _dt_o′`. Each band's
+  term is its coefficient (row names substituted), as
+  `ifelse(and(<its where's conjuncts>), coef, 0)` when it has a `where`.
+  A sum of one term is the term; otherwise an n-ary `+` in band order. The
+  `rhs` is, for a scalar `o`, the sum of its bands' terms. For an array
+  `o` whose every band covers the whole shape (no pinned dimension), it is
+  one `faq{output_idx: [r…], ranges: {r_d: [1, n_d]}, expr: <sum>}`. The
+  row names `r…` are the bands' own when every band has the same, all
+  named; else `_r<d>`, `_` appended until clear of every name the bands
+  hold. Otherwise some band's region (its box, a pinned dimension `c` as
+  `[c, c]`) is narrower than the shape, and the region is written as a
+  region, never as a whole-shape `ifelse` gate on the row names (a reader
+  built per cell, such as a lane program, cannot follow a gate that reads
+  another cell along its lane axis): the boxes are cut at every box's
+  bounds (`lo` and `hi + 1` on each dimension, with `1` and `n_d + 1`) into
+  disjoint cells, and each cell some band covers is a region whose value is
+  `faq{output_idx: [r…], ranges: <the cell>, expr: <sum of the covering
+  bands' terms>}`, in lexicographic order of the cells, the first dimension
+  slowest. Where the cells do not cover the shape, a first region over the
+  whole shape holds `0`. The `rhs` is that `makearray` read at each cell of
+  the shape: `faq{output_idx: [m…], ranges: {m_d: [1, n_d]}, expr:
+  index(makearray(…), m…)}`, the names `_m<d>` with `_` appended until
+  clear of every name of the regions' values, so the definition is still
+  one array aggregate.
 - *Where they appear.* Entries' coefficients read companions by name; the
   block carries every companion read, directly or through another
   companion's definition, in its `intermediates` field (§4), and the
@@ -1235,7 +1250,12 @@ composition of an outer band (column `o′` at index `φ`) with an inner band
 (rows `o′`) is §3.6's: the inner row names read `φ`, contractions
 concatenate (the inner's renamed apart), the inner row box joins the
 `where`, decided over the outer box (§2.2), and a read outside the inner box
-contributes nothing.
+contributes nothing. A composite's contracted names that its column indices
+do not read are then summed into its coefficient — a scalar `faq{output_idx:
+[], reduce: "+", ranges: <their ranges>, filter: <the where conjuncts that
+read them, in order>, expr: coef}` — and the other conjuncts stay its
+`where`, so a composite keeps only the contracted dimensions its column
+reads, the form a band read off an inlined right-hand side has (§3.5).
 
 **Combination.** Within one row (a state's, or an observed's) and one
 target column, bands of the same structure — the same `rows`, `row_idx`,
@@ -1244,10 +1264,51 @@ band (their coefficients summed, an n-ary `+` in the order reached); the
 list is then re-merged and normalized as any band list. This keeps the work
 linear in the number of observed, whatever the number of paths.
 
-**Scope.** A structure-only pass (§2.1) on the `"states"`, `"parameters"`
-and `"forcing"` axes composes as above; its points equal those the inlined
-right-hand side gives. A pass through an active recurrence and the first
-pass of a pair inline the observed that move with the axis, as before.
+**Coefficients: named intermediates.** In full mode each observed's
+composed bands are written once, as named intermediate observed, and every
+reader reads them. The bands of `o` (after combination) are put in their
+canonical order: the code-point order of each band's structure-only entry
+(§2.1: the entry without `coef`, row `o`) written as §5's stable JSON. The
+band at 1-based position `k` whose coefficient is not a numeric literal is
+the intermediate `_d<a>_<o>_<k>`, `a` the axis letter (`u` states, `p`
+parameters, `f` forcing); for a scoped `o` = `P.v` it is `P._d<a>_<v>_<k>`,
+in `o`'s component; `_` is appended until the name is clear of every
+variable and index-set name of the source. Its dimensions are the band's
+row names (in row order) and then contracted names that its coefficient or
+`where` reads — only those, so a read of it depends on exactly what the
+coefficient depends on (a rank-one term still splits, §6) and it holds no
+more values than it varies over. Its value at a point is the band's
+coefficient there, gated by the band's `where`: a `faq` with those names as
+output indices when the band's box is the whole extent on each of them
+(`[1, n_d]` for a row dimension of `o`'s shape, `[1, hi]` for a contracted
+one), else the box as a region over a first region of `0` across the whole
+extent, read at each cell (§4.2's form); with no dimension, the gated
+coefficient itself. In the composed bands, the band's coefficient is
+replaced by the read of its intermediate at those names, the bare name when
+there are none; a literal coefficient is kept as it is. A
+reader's composite then reads the intermediate at the composed indices, and
+an intermediate's own definition reads those of the observed below it.
+
+There is ONE intermediate per band, never one per column and column index:
+two bands of one column and column index may overlap with different `where`
+conditions, and a definition summing both, read by the composite of each,
+would count the overlap twice. (The time axis has one intermediate per
+observed, `_dt_<o>`, because its single scalar column lets every reader
+multiply by the whole derivative, §4.2.)
+
+An intermediate is declared as an observed with no `shape`: its definition
+gives its extents. The block's `intermediates` field (§4) carries every
+intermediate some coefficient or `where` reads, directly or through
+another's definition, in the code-point order of `of`, then of the name; the
+evaluation document (§8.1) and every product document (§9.1) declare them as
+observed after the source's equations.
+
+**Scope.** The `"states"`, `"parameters"` and `"forcing"` axes compose as
+above in both modes; structure-only points equal those of the inlined
+right-hand side, and values agree with them. A pass through an active
+recurrence and the first pass of a pair inline the observed that move with
+the axis, as before; a time pair (§4.4) takes the inlined first-order pass
+of its second axis.
 
 **Fixtures.** `diamond_chain.esm` (§5): twelve levels of two observed,
 each reading both of the level below, so the inlined right-hand side has

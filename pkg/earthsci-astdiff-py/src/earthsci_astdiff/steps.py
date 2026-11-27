@@ -11,15 +11,17 @@ threshold.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
+from earthsci_ast.esm_types import ExprNode
 from earthsci_ast.expression import free_variables
 
 from .bands import Band, BandError, Ctx, bands_in, merge_bands, normalize_band
-from .companions import _faq_over, _obs_extents, _row_names_of
-from .expr_helpers import is_zero, mul, op, skey
+from .companions import _faq_over, _obs_extents, _row_names_of, region_array
+from .expr_helpers import is_zero, mul, op, skey, stable_json
 from .inline import all_names, inline_observed, subst_free
-from .reductions import conj, conj_list, fresh, split_guard
+from .reductions import conj, conj_list, conjuncts, fresh, split_guard
 from .simplify_branches import canon_lits, simp
 from .simplify_port import simplify_jl
 from .system import _moving_observed, _subscript_observed
@@ -38,7 +40,10 @@ class Steps:
     context with every column's extents; ``composed[o]`` the bands of
     observed ``o`` onto the targets once composed."""
 
-    def __init__(self, targets, cols, inline, obs, ctx, scalars, co):
+    def __init__(self, targets, cols, inline, obs, ctx, scalars, co, letter="u", taken=None):
+        self.letter = letter
+        self.taken = taken if taken is not None else set()
+        self.inters: dict = {}
         self.targets = targets
         self.cols = cols
         self.inline = inline
@@ -50,7 +55,7 @@ class Steps:
         self.busy: set = set()
 
 
-def steps_setup(sv, ctx: Ctx, obs: dict, targets, scalars, co: bool) -> Steps:
+def steps_setup(sv, ctx: Ctx, obs: dict, targets, scalars, co: bool, letter: str = "u") -> Steps:
     """The layout of a pass over ``targets``. ``obs`` is every observed
     definition with the recurrences left out; ``scalars`` the declared
     scalars that are not observed."""
@@ -64,8 +69,17 @@ def steps_setup(sv, ctx: Ctx, obs: dict, targets, scalars, co: bool) -> Steps:
         ext = _obs_extents(o, sv, obs, ctx, memo, set())
         if ext:
             shapes[o] = ext
+    taken = {str(n) for n in sv.variables} | {str(n) for n in sv.index_sets}
     return Steps(
-        tset, cols, {n: obs[n] for n in sub}, obs, replace(ctx, shapes=shapes), set(scalars), co
+        tset,
+        cols,
+        {n: obs[n] for n in sub},
+        obs,
+        replace(ctx, shapes=shapes),
+        set(scalars),
+        co,
+        letter,
+        taken,
     )
 
 
@@ -92,12 +106,49 @@ def steps_row(st: Steps, u: str, rhs, inl: dict, shape_u: list) -> list:
         inner = steps_composed(st, v)
         for w in sorted({e.v for e in inner}):
             ib = [e.band for e in inner if e.v == w]
-            bycol.setdefault(w, []).extend(compose(bs, ib, st.co))
+            bycol.setdefault(w, []).extend(
+                _steps_sum_free(x, st.co) for x in compose(bs, ib, st.co)
+            )
     out = []
     for w in sorted(bycol):
         for b in merge_bands(_steps_combine(bycol[w], st.co)):
             out.append(JacEntry(u, w, normalize_band(b)))
     return out
+
+
+def _steps_sum_free(b: Band, co: bool) -> Band:
+    """A composite's contracted names that its column indices do not read are
+    summed into its coefficient: a scalar ``faq`` (reduce ``+``) over their
+    ranges whose filter is the ``where`` conjuncts that read them (in order);
+    the other conjuncts stay the band's ``where`` (steps.jl
+    ``_steps_sum_free``)."""
+    if not b.contracted:
+        return b
+    read: set = set()
+    for c in b.cidx:
+        read |= set(free_variables(c))
+    free = {n for n, _, _ in b.contracted if n not in read}
+    if not free:
+        return b
+    keep, filt = [], []
+    if b.guard is not None:
+        for c in conjuncts(b.guard):
+            (filt if set(free_variables(c)) & free else keep).append(c)
+    con = [x for x in b.contracted if x[0] not in free]
+    coef = None
+    if co:
+        coef = ExprNode(
+            op="faq",
+            args=[],
+            output_idx=[],
+            reduce="+",
+            expr=b.coef,
+            ranges={n: [lo, hi] for n, lo, hi in b.contracted if n in free},
+            filter=conj_list(filt),
+        )
+    return normalize_band(
+        Band(list(b.rows), list(b.ridx), list(b.cidx), coef, con, conj_list(keep))
+    )
 
 
 def _steps_combine(bs: list, co: bool) -> list:
@@ -153,8 +204,169 @@ def steps_composed(st: Steps, o: str) -> list:
         out = steps_row(st, o, rhs, inl, shape)
     finally:
         st.busy.discard(o)
+    if st.co:
+        out = _steps_name(st, o, shape, out)
     st.composed[o] = out
     return out
+
+
+# ── named intermediates (full mode) ──────────────────────────────────────────
+
+
+def _steps_name(st: Steps, o: str, shape: list, bands: list) -> list:
+    """The composed bands of observed ``o`` in their canonical order (the
+    code-point order of each band's structure-only entry written as stable
+    JSON), each coefficient that is not a literal written once as a named
+    intermediate ``_d<letter>_<o>_<k>`` (k its 1-based position) and replaced
+    by a read of it at the band's row and contracted names. One intermediate
+    per BAND, never one per (column, column index): two bands of one column
+    index may overlap with different ``where``, and a summed definition read
+    by each would count the overlap twice (steps.jl ``_steps_name!``)."""
+    from .emit import serialize_band
+    from .jacobian import JacEntry
+
+    def key(en):
+        d = serialize_band(en)
+        d.pop("coef", None)
+        return stable_json(d)
+
+    out = []
+    for k, en in enumerate(sorted(bands, key=key), start=1):
+        b = en.band
+        if isinstance(b.coef, (int, float)) and not isinstance(b.coef, bool):
+            out.append(en)
+            continue
+        name = _inter_name(st, o, k)
+        dims = _inter_dims(b, shape)
+        st.inters[name] = (o, _inter_definition(b, dims), 1)
+        out.append(JacEntry(en.u, en.v, replace(b, coef=_inter_read(name, dims))))
+    return out
+
+
+def _inter_name(st: Steps, o: str, k: int) -> str:
+    i = o.rfind(".")
+    base = f"_d{st.letter}_{o}_{k}" if i < 0 else f"{o[:i]}._d{st.letter}_{o[i + 1 :]}_{k}"
+    return fresh(st.taken, base, "_")
+
+
+def _inter_dims(b: Band, shape: list) -> list:
+    """The dimensions of a band's intermediate: the band's row names (in row
+    order) and then contracted names that its coefficient or ``where`` reads,
+    each with its box and its whole extent. Only those: an intermediate
+    depends on what its coefficient depends on (steps.jl ``_inter_dims``)."""
+    fv = set(free_variables(b.coef))
+    if b.guard is not None:
+        fv |= set(free_variables(b.guard))
+    dims = []
+    for d, r in enumerate(b.ridx):
+        if isinstance(r, str) and r in fv:
+            dims.append((r, tuple(b.rows[d]), shape[d]))
+    for n, lo, hi in b.contracted:
+        if n in fv:
+            dims.append((n, (lo, hi), hi))
+    return dims
+
+
+def _inter_read(name: str, dims: list):
+    return op("index", name, *[n for n, _, _ in dims]) if dims else name
+
+
+def _inter_definition(b: Band, dims: list):
+    """The definition of a band's intermediate over its dimensions: one
+    ``faq`` when the box is the whole extent, else the ``makearray`` of zero
+    over the whole extent and the box over it, read at each cell (steps.jl
+    ``_inter_definition``)."""
+    body = b.coef if b.guard is None else op("ifelse", b.guard, b.coef, 0)
+    if not dims:
+        return body
+    names = [n for n, _, _ in dims]
+    box = [bx for _, bx, _ in dims]
+    full = [n for _, _, n in dims]
+
+    def faq(bx):
+        return ExprNode(
+            op="faq",
+            args=[],
+            output_idx=list(names),
+            expr=body,
+            ranges={n: [lo, hi] for n, (lo, hi) in zip(names, bx, strict=True)},
+        )
+
+    if all(lo == 1 and hi == n for (lo, hi), n in zip(box, full, strict=True)):
+        return faq(box)
+    return region_array([[[1, n] for n in full], [[lo, hi] for lo, hi in box]], [0, faq(box)], full)
+
+
+# ── the intermediates a band list reads ──────────────────────────────────────
+
+_INTER_RE = re.compile(r"^_d([upf])_(.*)_([0-9]+)_*$")
+_AXIS = {"u": "states", "p": "parameters", "f": "forcing"}
+
+
+def inter_parse(n: str):
+    """The axis and observed of intermediate name ``n``, or ``None``."""
+    i = n.rfind(".")
+    scope, base = ("", n) if i < 0 else (n[: i + 1], n[i + 1 :])
+    m = _INTER_RE.match(base)
+    if m is None:
+        return None
+    return _AXIS[m.group(1)], scope + m.group(2)
+
+
+def intermediates(sv, bands: list, forcing=None) -> list:
+    """Every named intermediate the coefficients and ``where`` of ``bands``
+    read, directly or through another intermediate's definition, as
+    ``(name, observed, definition, added contracted dimensions)``, in the
+    code-point order of the observed, then of the name: the time companions
+    (§4.2) and the named steps of the other axes (§4.6) (steps.jl
+    ``_intermediates``)."""
+    from .companions import declared_scalars, time_companions
+    from .jacobian import _targets
+    from .recurrence import recurrences
+    from .system import ctx_of, observed_defs
+
+    out = [(n, o, d, 0) for n, o, d in time_companions(sv, bands)]
+    work = []
+    for b in bands:
+        for x in (b.coef, b.guard):
+            if x is None:
+                continue
+            work += [n for n in free_variables(x) if inter_parse(n) is not None]
+    if not work:
+        return out
+    ctx = ctx_of(sv)
+    obs = observed_defs(sv)
+    recs = recurrences(sv, obs, ctx)
+    rn = {r.name for r in recs}
+    scalars = declared_scalars(sv, obs)
+    passes: dict = {}
+    defs: dict = {}
+    while work:
+        n = work.pop()
+        if n in defs:
+            continue
+        wrt, o = inter_parse(n)
+        if wrt not in passes:
+            letter = {"states": "u", "parameters": "p", "forcing": "f"}[wrt]
+            passes[wrt] = steps_setup(
+                sv,
+                ctx,
+                {k: v for k, v in obs.items() if k not in rn},
+                _targets(sv, wrt, forcing, obs),
+                scalars,
+                True,
+                letter,
+            )
+        st = passes[wrt]
+        if n not in st.inters:
+            steps_composed(st, o)
+        hit = st.inters.get(n)
+        if hit is None:
+            raise BandError(f"no named intermediate `{n}` (observed `{o}`)")
+        defs[n] = hit
+        work += [m for m in free_variables(hit[1]) if inter_parse(m) is not None and m not in defs]
+    out += [(n, o, d, c) for n, (o, d, c) in defs.items()]
+    return sorted(out, key=lambda x: (x[1], x[0]))
 
 
 def _int_lit(e):
