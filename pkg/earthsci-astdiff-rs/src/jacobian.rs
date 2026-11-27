@@ -120,6 +120,26 @@ pub(crate) fn targets(
         Wrt::Forcing => forcing_names(sv, forcing)?,
         Wrt::Parameters => {
             let fset: HashSet<String> = forcing_names(sv, forcing)?.into_iter().collect();
+            if let Some(ps) = &sv.parameters {
+                // the chosen parameter set (§4.3): each a parameter, none forcing
+                for n in ps {
+                    if !sv
+                        .variables
+                        .get(n)
+                        .is_some_and(|v| v.var_type == VariableType::Parameter)
+                    {
+                        return Err(BandError(format!(
+                            "parameter name `{n}` is not a parameter of the system"
+                        )));
+                    }
+                    if fset.contains(n) {
+                        return Err(BandError(format!(
+                            "parameter name `{n}` is in the forcing set: it is a column of the forcing axis"
+                        )));
+                    }
+                }
+                return Ok(ps.clone());
+            }
             let mut t: Vec<String> = sv
                 .variables
                 .iter()
@@ -252,6 +272,8 @@ pub struct StructureBand {
     pub cidx: Vec<Expr>,
     pub contracted: Vec<(String, i64, i64)>,
     pub guard: Option<Expr>,
+    /// The band's join (spec §3.5), as in a full band.
+    pub join: Option<crate::bands::BandJoin>,
 }
 
 impl From<JacEntry> for StructureEntry {
@@ -266,6 +288,7 @@ impl From<JacEntry> for StructureEntry {
                 cidx: b.cidx,
                 contracted: b.contracted,
                 guard: b.guard,
+                join: b.join,
             },
         }
     }
@@ -515,6 +538,53 @@ pub(crate) fn extended_pass_in(
                     band: b,
                 });
                 row_eq.push(q);
+            }
+        }
+        if co {
+            intern_entries(entries.iter_mut().map(|en| &mut en.band));
+        }
+        return Ok(ExtendedBands {
+            recurrences: Vec::new(),
+            rows: entries,
+            rec_rows: Vec::new(),
+            row_eq,
+            transfer: HashMap::new(),
+        });
+    }
+    // The other axes compose their bands through the observed graph (named
+    // steps, spec §4.6, steps.rs): each observed that moves with a target is
+    // a column, its bands composed once, and (full mode) each of its bands'
+    // coefficients a named intermediate. A pair's first pass (`seed`) and a
+    // pass through an active recurrence inline, as below.
+    if companions && seed.is_empty() && act.is_empty() && wrt != Wrt::Time {
+        let mut nr = src_obs.clone();
+        for r in &recs {
+            nr.remove(&r.name);
+        }
+        let letter = match wrt {
+            Wrt::States => "u",
+            Wrt::Parameters => "p",
+            _ => "f",
+        };
+        let mut st = crate::steps::steps_setup(sv, ctx, nr, &tset, &scalars, co, letter)?;
+        let mut entries = Vec::new();
+        let mut row_eq = Vec::new();
+        for (q, eq) in sv.equations.iter().enumerate() {
+            let Some(u) = lhs_state(eq) else {
+                if is_derivative(eq) {
+                    return Err(unsupported_derivative(eq));
+                }
+                continue;
+            };
+            let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
+            let inl = st.inline.clone();
+            let es = crate::steps::steps_row(&mut st, &u, &eq.rhs, &inl, &shape_u)?;
+            row_eq.resize(row_eq.len() + es.len(), q);
+            entries.extend(es);
+        }
+        if wrt.has_columns() {
+            for en in &entries {
+                check_closed_columns(en)?;
             }
         }
         if co {

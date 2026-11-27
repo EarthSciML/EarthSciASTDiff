@@ -1,0 +1,1 @@
+[{"coef":1,"col":"E","col_idx":["i"],"row":"c","row_idx":["i"],"rows":[[1,4]]},{"coef":{"args":[-1,{"args":["c","i"],"op":"index"},{"args":["Fb","i"],"op":"index"}],"op":"*"},"col":"k","col_idx":[],"row":"c","row_idx":["i"],"rows":[[1,4]]},{"coef":{"args":["c",1],"op":"index"},"col":"k","col_idx":[],"row":"S","row_idx":[],"rows":[]}]

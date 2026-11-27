@@ -15,7 +15,7 @@ from functools import reduce
 
 from earthsci_ast.expression import free_variables
 
-from .bands import Band, BandError
+from .bands import Band, BandError, join_ranges_into
 from .clip import _index_bounds, _index_box
 from .emit import (
     _base_document,
@@ -112,7 +112,9 @@ def _declare(m: dict, sv: SysView, ctx, name: str, like: str, rhs) -> None:
     m["equations"].append({"lhs": {"op": "D", "args": [name], "wrt": "t"}, "rhs": rhs})
 
 
-def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cse_min_nodes: int):
+def _product_base(
+    sv: SysView, name: str, entries: list[JacEntry], cse: bool, cse_min_nodes: int, forcing=None
+):
     """Base of every product document (§9.1): the evaluation document's base,
     with the observed kept that the coefficients, column indices and
     ``where`` guards read, and the coefficients optionally hoisted. Returns
@@ -126,10 +128,11 @@ def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cs
         roots.extend(en.band.cidx)
         if en.band.guard is not None:
             roots.append(en.band.guard)
-    from .companions import add_companions, time_companions
+    from .companions import add_companions
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
-    roots.extend(d for _, _, d in comps)
+    comps = intermediates(sv, [en.band for en in entries], forcing)
+    roots.extend(c[2] for c in comps)
     _zero_source_derivatives(m, sv, ctx, roots)
     add_companions(m, sv, comps)
     return doc, m, ctx, _hoist(doc, m, sv, entries, cse, cse_min_nodes)
@@ -303,7 +306,9 @@ def _jnames(taken: set[str], b: Band, coef, n: int) -> list[str]:
     return out
 
 
-def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames: set[str]):
+def _term_faq(
+    b: Band, output_idx: list, outranges, conj: list, body, bodynames: set[str], ctx=None
+):
     """The ``faq`` of one entry's term: ``ranges`` (the output names first,
     then the row names, then the contracted names), the ``filter``
     conjunction, and ``body`` under §9.1's ``ifelse`` guard when a reduced
@@ -314,6 +319,7 @@ def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames:
             ranges[r] = [b.rows[k][0], b.rows[k][1]]
     for n, lo, hi in b.contracted:
         ranges[n] = [lo, hi]
+    join_ranges_into(ranges, b, ctx)
     outnames = {x for x in output_idx if isinstance(x, str)}
     miss = [n for n in ranges if n not in outnames and n not in bodynames]
     expr = body
@@ -328,6 +334,8 @@ def _term_faq(b: Band, output_idx: list, outranges, conj: list, body, bodynames:
     f = {"op": "faq", "args": [], "output_idx": list(output_idx), "ranges": ranges}
     if conj:
         f["filter"] = _sand([c for c, _ in conj])
+    if b.join is not None:
+        f["join"] = list(b.join[0])
     f["expr"] = expr
     return f
 
@@ -344,7 +352,7 @@ def _jvp_term(en: JacEntry, coef, vin: str, ctx, wrt: str):
         conj = _where_conj(b) + _ghost_conjuncts(b, en.v, b.cidx, shape_v, wrt)
         bodynames = _names_of((coef, *b.cidx)) | _row_names(b)
         out = [] if not shape_u else [r if isinstance(r, str) else 1 for r in b.ridx]
-        val = _term_faq(b, out, (), conj, body, bodynames)
+        val = _term_faq(b, out, (), conj, body, bodynames, ctx)
     else:
         # no index names: `where` and the column are closed, decided here
         if not _point_in_extent(b, en.v, b.cidx, shape_v, wrt):
@@ -374,6 +382,7 @@ def _scatter_term(
     body,
     bodynames: set[str],
     taken: set[str],
+    ctx=None,
 ):
     """One entry's term landing in output variable ``out`` (shape
     ``shape_o``) at column index ``ci``: Σ over the points with ``ci == j``
@@ -393,6 +402,7 @@ def _scatter_term(
         _where_conj(b) + conj + eqs,
         body,
         bodynames,
+        ctx,
     )
 
 
@@ -416,6 +426,7 @@ def _vjp_term_read(en: JacEntry, coef, lam, ctx, wrt: str, taken: set[str]):
         body,
         _names_of((coef,)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 
@@ -451,6 +462,7 @@ def _hvp_term(en: JacEntry2, coef, mu, w, ctx, a1: str, a2: str, taken: set[str]
         _sop("*", ser_expr(coef), m),
         _names_of((coef, *ci)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 
@@ -488,6 +500,7 @@ def _hvp_sym_term(en: JacEntry2, coef, mu, w, ctx, taken: set[str]):
         body,
         _names_of((coef, *c2)) | _row_names(b),
         taken,
+        ctx=ctx,
     )
 
 
@@ -517,7 +530,7 @@ def _jvp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
 ):
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     vin = {c: _fresh(taken, f"_v_{c}") for c in _column_vars(sv, wrt, forcing)}
     out = {r: _fresh(taken, f"_jvp_{r}") for r in view_states(sv)}
@@ -542,7 +555,7 @@ def _vjp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
 ):
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     lam = {r: _fresh(taken, f"_lam_{r}") for r in view_states(sv)}
     out = {c: _fresh(taken, f"_vjp_{c}") for c in _column_vars(sv, wrt, forcing)}
@@ -586,7 +599,7 @@ def _hvp_document(
     # the coefficients only: a second-order entry rides through the base and
     # the hoisting as a first-order one (its `cidx` holds both columns)
     doc, m, ctx, coefs = _product_base(
-        sv, model, [JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes
+        sv, model, [JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes, forcing
     )
     taken = _doc_names(doc)
     states = view_states(sv)
@@ -756,7 +769,7 @@ def _rec_names(taken: set[str], ext, tag: str) -> dict:
 
 def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
     every = ext.rows + ext.rec_rows
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     vin = {c: _fresh(taken, f"_v_{c}") for c in _column_vars(sv, wrt, forcing)}
     vdot = _rec_names(taken, ext, "vdot")
@@ -780,7 +793,7 @@ def _jvp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: i
 
 def _vjp_sweeps(sv: SysView, ext, wrt: str, forcing, cse: bool, cse_min_nodes: int):
     every = ext.rows + ext.rec_rows
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes, forcing)
     taken = _doc_names(doc)
     lam = {r: _fresh(taken, f"_lam_{r}") for r in view_states(sv)}
     vbar = _rec_names(taken, ext, "vbar")
@@ -827,6 +840,7 @@ def _hvp_sweeps(
         [JacEntry(en.u, en.v, en.band) for en in entries] + first + ([] if shared else back),
         cse,
         cse_min,
+        forcing,
     )
     c2s, c1s = coefs[:n2], coefs[n2 : n2 + len(first)]
     cbs = c1s[nrow:] if shared else coefs[n2 + len(first) :]
@@ -955,6 +969,7 @@ def jvp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
     data_sources=None,
+    parameters=None,
 ):
     """The ``J v`` product document of spec §9.2 for one first-order axis.
 
@@ -969,7 +984,7 @@ def jvp_document(
     ``io["jvp"]`` each state to its output. The consumer writes the inputs
     into the evaluator's state slots beside the source states and reads the
     outputs from ``du`` through the evaluator's variable map."""
-    sv = sysview(obj, model_name, data_sources)
+    sv = sysview(obj, model_name, data_sources, parameters=parameters)
     ext = _first_pass(sv, wrt, forcing)
     if ext.recurrences:
         return _jvp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
@@ -984,6 +999,7 @@ def vjp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
     data_sources=None,
+    parameters=None,
 ):
     """The ``Jᵀ λ`` product document of spec §9.3 for one first-order axis
     (model ``"VjpEval"``), as :func:`jvp_document`: ``io["lam"]`` maps each
@@ -993,7 +1009,7 @@ def vjp_document(
     A ``VjpEval`` document is an equality-filtered ``faq`` scatter: correct
     under any evaluator, linear-time only under one that implements §9.3's
     equality-filter scatter."""
-    sv = sysview(obj, model_name, data_sources)
+    sv = sysview(obj, model_name, data_sources, parameters=parameters)
     ext = _first_pass(sv, wrt, forcing)
     if ext.recurrences:
         return _vjp_sweeps(sv, ext, wrt, forcing, cse, cse_min_nodes)
@@ -1010,6 +1026,7 @@ def hvp_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
     data_sources=None,
+    parameters=None,
 ):
     """The second-order product document of spec §9.4 for the axis pair
     ``wrt`` and ``stages`` stage pairs: its right-hand side leaves
@@ -1023,7 +1040,7 @@ def hvp_document(
     scatters by the first column instead (model ``"HvpEvalSymmetric"``);
     both forms give the same ``g``."""
     a1, a2 = axis_pair(wrt)
-    sv = sysview(obj, model_name, data_sources)
+    sv = sysview(obj, model_name, data_sources, parameters=parameters)
     memo = _FirstOrder()  # the first pass, shared with the sweeps' (§9.7)
     _, entries = _bands2(sv, a1, a2, forcing, memo)
     return _hvp_document(

@@ -89,12 +89,13 @@ end
 end
 
 @testset "evaluation document: only the observed the coefficients read" begin
-    # flux_form_adv's flux F, contracting_observed's s and c and
-    # contracted_ops's conn feed only f: inlined into every coefficient, so
-    # nothing in the derived document reads them. minmod_adv's dx is read.
+    # flux_form_adv's flux F and contracted_ops's conn feed only f: nothing
+    # in the derived document reads them (F's derivative is its named step,
+    # spec §4.6). contracting_observed's s and c are read by name by the
+    # coefficients (named steps, never inlined), and minmod_adv's dx is read.
     for (name, gone, kept) in (
             ("flux_form_adv", ["F"], String[]),
-            ("contracting_observed", ["s", "c"], String[]),
+            ("contracting_observed", String[], ["s", "c"]),
             ("contracted_ops", ["conn"], String[]),
             ("minmod_adv", String[], ["dx"]),
         )

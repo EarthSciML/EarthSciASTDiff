@@ -20,12 +20,24 @@ struct SysView
     domain::Any
     data_sources::Any
     refs::Any       # RefLayer of the system's operator definitions, or nothing
+    # the parameter set (esm-jacobian-spec.md §4.3): the columns of the
+    # parameters axis, `nothing` for every parameter outside the forcing set
+    parameters::Union{Nothing, Vector{String}}
 end
 SysView(variables, equations, index_sets) = SysView(variables, equations, index_sets, nothing)
 SysView(variables, equations, index_sets, domain) =
     SysView(variables, equations, index_sets, domain, nothing)
 SysView(variables, equations, index_sets, domain, data_sources) =
     SysView(variables, equations, index_sets, domain, data_sources, nothing)
+SysView(variables, equations, index_sets, domain, data_sources, refs) =
+    SysView(variables, equations, index_sets, domain, data_sources, refs, nothing)
+
+# The view with its parameter set (§4.3) chosen: `nothing` keeps it.
+_with_parameters(sv::SysView, ::Nothing) = sv
+_with_parameters(sv::SysView, ps) = SysView(
+    sv.variables, sv.equations, sv.index_sets, sv.domain, sv.data_sources, sv.refs,
+    sort!(unique!(String[String(p) for p in (ps isa AbstractString ? [ps] : ps)]))
+)
 
 # `expanded_model` is EarthSciAST's explicit expansion utility, re-exported
 # for convenience as before. No analysis here calls it: references are kept

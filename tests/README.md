@@ -107,6 +107,26 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     are checked byte for byte (values to 1e-10) by every binding, and each
     checks `f_t` against a central difference in `t` of the source
     right-hand side
+  - `tgrad_surface.esm` — a time-dependent source that exists only at the
+    surface (a `makearray` region one cell thick along `lev`) divided by an
+    observed pressure thickness read at level 1: its time companion is one
+    `faq` over the shape reading a `makearray` of that region, never a
+    whole-shape gate. Its `.time.{bands,block,evaldoc,jvp.evaldoc,
+    vjp.evaldoc,jvals}.json` goldens are checked byte for byte by every
+    binding, and the Julia reference checks `f_t` against a central
+    difference in `t`
+  - `join_regrid.esm` — a regrid through a spatial overlap join (spec
+    §3.5): six points binned into four cells, the join of the points'
+    (X, Y) and the cells' envelopes the sum's only gate, reading a state
+    and an array parameter. Its `.{bands,block,evaldoc,jvp.evaldoc,
+    vjp.evaldoc}.json` and `.parameters.*` goldens are checked byte for byte
+    by every binding; the Julia reference checks the values against central
+    differences of the source and Jᵀλ against them
+  - `diamond_chain.esm` — named steps (spec §4.6): twelve levels of two
+    observed, each reading both of the level below (2^12 paths when
+    inlined). Its structure-only golden, `diamond_chain.structure.bands.json`,
+    is checked byte for byte by every binding, and the Julia reference
+    checks its points against the inlined right-hand side's
   - `elementwise_aligned.esm` — an elementwise observed read at a cell whose
     array operands are aligned by index-set name (esm-spec §4.3.4): `w` over
     `[x, y]` is `c·q + k + r`, with `q` over `[y]` (the second axis, so
@@ -160,6 +180,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
+  - `makearray_of_reads.esm` — an observed `m[k, i]` read from a
+    `makearray` at `i` whose region values are cell reads of states (`u[k]`
+    on region 1, `v[k]` broadcast over regions 2–3). Each value is a scalar
+    and is read as itself, never wrapped in an `index` with no subscripts.
+    Its only golden, `makearray_of_reads.bands.json` (the state bands), is
+    checked byte for byte by every binding, and the Julia reference checks
+    the values against ForwardDiff
   - `recurrence_sweep.esm` — causal recurrences (spec §4.5, §9.7): a Thomas
     solve per column (forward elimination, forward substitution, back
     substitution on the REVERSED axis: dense lines), a lag-2 recurrence with

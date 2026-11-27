@@ -118,12 +118,26 @@ def _targets(sv: SysView, wrt: str, forcing, obs) -> list[str]:
     if wrt == "forcing":
         return fset
     fs = set(fset)
+    if sv.parameters is not None:
+        # the chosen parameter set (spec §4.3): each a parameter, none forcing
+        for n in sv.parameters:
+            var = sv.variables.get(n)
+            if var is None or not _is_parameter(var):
+                raise BandError(f"parameter name `{n}` is not a parameter of the system")
+            if n in fs:
+                raise BandError(
+                    f"parameter name `{n}` is in the forcing set: "
+                    "it is a column of the forcing axis"
+                )
+        return list(sv.parameters)
     return sorted(
         str(n) for n, var in sv.variables.items() if _is_parameter(var) and str(n) not in fs
     )
 
 
-def jacobian_columns(obj, model_name: str | None = None, wrt: str = "parameters", forcing=None):
+def jacobian_columns(
+    obj, model_name: str | None = None, wrt: str = "parameters", forcing=None, parameters=None
+):
     """The column space of a ``"parameters"`` or ``"forcing"`` block: each
     column variable with its integer shape (``[]`` for a scalar), sorted by
     name — the ``columns`` field of the emitted block (spec §4). The canonical
@@ -131,7 +145,7 @@ def jacobian_columns(obj, model_name: str | None = None, wrt: str = "parameters"
     column-major (first index fastest)."""
     if wrt not in ("parameters", "forcing"):
         raise ValueError(f"columns are defined for wrt = parameters or forcing, got {wrt}")
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     ctx = ctx_of(sv)
     return [(n, list(ctx.shapes.get(n, []))) for n in _targets(sv, wrt, forcing, None)]
 
@@ -142,6 +156,7 @@ def jacobian_bands(
     wrt: str = "states",
     forcing=None,
     coefficients: bool = True,
+    parameters=None,
 ) -> list[JacEntry]:
     """Differentiate a model's right-hand side into a list of Jacobian bands.
 
@@ -155,6 +170,9 @@ def jacobian_bands(
       (the cells of the forcing buffers, record axis included) or ``"time"``.
     - ``forcing`` — the forcing set; ``None`` infers it (every array
       parameter with a ``data`` update, see :func:`forcing_names`).
+    - ``parameters`` — the parameter set (spec §4.3), the columns of the
+      ``"parameters"`` axis: names of parameters outside the forcing set.
+      ``None`` (default) takes every one.
     - ``coefficients`` — ``False`` returns structure-only entries (spec
       §2.1): regions are clipped and sites found as in the full mode, but no
       derivative is taken, no coefficient simplified, and bands merge on
@@ -178,7 +196,7 @@ def jacobian_bands(
     """
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     entries = _jacobian_bands(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, co=coefficients)
     if coefficients:
         return entries
@@ -228,7 +246,12 @@ def _structure_only(entries: list[JacEntry], eqs: list[int]) -> list[JacEntry]:
 
 
 def extended_bands(
-    obj, model_name: str | None = None, wrt: str = "states", forcing=None, second=None
+    obj,
+    model_name: str | None = None,
+    wrt: str = "states",
+    forcing=None,
+    second=None,
+    parameters=None,
 ):
     """The extended first-order system of axis ``wrt`` (spec §4.5,
     :class:`~earthsci_astdiff.recurrence.ExtendedBands`): every state
@@ -241,7 +264,7 @@ def extended_bands(
     rest is empty."""
     if wrt not in _AXES:
         raise ValueError(f"wrt must be states, parameters, forcing or time, got {wrt}")
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     obs = observed_defs(sv)
     seed = _targets(sv, second, forcing, obs) if second is not None and second != wrt else []
     return _extended_pass(sv, ctx_of(sv), obs, wrt, forcing, seed, companions=not seed)
@@ -309,6 +332,43 @@ def _extended_pass(
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # pruned from {"t"} too: f_t is the partial derivative with every
     # parameter, data-fed ones included, held fixed (spec §4.2).
+    # The other axes compose their bands through the observed graph (named
+    # steps, spec §4.6, steps.py): each observed that moves with a target is a
+    # column, its bands composed once, and (full mode) each of its bands'
+    # coefficients a named intermediate. A pair's first pass (`seed`) and a
+    # pass through an active recurrence inline, as below.
+    if companions and not seed and not act and wrt != "time":
+        from .steps import steps_row, steps_setup
+
+        names = {r.name for r in recs}
+        letter = {"states": "u", "parameters": "p", "forcing": "f"}[wrt]
+        st = steps_setup(
+            sv,
+            ctx,
+            {k: v for k, v in src_obs.items() if k not in names},
+            targets,
+            scalars,
+            co,
+            letter,
+        )
+        entries: list[JacEntry] = []
+        row_eq: list[int] = []
+        for q, eq in enumerate(sv.equations):
+            u = lhs_state(eq)
+            if u is None:
+                if is_derivative(eq):
+                    raise BandError(
+                        f"unsupported derivative LHS {eq.lhs!r} (a state's derivative "
+                        "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                    )
+                continue
+            es = steps_row(st, u, eq.rhs, st.inline, ctx.shapes.get(u, []))
+            entries.extend(es)
+            row_eq.extend([q] * len(es))
+        if wrt in ("parameters", "forcing"):
+            for en in entries:
+                _check_closed_columns(en)
+        return ExtendedBands([], entries, [], row_eq)
     obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     if recs:
         names = {r.name for r in recs}

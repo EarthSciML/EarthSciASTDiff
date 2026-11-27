@@ -351,3 +351,21 @@ end
         @test back.models["JacobianEval"].variables[n].default == sv.variables[n].default
     end
 end
+
+@testset "parameters: a chosen parameter set (spec §4.3)" begin
+    file = fixture("forcing_bracket.esm")
+    sv = sysview(file, "Bracket")
+    golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
+    sub = jacobian_bands(sv; wrt = :parameters, parameters = ["E", "k"])
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in sub]) ==
+        read(joinpath(golden_dir, "forcing_bracket.parameters-subset.bands.json"), String)
+    @test stable_json(jacobian_document(file, "Bracket"; wrt = :parameters, parameters = ["E", "k"])["jacobians"]["Bracket"]) ==
+        read(joinpath(golden_dir, "forcing_bracket.parameters-subset.block.json"), String)
+    @test sort(unique([en.v for en in sub])) == ["E", "k"]
+    # the chosen columns' entries are the full set's
+    full = jacobian_bands(sv; wrt = :parameters)
+    @test [EarthSciASTDiff.serialize_band(en) for en in full if en.v in ("E", "k")] ==
+        [EarthSciASTDiff.serialize_band(en) for en in sub]
+    @test_throws EarthSciASTDiff.BandError jacobian_bands(sv; wrt = :parameters, parameters = ["F"])
+    @test_throws EarthSciASTDiff.BandError jacobian_bands(sv; wrt = :parameters, parameters = ["c"])
+end

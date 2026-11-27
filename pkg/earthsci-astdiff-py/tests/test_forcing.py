@@ -17,6 +17,8 @@ from earthsci_astdiff import (
     jacobian_columns,
     jacobian_pattern,
     jvp_document,
+    serialize_band,
+    stable_json,
     sysview,
     vjp_document,
 )
@@ -201,3 +203,24 @@ def test_vjp_is_the_transposed_product(bracket):
             g = doc_vjp(sv, lam, wrt=wrt, t=t)
             assert list(g) == cnames
             np.testing.assert_allclose(list(g.values()), list(want.values()), atol=1e-13)
+
+
+def test_chosen_parameter_set(bracket, golden_dir):
+    # A chosen parameter set (spec §4.3): the parameters axis over `E` and
+    # `k` only, byte-identical to the reference's goldens.
+    ps = ["E", "k"]
+    sub = jacobian_bands(bracket, "Bracket", wrt="parameters", parameters=ps)
+    text = stable_json([serialize_band(e) for e in sub])
+    assert text == (golden_dir / "forcing_bracket.parameters-subset.bands.json").read_text()
+    block = jacobian_block(bracket, "Bracket", wrt="parameters", parameters=ps)
+    assert (
+        stable_json(block)
+        == (golden_dir / "forcing_bracket.parameters-subset.block.json").read_text()
+    )
+    assert [n for n, _ in jacobian_columns(bracket, "Bracket", parameters=ps)] == ps
+    # the same set given on the view
+    sv = sysview(bracket, "Bracket", parameters=["k", "E"])
+    assert stable_json([serialize_band(e) for e in jacobian_bands(sv, wrt="parameters")]) == text
+    for bad in ("F", "c"):
+        with pytest.raises(BandError):
+            jacobian_bands(bracket, "Bracket", wrt="parameters", parameters=[bad])

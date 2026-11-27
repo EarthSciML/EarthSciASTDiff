@@ -696,6 +696,7 @@ fn transfer_band(rec: &Recurrence, tname: &str) -> Band {
         coef: index(tname, tidx),
         contracted: vec![(kap.clone(), rec.rows[d].0, rec.rows[d].1)],
         guard: Some(op("<=", vec![var(&kap), var(&rec.frame[d])])),
+        join: None,
     }
 }
 
@@ -823,6 +824,11 @@ pub(crate) fn compose(outer: &Band, inner: &Band, shape_v: &[i64]) -> R<Option<B
         crate::reductions::conj(outer.guard.clone(), and_all(conds)),
         inner.guard.as_ref().map(|g| subst_free(g, &sigma)),
     );
+    if inner.join.is_some() || outer.join.is_some() {
+        return Err(BandError(
+            "a joined faq node through a recurrence is not supported".into(),
+        ));
+    }
     let b = Band {
         rows,
         ridx: outer.ridx.clone(),
@@ -833,6 +839,7 @@ pub(crate) fn compose(outer: &Band, inner: &Band, shape_v: &[i64]) -> R<Option<B
         ])),
         contracted: [ctr, extra].concat(),
         guard,
+        join: None,
     };
     Ok(tidy(b))
 }

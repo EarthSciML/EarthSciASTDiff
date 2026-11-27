@@ -83,7 +83,10 @@ end
 # the observed kept that the coefficients, column indices and `where` guards
 # read, and the coefficients optionally hoisted. Returns (doc, model, ctx,
 # coefficients).
-function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int)
+function _product_base(
+        sv::SysView, name::String, entries::Vector{JacEntry}, cse::Bool, cse_min_nodes::Int;
+        forcing = nothing
+    )
     doc = _base_document(sv, name)
     m = doc["models"][name]
     ctx = _ctx(sv)
@@ -93,8 +96,8 @@ function _product_base(sv::SysView, name::String, entries::Vector{JacEntry}, cse
         append!(roots, en.band.cidx)
         en.band.guard === nothing || push!(roots, en.band.guard)
     end
-    comps = _time_companions(sv, entries)
-    append!(roots, last.(comps))
+    comps = _intermediates(sv, entries; forcing = forcing)
+    append!(roots, ASTExpr[c[3] for c in comps])
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_companions!(m, sv, comps)
     return doc, m, ctx, _hoist!(doc, m, sv, entries, cse, cse_min_nodes)
@@ -269,7 +272,7 @@ end
 # The `faq` of one entry's term: `ranges` (the output names first, then the
 # row names, then the contracted names), the `filter` conjunction, and `body`
 # under §9.1's `ifelse` guard when a reduced name would not occur in it.
-function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{String})
+function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{String}; ctx = nothing)
     ranges = OrderedDict{String, Any}(n => Any[lo, hi] for (n, lo, hi) in outranges)
     for (k, r) in enumerate(b.ridx)
         r isa String && (ranges[r] = Any[b.rows[k][1], b.rows[k][2]])
@@ -277,6 +280,7 @@ function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{St
     for (n, lo, hi) in b.contracted
         ranges[n] = Any[lo, hi]
     end
+    _join_ranges!(ranges, b, ctx)
     outnames = Set{String}(x for x in output_idx if x isa String)
     miss = [n for n in keys(ranges) if !(n in outnames) && !(n in bodynames)]
     expr = body
@@ -295,8 +299,25 @@ function _term_faq(b::Band, output_idx, outranges, conj, body, bodynames::Set{St
         "ranges" => ranges
     )
     isempty(conj) || (f["filter"] = _sand(first.(conj)))
+    b.join === nothing || (f["join"] = b.join[1])
     f["expr"] = expr
     return f
+end
+
+# A joined band's names take their join ranges (`{"from": set}`, through
+# which the join resolves its sides, §3.5) in place of the band's box, which
+# must be that whole set: a narrower box on a joined name is refused.
+function _join_ranges!(ranges, b::Band, ctx)
+    b.join === nothing && return ranges
+    for (n, spec) in b.join[2]
+        haskey(ranges, n) || throw(BandError("a join reads `$n`, no index name of its band"))
+        lo, hi = ranges[n]
+        ctx === nothing || (lo, hi) == _range_of(spec, ctx) || throw(
+            BandError("a joined band narrower than its join's index set on `$n` is not supported")
+        )
+        ranges[n] = spec
+    end
+    return ranges
 end
 
 _row_names(b::Band) = Set{String}(r for r in b.ridx if r isa String)
@@ -329,7 +350,7 @@ function _jvp_term(en::JacEntry, coef::ASTExpr, vin::String, ctx, wrt::Symbol)
         conj = vcat(_where_conj(b), _ghost_conjuncts(b, en.v, b.cidx, shape_v, wrt))
         bodynames = union(_names_of((coef, b.cidx...)), _row_names(b))
         out = isempty(shape_u) ? Any[] : Any[r isa String ? r : 1 for r in b.ridx]
-        _term_faq(b, out, (), conj, body, bodynames)
+        _term_faq(b, out, (), conj, body, bodynames; ctx = ctx)
     else
         # no index names: `where` and the column are closed, decided here
         _point_in_extent(b, en.v, b.cidx, shape_v, wrt) || return nothing
@@ -350,7 +371,7 @@ end
 # extra filter conjuncts `conj`.
 function _scatter_term(
         b::Band, coef::ASTExpr, out::String, ci::Vector{ASTExpr}, shape_o::Vector{Int},
-        wrt::Symbol, conj, body, bodynames::Set{String}, taken::Set{String}
+        wrt::Symbol, conj, body, bodynames::Set{String}, taken::Set{String}; ctx = nothing
     )
     # the equality drops every ghost, but on the forcing axis a dropped
     # point is a lost gradient
@@ -363,7 +384,7 @@ function _scatter_term(
     ]
     return _term_faq(
         b, j, ((j[d], 1, shape_o[d]) for d in eachindex(j)),
-        vcat(_where_conj(b), conj, eqs), body, bodynames
+        vcat(_where_conj(b), conj, eqs), body, bodynames; ctx = ctx
     )
 end
 
@@ -379,7 +400,7 @@ function _vjp_term_read(en::JacEntry, coef::ASTExpr, lam, ctx, wrt::Symbol, take
     body = _sop("*", _ser_expr(coef), lam)
     return _scatter_term(
         b, coef, en.v, b.cidx, get(ctx.shapes, en.v, Int[]), wrt,
-        Tuple{Any, Set{String}}[], body, union(_names_of((coef,)), _row_names(b)), taken
+        Tuple{Any, Set{String}}[], body, union(_names_of((coef,)), _row_names(b)), taken; ctx = ctx
     )
 end
 
@@ -405,7 +426,7 @@ function _hvp_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, a1::Symbol, a2::Sym
     return _scatter_term(
         b, coef, en.w, c2, get(ctx.shapes, en.w, Int[]), a2, g,
         _sop("*", _ser_expr(coef), m),
-        union(_names_of((coef, ci...)), _row_names(b)), taken
+        union(_names_of((coef, ci...)), _row_names(b)), taken; ctx = ctx
     )
 end
 
@@ -430,7 +451,7 @@ function _hvp_sym_term(en::JacEntry2, coef::ASTExpr, mu, w, ctx, taken)
     end
     return _scatter_term(
         b, coef, en.v, ci, get(ctx.shapes, en.v, Int[]), :states, g, body,
-        union(_names_of((coef, c2...)), _row_names(b)), taken
+        union(_names_of((coef, c2...)), _row_names(b)), taken; ctx = ctx
     )
 end
 
@@ -458,7 +479,7 @@ function _jvp_document(
         sv::SysView, entries::Vector{JacEntry}, wrt::Symbol, forcing;
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", entries, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     vin = OrderedDict{String, String}(c => _iofresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
     out = OrderedDict{String, String}(r => _iofresh!(taken, "_jvp_$r") for r in view_states(sv))
@@ -476,7 +497,7 @@ function _vjp_document(
         sv::SysView, entries::Vector{JacEntry}, wrt::Symbol, forcing;
         cse::Bool = true, cse_min_nodes::Int = 12
     )
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", entries, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     lam = OrderedDict{String, String}(r => _iofresh!(taken, "_lam_$r") for r in view_states(sv))
     out = OrderedDict{String, String}(c => _iofresh!(taken, "_vjp_$c") for c in _column_vars(sv, wrt, forcing))
@@ -509,7 +530,8 @@ function _hvp_document(
     # the coefficients only: a second-order entry rides through the base and
     # the hoisting as a first-order one (its `cidx` holds both columns)
     doc, m, ctx, coefs = _product_base(
-        sv, model, JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes
+        sv, model, JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], cse, cse_min_nodes;
+        forcing = forcing
     )
     taken = _doc_names(doc)
     states = view_states(sv)
@@ -650,7 +672,7 @@ _rec_names(taken::Set{String}, ext::ExtendedBands, tag::String) = OrderedDict{St
 
 function _jvp_sweeps(sv::SysView, ext::ExtendedBands, wrt::Symbol, forcing, cse::Bool, cse_min_nodes::Int)
     every = vcat(ext.rows, ext.rec_rows)
-    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "JvpEval", every, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     vin = OrderedDict{String, String}(c => _iofresh!(taken, "_v_$c") for c in _column_vars(sv, wrt, forcing))
     vdot = _rec_names(taken, ext, "vdot")
@@ -676,7 +698,7 @@ end
 
 function _vjp_sweeps(sv::SysView, ext::ExtendedBands, wrt::Symbol, forcing, cse::Bool, cse_min_nodes::Int)
     every = vcat(ext.rows, ext.rec_rows)
-    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes)
+    doc, m, ctx, coefs = _product_base(sv, "VjpEval", every, cse, cse_min_nodes; forcing = forcing)
     taken = _doc_names(doc)
     lam = OrderedDict{String, String}(r => _iofresh!(taken, "_lam_$r") for r in view_states(sv))
     vbar = _rec_names(taken, ext, "vbar")
@@ -725,7 +747,7 @@ function _hvp_sweeps(
     doc, m, ctx, coefs = _product_base(
         sv, model,
         vcat(JacEntry[JacEntry(en.u, en.v, en.band) for en in entries], first_, shared ? JacEntry[] : back),
-        cse, cse_min
+        cse, cse_min; forcing = forcing
     )
     c2s = coefs[1:n2]
     c1s = coefs[(n2 + 1):(n2 + nf)]
@@ -858,9 +880,9 @@ equality-filter scatter.
 """
 function jvp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     _check_axis(wrt)
     ext = _first_pass(sv, wrt, forcing)
     isempty(ext.recurrences) ||
@@ -870,9 +892,9 @@ end
 
 @doc (@doc jvp_document) function vjp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     _check_axis(wrt)
     ext = _first_pass(sv, wrt, forcing)
     isempty(ext.recurrences) ||
@@ -897,10 +919,10 @@ first column instead (model `"HvpEvalSymmetric"`); both forms give the same
 function hvp_document(
         input; stages::Int, wrt = (:states, :states), form::Symbol = :contract,
         model_name = nothing, forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12,
-        data_sources = nothing
+        data_sources = nothing, parameters = nothing
     )
     a1, a2 = _axis_pair(wrt)
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     memo = _FirstOrder()   # the first pass, shared with the sweeps' (§9.7)
     _, entries = _bands2(sv, a1, a2, forcing, memo)
     return _hvp_document(

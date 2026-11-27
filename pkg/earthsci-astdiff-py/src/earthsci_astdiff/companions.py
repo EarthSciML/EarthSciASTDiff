@@ -17,6 +17,8 @@ is, §4.5), so each definition is differentiated once.
 
 from __future__ import annotations
 
+import itertools
+import math
 from dataclasses import replace
 
 from earthsci_ast.esm_types import ExprNode
@@ -266,6 +268,8 @@ def time_row_bands(cs: Companions, rhs, u: str, inl: dict, shape_u: list) -> lis
             continue
         shape_v = ctx.shapes.get(v, [])
         for b in bs:
+            if b.join is not None:
+                raise BandError("a time companion read through a joined faq node is not supported")
             out.append(_through_companion(b, v, cs.names[v], shape_v, cs.co))
     return [normalize_band(b) for b in merge_bands(_sum_same_box(out, cs.co))]
 
@@ -378,34 +382,89 @@ def _companion_definition(bs: list[Band], shape: list):
             if b.guard is not None:
                 all_names(b.guard, taken)
         names = [fresh(taken, f"_r{i}", "_") for i in range(1, k + 1)]
-    ts = []
+    # each band: its box over the shape and its term (row names unified,
+    # gated by its `where` only)
+    boxes = []
+    terms = []
     for b in bs:
         m = {}
-        conds = []
+        box = []
         for d in range(k):
             r = b.ridx[d]
-            lo, hi = b.rows[d]
-            x = names[d]
             if isinstance(r, str):
-                if r != x:
-                    m[r] = x
-                if lo > 1:
-                    conds.append(op(">=", x, lo))
-                if hi < shape[d]:
-                    conds.append(op("<=", x, hi))
+                if r != names[d]:
+                    m[r] = names[d]
+                box.append(tuple(b.rows[d]))
             else:
-                conds.append(op("==", x, r))
+                box.append((r, r))
         coef = subst_free(b.coef, m) if m else b.coef
-        if b.guard is not None:
-            conds.extend(conjuncts(subst_free(b.guard, m) if m else b.guard))
-        ts.append(gate(coef, conds))
-    return _faq_over(names, shape, total(ts))
+        conds = [] if b.guard is None else conjuncts(subst_free(b.guard, m) if m else b.guard)
+        boxes.append(box)
+        terms.append(gate(coef, conds))
+
+    def faq_box(box, body):
+        return ExprNode(
+            op="faq",
+            args=[],
+            output_idx=list(names),
+            expr=body,
+            ranges={n: [box[d][0], box[d][1]] for d, n in enumerate(names)},
+        )
+
+    full = [(1, n) for n in shape]
+    if all(bx == full for bx in boxes):
+        return faq_box(full, total(terms))
+    # A region narrower than the shape: a `makearray`, never a whole-shape
+    # gate (a reader built per cell, a lane program, needs the region). The
+    # boxes are cut at every box's bounds into disjoint cells, each the sum of
+    # the bands that cover it, over zero where none does
+    # (companions.jl `_companion_definition`).
+    cuts = []
+    for d in range(k):
+        c = {1, shape[d] + 1}
+        for bx in boxes:
+            c |= {bx[d][0], bx[d][1] + 1}
+        cuts.append(sorted(c))
+    regions = []
+    values = []
+    ncells = 0
+    for pos in itertools.product(*(range(len(cuts[d]) - 1) for d in range(k))):
+        cell = [(cuts[d][pos[d]], cuts[d][pos[d] + 1] - 1) for d in range(k)]
+        cover = [
+            i
+            for i, bx in enumerate(boxes)
+            if all(bx[d][0] <= cell[d][0] and cell[d][1] <= bx[d][1] for d in range(k))
+        ]
+        if not cover:
+            continue
+        ncells += math.prod(hi - lo + 1 for lo, hi in cell)
+        regions.append([[lo, hi] for lo, hi in cell])
+        values.append(faq_box(cell, total([terms[i] for i in cover])))
+    if ncells < math.prod(shape):
+        regions.insert(0, [[1, n] for n in shape])
+        values.insert(0, 0)
+    return region_array(regions, values, shape)
+
+
+def region_array(regions: list, values: list, shape: list):
+    """An array over ``shape`` given by ``makearray`` regions: one ``faq``
+    over the whole extent whose body reads the ``makearray`` at its own
+    cell, so the definition stays an array aggregate (a lane program builds
+    an observed only from one) while each region keeps its own box. Its names
+    are ``_m<d>``, ``_`` appended until clear of every name of the regions'
+    values (companions.jl ``_region_array``)."""
+    taken: set = set()
+    for v in values:
+        all_names(v, taken)
+    names = [fresh(taken, f"_m{d}", "_") for d in range(1, len(shape) + 1)]
+    ma = ExprNode(op="makearray", args=[], regions=regions, values=values)
+    return _faq_over(names, shape, op("index", ma, *names))
 
 
 def time_companions(sv, bands: list[Band]) -> list:
     """The companions the band list ``bands`` reads, directly or through
     other companions' definitions, as ``(name, observed, definition)`` in the
-    observed's name order — what the block's ``companions`` field and every
+    observed's name order — what the block's ``intermediates`` field and every
     derived document of the list carry (spec §4.2, §8.1). Empty unless some
     coefficient (or ``where``) reads a companion name, which no source name
     can be."""
@@ -458,23 +517,30 @@ def time_companions(sv, bands: list[Band]) -> list:
 
 
 def add_companions(m: dict, sv, comps: list) -> None:
-    """The companions as observed of a derived model (spec §8.1): each
-    declared like its observed (``{"type": "unknown"}``, with the observed's
-    declared ``shape`` when it has one) and defined by a bare-LHS equation,
-    after the source's equations."""
-    for n, o, _ in comps:
-        d = {"type": "unknown"}
-        shp = getattr(sv.variables[o], "shape", None)
-        if shp:
+    """The companions and named intermediates as observed of a derived model
+    (spec §8.1): each declared like its observed (``{"type": "unknown"}``,
+    with the observed's declared ``shape`` when it has one, unless it adds
+    contracted dimensions, §4.6) and defined by a bare-LHS equation, after
+    the source's equations."""
+    for c in comps:
+        n, o = c[0], c[1]
+        d: dict = {"type": "unknown"}
+        # a named step of another axis (§4.6) is declared without a shape:
+        # its definition gives its extents
+        noshape = len(c) >= 4 and c[3] != 0
+        v = sv.variables.get(o)
+        shp = getattr(v, "shape", None) if v is not None else None
+        if not noshape and shp:
             d["shape"] = list(shp)
         m["variables"][n] = d
-    for n, _, d in comps:
-        m["equations"].append({"lhs": n, "rhs": ser_expr(d)})
+    for c in comps:
+        m["equations"].append({"lhs": c[0], "rhs": ser_expr(c[2])})
 
 
 def companions_field(comps: list) -> list:
-    """The block's ``companions`` field (spec §4.2): ``[{name, of, rhs}]``."""
-    return [{"name": n, "of": o, "rhs": ser_expr(d)} for n, o, d in comps]
+    """The block's ``intermediates`` field (spec §4, §4.2, §4.6): ``[{name,
+    of, rhs}]``."""
+    return [{"name": c[0], "of": c[1], "rhs": ser_expr(c[2])} for c in comps]
 
 
 # ── second-order pairs ``["time", a2]`` (spec §4.4) ──────────────────────────
@@ -501,7 +567,11 @@ def time_pair_bands(sv, a2: str, forcing, memo, t2) -> list | None:
     recs = recurrences(sv, obs, ctx)
     if recs and active(recs, obs, set(t2) | {"t"}):
         return None
-    e2 = memo.bands(sv, a2, None, forcing)
+    # the a2 pass inlining the observed that move with a2 (not its named
+    # steps, §4.6): its coefficients are then differentiated in `t` here
+    from .jacobian import _extended_pass
+
+    e2 = _extended_pass(sv, ctx, obs, a2, forcing, [], companions=False).rows
     names = {r.name for r in recs}
     cs = companion_setup(
         sv,

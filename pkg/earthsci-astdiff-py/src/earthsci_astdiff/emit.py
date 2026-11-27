@@ -13,7 +13,7 @@ from earthsci_ast.numpy_interpreter import evaluate
 from earthsci_ast.parse import _parse_expression as parse_expression
 from earthsci_ast.serialize import _serialize_domain
 
-from .bands import Band, BandError
+from .bands import Band, BandError, join_ranges_into
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
@@ -41,6 +41,9 @@ def serialize_band(en: JacEntry | JacEntry2) -> dict:
         d["contracted"] = [[n, lo, hi] for n, lo, hi in b.contracted]
     if b.guard is not None:
         d["where"] = ser_expr(b.guard)
+    if b.join is not None:
+        d["join"] = list(b.join[0])
+        d["join_ranges"] = dict(b.join[1])
     return d
 
 
@@ -53,6 +56,7 @@ def parse_band(d: dict) -> JacEntry:
         parse_expression(d["coef"]) if "coef" in d else None,
         [(str(c[0]), int(c[1]), int(c[2])) for c in d.get("contracted", [])],
         parse_expression(d["where"]) if "where" in d else None,
+        (list(d["join"]), sorted(d["join_ranges"].items())) if "join" in d else None,
     )
     return JacEntry(str(d["row"]), str(d["col"]), band)
 
@@ -130,6 +134,7 @@ def jacobian_pattern(
     wrt: str = "states",
     forcing=None,
     coefficients: bool = True,
+    parameters=None,
 ):
     """The structural sparsity pattern as sorted (rowname, colname) pairs
     plus the entries — dependency-light (no scipy). On the ``"parameters"``
@@ -138,7 +143,7 @@ def jacobian_pattern(
     and a parameter column outside its variable's extent is a ghost read.
     ``coefficients=False`` builds it from structure-only entries (spec §2.1),
     a superset of the default pattern that costs no differentiation."""
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing, coefficients=coefficients)
     if wrt != "states":
         triples = scatter_pairs(sv, entries)
@@ -219,6 +224,7 @@ def jacobian_block(
     cse_min_nodes: int = 12,
     forcing=None,
     column_axis: str | None = None,
+    parameters=None,
 ):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default) and the block-local `expression_templates`; on the state and
@@ -249,7 +255,7 @@ def jacobian_block(
             '(["states", "forcing"]) and a second-order pair inside one '
             '([("states", "forcing")])'
         )
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     memo = _FirstOrder()
     # One axis is a str (iterating it would split it into characters).
     if isinstance(wrt, str):
@@ -309,11 +315,12 @@ def _jacobian_block(
     aux = auxiliary(sv, observed_defs(sv), ctx_of(sv), entries)
     if aux:
         block["auxiliary"] = _auxiliary_field(aux)
-    from .companions import companions_field, time_companions
+    from .companions import companions_field
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
+    comps = intermediates(sv, [en.band for en in entries], forcing)
     if comps:
-        block["companions"] = companions_field(comps)
+        block["intermediates"] = companions_field(comps)
     if not rect:
         from .factorization import _column_block_plan, plan_factorization, serialize_plan
 
@@ -688,6 +695,7 @@ def evaluation_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
     data_sources=None,
+    parameters=None,
 ):
     """The derived evaluation document of the first-order bands on axis
     ``wrt`` (spec §8, model ``"JacobianEval"``): the source's observed the
@@ -707,12 +715,14 @@ def evaluation_document(
     ``EsmFile``'s own. A flattened system carries none, so pass the flattened
     document's ``data_sources`` when its parameters read data; a named source
     that is not found raises :class:`BandError`."""
-    sv = sysview(obj, model_name, data_sources)
+    sv = sysview(obj, model_name, data_sources, parameters=parameters)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
-    return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes)
+    return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes, forcing=forcing)
 
 
-def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int = 12):
+def _evaluation_document(
+    sv, entries: list, cse: bool = True, cse_min_nodes: int = 12, forcing=None
+):
     # The source's observed definitions that the coefficients read, its state
     # derivatives zeroed, then one state per band whose RHS is the band's
     # coefficient field, after the optional hoisting. Returns (document,
@@ -724,10 +734,11 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
     m = doc["models"]["JacobianEval"]
     ctx = ctx_of(sv)
     aux = auxiliary(sv, observed_defs(sv), ctx, entries)
-    from .companions import add_companions, time_companions
+    from .companions import add_companions
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
-    roots = [en.band.coef for en in entries] + [d for _, _, d in aux] + [d for _, _, d in comps]
+    comps = intermediates(sv, [en.band for en in entries], forcing)
+    roots = [en.band.coef for en in entries] + [d for _, _, d in aux] + [c[2] for c in comps]
     _zero_source_derivatives(m, sv, ctx, roots)
     _add_auxiliary(m, aux)
     add_companions(m, sv, comps)
@@ -769,6 +780,9 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
                 rngs = {r: [b.rows[k2][0], b.rows[k2][1]] for k2, r in free}
                 for n, lo, hi in cr:
                     rngs[n] = [lo, hi]
+                # a joined band's field is its coefficient on the joined
+                # tuples and 0 elsewhere: the faq carries the join (§3.5)
+                join_ranges_into(rngs, b, ctx)
                 val = {
                     "op": "faq",
                     "args": [],
@@ -776,6 +790,8 @@ def _evaluation_document(sv, entries: list, cse: bool = True, cse_min_nodes: int
                     "ranges": rngs,
                     "expr": ser_expr(coefs[k]),
                 }
+                if b.join is not None:
+                    val["join"] = list(b.join[0])
             rhs = {
                 "op": "makearray",
                 "args": [],

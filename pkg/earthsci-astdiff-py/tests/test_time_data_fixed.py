@@ -83,7 +83,7 @@ def test_elementwise_read_at_a_cell_refuses_what_it_cannot_read(valid_dir):
 
     cap = _variant(valid_dir, capture)
     assert len(jacobian_bands(cap, "Box", wrt="time")) == 1
-    rhs = jacobian_block(cap, "Box", wrt="time")["companions"][0]["rhs"]
+    rhs = jacobian_block(cap, "Box", wrt="time")["intermediates"][0]["rhs"]
     assert rhs["output_idx"] == ["_r1", "_r2"]
     assert '"j"' in stable_json(rhs)
 
@@ -128,7 +128,7 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
     assert _companion_reads(bands[0]["coef"]) == ["_dt_kr"]
     assert bands[1]["coef"]["op"] == "faq"
     assert stable_json(bands) == (golden_dir / "tgrad_named_steps.time.bands.json").read_text()
-    comps = jacobian_block(file, "Column", wrt="time")["companions"]
+    comps = jacobian_block(file, "Column", wrt="time")["intermediates"]
     assert [c["name"] for c in comps] == ["_dt_Tb", "_dt_kr", "_dt_w"]
     assert [c["of"] for c in comps] == ["Tb", "kr", "w"]
     assert _companion_reads(comps[1]["rhs"]) == ["_dt_Tb"]
@@ -142,7 +142,7 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
         assert en.v == "t"
         assert _companion_reads(ser_expr(en.band.coef)) != []
     (pblk,) = jacobian_block(file, "Column", wrt=[("time", "states")])
-    assert [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    assert [c["name"] for c in pblk["intermediates"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
 
 
 def test_companion_extents_are_read_or_refused(valid_dir):
@@ -189,7 +189,7 @@ def test_companion_name_is_clear_of_the_source(valid_dir):
     d = json.loads((valid_dir / "tgrad_named_steps.esm").read_text())
     d["models"]["Column"]["variables"]["_dt_w"] = {"type": "parameter", "default": 1.0}
     file = ea.load_string(json.dumps(d))
-    comps = jacobian_block(file, "Column", wrt="time")["companions"]
+    comps = jacobian_block(file, "Column", wrt="time")["intermediates"]
     assert [c["name"] for c in comps] == ["_dt_Tb", "_dt_kr", "_dt_w_"]
     # a component path is taken too: `P._dt_v` names a subsystem of a source
     # with a variable `P._dt_v.x`

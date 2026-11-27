@@ -68,6 +68,10 @@ function serialize_band(en::JacEntry)
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
     b.guard === nothing || (d["where"] = _ser_expr(b.guard))
+    if b.join !== nothing
+        d["join"] = b.join[1]
+        d["join_ranges"] = OrderedDict{String, Any}(b.join[2]...)
+    end
     return d
 end
 
@@ -88,6 +92,10 @@ function parse_band(d::AbstractDict)::JacEntry
             ] :
             Tuple{String, Int, Int}[],
         haskey(d, "where") ? expression_from_json(d["where"]) : nothing,
+        haskey(d, "join") ? (
+                Any[_plain(c) for c in d["join"]],
+                Pair{String, Any}[String(k) => _plain(v) for (k, v) in sort!(collect(pairs(d["join_ranges"])); by = x -> String(first(x)))],
+            ) : nothing,
     )
     return JacEntry(String(d["row"]), String(d["col"]), band)
 end
@@ -135,9 +143,9 @@ source that is not found is a `BandError`.
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, parameters = nothing
     )
-    sv = sysview(file, model_name)
+    sv = _with_parameters(sysview(file, model_name), parameters)
     doc = EarthSciAST.serialize_esm_file(file)
     _attach_jacobians!(
         doc, sv, String(model_name); wrt = wrt, forcing = forcing,
@@ -150,9 +158,9 @@ function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
         cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing,
-        data_sources = nothing
+        data_sources = nothing, parameters = nothing
     )
-    sv = sysview(flat; data_sources = data_sources)
+    sv = _with_parameters(sysview(flat; data_sources = data_sources), parameters)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
@@ -231,8 +239,8 @@ function _jacobian_block(
     info = _rec_info!(memo, sv)
     aux = _auxiliary(info, entries)
     isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
-    comps = _time_companions(sv, entries; info = info)
-    isempty(comps) || (block["companions"] = _companions_field(comps))
+    comps = _intermediates(sv, entries; forcing = forcing, info = info)
+    isempty(comps) || (block["intermediates"] = _companions_field(comps))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
             _column_block_plan(cl)
@@ -579,11 +587,11 @@ that is not found is a `BandError`.
 """
 function evaluation_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
-    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes)
+    return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing)
 end
 
 """
@@ -601,7 +609,8 @@ passed with one. `fields[k]` names `entries[k]`'s field.
 """
 function evaluation_document(
         input, entries::AbstractVector{JacEntry}; model_name = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, forcing = nothing,
+        parameters = nothing
     )
     any(en -> en.band.coef === nothing, entries) && throw(
         ArgumentError(
@@ -609,9 +618,9 @@ function evaluation_document(
                 "bands (`jacobian_bands(...; coefficients = false)`)"
         )
     )
-    sv = _bands_sysview(input, model_name, data_sources)
+    sv = _with_parameters(_bands_sysview(input, model_name, data_sources), parameters)
     return _evaluation_document(
-        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes
+        sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing
     )
 end
 
@@ -684,17 +693,17 @@ _auxiliary_field(aux) = Any[
 # is the band's coefficient field. Returns (document, band-state names).
 function _evaluation_document(
         sv::SysView, entries::Vector{JacEntry};
-        cse::Bool = false, cse_min_nodes::Int = 12
+        cse::Bool = false, cse_min_nodes::Int = 12, forcing = nothing
     )
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
     info = _rec_info(sv, _observed_defs(sv), ctx)
     aux = _auxiliary(info, entries)
-    comps = _time_companions(sv, entries; info = info)
+    comps = _intermediates(sv, entries; forcing = forcing, info = info)
     roots = ASTExpr[en.band.coef for en in entries]
     append!(roots, last.(aux))
-    append!(roots, last.(comps))
+    append!(roots, ASTExpr[c[3] for c in comps])
     _zero_source_derivatives!(m, sv, ctx, roots)
     _add_auxiliary!(m, aux)
     _add_companions!(m, sv, comps)
@@ -742,12 +751,17 @@ function _evaluation_document(
                 for (n, lo, hi) in cr
                     rngs[n] = Any[lo, hi]
                 end
-                OrderedDict{String, Any}(
+                # a joined band's field is its coefficient on the joined
+                # tuples and 0 elsewhere: the faq carries the join (§3.5)
+                _join_ranges!(rngs, b, ctx)
+                fq = OrderedDict{String, Any}(
                     "op" => "faq", "args" => Any[],
                     "output_idx" => aggnames,
                     "ranges" => rngs,
-                    "expr" => _ser_expr(coefs[k])
                 )
+                b.join === nothing || (fq["join"] = b.join[1])
+                fq["expr"] = _ser_expr(coefs[k])
+                fq
             end
             rhs = OrderedDict{String, Any}(
                 "op" => "makearray", "args" => Any[],

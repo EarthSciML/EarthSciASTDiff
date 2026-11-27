@@ -5,7 +5,7 @@
 
 using EarthSciASTDiff: _evaluation_document
 
-const TIME_FIXTURES = ("tgrad_photolysis", "tgrad_named_steps")
+const TIME_FIXTURES = ("tgrad_photolysis", "tgrad_named_steps", "tgrad_surface")
 
 @testset "time bands: goldens" begin
     golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
@@ -69,8 +69,8 @@ end
     @test reads(defs["_dt_Tb"]) == ["_dt_w"]
     @test isempty(reads(defs["_dt_w"]))
     block = jacobian_document(file, "Column"; wrt = :time)["jacobians"]["Column"]
-    @test [c["name"] for c in block["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
-    @test [c["of"] for c in block["companions"]] == ["Tb", "kr", "w"]
+    @test [c["name"] for c in block["intermediates"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    @test [c["of"] for c in block["intermediates"]] == ["Tb", "kr", "w"]
     # the evaluation document declares each like its observed
     doc, _ = _evaluation_document(sv, entries)
     vars = doc["models"]["JacobianEval"]["variables"]
@@ -81,7 +81,7 @@ end
     e2 = jacobian_bands2(sv; wrt = :time => :states)
     @test !isempty(e2) && all(en -> en.v == "t" && !isempty(reads(en.band.coef)), e2)
     pblk = jacobian_document(file, "Column"; wrt = :time => :states)["jacobians"]["Column"]
-    @test [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    @test [c["name"] for c in pblk["intermediates"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
     # structure-only entries: the same points
     so = jacobian_bands(sv; wrt = :time, coefficients = false)
     @test [(en.u, en.band.rows) for en in so] == [(en.u, en.band.rows) for en in entries]
@@ -114,6 +114,30 @@ end
         f!(up, u, p, τ + h); f!(um, u, p, τ - h)
         @test dT ≈ (up .- um) ./ 2h rtol = 1.0e-6
         @test all(!iszero, dT)
+    end
+end
+
+@testset "time bands: a surface-only companion is a region, not a gate" begin
+    # emis exists only at lev = 1 and reads the observed delP there: its
+    # companion is one faq over the whole shape reading a makearray whose
+    # second region is the surface (spec §4.2), and f_t is the derivative of
+    # the source right-hand side
+    file = fixture("tgrad_surface.esm")
+    blk = jacobian_document(file, "Box"; wrt = :time)["jacobians"]["Box"]
+    c = only(x for x in blk["intermediates"] if x["name"] == "_dt_emis")
+    rhs = c["rhs"]
+    @test rhs["op"] == "faq" && rhs["expr"]["op"] == "index"
+    ma = rhs["expr"]["args"][1]
+    @test ma["op"] == "makearray" && ma["regions"] == Any[Any[Any[1, 3], Any[1, 4]], Any[Any[1, 3], Any[1, 1]]]
+    @test ma["values"][1] == 0
+    f!, u0, p, _, _ = tw_build(file)
+    for τ in (700.0, 2900.0)
+        u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(u0)]
+        dT = Vector(doc_jacobian(file; wrt = :time, u = u, t = τ).J[:, 1])
+        h = 1.0e-3; up = similar(u); um = similar(u)
+        f!(up, u, p, τ + h); f!(um, u, p, τ - h)
+        @test dT ≈ (up .- um) ./ 2h rtol = 1.0e-7
+        @test count(!iszero, dT) == 3
     end
 end
 

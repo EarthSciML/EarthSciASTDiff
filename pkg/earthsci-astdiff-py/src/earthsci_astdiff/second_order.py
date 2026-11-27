@@ -75,7 +75,7 @@ def axis_pair(wrt) -> tuple[str, str]:
 
 
 def jacobian_bands2(
-    obj, model_name: str | None = None, wrt=("states", "states"), forcing=None
+    obj, model_name: str | None = None, wrt=("states", "states"), forcing=None, parameters=None
 ) -> list[JacEntry2]:
     """Second-order bands for the axis pair ``wrt = (a1, a2)``, ``a1`` in
     ``("states", "time")`` and ``a2`` in ``("states", "parameters",
@@ -92,7 +92,7 @@ def jacobian_bands2(
     index must be closed at build time (spec §4.3), else :class:`BandError`.
     """
     a1, a2 = axis_pair(wrt)
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     return _bands2(sv, a1, a2, forcing)[1]
 
 
@@ -153,7 +153,15 @@ def _coef_bands(b: Band, w: str, ctx: Ctx) -> list[Band]:
                 continue
             c2, coef, contracted = one_hot(c2, coef, list(b.contracted) + extra, b.ridx, w, ctx)
             out.append(
-                Band(rows2, list(b.ridx), list(b.cidx) + c2, coef, contracted, conj(b.guard, g))
+                Band(
+                    rows2,
+                    list(b.ridx),
+                    list(b.cidx) + c2,
+                    coef,
+                    contracted,
+                    conj(b.guard, g),
+                    b.join,
+                )
             )
     return out
 
@@ -256,11 +264,12 @@ def jacobian_block2(
     )
     if e1.recurrences:
         block["recurrences"] = recurrences_field(e1.recurrences)
-    from .companions import companions_field, time_companions
+    from .companions import companions_field
+    from .steps import intermediates
 
-    comps = time_companions(sv, [en.band for en in entries])
+    comps = intermediates(sv, [en.band for en in entries], forcing)
     if comps:
-        block["companions"] = companions_field(comps)
+        block["intermediates"] = companions_field(comps)
     return block
 
 

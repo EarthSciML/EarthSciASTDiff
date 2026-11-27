@@ -31,6 +31,9 @@ class SysView:
     # flattened system carries none. The derived documents copy the entries a
     # data-fed parameter names (spec §8.1).
     data_sources: object = None
+    # the parameter set (spec §4.3): the columns of the parameters axis,
+    # None for every parameter outside the forcing set
+    parameters: object = None
 
 
 def _only_model(file: EsmFile) -> str:
@@ -39,7 +42,7 @@ def _only_model(file: EsmFile) -> str:
     return next(iter(file.models))
 
 
-def sysview(obj, model_name: str | None = None, data_sources=None) -> SysView:
+def sysview(obj, model_name: str | None = None, data_sources=None, parameters=None) -> SysView:
     """View a model of an ``EsmFile``, or a ``FlattenedSystem``, for differentiation.
 
     **Parameters**
@@ -53,11 +56,23 @@ def sysview(obj, model_name: str | None = None, data_sources=None) -> SysView:
       (spec §8.1). ``None`` keeps the input's own: an ``EsmFile``'s, none for
       a flattened system, which does not carry them, so pass the flattened
       document's when its parameters read data.
+    - ``parameters`` — the parameter set (spec §4.3): the names whose cells
+      are the columns of the ``"parameters"`` axis. ``None`` keeps the
+      input's own, for an ``EsmFile`` or flattened system every parameter
+      outside the forcing set.
     """
-    if isinstance(obj, SysView):
-        if data_sources is None:
-            return obj
-        return dataclasses.replace(obj, data_sources=data_sources)
+    if not isinstance(obj, SysView):
+        obj = _sysview(obj, model_name, data_sources)
+    elif data_sources is not None:
+        obj = dataclasses.replace(obj, data_sources=data_sources)
+    if parameters is None:
+        return obj
+    if isinstance(parameters, str):
+        parameters = [parameters]
+    return dataclasses.replace(obj, parameters=sorted({str(p) for p in parameters}))
+
+
+def _sysview(obj, model_name, data_sources) -> SysView:
     if isinstance(obj, EsmFile):
         expanded = expand_document(obj)
         name = model_name if model_name is not None else _only_model(expanded)

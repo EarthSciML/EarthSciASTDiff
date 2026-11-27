@@ -327,6 +327,7 @@ fn coef_site_bands(
                 coef,
                 contracted,
                 guard: conj(b.guard.clone(), g),
+                join: b.join.clone(),
             });
         }
     }
@@ -498,10 +499,10 @@ pub(crate) fn pair_block(
         block.insert("recurrences".into(), recurrences_field(&e1.recurrences));
     }
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     if !comps.is_empty() {
         block.insert(
-            "companions".into(),
+            "intermediates".into(),
             crate::companions::companions_field(&comps),
         );
     }

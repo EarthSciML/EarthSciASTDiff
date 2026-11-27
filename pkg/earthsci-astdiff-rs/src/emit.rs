@@ -32,14 +32,26 @@ pub fn serialize_band(en: &JacEntry) -> Value {
         b.guard.as_ref(),
     );
     d.insert("coef".into(), ser_expr(&b.coef));
+    ser_join(&mut d, b.join.as_ref());
     Value::Object(d)
+}
+
+/// A joined band's `join` and `join_ranges` fields (spec §3.5, §4).
+pub(crate) fn ser_join(d: &mut Map<String, Value>, j: Option<&crate::bands::BandJoin>) {
+    if let Some(j) = j {
+        d.insert("join".into(), Value::Array(j.clauses.clone()));
+        d.insert(
+            "join_ranges".into(),
+            Value::Object(j.ranges.iter().cloned().collect()),
+        );
+    }
 }
 
 /// A structure-only entry (spec §2.1) as JSON: the fields of
 /// [`serialize_band`] without `coef`.
 pub fn serialize_structure_band(en: &StructureEntry) -> Value {
     let b = &en.band;
-    Value::Object(ser_fields(
+    let mut d = ser_fields(
         &en.u,
         &en.v,
         &b.rows,
@@ -47,7 +59,9 @@ pub fn serialize_structure_band(en: &StructureEntry) -> Value {
         &b.cidx,
         &b.contracted,
         b.guard.as_ref(),
-    ))
+    );
+    ser_join(&mut d, b.join.as_ref());
+    Value::Object(d)
 }
 
 /// Every field of an entry but `coef`.
@@ -924,6 +938,9 @@ pub fn jacobian_block(
 pub struct BlockOptions<'a> {
     /// The forcing set (`None` infers it).
     pub forcing: Option<&'a [String]>,
+    /// The parameter set (spec §4.3; `None`: every parameter outside the
+    /// forcing set).
+    pub parameters: Option<&'a [String]>,
     /// Template-CSE the coefficients.
     pub cse: bool,
     /// The smallest subtree (in nodes) hoisted into a template.
@@ -939,6 +956,7 @@ impl Default for BlockOptions<'_> {
     fn default() -> Self {
         BlockOptions {
             forcing: None,
+            parameters: None,
             cse: true,
             cse_min_nodes: 12,
             column_axis: None,
@@ -953,7 +971,7 @@ pub fn jacobian_block_with(
     wrt: Wrt,
     opts: &BlockOptions,
 ) -> Result<Value, crate::bands::BandError> {
-    let sv: SysView = crate::system::sysview(file, model_name)?;
+    let sv: SysView = crate::system::sysview(file, model_name)?.with_parameters(opts.parameters);
     let ctx = crate::system::ctx_of(&sv)?;
     let obs = crate::system::observed_defs(&sv)?;
     let mut memo = FirstOrder::default();
@@ -1004,6 +1022,7 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
 ) -> Result<Value, crate::bands::BandError> {
     let opts = BlockOptions {
         forcing,
+        parameters: None,
         cse,
         cse_min_nodes,
         column_axis: None,
@@ -1029,7 +1048,7 @@ pub fn jacobian_blocks_with<W: Into<BlockWrt> + Copy>(
             wrt.iter().map(BlockWrt::label).collect::<Vec<_>>()
         )));
     }
-    let sv = crate::system::sysview(file, model_name)?;
+    let sv = crate::system::sysview(file, model_name)?.with_parameters(opts.parameters);
     let ctx = crate::system::ctx_of(&sv)?;
     let obs = crate::system::observed_defs(&sv)?;
     let mut memo = FirstOrder::default();
@@ -1063,6 +1082,7 @@ pub fn jacobian_block_with_forcing(
 ) -> Result<Value, crate::bands::BandError> {
     let opts = BlockOptions {
         forcing,
+        parameters: None,
         cse,
         cse_min_nodes,
         column_axis: None,
@@ -1123,10 +1143,10 @@ fn axis_block(
         block.insert("auxiliary".into(), auxiliary_field(&aux));
     }
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     if !comps.is_empty() {
         block.insert(
-            "companions".into(),
+            "intermediates".into(),
             crate::companions::companions_field(&comps),
         );
     }
@@ -1290,6 +1310,18 @@ pub fn parse_band(d: &Value) -> Result<JacEntry, crate::bands::BandError> {
             coef: parse_expr(d.get("coef").ok_or_else(|| perr("band without `coef`"))?)?,
             contracted,
             guard: d.get("where").map(parse_expr).transpose()?,
+            join: match (d.get("join"), d.get("join_ranges")) {
+                (Some(Value::Array(c)), Some(Value::Object(r))) => {
+                    let mut ranges: Vec<(String, Value)> =
+                        r.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                    ranges.sort_by(|a, b| a.0.cmp(&b.0));
+                    Some(crate::bands::BandJoin {
+                        clauses: c.clone(),
+                        ranges,
+                    })
+                }
+                _ => None,
+            },
         },
     })
 }
@@ -1717,15 +1749,28 @@ pub fn evaluation_document(
     cse: bool,
     cse_min_nodes: usize,
 ) -> Result<(Value, Vec<String>), crate::bands::BandError> {
+    evaluation_document_with_forcing(sv, entries, cse, cse_min_nodes, None)
+}
+
+/// [`evaluation_document`] for bands of a parameters or forcing axis
+/// computed with an explicit forcing set (`None` infers it): the named
+/// intermediates of those bands (spec §4.6) are found under the same set.
+pub fn evaluation_document_with_forcing(
+    sv: &SysView,
+    entries: &[JacEntry],
+    cse: bool,
+    cse_min_nodes: usize,
+    forcing: Option<&[String]>,
+) -> Result<(Value, Vec<String>), crate::bands::BandError> {
     let ctx = crate::system::ctx_of(sv)?;
     let (mut doc, mut model) = base_document(sv, "JacobianEval");
     let obs = crate::system::observed_defs(sv)?;
     let aux = crate::recurrence::auxiliary(sv, &obs, &ctx, entries)?;
     let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
-    let comps = crate::companions::time_companions(sv, &eb)?;
+    let comps = crate::steps::intermediates(sv, &eb, forcing)?;
     let mut roots: Vec<&Expr> = entries.iter().map(|en| &en.band.coef).collect();
     roots.extend(aux.iter().map(|(_, _, d)| d));
-    roots.extend(comps.iter().map(|(_, _, d)| d));
+    roots.extend(comps.iter().map(|(_, _, d, _)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
     add_auxiliary(&mut model, &aux);
     crate::companions::add_companions(&mut model, sv, &comps);
@@ -1805,8 +1850,15 @@ pub fn evaluation_document(
                 for (n, lo, hi) in cr {
                     rngs.insert(n.clone(), json!([lo, hi]));
                 }
-                json!({"op": "faq", "args": [], "output_idx": aggnames,
-                       "ranges": rngs, "expr": ser_expr(&coefs[k])})
+                // a joined band's field is its coefficient on the joined
+                // tuples and 0 elsewhere: the faq carries the join (§3.5)
+                crate::bands::join_ranges_into(&mut rngs, b, Some(&ctx))?;
+                let mut fq = json!({"op": "faq", "args": [], "output_idx": aggnames,
+                       "ranges": rngs, "expr": ser_expr(&coefs[k])});
+                if let Some(j) = &b.join {
+                    fq["join"] = Value::Array(j.clauses.clone());
+                }
+                fq
             };
             let mut full: Vec<Value> = shape_u.iter().map(|n| json!([1, n])).collect();
             full.extend(cr.iter().map(|(_, _, hi)| json!([1, hi])));

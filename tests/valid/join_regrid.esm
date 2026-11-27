@@ -1,0 +1,282 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "JoinRegrid",
+    "description": "A regrid through a spatial overlap join (CONFORMANCE_SPEC \u00a75.5.6): six points (recs) binned into four cells, the sum over the pairs the join of the points' (X, Y) and the cells' envelopes (W, S, E, N) admits, with no other gate in the body. The binned field reads a state q (squared) and an array parameter F, so the states and parameters bands carry the join (spec \u00a73.5): their points are the joined (cell, point) pairs, their values those of the source."
+  },
+  "index_sets": {
+    "cells": {
+      "kind": "interval",
+      "size": 4
+    },
+    "recs": {
+      "kind": "interval",
+      "size": 6
+    }
+  },
+  "models": {
+    "Regrid": {
+      "variables": {
+        "W": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            1.0
+          ]
+        },
+        "E": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            1.0,
+            2.0,
+            1.0,
+            2.0
+          ]
+        },
+        "S": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        },
+        "N": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            1.0,
+            1.0,
+            2.0,
+            2.0
+          ]
+        },
+        "X": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            0.5,
+            1.5,
+            1.2,
+            0.3,
+            1.7,
+            0.9
+          ]
+        },
+        "Y": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            0.5,
+            1.5,
+            0.2,
+            1.4,
+            0.6,
+            1.8
+          ]
+        },
+        "F": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0
+          ]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.1
+        },
+        "c": {
+          "type": "unknown",
+          "shape": [
+            "cells"
+          ],
+          "default": 1.0
+        },
+        "q": {
+          "type": "unknown",
+          "shape": [
+            "recs"
+          ],
+          "default": 0.5
+        },
+        "B": {
+          "type": "unknown",
+          "shape": [
+            "cells"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "B",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "cells"
+              },
+              "r": {
+                "from": "recs"
+              }
+            },
+            "reduce": "+",
+            "join": [
+              {
+                "overlap": {
+                  "src_env": [
+                    "X",
+                    "Y"
+                  ],
+                  "tgt_env": [
+                    "W",
+                    "S",
+                    "E",
+                    "N"
+                  ],
+                  "eps": 0.0
+                }
+              }
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F",
+                    "r"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "c"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "cells"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "B",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "k",
+                    {
+                      "op": "index",
+                      "args": [
+                        "c",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "r"
+            ],
+            "ranges": {
+              "r": {
+                "from": "recs"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

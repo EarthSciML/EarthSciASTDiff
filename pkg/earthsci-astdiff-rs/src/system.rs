@@ -41,9 +41,26 @@ pub struct SysView<'a> {
     /// The operator definitions the equations' references resolve against
     /// (operator_refs.rs), `None` without any.
     pub refs: Option<std::rc::Rc<crate::operator_refs::RefLayer>>,
+    /// The parameter set (spec §4.3): the columns of the parameters axis,
+    /// `None` for every parameter outside the forcing set. Set with
+    /// [`SysView::with_parameters`].
+    pub parameters: Option<Vec<String>>,
 }
 
 impl<'a> SysView<'a> {
+    /// This view with its parameter set (spec §4.3) chosen: the columns of
+    /// the parameters axis. `None` keeps every parameter outside the forcing
+    /// set.
+    pub fn with_parameters(mut self, parameters: Option<&[String]>) -> Self {
+        if let Some(ps) = parameters {
+            let mut v: Vec<String> = ps.to_vec();
+            v.sort();
+            v.dedup();
+            self.parameters = Some(v);
+        }
+        self
+    }
+
     /// This view with `data_sources` (a document's, name → source) as the
     /// entries the derived documents copy for each data-fed parameter (spec
     /// §8.1): for a flattened system, the flattened document's own. `None`
@@ -106,6 +123,7 @@ pub fn sysview<'a>(file: &'a EsmFile, model_name: Option<&str>) -> Result<SysVie
         domain: file.domain.as_ref(),
         data_sources: file.data_sources.as_ref(),
         refs,
+        parameters: None,
     })
 }
 
@@ -182,6 +200,7 @@ pub fn sysview_flat(flat: &FlattenedSystem) -> Result<SysView<'_>, BandError> {
         domain: flat.domain.as_ref(),
         data_sources: None,
         refs,
+        parameters: None,
     })
 }
 

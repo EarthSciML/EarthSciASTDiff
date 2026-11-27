@@ -74,8 +74,10 @@ def test_elementwise_aligned_refuses_arity_mixed_ranks_and_whole_arrays(valid_di
         )
         m["equations"][0]["rhs"]["args"].append("u")
 
+    # (named steps keep `u` a column: its extents, the union of its operands'
+    # index sets, cannot be read from ranks, and it is refused there)
     with pytest.raises(
-        InlineError, match="observed u, declared without a shape, combines arrays of rank 2 and 1"
+        BandError, match=r"observed `u` \(declared without a shape\) cannot be read"
     ):
         jacobian_bands(_variant(valid_dir, nested), "Box")
 

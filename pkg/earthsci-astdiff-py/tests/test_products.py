@@ -49,6 +49,7 @@ PRODUCT_AXES = (
     ("pre_operator", "states"),
     ("tgrad_photolysis", "time"),
     ("tgrad_named_steps", "time"),
+    ("tgrad_surface", "time"),
     ("forcing_bracket", "forcing"),
     ("forcing_bracket", "parameters"),
     ("recurrence_sweep", "states"),
@@ -127,7 +128,7 @@ def test_evaldoc_no_source_rhs_survives(name, valid_dir):
     "name,gone,kept",
     [
         ("flux_form_adv", ["F"], []),
-        ("contracting_observed", ["s", "c"], []),
+        ("contracting_observed", [], ["s", "c"]),
         ("contracted_ops", ["conn"], []),
         ("minmod_adv", [], ["dx"]),
     ],

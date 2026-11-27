@@ -106,10 +106,12 @@ fn elementwise_aligned_refuses_arity_mixed_ranks_and_whole_arrays() {
             .unwrap()
             .push(json!("u"));
     });
+    // (named steps keep `u` a column: its extents, the union of its operands'
+    // index sets, cannot be read from ranks, and it is refused there)
     let err = jacobian_bands(&nested, Some("Box"), Wrt::States).unwrap_err();
     assert!(
         err.0
-            .contains("observed u, declared without a shape, combines arrays of rank 2 and 1"),
+            .contains("observed `u` (declared without a shape) cannot be read"),
         "{}",
         err.0
     );

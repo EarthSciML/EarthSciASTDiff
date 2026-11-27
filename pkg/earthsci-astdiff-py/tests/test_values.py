@@ -33,6 +33,7 @@ NAMES = (
 AXIS_VALUES = (
     ("tgrad_photolysis", "time", ""),
     ("tgrad_named_steps", "time", ""),
+    ("tgrad_surface", "time", ""),
     ("forcing_bracket", "forcing", ""),
     ("forcing_bracket", "forcing", ".w0"),
     ("forcing_bracket", "parameters", ""),

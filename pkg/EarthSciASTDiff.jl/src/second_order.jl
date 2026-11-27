@@ -68,8 +68,8 @@ jacobian_bands2(file::EarthSciAST.EsmFile, model_name; kw...) =
     jacobian_bands2(sysview(file, model_name); kw...)
 jacobian_bands2(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands2(sysview(flat); kw...)
-jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing) =
-    last(_bands2(sv, _axis_pair(wrt)..., forcing))
+jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing, parameters = nothing) =
+    last(_bands2(_with_parameters(sv, parameters), _axis_pair(wrt)..., forcing))
 
 # (extended first-order system, second-order entries). The first-order pass
 # inlines the observed that move with EITHER axis: one that reads only
@@ -180,7 +180,7 @@ function _coef_site_bands(b::Band, pieces, w::String, ctx::Ctx)
             c2, coef2, contracted = _one_hot(c2, coef2, vcat(b.contracted, extra), b.ridx, w, ctx)
             push!(
                 out, Band(
-                    rows2, b.ridx, vcat(b.cidx, c2), coef2, contracted, _conj(b.guard, g)
+                    rows2, b.ridx, vcat(b.cidx, c2), coef2, contracted, _conj(b.guard, g), b.join
                 )
             )
         end
@@ -231,6 +231,10 @@ function serialize_band(en::JacEntry2)
     isempty(b.contracted) ||
         (d["contracted"] = Any[Any[n, lo, hi] for (n, lo, hi) in b.contracted])
     b.guard === nothing || (d["where"] = _ser_expr(b.guard))
+    if b.join !== nothing
+        d["join"] = b.join[1]
+        d["join_ranges"] = OrderedDict{String, Any}(b.join[2]...)
+    end
     return d
 end
 
@@ -264,8 +268,8 @@ function _jacobian_block(
         through ? nothing : _structure2(e1.rows, entries, sv, a1, memo), cse, cse_min_nodes
     )
     through && (block["recurrences"] = _recurrences_field(e1.recurrences))
-    comps = _time_companions(sv, entries; info = _rec_info!(memo, sv))
-    isempty(comps) || (block["companions"] = _companions_field(comps))
+    comps = _intermediates(sv, entries; forcing = forcing, info = _rec_info!(memo, sv))
+    isempty(comps) || (block["intermediates"] = _companions_field(comps))
     return block
 end
 

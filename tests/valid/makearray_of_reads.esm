@@ -1,0 +1,195 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "MakearrayOfReads",
+    "description": "An observed m[k,i] defined by reading a makearray at i whose region values are cell reads of states (u[k] on region 1, v[k] broadcast over regions 2..3): each value is a scalar, read as itself (never as an index with no subscripts)."
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 3
+    },
+    "s": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "M": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.5
+        },
+        "v": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.2
+        },
+        "m": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "s"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "m",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "x"
+              },
+              "i": {
+                "from": "s"
+              }
+            },
+            "expr": {
+              "op": "index",
+              "args": [
+                {
+                  "op": "makearray",
+                  "args": [],
+                  "regions": [
+                    [
+                      [
+                        1,
+                        1
+                      ]
+                    ],
+                    [
+                      [
+                        2,
+                        3
+                      ]
+                    ]
+                  ],
+                  "values": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "u",
+                        "k"
+                      ]
+                    },
+                    {
+                      "op": "index",
+                      "args": [
+                        "v",
+                        "k"
+                      ]
+                    }
+                  ]
+                },
+                "i"
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "u"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                {
+                  "op": "index",
+                  "args": [
+                    "m",
+                    "k",
+                    1
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "m",
+                    "k",
+                    2
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "v"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "m",
+                    "k",
+                    3
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "v",
+                        "k"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

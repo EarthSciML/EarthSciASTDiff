@@ -11,7 +11,7 @@ from earthsci_ast.expression import free_variables
 from earthsci_ast.substitute import substitute
 
 from .clip import _SummandPlan, clip_summands
-from .expr_helpers import Site, add, is_zero, mul, op, region_bound, skey
+from .expr_helpers import Site, add, is_zero, mul, op, region_bound, ser_expr, skey, stable_json
 from .inline import all_names
 from .inline import subst_free as _subst_free
 from .reductions import check_window as _check_window
@@ -39,6 +39,9 @@ class Band:
     coef: Expr | None  # None for a structure-only band (spec §2.1)
     contracted: list[tuple[str, int, int]] = field(default_factory=list)
     guard: Expr | None = None
+    # the relational join of the faq node the band was read off (spec §3.5):
+    # None, or (clauses as serialized, [(name, range)] in name order)
+    join: tuple | None = None
 
 
 @dataclass
@@ -310,11 +313,62 @@ def _site_cidx(s: Site) -> list:
     return [] if isinstance(s.expr, str) else list(s.expr.args[1:])
 
 
-def _push_band(out, rows, ridx, cidx, coef, contracted, guard, v: str, ctx: Ctx) -> None:
+def _push_band(out, rows, ridx, cidx, coef, contracted, guard, v: str, ctx: Ctx, join=None) -> None:
     """Push one band, its value-reading column dimensions made one-hot first."""
     ridx = list(ridx)
     cidx, coef, contracted = one_hot(cidx, coef, contracted, ridx, v, ctx)
-    out.append(Band(list(rows), ridx, cidx, coef, list(contracted), guard))
+    out.append(Band(list(rows), ridx, cidx, coef, list(contracted), guard, join))
+
+
+def node_join(e: ExprNode):
+    """The join of faq node ``e`` as a band carries it (spec §3.5), ``None``
+    without one."""
+    if e.join is None:
+        return None
+    d = ser_expr(e)
+    rs = d["ranges"]
+    return (list(d["join"]), [(n, rs[n]) for n in sorted(rs)])
+
+
+def join_names(b: Band) -> list:
+    """The index names a band's join reads (none without a join)."""
+    return [] if b.join is None else [n for n, _ in b.join[1]]
+
+
+def rename_join(j, m: dict):
+    """A join with its index names renamed by ``m`` (old -> new)."""
+    if j is None or not m:
+        return j
+
+    def walk(x):
+        if isinstance(x, dict):
+            return {k: walk(v) for k, v in x.items()}
+        if isinstance(x, list):
+            return [walk(y) for y in x]
+        return m.get(x, x) if isinstance(x, str) else x
+
+    return ([walk(c) for c in j[0]], [(m.get(n, n), r) for n, r in j[1]])
+
+
+def join_ranges_into(ranges: dict, b: Band, ctx) -> None:
+    """A joined band's names take their join ranges (``{"from": set}``) in
+    place of the band's box, which must be that whole range (spec §3.5)."""
+    if b.join is None:
+        return
+    for n, spec in b.join[1]:
+        if n not in ranges:
+            raise BandError(f"a join reads `{n}`, no index name of its band")
+        lo, hi = ranges[n][0], ranges[n][-1]
+        if ctx is not None and (lo, hi) != _range_of(spec, ctx):
+            raise BandError(
+                f"a joined band narrower than its join's index set on `{n}` is not supported"
+            )
+        ranges[n] = spec
+
+
+def join_key(j):
+    """A key for grouping: equal joins, equal keys."""
+    return None if j is None else stable_json([j[0], dict(j[1])])
 
 
 def _scalar_bands(out, e: Expr, v: str, ctx: Ctx, rows, ridx, scale, co: bool) -> None:
@@ -409,6 +463,7 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
     if len(oidx) != len(eoidx):
         raise BandError("singleton `1` output_idx entries not supported yet")
     red = reduce_op(e, BandError)
+    jn = node_join(e)
     ranges = e.ranges or {}
     cnames = sorted(str(n) for n in ranges if str(n) not in oidx)
     crange0 = [(n, *_range_of(ranges[n], ctx)) for n in cnames]
@@ -457,8 +512,10 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
                     coef = simp(mul(d, *scale)) if co else d
                     if is_zero(coef):
                         continue
-                    _push_band(out, rows2, oidx, cidx, coef, extra, conj(guard, g), v, ctx)
-                elif not any(any(n in free_variables(c) for c in cidx) for n, _, _ in crange):
+                    _push_band(out, rows2, oidx, cidx, coef, extra, conj(guard, g), v, ctx, jn)
+                elif jn is None and not any(
+                    any(n in free_variables(c) for c in cidx) for n, _, _ in crange
+                ):
                     # The column is independent of every contracted index: a
                     # plain band whose coefficient is the (scalar) `reduce:
                     # "+"` of the site derivative over the contraction. A
@@ -496,7 +553,16 @@ def _bands_faq(out, e: ExprNode, v: str, ctx: Ctx, shape_u, scale, co: bool) -> 
                     if is_zero(coef):
                         continue
                     _push_band(
-                        out, rows2, oidx, cidx, coef, list(crange) + extra, conj(guard, g), v, ctx
+                        out,
+                        rows2,
+                        oidx,
+                        cidx,
+                        coef,
+                        list(crange) + extra,
+                        conj(guard, g),
+                        v,
+                        ctx,
+                        jn,
                     )
 
 
@@ -560,7 +626,11 @@ def _bands_makearray(out, e: ExprNode, v: str, ctx: Ctx, scale, co: bool) -> Non
                 coef = b.coef if not subst else substitute(b.coef, subst)
                 cidx = b.cidx if not subst else [substitute(c, subst) for c in b.cidx]
                 guard = b.guard if not subst or b.guard is None else substitute(b.guard, subst)
-                out.append(Band(rows2, ridx, cidx, coef, b.contracted, guard))
+                if b.join is not None and set(subst) & set(join_names(b)):
+                    raise BandError(
+                        "a joined faq value shifted inside a makearray region is not supported"
+                    )
+                out.append(Band(rows2, ridx, cidx, coef, b.contracted, guard, b.join))
         else:
             _scalar_bands(out, val, v, ctx, rows, [lo for lo, _ in rows], scale, co)
 
@@ -678,16 +748,17 @@ def normalize_band(b: Band) -> Band:
     substituting them through ``cidx``, ``coef`` and ``guard``."""
     subst: dict[str, Expr] = {}
     ridx: list = []
+    jn = join_names(b)  # a name the band's join reads is never pinned
     for k, r in enumerate(b.ridx):
         lo, hi = b.rows[k]
-        if isinstance(r, str) and lo == hi:
+        if isinstance(r, str) and lo == hi and r not in jn:
             subst[r] = lo
             ridx.append(lo)
         else:
             ridx.append(r)
     contracted = []
     for n, lo, hi in b.contracted:
-        if lo == hi:
+        if lo == hi and n not in jn:
             subst[n] = lo
         else:
             contracted.append((n, lo, hi))
@@ -700,6 +771,7 @@ def normalize_band(b: Band) -> Band:
         None if b.coef is None else simp(substitute(b.coef, subst)),
         contracted,
         None if b.guard is None else canon_lits(simplify(substitute(b.guard, subst))),
+        b.join,
     )
 
 
@@ -716,6 +788,7 @@ def merge_bands(bs: list[Band]) -> list[Band]:
             None if b.coef is None else skey(b.coef),
             tuple(b.contracted),
             None if b.guard is None else skey(b.guard),
+            join_key(b.join),
         )
 
     ks = [key(b) for b in bs]

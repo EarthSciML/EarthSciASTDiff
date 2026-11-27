@@ -78,7 +78,7 @@ end
 # entries without coefficients, for every model fixture above and the
 # flattened coupled document (the list the tests check, shared with them)
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
-for name in (STRUCTURE_FIXTURES..., "recurrence_sweep", "pbl_rank1")
+for name in (STRUCTURE_FIXTURES..., "recurrence_sweep", "pbl_rank1", "diamond_chain")
     src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
         sysview(src, first(keys(src.models)))
@@ -138,6 +138,48 @@ let name = "elementwise_aligned"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
+# A makearray whose region values are cell reads (scalars), read at a cell
+# through an observed: the band list only (tests/README.md).
+let name = "makearray_of_reads"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(sysview(file, "M"))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
+# A regrid through a spatial overlap join (spec §3.5): the bands of the
+# states and parameters axes, their evaluation documents, and the Jv / Jᵀλ
+# documents of both, all carrying the join (tests/README.md).
+let name = "join_regrid"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, "Regrid")
+    for wrt in (:states, :parameters)
+        tag = wrt == :states ? "" : ".$wrt"
+        gold(kind) = joinpath(root, "tests", "goldens", "$name$tag.$kind.json")
+        entries = jacobian_bands(sv; wrt = wrt)
+        write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+        write(gold("block"), stable_json(jacobian_document(file, "Regrid"; wrt = wrt)["jacobians"]["Regrid"]))
+        evdoc, _ = EarthSciASTDiff._evaluation_document(sv, entries)
+        write(gold("evaldoc"), stable_json(evdoc))
+        for (kind, build) in (("jvp", jvp_document), ("vjp", vjp_document))
+            doc, _ = build(file; wrt = wrt)
+            write(gold("$kind.evaldoc"), stable_json(doc))
+        end
+        println("wrote ", name, tag, ".{bands,block,evaldoc,jvp.evaldoc,vjp.evaldoc}.json")
+    end
+end
+# A chosen parameter set (spec §4.3): the forcing fixture's parameters axis
+# over `E` and `k` only.
+let name = "forcing_bracket"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, "Bracket")
+    gold(kind) = joinpath(root, "tests", "goldens", "$name.parameters-subset.$kind.json")
+    entries = jacobian_bands(sv; wrt = :parameters, parameters = ["E", "k"])
+    write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    doc = jacobian_document(file, "Bracket"; wrt = :parameters, parameters = ["E", "k"])
+    write(gold("block"), stable_json(doc["jacobians"]["Bracket"]))
+    println("wrote ", name, ".parameters-subset.{bands,block}.json")
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the
@@ -146,6 +188,7 @@ end
 for (name, wrt) in (
         ("tgrad_photolysis", :time),
         ("tgrad_named_steps", :time),
+        ("tgrad_surface", :time),
         ("forcing_bracket", :forcing),
         ("forcing_bracket", :parameters),
         ("recurrence_sweep", :parameters),
@@ -212,6 +255,7 @@ for (name, wrt) in (
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
         ("tgrad_named_steps", :time),
+        ("tgrad_surface", :time),
         ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
         ("recurrence_sweep", :states), ("recurrence_sweep", :parameters),

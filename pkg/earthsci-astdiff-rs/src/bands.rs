@@ -38,6 +38,137 @@ pub struct Band {
     pub coef: Expr,
     pub contracted: Vec<(String, i64, i64)>,
     pub guard: Option<Expr>,
+    /// The relational join of the faq node the band was read off (spec
+    /// §3.5): its clauses as serialized and the range of each of its index
+    /// names that is a row or contracted name of the band (`{"from": set}`
+    /// kept), in name order.
+    pub join: Option<BandJoin>,
+}
+
+/// A band's join (spec §3.5): the node's `join` clauses and its ranges.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandJoin {
+    pub clauses: Vec<serde_json::Value>,
+    pub ranges: Vec<(String, serde_json::Value)>,
+}
+
+impl BandJoin {
+    /// The index names the join reads.
+    pub fn names(&self) -> Vec<String> {
+        self.ranges.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// A key for grouping: equal joins, equal keys.
+    pub fn key(&self) -> String {
+        let r: serde_json::Map<String, serde_json::Value> = self.ranges.iter().cloned().collect();
+        crate::helpers::stable_json(&serde_json::json!([self.clauses, r]))
+    }
+
+    /// The join with its index names renamed by `m` (old → new): range keys
+    /// and every string of the clauses that is a renamed name.
+    pub fn renamed(&self, m: &HashMap<String, String>) -> BandJoin {
+        fn walk(v: &serde_json::Value, m: &HashMap<String, String>) -> serde_json::Value {
+            match v {
+                serde_json::Value::String(s) => {
+                    serde_json::Value::String(m.get(s).cloned().unwrap_or_else(|| s.clone()))
+                }
+                serde_json::Value::Array(a) => {
+                    serde_json::Value::Array(a.iter().map(|x| walk(x, m)).collect())
+                }
+                serde_json::Value::Object(o) => serde_json::Value::Object(
+                    o.iter().map(|(k, x)| (k.clone(), walk(x, m))).collect(),
+                ),
+                x => x.clone(),
+            }
+        }
+        BandJoin {
+            clauses: self.clauses.iter().map(|c| walk(c, m)).collect(),
+            ranges: self
+                .ranges
+                .iter()
+                .map(|(n, r)| (m.get(n).cloned().unwrap_or_else(|| n.clone()), r.clone()))
+                .collect(),
+        }
+    }
+}
+
+/// The bounds of a join range as serialized: `{"from": set}` over the set,
+/// `[lo, hi]` as given.
+pub(crate) fn join_range_bounds(v: &serde_json::Value, ctx: &Ctx) -> R<(i64, i64)> {
+    if let Some(set) = v.get("from").and_then(|x| x.as_str()) {
+        let n =
+            ctx.index_sets.get(set).copied().ok_or_else(|| {
+                BandError(format!("join range over an unknown index set `{set}`"))
+            })?;
+        return Ok((1, n));
+    }
+    match v.as_array().map(|a| a.as_slice()) {
+        Some([lo, .., hi]) => Ok((lo.as_i64().unwrap_or(1), hi.as_i64().unwrap_or(0))),
+        _ => Err(BandError(format!("an unreadable join range {v}"))),
+    }
+}
+
+/// A joined band's names take their join ranges in place of the band's box
+/// (`ranges`, name → JSON range), which must be that whole range (§3.5).
+pub(crate) fn join_ranges_into(
+    ranges: &mut serde_json::Map<String, serde_json::Value>,
+    b: &Band,
+    ctx: Option<&Ctx>,
+) -> R<()> {
+    let Some(j) = &b.join else { return Ok(()) };
+    for (n, spec) in &j.ranges {
+        let cur = ranges
+            .get(n)
+            .cloned()
+            .ok_or_else(|| BandError(format!("a join reads `{n}`, no index name of its band")))?;
+        if let Some(ctx) = ctx {
+            let a = cur.as_array().cloned().unwrap_or_default();
+            let box_ = (
+                a[0].as_i64().unwrap_or(0),
+                a[a.len() - 1].as_i64().unwrap_or(0),
+            );
+            if box_ != join_range_bounds(spec, ctx)? {
+                return Err(BandError(format!(
+                    "a joined band narrower than its join's index set on `{n}` is not supported"
+                )));
+            }
+        }
+        ranges.insert(n.clone(), spec.clone());
+    }
+    Ok(())
+}
+
+/// The names a band's join reads (none without a join).
+pub(crate) fn join_names(b: &Band) -> Vec<String> {
+    b.join.as_ref().map(|j| j.names()).unwrap_or_default()
+}
+
+/// The join of faq node `n` as a band carries it, `None` without one.
+pub(crate) fn node_join(n: &ExpressionNode) -> Option<BandJoin> {
+    n.join.as_ref()?;
+    let d = crate::helpers::ser_expr(&Expr::operator(n.clone()));
+    // every number a join clause holds is a float (`eps`): written as one,
+    // as the reference writes it
+    fn floats(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Number(x) => serde_json::json!(x.as_f64().unwrap_or(0.0)),
+            serde_json::Value::Array(a) => serde_json::Value::Array(a.iter().map(floats).collect()),
+            serde_json::Value::Object(o) => {
+                serde_json::Value::Object(o.iter().map(|(k, x)| (k.clone(), floats(x))).collect())
+            }
+            x => x.clone(),
+        }
+    }
+    let clauses: Vec<serde_json::Value> = d["join"]
+        .as_array()
+        .map(|a| a.iter().map(floats).collect())
+        .unwrap_or_default();
+    let mut ranges: Vec<(String, serde_json::Value)> = d["ranges"]
+        .as_object()
+        .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default();
+    ranges.sort_by(|a, b| a.0.cmp(&b.0));
+    Some(BandJoin { clauses, ranges })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -433,7 +564,7 @@ pub(crate) fn bands_in(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: bool
             if is_zero(&coef) {
                 continue;
             }
-            push_band(&mut out, vec![], vec![], cidx, coef, extra, g, v, ctx)?;
+            push_band(&mut out, vec![], vec![], cidx, coef, extra, g, v, ctx, None)?;
         }
         return Ok(out);
     }
@@ -454,6 +585,7 @@ fn push_band(
     guard: Option<Expr>,
     v: &str,
     ctx: &Ctx,
+    join: Option<BandJoin>,
 ) -> R<()> {
     let (cidx, coef, contracted) = one_hot(cidx, coef, contracted, &ridx, v, ctx)?;
     out.push(Band {
@@ -463,6 +595,7 @@ fn push_band(
         coef,
         contracted,
         guard,
+        join,
     });
     Ok(())
 }
@@ -522,6 +655,7 @@ fn scalar_bands(
                 g,
                 v,
                 ctx,
+                None,
             )?;
         }
     }
@@ -573,6 +707,7 @@ fn bands_array(
             },
             contracted: vec![],
             guard: None,
+            join: None,
         });
         return Ok(());
     }
@@ -696,6 +831,7 @@ fn bands_faq(
         ));
     }
     let red = reduce_op(n).map_err(BandError)?;
+    let jn = node_join(n);
     let empty = HashMap::new();
     let ranges = n.ranges.as_ref().unwrap_or(&empty);
     let mut cnames: Vec<String> = ranges
@@ -818,10 +954,12 @@ fn bands_faq(
                         guard,
                         v,
                         ctx,
+                        jn.clone(),
                     )?;
-                } else if !crange
-                    .iter()
-                    .any(|(nm, _, _)| cidx.iter().any(|c| free_vars(c).contains(nm)))
+                } else if jn.is_none()
+                    && !crange
+                        .iter()
+                        .any(|(nm, _, _)| cidx.iter().any(|c| free_vars(c).contains(nm)))
                 {
                     // The column is independent of every contracted index: a
                     // plain band whose coefficient is the (scalar)
@@ -875,6 +1013,7 @@ fn bands_faq(
                         guard,
                         v,
                         ctx,
+                        None,
                     )?;
                 } else {
                     // A gathered column (`u[j]`, `u[i+k]`, `u[conn[i,k]]`): a
@@ -902,6 +1041,7 @@ fn bands_faq(
                         guard,
                         v,
                         ctx,
+                        jn.clone(),
                     )?;
                 }
             }
@@ -1047,6 +1187,12 @@ fn bands_makearray(
                         b.guard.as_ref().map(|g| substitute(g, &subst)),
                     )
                 };
+                if b.join.is_some() && join_names(&b).iter().any(|n| subst.contains_key(n)) {
+                    return Err(BandError(
+                        "a joined faq value shifted inside a makearray region is not supported"
+                            .into(),
+                    ));
+                }
                 out.push(Band {
                     rows: rows2,
                     ridx,
@@ -1054,6 +1200,7 @@ fn bands_makearray(
                     coef,
                     contracted: b.contracted.clone(),
                     guard,
+                    join: b.join.clone(),
                 });
             }
         } else {
@@ -1256,10 +1403,12 @@ fn aligned_row_idx(
 pub fn normalize_band(b: &Band) -> Band {
     let mut subst: HashMap<String, Expr> = HashMap::new();
     let mut ridx = Vec::new();
+    // a name the band's join reads is never pinned: the join reads it
+    let jn = join_names(b);
     for (k, r) in b.ridx.iter().enumerate() {
         let (lo, hi) = b.rows[k];
         match r {
-            RIdx::Name(nm) if lo == hi => {
+            RIdx::Name(nm) if lo == hi && !jn.contains(nm) => {
                 subst.insert(nm.clone(), Expr::Integer(lo));
                 ridx.push(RIdx::Fixed(lo));
             }
@@ -1268,7 +1417,7 @@ pub fn normalize_band(b: &Band) -> Band {
     }
     let mut contracted = Vec::new();
     for (nm, lo, hi) in &b.contracted {
-        if lo == hi {
+        if lo == hi && !jn.contains(nm) {
             subst.insert(nm.clone(), Expr::Integer(*lo));
         } else {
             contracted.push((nm.clone(), *lo, *hi));
@@ -1291,6 +1440,7 @@ pub fn normalize_band(b: &Band) -> Band {
             .guard
             .as_ref()
             .map(|g| canon_lits(&simplify_jl(&substitute(g, &subst)))),
+        join: b.join.clone(),
     }
 }
 
@@ -1314,6 +1464,7 @@ pub fn merge_bands(bs: Vec<Band>) -> Vec<Band> {
                 ix.sid(&b.coef),
                 b.contracted.clone(),
                 b.guard.as_ref().map(|g| ix.sid(g)),
+                b.join.as_ref().map(|j| j.key()),
             )
         })
         .collect();

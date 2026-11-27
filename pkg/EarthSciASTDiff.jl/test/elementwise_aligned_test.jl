@@ -47,7 +47,10 @@ end
     catch e
         e
     end
-    @test err isa EarthSciASTDiff.InlineError && occursin("declared without a shape", sprint(showerror, err))
+    # (named steps keep `w` a column and differentiate its definition on its
+    # own, so the refusal is the extents check's rather than inlining's)
+    @test err isa Union{EarthSciASTDiff.InlineError, EarthSciASTDiff.BandError} &&
+        occursin("declared without a shape", sprint(showerror, err))
 end
 
 # what the refusal throws, or `nothing`
@@ -85,8 +88,10 @@ end
         push!(m["equations"][1]["rhs"]["args"], "u")
     end
     err = _refusal(nested)
-    @test err isa EarthSciASTDiff.InlineError &&
-        occursin("observed u, declared without a shape, combines arrays of rank 2 and 1", sprint(showerror, err))
+    # (named steps keep `u` a column: its extents, the union of its operands'
+    # index sets, cannot be read from ranks, and it is refused there)
+    @test err isa EarthSciASTDiff.BandError &&
+        occursin("observed `u` (declared without a shape) cannot be read", sprint(showerror, err))
     # a whole-array operand over an index set the row is not shaped over
     foreign = _aligned_variant() do d
         d["index_sets"]["z"] = Dict{String, Any}("kind" => "interval", "size" => 2)
