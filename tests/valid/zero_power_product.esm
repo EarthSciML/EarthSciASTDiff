@@ -1,0 +1,153 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "zero_power_product",
+    "description": "A product over ions of m^stoich (esm-jacobian-spec \u00a73, `^`): a[e] = prod_i m[i]^stoich[e, i] with a parameter exponent. At the default state m[1] = 0, an absent ion; where stoich[e, 1] = 0 the term x\u00b7b^(x\u22121) of the power rule is 0\u00b70^(\u22121) = NaN, while the derivative of b^0 is 0. The derivative must be finite and exact there, and match central differences away from it."
+  },
+  "index_sets": {
+    "ion": {
+      "kind": "interval",
+      "size": 3
+    },
+    "el": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Ions": {
+      "variables": {
+        "m": {
+          "type": "unknown",
+          "shape": [
+            "ion"
+          ],
+          "default": [
+            0.0,
+            0.5,
+            2.0
+          ]
+        },
+        "a": {
+          "type": "unknown",
+          "shape": [
+            "el"
+          ],
+          "default": 0.0
+        },
+        "stoich": {
+          "type": "parameter",
+          "shape": [
+            "el",
+            "ion"
+          ],
+          "default": [
+            [
+              0.0,
+              1.0,
+              2.0
+            ],
+            [
+              1.0,
+              0.0,
+              1.5
+            ]
+          ]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.1
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "m"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "ion"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "m",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "a"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "e"
+            ],
+            "args": [],
+            "ranges": {
+              "e": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "faq",
+              "output_idx": [],
+              "reduce": "*",
+              "args": [],
+              "ranges": {
+                "i": {
+                  "from": "ion"
+                }
+              },
+              "expr": {
+                "op": "^",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "m",
+                      "i"
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "stoich",
+                      "e",
+                      "i"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

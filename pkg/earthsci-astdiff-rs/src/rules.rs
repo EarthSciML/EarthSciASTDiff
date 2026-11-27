@@ -115,14 +115,30 @@ fn dscalar_op(e: &Expr, n: &ExpressionNode, s: &Site, sc: &SiteScan) -> R {
         "^" | "pow" => {
             let (b, x) = (&a[0], &a[1]);
             let (db, dx) = (d(b)?, d(x)?);
-            let t1 = if is_zero(&db) {
+            // x·b^(x−1) is 0·0^(−1) = NaN at b = 0, x = 0, where the
+            // derivative of b^0 is 0: a literal exponent 0 gives 0, any other
+            // literal the usual form, and an exponent that is not a literal is
+            // guarded in the exponent, x·b^(ifelse(x == 0, 1, x − 1)), so no
+            // evaluator (one that computes both branches of an ifelse
+            // included) forms 0^(−1) (spec §3).
+            let t1 = if is_zero(&db) || is_zero(x) {
                 lit(0)
-            } else {
+            } else if matches!(x, Expr::Integer(_) | Expr::Number(_)) {
                 mul(vec![
                     x.clone(),
                     op("^", vec![b.clone(), add(vec![x.clone(), lit(-1)])]),
                     db,
                 ])
+            } else {
+                let e = op(
+                    "ifelse",
+                    vec![
+                        op("==", vec![x.clone(), lit(0)]),
+                        lit(1),
+                        add(vec![x.clone(), lit(-1)]),
+                    ],
+                );
+                mul(vec![x.clone(), op("^", vec![b.clone(), e]), db])
             };
             let t2 = if is_zero(&dx) {
                 lit(0)
