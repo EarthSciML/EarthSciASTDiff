@@ -40,7 +40,11 @@ def test_elementwise_aligned_refuses_what_cannot_be_aligned(valid_dir):
         m["variables"]["p"] = {"type": "parameter", "shape": ["z"], "default": 0.1}
         m["equations"][0]["rhs"]["args"].append("p")
 
-    with pytest.raises((BandError, InlineError), match="index set `z`"):
+    # refused by this binding, or already by an EarthSciAST loader that
+    # checks array-level index sets itself (esm-spec §4.3.4)
+    with pytest.raises(
+        (BandError, InlineError, ea.SchemaValidationError), match=r"index set [`']z[`']"
+    ):
         jacobian_bands(_variant(valid_dir, foreign), "Box")
 
     # an observed declared without a shape that mixes ranks
@@ -116,7 +120,16 @@ def test_elementwise_aligned_synthetic_lift_set_aligns_by_position(valid_dir):
             {"lhs": {"op": "D", "args": ["e"], "wrt": "t"}, "rhs": cell("h", "x")},
         ]
 
-    f = _variant(valid_dir, lifted)
+    # A loader that checks array-level index sets by name refuses this
+    # hand-built document (`flatten` writes the synthetic set itself); the
+    # positional fallback is then never reached from a document. A check of
+    # the loader's behavior, not of a version.
+    try:
+        f = _variant(valid_dir, lifted)
+    except ea.SchemaValidationError as err:
+        if "_liftdim1_3" not in str(err):
+            raise
+        pytest.skip("the installed EarthSciAST loader refuses the hand-built lift document")
     assert "g" not in ctx_of(sysview(f, "Box")).axes
     bands = [serialize_band(e) for e in jacobian_bands(f, "Box")]
     assert [b["col_idx"] for b in bands if b["row"] == "e" and b["col"] == "g"] == [["i"]]
