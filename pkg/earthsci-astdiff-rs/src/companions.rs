@@ -29,7 +29,8 @@ use crate::bands::{
 use crate::branches::simp;
 use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{mul, op, ser_expr, skey};
-use crate::inline::{all_names, inline_observed_ranked};
+use crate::inline::{all_names, inline_observed_aligned};
+use crate::jacobian::declared_scalars;
 use crate::operator_refs::{ref_node, with_layer};
 use crate::reductions::{conj_list, conjuncts, fresh};
 use crate::system::{moving_observed, subscript_observed, SysView};
@@ -331,7 +332,7 @@ pub(crate) fn companion_bands(cs: &mut Companions, o: &str) -> R<Vec<Band>> {
     };
     let mut inl = cs.inline.clone();
     inl.insert(o.to_string(), def);
-    let bs = time_row_bands(cs, &rhs, &inl, &shape)?;
+    let bs = time_row_bands(cs, &rhs, o, &inl, &shape)?;
     cs.pending.remove(o);
     cs.bands.insert(o.to_string(), bs.clone());
     Ok(bs)
@@ -365,21 +366,20 @@ fn row_names_of(def: &Expr, k: usize) -> Vec<String> {
 pub(crate) fn time_row_bands(
     cs: &mut Companions,
     rhs: &Expr,
+    u: &str,
     inl: &HashMap<String, Expr>,
     shape_u: &[i64],
 ) -> R<Vec<Band>> {
     let mut obs_names = None;
-    let rhs = with_layer(&cs.ctx.refs, || {
-        inline_observed_ranked(
-            rhs,
-            inl,
-            &mut obs_names,
-            &cs.ctx.shapes,
-            &cs.rank_obs,
-            &cs.scalars,
-        )
-    })
-    .map_err(|e| BandError(e.0))?;
+    let rhs = crate::jacobian::inline_row(
+        rhs,
+        u,
+        inl,
+        &mut obs_names,
+        &cs.ctx,
+        &cs.rank_obs,
+        &cs.scalars,
+    )?;
     let mut hits: Vec<String> = free_variables(&rhs)
         .into_iter()
         .filter(|v| v == "t" || cs.cols.contains(v))
@@ -715,16 +715,6 @@ pub(crate) fn time_companions(sv: &SysView, bands: &[&Band]) -> R<Vec<(String, S
     Ok(out)
 }
 
-/// The declared scalars that are not observed: an elementwise observed read
-/// at a cell reads them unchanged.
-pub(crate) fn declared_scalars(sv: &SysView, obs: &HashMap<String, Expr>) -> HashSet<String> {
-    sv.variables
-        .iter()
-        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !obs.contains_key(*n))
-        .map(|(n, _)| n.clone())
-        .collect()
-}
-
 /// The companions as observed of a derived model (spec §8.1): each declared
 /// like its observed (`{"type": "unknown"}`, with the observed's declared
 /// `shape` when it has one) and defined by a bare-LHS equation, after the
@@ -822,13 +812,14 @@ pub(crate) fn time_pair_bands(
 fn time_coef_bands(cs: &mut Companions, b: &Band) -> R<Vec<Band>> {
     let mut obs_names = None;
     let coef = with_layer(&cs.ctx.refs, || {
-        inline_observed_ranked(
+        inline_observed_aligned(
             &b.coef,
             &cs.inline,
             &mut obs_names,
             &cs.ctx.shapes,
             &cs.rank_obs,
             &cs.scalars,
+            &cs.ctx.axes,
         )
     })
     .map_err(|e| BandError(e.0))?;

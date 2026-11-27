@@ -353,7 +353,7 @@ function _extended_pass(
                 )
                 continue
             end
-            for b in _time_row_bands(cs, eq.rhs, cs.inline, get(ctx.shapes, u, Int[]))
+            for b in _time_row_bands(cs, eq.rhs, u, cs.inline, get(ctx.shapes, u, Int[]))
                 push!(entries, JacEntry(u, "t", b))
                 push!(row_eq, q)
             end

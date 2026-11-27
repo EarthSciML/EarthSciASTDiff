@@ -508,7 +508,7 @@ pub(crate) fn extended_pass_in(
             };
             let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
             let inl = cs.inline.clone();
-            for b in crate::companions::time_row_bands(&mut cs, &eq.rhs, &inl, &shape_u)? {
+            for b in crate::companions::time_row_bands(&mut cs, &eq.rhs, &u, &inl, &shape_u)? {
                 entries.push(JacEntry {
                     u: u.clone(),
                     v: "t".to_string(),

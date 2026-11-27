@@ -301,7 +301,7 @@ def _extended_pass(
                         "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
                     )
                 continue
-            for b in time_row_bands(cs, eq.rhs, cs.inline, ctx.shapes.get(u, [])):
+            for b in time_row_bands(cs, eq.rhs, u, cs.inline, ctx.shapes.get(u, [])):
                 entries.append(JacEntry(u, "t", b))
                 row_eq.append(q)
         return ExtendedBands([], entries, [], row_eq)

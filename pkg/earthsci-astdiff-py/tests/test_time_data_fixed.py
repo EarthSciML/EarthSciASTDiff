@@ -173,7 +173,8 @@ def test_moving_observed_that_read_each_other_are_refused(valid_dir):
     # refuses one too (a companion reached again while its bands are being
     # built), never recursing without end
     from earthsci_astdiff import sysview
-    from earthsci_astdiff.companions import companion_bands, companion_setup, declared_scalars
+    from earthsci_astdiff.companions import companion_bands, companion_setup
+    from earthsci_astdiff.jacobian import declared_scalars
     from earthsci_astdiff.system import ctx_of, observed_defs
 
     sv = sysview(ea.load_path(str(valid_dir / "tgrad_named_steps.esm")))
