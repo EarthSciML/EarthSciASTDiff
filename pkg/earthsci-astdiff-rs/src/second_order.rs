@@ -136,6 +136,28 @@ pub(crate) fn bands2_memo(
 ) -> R<(Rc<ExtendedBands>, Vec<JacEntry2>)> {
     let (a1, a2) = wrt;
     let t2 = targets(sv, a2, forcing, obs)?;
+    // A time pair takes `t` second, through the companions (companions.rs);
+    // through an active recurrence it inlines, as below.
+    if a1 == Wrt::Time {
+        if let Some(mut tp) =
+            crate::companions::time_pair_bands(sv, ctx, obs, a2, forcing, memo, &t2)?
+        {
+            if a2.has_columns() {
+                for en in &tp {
+                    check_closed_col2(en)?;
+                }
+            }
+            crate::jacobian::intern_entries(tp.iter_mut().map(|en| &mut en.band));
+            let e1 = Rc::new(ExtendedBands {
+                recurrences: Vec::new(),
+                rows: Vec::new(),
+                rec_rows: Vec::new(),
+                row_eq: Vec::new(),
+                transfer: HashMap::new(),
+            });
+            return Ok((e1, tp));
+        }
+    }
     let e1 = memo.ext(sv, ctx, obs, a1, Some(a2), forcing, &t2)?;
     // a recurrence is a second column too (spec §4.5): its rows and columns
     // are the extended system's
@@ -187,7 +209,7 @@ pub(crate) fn bands2_memo(
 /// table's reference row under the view's layer; an array one is read as an
 /// intermediate, its bands w.r.t. `w` composed with the coefficient's w.r.t.
 /// it (as `ref_bands`; second_order.jl `_coef_bands`).
-fn coef_bands(
+pub(crate) fn coef_bands(
     b: &Band,
     w: &str,
     ctx: &Ctx,
@@ -474,6 +496,14 @@ pub(crate) fn pair_block(
     );
     if !e1.recurrences.is_empty() {
         block.insert("recurrences".into(), recurrences_field(&e1.recurrences));
+    }
+    let eb: Vec<&Band> = entries.iter().map(|en| &en.band).collect();
+    let comps = crate::companions::time_companions(sv, &eb)?;
+    if !comps.is_empty() {
+        block.insert(
+            "companions".into(),
+            crate::companions::companions_field(&comps),
+        );
     }
     Ok(Value::Object(block))
 }

@@ -8,6 +8,7 @@ import json
 
 import earthsci_ast as ea
 import pytest
+from conftest import ref_golden
 from docvals import doc_hvp, reached2
 from earthsci_ast.expression import free_variables
 from earthsci_astdiff import (
@@ -29,6 +30,12 @@ SECOND_ORDER = (
     ("arrhenius_chem", ("states", "parameters")),
     ("forcing_bracket", ("states", "forcing")),
     ("forcing_bracket", ("time", "states")),
+    ("forcing_bracket", ("time", "parameters")),
+    ("forcing_bracket", ("time", "forcing")),
+    ("tgrad_named_steps", ("time", "states")),
+    ("tgrad_named_steps", ("time", "parameters")),
+    ("tgrad_named_steps", ("time", "forcing")),
+    ("tgrad_photolysis", ("time", "states")),
     ("minmod_adv", ("states", "states")),
     ("filtered_scan", ("states", "states")),
     ("semiring_reduce", ("states", "states")),
@@ -49,12 +56,12 @@ def test_second_order_goldens(name, wrt, valid_dir, golden_dir):
     tag = f"{wrt[0]}-{wrt[1]}"
     entries = jacobian_bands2(file, model, wrt=wrt)
     bands = stable_json([serialize_band(en) for en in entries])
-    assert bands == (golden_dir / f"{name}.{tag}.bands.json").read_text()
+    assert bands == ref_golden(golden_dir / f"{name}.{tag}.bands.json")
     (block,) = jacobian_block(file, model, wrt=[wrt])
     assert block["wrt"] == list(wrt)
     assert "factorization" not in block
     assert ("columns" in block) == (wrt[1] in ("parameters", "forcing"))
-    assert stable_json(block) == (golden_dir / f"{name}.{tag}.block.json").read_text()
+    assert stable_json(block) == ref_golden(golden_dir / f"{name}.{tag}.block.json")
     w, back = parse_jacobian_block(block)
     assert w == wrt
     assert stable_json([serialize_band(en) for en in back]) == bands

@@ -134,11 +134,15 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
     assert _companion_reads(comps[1]["rhs"]) == ["_dt_Tb"]
     assert _companion_reads(comps[0]["rhs"]) == ["_dt_w"]
     assert _companion_reads(comps[2]["rhs"]) == []
-    # a time pair differentiates its coefficients again: it inlines
+    # a time pair takes `t` second (spec §4.4): the time bands of each state
+    # entry's coefficient, through the same companions, never inlined
     e2 = jacobian_bands2(file, "Column", ("time", "states"))
     assert e2
     for en in e2:
-        assert _companion_reads(ser_expr(en.band.coef)) == []
+        assert en.v == "t"
+        assert _companion_reads(ser_expr(en.band.coef)) != []
+    (pblk,) = jacobian_block(file, "Column", wrt=[("time", "states")])
+    assert [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
 
 
 def test_companion_extents_are_read_or_refused(valid_dir):
@@ -155,6 +159,13 @@ def test_companion_extents_are_read_or_refused(valid_dir):
 
     with pytest.raises(BandError):
         _through_companion(Band([(1, 3)], ["i"], ["i"], 1, [], None), "jr", "_dt_jr", [3, 2], True)
+    # and in a time pair: the first `n` column indices are the pair's own
+    from earthsci_astdiff.companions import _pair_through_companion
+
+    b = Band([(1, 3)], ["i"], ["i"], 1, [], None)
+    with pytest.raises(BandError):
+        _pair_through_companion(b, 0, "jr", "_dt_jr", [3, 2])
+    assert _pair_through_companion(b, 0, "jr", "_dt_jr", [3]).cidx == []
 
 
 def test_moving_observed_that_read_each_other_are_refused(valid_dir):

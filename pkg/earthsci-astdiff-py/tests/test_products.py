@@ -193,7 +193,7 @@ def test_hvp_goldens(name, wrt, form, valid_dir, golden_dir):
     doc, _ = _hvp_document(sv, entries, wrt, None, 2, form=form)
     kind = "hvp" if form == "contract" else "hvp-sym"
     want = golden_dir / f"{name}.{_pairtag(wrt)}.{kind}.evaldoc.json"
-    assert stable_json(doc) == want.read_text()
+    assert stable_json(doc) == ref_golden(want)
 
 
 # ── product documents: values ────────────────────────────────────────────────
