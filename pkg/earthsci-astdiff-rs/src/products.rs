@@ -328,7 +328,10 @@ fn product_base<'s, 'a>(
         roots.extend(&b.cidx);
         roots.extend(&b.guard);
     }
+    let comps = crate::companions::time_companions(sv, bands)?;
+    roots.extend(comps.iter().map(|(_, _, d)| d));
     zero_source_derivatives(&mut model, sv, &ctx, &roots)?;
+    crate::companions::add_companions(&mut model, sv, &comps);
     let coefs = hoist(
         &mut doc,
         &mut model,
@@ -1139,7 +1142,7 @@ fn extended_for(sv: &SysView, wrt: Wrt, forcing: Option<&[String]>) -> R<Extende
     if recurrences(sv, &obs, &ctx)?.is_empty() {
         return Ok(ExtendedBands::default());
     }
-    extended_pass(sv, &ctx, &obs, wrt, forcing, &[])
+    extended_pass(sv, &ctx, &obs, wrt, forcing, &[], true)
 }
 
 /// The two extended systems of a pair with an active recurrence: the first
@@ -1161,14 +1164,14 @@ fn pair_extended(
     }
     let t1 = targets(sv, a1, forcing, &obs)?;
     let t2 = targets(sv, a2, forcing, &obs)?;
-    let e1 = extended_pass(sv, &ctx, &obs, a1, forcing, &t2)?;
+    let e1 = extended_pass(sv, &ctx, &obs, a1, forcing, &t2, false)?;
     if e1.recurrences.is_empty() {
         return Ok(None);
     }
     let e2 = if a1 == a2 {
         None
     } else {
-        Some(extended_pass(sv, &ctx, &obs, a2, forcing, &t1)?)
+        Some(extended_pass(sv, &ctx, &obs, a2, forcing, &t1, false)?)
     };
     Ok(Some((e1, e2)))
 }

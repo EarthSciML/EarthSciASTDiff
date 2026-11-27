@@ -366,6 +366,15 @@ def inlinable_observed(obs: dict[str, Expr], equations, targets: set[str]) -> di
     (all others are constant w.r.t. every target); (2) any observed reached
     through an index subscript, whose value a column index needs at build
     time. Joint fixpoint. The seed MUST be this ``wrt``'s targets."""
+    keep = _moving_observed(obs, targets)
+    _subscript_observed(keep, obs, equations, set(keep))
+    return {n: obs[n] for n in keep}
+
+
+def _moving_observed(obs: dict[str, Expr], targets: set[str]) -> set[str]:
+    """Clause (1) of :func:`inlinable_observed`: the observed that can move
+    with a target, the reflexive-transitive READER closure of those that name
+    a ``targets`` member directly."""
     readers: dict[str, list[str]] = {}
     work: list[str] = []
     for n, e in obs.items():
@@ -376,17 +385,23 @@ def inlinable_observed(obs: dict[str, Expr], equations, targets: set[str]) -> di
             if m in obs:
                 readers.setdefault(m, []).append(n)
     keep = set(work)
-    while work:  # (1) reader closure
+    while work:
         for n in readers.get(work.pop(), ()):
             if n not in keep:
                 keep.add(n)
                 work.append(n)
-    # (2) subscript fixpoint. The equations are scanned once; each pass then
-    # scans only the bodies it just added, since nothing else can change.
+    return keep
+
+
+def _subscript_observed(keep: set[str], obs: dict[str, Expr], equations, scan) -> set[str]:
+    """Clause (2) of :func:`inlinable_observed`, added to ``keep``: the
+    observed a column index reads, to a fixpoint over the equations plus the
+    bodies of ``scan`` and of each observed this clause adds. The equations
+    are scanned once; each pass then scans only the bodies it just added."""
     acc: set[str] = set()
     for eq in equations:
         _index_arg_names(acc, eq.rhs)
-    added = set(keep)
+    added = set(scan)
     while True:
         for n in added:
             _index_arg_names(acc, obs[n])
@@ -394,4 +409,4 @@ def inlinable_observed(obs: dict[str, Expr], equations, targets: set[str]) -> di
         if not added:
             break
         keep |= added
-    return {n: obs[n] for n in keep}
+    return keep

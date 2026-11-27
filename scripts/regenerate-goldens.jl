@@ -136,6 +136,7 @@ end
 # scatter plan: plans cover the state Jacobian only (spec §8).
 for (name, wrt) in (
         ("tgrad_photolysis", :time),
+        ("tgrad_named_steps", :time),
         ("forcing_bracket", :forcing),
         ("forcing_bracket", :parameters),
         ("recurrence_sweep", :parameters),
@@ -195,6 +196,7 @@ for (name, wrt) in (
         ("contracting_observed", :states), ("tgrad_photolysis", :states),
         ("forcing_bracket", :states), ("filtered_scan", :states),
         ("semiring_reduce", :states), ("tgrad_photolysis", :time),
+        ("tgrad_named_steps", :time),
         ("pre_operator", :states),
         ("forcing_bracket", :forcing), ("forcing_bracket", :parameters),
         ("recurrence_sweep", :states), ("recurrence_sweep", :parameters),

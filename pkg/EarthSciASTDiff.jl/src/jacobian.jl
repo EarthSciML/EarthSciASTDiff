@@ -209,7 +209,9 @@ end
 function _first_order_ext!(memo::_FirstOrder, sv::SysView, a1::Symbol, a2, forcing, seed = String[])
     return get!(memo.ext, _memo_key(memo, sv, a1, a2)) do
         info = _rec_info!(memo, sv)
-        _extended_pass(sv, info.ctx, info.obs, a1, forcing, seed; info = info)
+        _extended_pass(
+            sv, info.ctx, info.obs, a1, forcing, seed; info = info, companions = a2 === nothing
+        )
     end
 end
 
@@ -239,7 +241,8 @@ function _jacobian_bands(
         sv::SysView, wrt::Symbol, forcing, seed::Vector{String}; coefficients::Bool = true
     )
     ext = _extended_pass(
-        sv, _ctx(sv), _observed_defs(sv), wrt, forcing, seed; coefficients = coefficients
+        sv, _ctx(sv), _observed_defs(sv), wrt, forcing, seed; coefficients = coefficients,
+        companions = isempty(seed)
     )
     isempty(ext.recurrences) && return ext.rows
     closed = _closed_axis(wrt)
@@ -296,7 +299,7 @@ function extended_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing, s
     obs = _observed_defs(sv)
     seed = second === nothing || second == wrt ? String[] :
         _targets(sv, Symbol(second), forcing, obs)
-    return _extended_pass(sv, _ctx(sv), obs, wrt, forcing, seed)
+    return _extended_pass(sv, _ctx(sv), obs, wrt, forcing, seed; companions = isempty(seed))
 end
 
 # The extended first-order system of one pass (§4.5): the bands of every
@@ -309,7 +312,8 @@ end
 # caller already has it.
 function _extended_pass(
         sv::SysView, ctx::Ctx, obs, wrt::Symbol, forcing, seed;
-        coefficients::Bool = true, info::_RecInfo = _rec_info(sv, obs, ctx)
+        coefficients::Bool = true, info::_RecInfo = _rec_info(sv, obs, ctx),
+        companions::Bool = false
     )
     src_obs = obs
     # declared scalars that are not observed: an elementwise observed read at
@@ -327,6 +331,39 @@ function _extended_pass(
     # (§4.5) reads the coefficients, so that pass runs in full and only the
     # caller drops them.
     co = coefficients || !isempty(act)
+    # A single time axis keeps the chain through the observed that move with
+    # `t` as named steps (spec §4.2, companions.jl): each is a column of the
+    # pass, composed with its companion `_dt_<o>`, rather than inlined into
+    # every row. A pair's first pass (`seed`) and a pass through an active
+    # recurrence differentiate its coefficients again or compose them with a
+    # transfer, so they follow those observed by inlining.
+    if companions && wrt == :time && isempty(act) && isempty(seed)
+        rn = Set{String}(r.name for r in recs)
+        cs = _companion_setup(
+            sv, ctx, Dict{String, ASTExpr}(k => v for (k, v) in src_obs if !(k in rn)),
+            scalars, co; rank_obs = src_obs
+        )
+        entries = JacEntry[]
+        row_eq = Int[]
+        for (q, eq) in enumerate(sv.equations)
+            u = lhs_state(eq)
+            if u === nothing
+                _is_derivative(eq) && throw(
+                    BandError(
+                        "unsupported derivative LHS $(JSON3.write(EarthSciAST.serialize_expression(eq.lhs))) " *
+                            "(a state's derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                    )
+                )
+                continue
+            end
+            for b in _time_row_bands(cs, eq.rhs, cs.inline, get(ctx.shapes, u, Int[]))
+                push!(entries, JacEntry(u, "t", b))
+                push!(row_eq, q)
+            end
+        end
+        co && (entries = _intern_entries(entries, _Interner()))
+        return ExtendedBands(Recurrence[], entries, JacEntry[], row_eq, Dict{String, String}())
+    end
     # Only the observed that can actually move with a target are inlined; the
     # rest have an identically-zero derivative and stay opaque reads that the
     # derived evaluation model resolves from their own definitions. Exact, and

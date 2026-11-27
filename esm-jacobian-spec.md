@@ -574,6 +574,13 @@ names). A consumer evaluates them, with the source document's own observed
 and esm-spec §4.3.1.1's recurrence semantics, before any coefficient.
 `recurrences` (a pair block through a recurrence, §4.5): `[{"name": …,
 "dim": d}]`.
+`companions` (present only on a `"time"` block whose coefficients read a
+time companion, §4.2): `[{"name": …, "of": …, "rhs": <Expression>}]`, one
+per companion some coefficient reads, directly or through another
+companion's `rhs`, in the code-point order of `of` — each the definition
+`name ~ rhs` of the companion of observed `of`, which has `of`'s shape. A
+consumer evaluates them, with the source document's own observed, before any
+coefficient.
 
 **Several axes per model.** `jacobians.<ModelName>` MAY be an ARRAY of
 blocks with pairwise-distinct `wrt` instead of one block, so a producer
@@ -688,17 +695,18 @@ equation order, and the single column within each equation.
 
 - Every explicit occurrence of `t` in a right-hand side is differentiated,
   including occurrences inside the observed it reads: a producer MUST follow
-  (inline) every observed variable that moves with `t` — one whose
-  definition reads `t`, or reads such an observed, transitively — before
-  differentiating. Like the state and parameter axes, the time axis prunes
-  the rest, from the seed `{t}`: an observed that reads `t` neither directly
-  nor through another observed is constant here, because `f_t` holds every
-  parameter fixed (below), data-fed parameters and forcing buffers
-  included. Its read stays an opaque read and its definition is never
-  differentiated, however it is built (a regrid, a geometry table, a
-  mixed-rank broadcast). Operator references are not expanded: an observed
-  defined by a reference is followed when a binding moves with `t`, and
-  differentiated through the reference by the chain rule (§3.4, §3.6).
+  every observed variable that **moves with `t`** — one whose definition
+  reads `t`, or reads such an observed, transitively. It follows each one
+  through its **time companion** (below), not by inlining it. Like the state
+  and parameter axes, the time axis prunes the rest, from the seed `{t}`:
+  an observed that reads `t` neither directly nor through another observed
+  is constant here, because `f_t` holds every parameter fixed (below),
+  data-fed parameters and forcing buffers included. Its read stays an
+  opaque read and its definition is never differentiated, however it is
+  built (a regrid, a geometry table, a mixed-rank broadcast). Operator
+  references are not expanded: an observed defined by a reference is
+  followed when a binding moves with `t`, and differentiated through the
+  reference by the chain rule (§3.4, §3.6).
 - An observed read at a cell, `index(x, i…)`, whose definition is an
   elementwise expression of arrays (declared without a shape, its shape
   inferred, esm-spec §4.3.4) is followed as that definition read at the
@@ -730,6 +738,101 @@ equation order, and the single column within each equation.
   respect to forcing values are the forcing axis (§4.3). A blend weight
   that the model computes from `t` (a `frac` expression) is an explicit
   occurrence and IS covered.
+
+**Time companions (normative).** The chain through the observed that move
+with `t` is kept as named steps: each such observed's time derivative is
+written once, as its own derived observed, and every band reads it there.
+An observed is never inlined into the rows that read it and then
+differentiated again in each of them.
+
+- *Which observed.* The observed that move with `t` (above; recurrences,
+  §4.5, are never among them) minus those a column index needs at build
+  time (the subscript clause of §4.3's inlining rule: an observed read
+  through an `index` subscript, or read by such an observed's body, to a
+  fixpoint over the equations and the bodies of the moving observed). Those
+  few are inlined, as on every other axis. Each remaining observed `o` is a
+  **column** of the time pass beside `t`, and has a companion. Columns
+  that read each other (an observed cycle that is not a recognized
+  recurrence) have no companion and are refused.
+- *Name.* `o`'s companion is `_dt_<o>`; for a scoped `o` = `P.v` it is
+  `P._dt_<v>`, a variable of `o`'s own component. `_` is appended until the
+  name is clear of every variable name, component path (`A` and `A.B` of a
+  variable `A.B.v`) and index-set name of the source and of the companion
+  names assigned before it. Names are assigned over every
+  observed that moves with `t`, in code-point order, so a name never
+  depends on which companions a block reads.
+- *Shape.* `o`'s shape: its declared `shape`, or, for an observed declared
+  without one, the extents its definition gives — a `faq`'s output ranges
+  (each starting at 1), a `makearray`'s regions (the largest upper bound per
+  dimension), an array-valued operator reference's body extents at its
+  bindings (each starting at 1), else the extents its array operands share
+  (an `index` at a cell is a scalar). A producer MUST refuse an observed
+  whose extents it cannot read so: array operands of different extents
+  (their union needs index-set names), an `index` with fewer indices than
+  its operand's rank. A band whose column index does not read every
+  dimension of `o` is refused too.
+- *The bands of a row.* A row's right-hand side (only the observed a column
+  index needs inlined) is differentiated with respect to `t` and to every
+  companion-bearing observed it reads, columns in code-point order, by the
+  ordinary calculus (§3, §3.5). Each band whose column is an observed `o`
+  is composed with `o`'s companion into a band with column `t`: same rows,
+  row names and `where`, coefficient the simplified `coef · _dt_o[φ…]` (the
+  bare `_dt_o` for a scalar `o`), `φ` the band's column index. A column
+  index not provably inside `o`'s extent over the band's box (interval
+  bounds over `+`, `-`, `*`, §9.1) gates the term:
+  `ifelse(and(φ_d >= 1, φ_d <= n_d, …), term, 0)` over each such dimension
+  `d` in order. A band with `contracted` dimensions becomes a scalar sum:
+  coefficient `faq{output_idx: [], reduce: "+", ranges: <its contracted
+  ranges>, filter: <its where>, expr: term}`, and no `where` or
+  `contracted` of its own, so every time band keeps its row's shape. A band
+  whose companion is identically zero (one with no bands) contributes
+  nothing. The bands of one row are then taken in order — the direct bands
+  in `t` and the composites, by column — and bands with the same rows, row
+  names and `where` are summed into the first of them (an n-ary `+` of their
+  coefficients, in order); the list is re-merged and normalized as any
+  band list (§2, §4).
+- *The definition of a companion.* The bands of `o`'s own row are computed
+  by the same rule: the right-hand side is `o` itself (a scalar `o`), or
+  `faq{output_idx: [i…], ranges: [1, n]…, expr: index(o, i…)}` over its
+  shape, with `o` (and the observed a column index needs) inlined; the row
+  names `i…` are the output indices of `o`'s definition when it is a `faq`
+  with one distinct name per dimension, else `_r<d>` clear of every name of
+  the definition. So `_dt_o` is `o`'s direct derivative in `t` plus, for
+  each companion-bearing `o′` it reads, `∂def_o/∂o′ · _dt_o′`. Its `rhs` is,
+  for a scalar `o`, the sum of its bands' coefficients (each
+  `ifelse(where, coef, 0)` when it has one); for an array `o`, one
+  `faq{output_idx: [r…], ranges: {r_d: [1, n_d]}, expr: <sum>}` over the
+  whole shape. The row names `r…` are the bands' own when every band has
+  the same, all named; else `_r<d>`, `_` appended until clear of every name
+  the bands hold. Each band's term is its coefficient (row names
+  substituted), gated by `ifelse(and(…), coef, 0)` with its region's
+  membership — `r_d >= lo` where `lo > 1`, `r_d <= hi` where `hi < n_d`,
+  `r_d == c` for a pinned dimension — and its `where`, unless none applies.
+  A sum of one term is the term; otherwise an n-ary `+` in band order.
+- *Where they appear.* Entries' coefficients read companions by name; the
+  block carries every companion read, directly or through another
+  companion's definition, in its `companions` field (§4), and the
+  evaluation document (§8.1) and every product document of the time axis
+  (§9.1) declare them as observed. The band list itself (an entries list,
+  §5) carries no definitions: a producer regenerates them from the source.
+- *Scope.* Companions are used on a single `"time"` axis whose pass has no
+  active recurrence. The first pass of a pair `["time", a2]` (§4.4)
+  differentiates its coefficients again with respect to `a2`, and a pass
+  through an active recurrence composes them with a transfer (§4.5): both
+  follow the observed that move with `t` by inlining, as before.
+
+Example (`tgrad_named_steps`, abridged): `w = (t − t0)/dt − floor(…)`,
+`Tb[i,k] = (1 − w)·T[1,i,k] + w·T[2,i,k]`, `kr[i,k] = A·(P[i,k]/p0)·exp(−Ea/Tb[i,k])`
+and `D(c)[i,k] = −kr[i,k]·c[i,k] + …` give the single band of `c`
+
+```json
+{"row": "c", "col": "t", "rows": [[1, 3], [1, 3]], "row_idx": ["i", "k"], "col_idx": [],
+ "coef": {"op": "*", "args": [{"op": "*", "args": [-1, {"op": "index", "args": ["c", "i", "k"]}]},
+                              {"op": "index", "args": ["_dt_kr", "i", "k"]}]}}
+```
+
+and the companions `_dt_w = 1/dt`, `_dt_Tb[i,k] = (T[2,i,k] − T[1,i,k])·_dt_w` and
+`_dt_kr[i,k] = ∂kr/∂Tb[i,k] · _dt_Tb[i,k]`, each written once.
 
 **Autonomous systems.** An empty `"time"` entry list means `f_t ≡ 0`: no
 row's right-hand side reads `t`. A consumer MAY skip evaluating `f_t` for
@@ -1121,7 +1224,11 @@ Fixture corpus in `tests/` of this repository:
    photolysis rate `max(0, cos(ω t + φᵢ))` through an array observed,
    the esm:std `linear` template of `t` through a scalar observed, an `hour`
    factor, a `julian_day` source, and one autonomous row; an esm 2.0.0
-   document). A fixture
+   document; `tgrad_named_steps.esm`: the time companions of §4.2 — a
+   scalar time-interpolation weight, an array blend of two temperature
+   records by it, a rate of the blend, a state reading the rate at its cell
+   and one reading it through a contraction over the vertical index, and
+   data-fed parameters held fixed). A fixture
    with forcing carries the same four for `wrt: "forcing"` and
    `wrt: "parameters"` as `<name>.forcing.*.json` and
    `<name>.parameters.*.json`, its forcing set inferred, plus a second value
@@ -1306,7 +1413,11 @@ rather than re-derived by each consumer.
 
 **Time bands.** The evaluation document for `wrt: "time"` is built the same
 way from the time band list: one field `J_k` per entry, of the row variable's
-shape (the scalar site `t` contributes no contracted dimension). No plan
+shape (the scalar site `t` contributes no contracted dimension, and a
+composite through a time companion sums its contraction in its coefficient,
+§4.2). It also declares every time companion the coefficients read (§8.1),
+so each observed's time derivative is evaluated once per call, not once per
+band that reads it. No plan
 layout is defined for it, since `f_t` is one dense vector: field `k`'s cell
 `f` (column-major, as for the state Jacobian fields above) adds into the
 canonical-state-order position of state `row_k`'s cell `f` (the state's
@@ -1463,6 +1574,15 @@ The derived model is named `JacobianEval` and holds:
   in order of first need, in name order. If an entry reading a hoisted
   observed does not bind all of its axes, the document is emitted without
   hoisting;
+- the time companions the coefficients read (§4.2), directly or through
+  another companion's definition, in the code-point order of their
+  observed, after the source's equations and the recurrence auxiliaries:
+  each declared as its observed is, `{"type": "unknown"}` with the
+  observed's declared `shape` when it has one, and defined by the bare-LHS
+  equation `name ~ rhs` of the block's `companions` field. A scoped
+  companion (`P._dt_v`) is laid out in its component like any scoped
+  variable (below). The observed the companions' definitions read are kept
+  like those the coefficients read;
 - one band field per entry, in entry order: `J_k`, an `unknown` with default
   `0.0` (and, for an array row or an entry with `contracted` dimensions, the
   field `shape` above: the row variable's index sets, then one `jcax<n>`
@@ -1587,7 +1707,9 @@ A product document is built like the §8.1 evaluation document: the source
 model's variables, the observed definitions the coefficients read
 (transitively), every source `D(u)` equation replaced by `D(u) = 0`, and the
 coefficients' `expression_templates` expanded (or hoisted as observed, as the
-evaluation document does). Like the evaluation document it carries the
+evaluation document does), and, on the time axis, the time companions the
+coefficients read (§4.2), declared as the evaluation document declares them
+(§8.1). Like the evaluation document it carries the
 source's `domain` and its data-fed parameters' `data` rules with the
 `data_sources` they name (§8.1), and a flattened source is laid out as its component tree
 (§8.1), refused on the same grounds, with the product's model (`JvpEval`,

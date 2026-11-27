@@ -23,7 +23,7 @@ use common::{load, root};
 const SS: (Wrt, Wrt) = (Wrt::States, Wrt::States);
 
 /// Every axis with a value golden (spec §9.6).
-const PRODUCT_AXES: [(&str, Wrt); 17] = [
+const PRODUCT_AXES: [(&str, Wrt); 18] = [
     ("bd_chem", Wrt::States),
     ("adv_interior", Wrt::States),
     ("contracted_ops", Wrt::States),
@@ -36,6 +36,7 @@ const PRODUCT_AXES: [(&str, Wrt); 17] = [
     ("semiring_reduce", Wrt::States),
     ("pre_operator", Wrt::States),
     ("tgrad_photolysis", Wrt::Time),
+    ("tgrad_named_steps", Wrt::Time),
     ("forcing_bracket", Wrt::Forcing),
     ("forcing_bracket", Wrt::Parameters),
     ("recurrence_sweep", Wrt::States),

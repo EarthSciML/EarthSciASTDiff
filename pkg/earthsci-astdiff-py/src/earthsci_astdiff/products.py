@@ -126,7 +126,12 @@ def _product_base(sv: SysView, name: str, entries: list[JacEntry], cse: bool, cs
         roots.extend(en.band.cidx)
         if en.band.guard is not None:
             roots.append(en.band.guard)
+    from .companions import add_companions, time_companions
+
+    comps = time_companions(sv, [en.band for en in entries])
+    roots.extend(d for _, _, d in comps)
     _zero_source_derivatives(m, sv, ctx, roots)
+    add_companions(m, sv, comps)
     return doc, m, ctx, _hoist(doc, m, sv, entries, cse, cse_min_nodes)
 
 
@@ -630,7 +635,7 @@ def _first_pass(sv: SysView, wrt: str, forcing):
     from .jacobian import _extended_pass
     from .system import observed_defs
 
-    return _extended_pass(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, [])
+    return _extended_pass(sv, ctx_of(sv), observed_defs(sv), wrt, forcing, [], companions=True)
 
 
 def _pair_extended(sv: SysView, a1: str, a2: str, forcing, memo=None):
