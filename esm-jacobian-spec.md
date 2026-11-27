@@ -479,7 +479,24 @@ trailing parameters, sorted; each reference binds them to their own names).
   array parameter read at a subscript that depends on the site parameter is
   piecewise constant in it (the `index` rule of §3.2). An ARRAY parameter
   (one the body reads through `index`, as a `faq` operand or a `makearray`
-  value) whose argument holds the site has no rule here: refused, never 0.
+  value) whose argument holds the site is read through its **sites**: the
+  bands of the body with respect to the parameter, as for an array
+  definition below but with no rows (each band's column index is a site's
+  subscript in D's parameter names; a sum around the site inside the body
+  is a contracted dimension, its filter the band's `where`; a site of a
+  definition the body passes the parameter to whole counts as the body's).
+  Band k's coefficient, when not a leaf or a lone reference, is the derived
+  definition `D.d_p.s<k>@<shape>` over the parameters of D it reads and the
+  contracted index names it reads, sorted (`<shape>` as below). The bands
+  are numbered in the order of their sites, the code-point order of each
+  site's canonical JSON (`index(p, …)` in D's names), identical bands
+  merged. While those bands are read, D's value parameters are index names
+  (a site `p[k]` with `k` a parameter is a column `k`, not a value); at the
+  use, a column that reads a value once bound is lifted one-hot (§3.2).
+  The use reads the reference as an intermediate, as an array reference
+  below: its derivative is that band list bound to the use and composed
+  with the arguments' bands, an argument that is an array expression by
+  the chain rule.
 - **Array definition** (its body is a `faq` or `makearray` array: a stencil).
   Its bands with respect to each parameter are computed once per binding
   shape (array arguments' extents, structural literals) in the body's own
@@ -498,8 +515,19 @@ trailing parameters, sorted; each reference binds them to their own names).
   cells) are composed with its own bands bound to the use's arguments and
   composed with the arguments' bands — inner row names read the outer
   column indices, coefficients multiply, contractions concatenate, and the
-  inner row box joins the guard, decided over the outer box (§2.2). The
-  bindings of an array reference may not read an index bound around it.
+  inner row box joins the guard, decided over the outer box (§2.2).
+- **A reference whose bindings read an index bound around it** (an enclosing
+  `faq`'s output or contracted name, as `D(k = k)` inside a row's `faq`
+  over `k`) is an intermediate array over those indices, followed by its
+  own dimensions if it is array-valued: its cells are the indices' range
+  values, in the order they are bound (an outer `faq` first; within one,
+  its range names in code-point order, then its output names not among
+  them), and the enclosing expression reads it at `(s…, i…)`. Its bands
+  are the reference's with the scope indices as leading row names (the
+  bound arguments read them by those names); the composition is as above,
+  and the reference is never expanded. A scope index whose range is not a
+  static interval or index set, and an array reference with scope
+  dimensions read whole rather than through `index`, are refused.
 
 Points, structure and values equal those of the expansion. Every derived
 document carries the definitions its references reach (§8.1).

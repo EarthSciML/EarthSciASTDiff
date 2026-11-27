@@ -115,6 +115,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     vjp.evaldoc,jvals}.json` goldens are checked byte for byte by every
     binding, and the Julia reference checks `f_t` against a central
     difference in `t`
+  - `ref_array_param.esm` — a scalar operator definition read through its
+    array parameters (spec §3.6): at sites directly, under a sum over `i` in
+    its body, and through a nested definition it passes one to whole, used
+    inside each row's own `faq` with bindings that read the row index, once
+    with an array-expression argument. Its `.bands.json` and `.evaldoc.json`
+    goldens (derived definitions `pair.d_w.s<k>@<shape>`) are checked byte
+    for byte by Julia and Rust (Python expands references at load); the
+    Julia reference checks points and values against the expanded system
   - `join_regrid.esm` — a regrid through a spatial overlap join (spec
     §3.5): six points binned into four cells, the join of the points'
     (X, Y) and the cells' envelopes the sum's only gate, reading a state

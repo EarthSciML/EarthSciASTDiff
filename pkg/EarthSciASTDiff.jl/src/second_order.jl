@@ -126,23 +126,24 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
     return _with_layer(L) do
         out = Band[]
         for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
-            body2, ps = _abstract_refs(L, body, ctx)
+            body2, ps = _abstract_refs(L, body, ctx; v = w)
             if isempty(ps)
                 append!(out, _coef_site_bands(b, [(rows2, body)], w, ctx))
                 continue
             end
             shapes = copy(ctx.shapes); origins = copy(ctx.origins)
-            for (n, (_, ext, org)) in ps
-                shapes[n] = ext; origins[n] = org
+            for (n, P) in ps
+                shapes[n] = P.ext; origins[n] = P.org
             end
             ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins, ctx.axes)
             fv = free_variables(body2)
             got = Band[]
             w in fv && append!(got, _coef_site_bands(b, [(rows2, body2)], w, ctx2))
-            for (n, (r, _, _)) in ps
-                (n in fv && w in free_variables(r)) || continue
-                inner = _ref_value_bands(L, r, w, ctx, true)
+            for (n, P) in ps
+                (n in fv && w in free_variables(P.ref)) || continue
+                inner = _ref_value_bands(L, P.ref, w, ctx, true)
                 isempty(inner) && continue
+                inner = Band[_one_hot_band(_with_scope(x, P), w, ctx) for x in inner]
                 # the bands of the coefficient with respect to the
                 # intermediate, their columns its cells only
                 outer = Band[
@@ -153,8 +154,7 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
                     push!(got, _rebuild(x; cidx = vcat(b.cidx, x.cidx)))
                 end
             end
-            restore = Dict{String, ASTExpr}(n => r for (n, (r, _, _)) in ps)
-            append!(out, Band[_restore(x, restore) for x in got])
+            append!(out, Band[_restore(x, ps) for x in got])
         end
         return out
     end

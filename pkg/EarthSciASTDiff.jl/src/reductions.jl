@@ -218,6 +218,11 @@ function _one_hot(cidx::Vector{ASTExpr}, coef::ASTExpr, contracted, ridx, v::Str
     for (n, _, _) in contracted
         push!(bound, n)
     end
+    # a scalar definition's value parameters, while its site bands are read
+    # (§3.6): bound to an index or a value at each use, where the band is
+    # made one-hot again if need be
+    ip = get(task_local_storage(), :esad_index_params, nothing)
+    ip === nothing || union!(bound, ip)
     hot = [k for (k, c) in enumerate(cidx) if !_index_only(c, bound)]
     isempty(hot) && return cidx, coef, contracted
     shape = get(ctx.shapes, v, Int[])

@@ -222,7 +222,7 @@ pub(crate) fn coef_bands(
     with_layer(&Some(l.clone()), || {
         let mut out = Vec::new();
         for (rows2, body) in clip_regions(&b.coef, &b.ridx, &b.rows) {
-            let (body2, ps) = abstract_refs(&l, &body, ctx)?;
+            let (body2, ps) = abstract_refs(&l, &body, ctx, Some(w))?;
             if ps.is_empty() {
                 out.extend(coef_site_bands(b, vec![(rows2, body)], w, ctx, occ, sm)?);
                 continue;
@@ -245,6 +245,10 @@ pub(crate) fn coef_bands(
                 if inner.is_empty() {
                     continue;
                 }
+                let inner: Vec<Band> = inner
+                    .into_iter()
+                    .map(|x| crate::operator_refs::one_hot_band(p.with_scope(x), w, ctx))
+                    .collect::<R<_>>()?;
                 // the bands of the coefficient w.r.t. the intermediate, their
                 // columns its cells only
                 let pocc = RefCell::new(OccIndex::new(&p.name));
@@ -261,9 +265,9 @@ pub(crate) fn coef_bands(
                     got.push(x);
                 }
             }
-            let restore: HashMap<String, Expr> =
-                ps.iter().map(|p| (p.name.clone(), p.r.clone())).collect();
-            out.extend(got.into_iter().map(|x| restore_band(x, &restore)));
+            for x in got {
+                out.push(restore_band(x, &ps)?);
+            }
         }
         Ok(out)
     })

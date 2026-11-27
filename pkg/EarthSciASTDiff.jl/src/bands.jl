@@ -167,6 +167,14 @@ struct _Nested
     ix::StructIndex
 end
 
+# Two range specs that say the same thing: an `IndexSetRef` compares by
+# identity in its fields, so two sums over the same index set written twice
+# compare by value here.
+_same_range(a, b) = a == b || (
+    typeof(a) == typeof(b) && !(a isa AbstractString) &&
+        all(f -> getfield(a, f) == getfield(b, f), fieldnames(typeof(a)))
+)
+
 function _nested_sums(e::ASTExpr, v::String, outer)
     acc = _Nested(
         Dict{String, Dict{String, Any}}(), Dict{String, Any}(),
@@ -195,7 +203,7 @@ function _nested_sums!(
         d = get!(() -> Dict{String, Any}(), acc.ranges, key)
         seen = Set{String}()
         for (n, r) in stack
-            d[n] = n in outer || n in seen || (haskey(d, n) && d[n] != r) ? :ambiguous : r
+            d[n] = n in outer || n in seen || (haskey(d, n) && !_same_range(d[n], r)) ? :ambiguous : r
             push!(seen, n)
         end
         return

@@ -153,9 +153,11 @@ _no_defmode(f) = _with_defparams(f, nothing)
 
 # ── definitions ─────────────────────────────────────────────────────────────
 
-# `<D>.d_<p>` (a scalar definition's derivative) or `<D>.d_<p>.b<k>@<shape>`
-# (band k of an array definition's at one binding shape, `_shape_tag`).
-const _DERIVED_NAME = r"^(.+)\.d_([^.@]+)(?:\.b(\d+)@(.*))?$"
+# `<D>.d_<p>` (a scalar definition's derivative), `<D>.d_<p>.b<k>@<shape>`
+# (band k of an array definition's at one binding shape, `_shape_tag`) or
+# `<D>.d_<p>.s<k>@<shape>` (band k of a scalar definition's with respect to
+# an array parameter: its sites, §3.6).
+const _DERIVED_NAME = r"^(.+)\.d_([^.@]+)(?:\.([bs])(\d+)@(.*))?$"
 
 # The definition `name`: a registry entry, or a derived definition — one this
 # layer wrote, or one a document written from another view of the same
@@ -191,7 +193,7 @@ function _def!(L::RefLayer, name::AbstractString)::_DefInfo
     else
         # the binding shape is the name's own: a derived band definition binds
         # only the parameters its coefficient reads
-        _def_bands!(L, base, _parse_shape_tag(base, String(m.captures[4]), name), p, true)
+        _def_bands!(L, base, _parse_shape_tag(base, String(m.captures[5]), name), p, true)
     end
     d = get(L.defs, name, nothing)
     d === nothing && throw(
@@ -624,12 +626,18 @@ function _def_bands!(L::RefLayer, D::_DefInfo, sk, p::String, co::Bool)::Vector{
     key = (D.name, sk, p, co)
     hit = get(L.defbands, key, nothing)
     hit === nothing || return hit
-    D.rank == 0 && throw(BandError("`$(D.name)` is a scalar definition"))
+    # a scalar definition has bands only with respect to an array parameter
+    # (its sites, §3.6); a value parameter's derivative is `D.d_p`
+    D.rank == 0 && !(p in D.array) && throw(BandError("`$(D.name)` is a scalar definition"))
     body = _specialized(D, sk)
     ctx = _def_ctx(L, D, sk)
-    ext, _ = _body_extents(body, ctx)
+    ext = D.rank == 0 ? Int[] : _body_extents(body, ctx)[1]
     raw = _with_defmode(D.params) do
-        _ref_bands(body, p, ctx, ext, co)
+        D.rank > 0 && return _ref_bands(body, p, ctx, ext, co)
+        # a scalar body's sites: its value parameters index like names
+        task_local_storage(:esad_index_params, Set{String}(D.value)) do
+            _ref_bands(body, p, ctx, ext, co)
+        end
     end
     bs = Band[normalize_band(b) for b in merge_bands(raw)]
     out = Band[]
@@ -666,7 +674,7 @@ function _generic_coef!(L::RefLayer, D::_DefInfo, sk, p::String, k::Int, b::Band
             BandError("`$(D.name)`: index name `$n` is also a parameter name")
         )
     end
-    name = D.name * ".d_" * p * ".b" * string(k) * "@" * _shape_tag(D, sk)
+    name = D.name * ".d_" * p * (D.rank == 0 ? ".s" : ".b") * string(k) * "@" * _shape_tag(D, sk)
     params = vcat(_used_params(c, D.params), extra)
     _register_derived!(L, name, params, c, "band $k of ∂$(D.name)/∂$(p)")
     L.bandkey[name] = sk
@@ -728,46 +736,111 @@ end
 # Placeholder names: `§` occurs in no ESM name.
 _pseudo_name(k::Int) = "§ref$k"
 
-# `e` with every ARRAY-valued reference replaced by a placeholder array
-# variable (the same reference, structurally, by the same placeholder), and
-# the placeholders: name → (reference, extents, origins). A placeholder's
-# cells are the index values the reference's array takes (a `faq` body's own
-# range values, a `makearray`'s positions), so `index(ref, i…)` reads cell
-# `i…`. Its bindings may not read an index bound around it: one array per
-# reference is what the composition differentiates once.
-function _abstract_refs(L::RefLayer, e::ASTExpr, ctx::Ctx)
-    found = OrderedDict{String, Tuple{OpExpr, String}}()   # skey → (ref, name)
-    out = _abstract!(L, e, ctx, found, Set{String}())
-    ps = OrderedDict{String, Tuple{OpExpr, Vector{Int}, Vector{Int}}}()
-    for (_, (r, n)) in found
+# `e` with every reference read as an intermediate replaced by a placeholder
+# array (the same reference under the same scope, structurally, by the same
+# placeholder), and the placeholders: name → `_Pseudo`. A reference is read
+# as an intermediate when it is array-valued, or when it is scalar and binds
+# an array parameter to an argument that reads `v` (§3.6; with `v ===
+# nothing`, array-valued ones only). A placeholder's cells are, first, the
+# values of the indices bound around the reference that its bindings read
+# (its scope dimensions, in the order they are bound: outer `faq` first,
+# within one its ranges in code-point order then its output indices, as
+# `_binders`), then the index values the reference's own array takes (a
+# `faq` body's own range values, a `makearray`'s positions). A read
+# `index(ref, i…)` becomes `index(placeholder, s…, i…)`; a scalar reference
+# with scope dimensions `index(placeholder, s…)`.
+struct _Pseudo
+    ref::OpExpr
+    ext::Vector{Int}
+    org::Vector{Int}
+    scope::Vector{String}     # the scope dimensions' index names
+end
+
+function _abstract_refs(L::RefLayer, e::ASTExpr, ctx::Ctx; v = nothing)
+    found = OrderedDict{Any, Tuple{OpExpr, String, Vector{Pair{String, Any}}}}()
+    out = _abstract!(L, e, ctx, found, Pair{String, Any}[], v)
+    ps = OrderedDict{String, _Pseudo}()
+    for (_, (r, n, sc)) in found
         D = _def!(L, r.name)
-        ext, org = _ref_extents(L, D, r.bindings, ctx)
-        ps[n] = (r, ext, org)
+        ext, org = D.rank > 0 ? _ref_extents(L, D, r.bindings, ctx) : (Int[], Int[])
+        sext = Int[]; sorg = Int[]
+        for (nm, spec) in sc
+            lo, hi = _scope_range(spec, nm, D, ctx)
+            push!(sext, hi - lo + 1); push!(sorg, lo)
+        end
+        ps[n] = _Pseudo(r, vcat(sext, ext), vcat(sorg, org), String[first(x) for x in sc])
     end
     return out, ps
 end
 
-function _abstract!(L, e::ASTExpr, ctx, found, scope::Set{String})
+# The static `[lo, hi]` of a scope index's range spec.
+function _scope_range(spec, nm::String, D::_DefInfo, ctx::Ctx)
+    if spec isa AbstractDict || spec isa EarthSciAST.IndexSetRef
+        from = spec isa AbstractDict ? spec["from"] : spec.from
+        from isa AbstractString && return (1, _set_size(String(from), ctx))
+    elseif spec isa AbstractVector && length(spec) == 2 &&
+            all(x -> x isa Integer || (x isa IntExpr) || (x isa NumExpr && isinteger(x.value)), spec)
+        lit(x) = x isa Integer ? Int(x) : Int(x.value)
+        return (lit(spec[1]), lit(spec[2]))
+    end
+    throw(
+        BandError(
+            "operator reference to `$(D.name)` binds an argument that reads the index " *
+                "`$nm` bound around it, whose range is not a static interval or index " *
+                "set; not supported"
+        )
+    )
+end
+
+# Does `D` (scalar) bind an array parameter to an argument that reads `v`?
+_reads_through_array(D::_DefInfo, B, v) = v !== nothing &&
+    any(p -> p in D.array && v in free_variables(B[p]), D.params)
+
+function _abstract!(L, e::ASTExpr, ctx, found, scope::Vector{Pair{String, Any}}, v)
     e isa OpExpr || return e
+    # `index(ref, i…)` of an array-valued reference: the reference's own
+    # indices follow its scope dimensions
+    if e.op == "index" && _is_ref(e.args[1]) && _def!(L, e.args[1].name).rank > 0
+        r = e.args[1]
+        own = ASTExpr[_abstract!(L, x, ctx, found, scope, v) for x in e.args[2:end]]
+        n, sc = _placeholder!(L, r, found, scope)
+        return op("index", VarExpr(n), ASTExpr[VarExpr(first(x)) for x in sc]..., own...)
+    end
     if _is_ref(e)
         D = _def!(L, e.name)
-        if D.rank > 0
-            fv = free_variables(e)
-            isdisjoint(fv, scope) || throw(
+        if D.rank > 0 || _reads_through_array(D, e.bindings, v)
+            n, sc = _placeholder!(L, e, found, scope)
+            isempty(sc) && return VarExpr(n)
+            D.rank > 0 && throw(
                 BandError(
                     "the array-valued operator reference `$(D.name)` binds an argument " *
                         "that reads an index bound around it " *
-                        "($(join(sort!(collect(intersect(fv, scope))), ", "))); not supported"
+                        "($(join(first.(sc), ", "))) and is read whole, not through " *
+                        "`index`; not supported"
                 )
             )
-            k = skey(e)
-            hit = get(found, k, nothing)
-            hit === nothing && (hit = found[k] = (e, _pseudo_name(length(found) + 1)))
-            return VarExpr(hit[2])
+            return op("index", VarExpr(n), ASTExpr[VarExpr(first(x)) for x in sc]...)
         end
     end
-    e.op == "faq" && (scope = union(scope, _binders(e)))
-    return map_children(c -> _abstract!(L, c, ctx, found, scope), e)
+    if e.op == "faq" && e.ranges !== nothing
+        scope = copy(scope)
+        for b in _binders(e)
+            filter!(x -> first(x) != b, scope)
+            push!(scope, b => get(e.ranges, b, nothing))
+        end
+    end
+    return map_children(c -> _abstract!(L, c, ctx, found, scope, v), e)
+end
+
+# The placeholder of reference `r` under `scope`: its name and the scope
+# dimensions it has (the scope indices its bindings read, in scope order).
+function _placeholder!(L, r::OpExpr, found, scope)
+    fv = free_variables(r)
+    sc = Pair{String, Any}[x for x in scope if first(x) in fv]
+    k = (skey(r), [first(x) for x in sc], [string(last(x)) for x in sc])
+    hit = get(found, k, nothing)
+    hit === nothing && (hit = found[k] = (r, _pseudo_name(length(found) + 1), sc))
+    return hit[2], hit[3]
 end
 
 """
@@ -783,33 +856,79 @@ function _ref_bands(rhs::ASTExpr, v::String, ctx::Ctx, shape_u::Vector{Int}, co:
     L = ctx.refs
     L === nothing && return bands(rhs, v, ctx; shape_u = shape_u, coefficients = co)
     return _with_layer(L) do
-        rhs2, ps = _abstract_refs(L, rhs, ctx)
+        rhs2, ps = _abstract_refs(L, rhs, ctx; v = v)
         isempty(ps) && return bands(rhs, v, ctx; shape_u = shape_u, coefficients = co)
         shapes = copy(ctx.shapes); origins = copy(ctx.origins)
-        for (n, (_, ext, org)) in ps
-            shapes[n] = ext; origins[n] = org
+        for (n, P) in ps
+            shapes[n] = P.ext; origins[n] = P.org
         end
         ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins, ctx.axes)
         out = Band[]
         fv = free_variables(rhs2)
         v in fv && append!(out, bands(rhs2, v, ctx2; shape_u = shape_u, coefficients = co))
-        restore = Dict{String, ASTExpr}(n => r for (n, (r, _, _)) in ps)
-        for (n, (r, _, _)) in ps
+        for (n, P) in ps
             n in fv || continue
-            v in free_variables(r) || continue
-            inner = _ref_value_bands(L, r, v, ctx, co)
+            v in free_variables(P.ref) || continue
+            inner = _ref_value_bands(L, P.ref, v, ctx, co)
             isempty(inner) && continue
+            inner = Band[_one_hot_band(_with_scope(b, P), v, ctx) for b in inner]
             outer = bands(rhs2, n, ctx2; shape_u = shape_u, coefficients = co)
             append!(out, _compose(outer, inner, v, ctx, co))
         end
-        return Band[_restore(b, restore) for b in out]
+        return Band[_restore(b, ps) for b in out]
     end
 end
 
-# A band with every placeholder read back as its reference.
-function _restore(b::Band, m::Dict{String, ASTExpr})
-    f(x) = x === nothing ? nothing : _subst_names(x, m)
+# A band of a reference's value with its placeholder's scope dimensions put
+# first: rows over their ranges, named by the scope indices (the bound
+# arguments already read them by those names).
+function _with_scope(b::Band, P::_Pseudo)
+    isempty(P.scope) && return b
+    m = length(P.scope)
+    rows = Tuple{Int, Int}[(P.org[d], P.org[d] + P.ext[d] - 1) for d in 1:m]
+    return _rebuild(
+        b; rows = vcat(rows, b.rows),
+        ridx = Union{String, Int}[P.scope..., b.ridx...]
+    )
+end
+
+# A band whose column reads a value at the use (a scalar definition's
+# parameter bound to data) made one-hot (`_one_hot`).
+function _one_hot_band(b::Band, v::String, ctx::Ctx)
+    b.coef === nothing && return b
+    cidx, coef, contracted = _one_hot(b.cidx, b.coef, b.contracted, b.ridx, v, ctx)
+    return _rebuild(b; cidx = cidx, coef = coef, contracted = contracted)
+end
+
+# A band with every placeholder read back as its reference: a read
+# `index(placeholder, a…, i…)` is the reference with its scope indices bound
+# to `a…`, read at `i…` (itself when it has no own dimensions).
+function _restore(b::Band, ps::AbstractDict)
+    function f(x)
+        x === nothing && return nothing
+        return _restore_expr(x, ps)
+    end
     return _rebuild(b; cidx = ASTExpr[f(c) for c in b.cidx], coef = f(b.coef), guard = f(b.guard))
+end
+
+function _restore_expr(e::ASTExpr, ps::AbstractDict)
+    if e isa VarExpr
+        P = get(ps, e.name, nothing)
+        P === nothing && return e
+        isempty(P.scope) || throw(BandError("a placeholder with scope dimensions read whole"))
+        return P.ref
+    end
+    e isa OpExpr || return e
+    if e.op == "index" && e.args[1] isa VarExpr && haskey(ps, e.args[1].name)
+        P = ps[e.args[1].name]
+        m = length(P.scope)
+        a = ASTExpr[_restore_expr(x, ps) for x in e.args[2:end]]
+        sub = Dict{String, ASTExpr}(P.scope[d] => a[d] for d in 1:m)
+        r = isempty(sub) ? P.ref : _bind(P.ref, sub)
+        own = a[(m + 1):end]
+        return isempty(own) ? r : op("index", r, own...)
+    end
+    return map_children(c -> _restore_expr(c, ps), e)
 end
 
 """
@@ -830,7 +949,15 @@ function _ref_value_bands(L::RefLayer, r::OpExpr, v::String, ctx::Ctx, co::Bool)
         b = B[p]
         v in free_variables(b) || continue
         (p in D.structural && !(p in D.value) && !(p in D.array)) && continue
-        db = _def_bands!(L, D, sk, p, co)
+        db = if D.rank == 0 && !(p in D.array)
+            # a value parameter of a scalar definition: `D.d_p`, one band
+            T = co ? _dparam!(L, D, p) : nothing
+            co && iszero_lit(T) ? Band[] : Band[
+                    Band(Tuple{Int, Int}[], Union{String, Int}[], ASTExpr[], T, Tuple{String, Int, Int}[], nothing),
+                ]
+        else
+            _def_bands!(L, D, sk, p, co)
+        end
         isempty(db) && continue
         shape_p = p in D.array ? collect(Int, Dict(sk)[p]) : Int[]
         inner = _no_defmode() do

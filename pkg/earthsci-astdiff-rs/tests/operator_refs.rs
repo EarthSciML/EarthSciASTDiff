@@ -164,3 +164,27 @@ fn one_stencil_at_two_binding_shapes() {
     assert!(ops.keys().any(|k| k.ends_with(".d_f.b1@2,2")));
     assert_eq!(stable_json(&doc), golden(&format!("{name}.evaldoc.json")));
 }
+
+/// A scalar definition read through its array parameters (directly, under a
+/// sum in its body, and through a nested definition), at uses whose bindings
+/// read the row index, once with an expression argument (spec §3.6): the
+/// bands and evaluation document match the reference's goldens.
+#[test]
+fn scalar_definition_through_array_parameters() {
+    let name = "ref_array_param";
+    let flat = earthsci_ast::flatten(&load(name)).unwrap();
+    let sv = sysview_flat(&flat).unwrap();
+    let entries = jacobian_bands_view(&sv, Wrt::States, None).unwrap();
+    let ser: Vec<Value> = entries.iter().map(serialize_band).collect();
+    assert_eq!(
+        stable_json(&Value::Array(ser)),
+        golden(&format!("{name}.bands.json"))
+    );
+    let (doc, _) = evaluation_document(&sv, &entries, false, 12).unwrap();
+    let ops = doc["models"]["JacobianEval"]["operators"]
+        .as_object()
+        .unwrap();
+    assert!(ops.keys().any(|k| k.starts_with("pair.d_w.s1@")));
+    assert!(ops.keys().any(|k| k.starts_with("inner.d_w.s1@")));
+    assert_eq!(stable_json(&doc), golden(&format!("{name}.evaldoc.json")));
+}

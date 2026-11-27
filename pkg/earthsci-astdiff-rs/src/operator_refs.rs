@@ -194,7 +194,9 @@ fn derived_name(name: &str) -> Option<DerivedName> {
         if tail.is_empty() {
             return Some((name[..i].to_string(), p.to_string(), None));
         }
-        let Some(t) = tail.strip_prefix(".b") else {
+        // `.b<k>@` (an array definition's band) or `.s<k>@` (a scalar
+        // definition's band w.r.t. an array parameter, its sites)
+        let Some(t) = tail.strip_prefix(".b").or_else(|| tail.strip_prefix(".s")) else {
             continue;
         };
         let Some(at) = t.find('@') else { continue };
@@ -838,7 +840,9 @@ impl RefLayer {
         if let Some(x) = self.st.borrow().defbands.get(&key) {
             return Ok(x.clone());
         }
-        if d.rank == 0 {
+        // a scalar definition has bands only w.r.t. an array parameter (its
+        // sites, §3.6); a value parameter's derivative is `D.d_p`
+        if d.rank == 0 && !d.array.contains(p) {
             return Err(BandError(format!("`{}` is a scalar definition", d.name)));
         }
         let mut ctx = self.def_ctx(sk);
@@ -851,9 +855,21 @@ impl RefLayer {
                 d.name
             )));
         };
-        let (ext, _) = body_extents(n, &ctx)?;
+        let ext = if d.rank == 0 {
+            Vec::new()
+        } else {
+            body_extents(n, &ctx)?.0
+        };
         let ps: HashSet<String> = d.params.iter().cloned().collect();
-        let raw = with_defparams(Some(ps), || ref_bands(&body, p, &ctx, &ext, co))?;
+        let raw = with_defparams(Some(ps), || {
+            if d.rank > 0 {
+                return ref_bands(&body, p, &ctx, &ext, co);
+            }
+            // a scalar body's sites: its value parameters index like names
+            crate::reductions::with_index_params(Some(d.value.clone()), || {
+                ref_bands(&body, p, &ctx, &ext, co)
+            })
+        })?;
         let bs: Vec<Band> = merge_bands(raw).iter().map(normalize_band).collect();
         let mut out = Vec::new();
         for (k, mut b) in bs.into_iter().enumerate() {
@@ -893,7 +909,8 @@ impl RefLayer {
         }
         let mut extra: Vec<String> = fv.into_iter().filter(|n| names.contains(n)).collect();
         extra.sort();
-        let name = format!("{}.d_{}.b{}@{}", d.name, p, k, shape_tag(sk));
+        let letter = if d.rank == 0 { "s" } else { "b" };
+        let name = format!("{}.d_{}.{letter}{}@{}", d.name, p, k, shape_tag(sk));
         let mut params = used_params(c, &d.params);
         params.extend(extra);
         self.register_derived(
@@ -1047,6 +1064,8 @@ pub(crate) struct Placeholder {
     pub(crate) r: Expr,
     ext: Vec<i64>,
     org: Vec<i64>,
+    /// the scope dimensions' index names (operator_refs.jl `_Pseudo`)
+    scope: Vec<String>,
 }
 
 impl Placeholder {
@@ -1055,66 +1074,268 @@ impl Placeholder {
         ctx.shapes.insert(self.name.clone(), self.ext.clone());
         ctx.origins.insert(self.name.clone(), self.org.clone());
     }
+
+    /// A band of the reference's value with the scope dimensions put first:
+    /// rows over their ranges, named by the scope indices.
+    pub(crate) fn with_scope(&self, mut b: Band) -> Band {
+        if self.scope.is_empty() {
+            return b;
+        }
+        let m = self.scope.len();
+        let mut rows: Vec<(i64, i64)> = (0..m)
+            .map(|d| (self.org[d], self.org[d] + self.ext[d] - 1))
+            .collect();
+        rows.extend(b.rows);
+        let mut ridx: Vec<RIdx> = self.scope.iter().map(|n| RIdx::Name(n.clone())).collect();
+        ridx.extend(b.ridx);
+        b.rows = rows;
+        b.ridx = ridx;
+        b
+    }
 }
 
-/// `b` with every placeholder read back as its reference.
-pub(crate) fn restore_band(mut b: Band, restore: &HashMap<String, Expr>) -> Band {
-    b.cidx = b.cidx.iter().map(|c| subst_names(c, restore)).collect();
-    b.coef = subst_names(&b.coef, restore);
-    b.guard = b.guard.as_ref().map(|g| subst_names(g, restore));
-    b
+/// A band whose column reads a value at the use (a scalar definition's
+/// parameter bound to data) made one-hot.
+pub(crate) fn one_hot_band(mut b: Band, v: &str, ctx: &Ctx) -> R<Band> {
+    let (cidx, coef, contracted) = crate::reductions::one_hot(
+        std::mem::take(&mut b.cidx),
+        b.coef.clone(),
+        std::mem::take(&mut b.contracted),
+        &b.ridx,
+        v,
+        ctx,
+    )?;
+    b.cidx = cidx;
+    b.coef = coef;
+    b.contracted = contracted;
+    Ok(b)
 }
 
-pub(crate) fn abstract_refs(l: &RefLayer, e: &Expr, ctx: &Ctx) -> R<(Expr, Vec<Placeholder>)> {
-    let mut found: IndexMap<String, (Expr, String)> = IndexMap::new();
-    let out = abstract_walk(l, e, &mut found, &HashSet::new())?;
+/// `b` with every placeholder read back as its reference: a read
+/// `index(placeholder, a…, i…)` is the reference with its scope indices
+/// bound to `a…`, read at `i…` (itself without own dimensions).
+pub(crate) fn restore_band(mut b: Band, ps: &[Placeholder]) -> R<Band> {
+    let m: HashMap<&str, &Placeholder> = ps.iter().map(|p| (p.name.as_str(), p)).collect();
+    b.cidx = b
+        .cidx
+        .iter()
+        .map(|c| restore_expr(c, &m))
+        .collect::<R<_>>()?;
+    b.coef = restore_expr(&b.coef, &m)?;
+    b.guard = match &b.guard {
+        Some(g) => Some(restore_expr(g, &m)?),
+        None => None,
+    };
+    Ok(b)
+}
+
+fn restore_expr(e: &Expr, ps: &HashMap<&str, &Placeholder>) -> R<Expr> {
+    match e {
+        Expr::Variable(v) => match ps.get(v.as_str()) {
+            None => Ok(e.clone()),
+            Some(p) if p.scope.is_empty() => Ok(p.r.clone()),
+            Some(_) => Err(BandError(
+                "a placeholder with scope dimensions read whole".into(),
+            )),
+        },
+        Expr::Operator(n) => {
+            if n.op == "index" {
+                if let Some(Expr::Variable(v)) = n.args.first() {
+                    if let Some(p) = ps.get(v.as_str()) {
+                        let a: Vec<Expr> = n.args[1..]
+                            .iter()
+                            .map(|x| restore_expr(x, ps))
+                            .collect::<R<_>>()?;
+                        let m = p.scope.len();
+                        let sub: HashMap<String, Expr> =
+                            (0..m).map(|d| (p.scope[d].clone(), a[d].clone())).collect();
+                        let r = if sub.is_empty() {
+                            p.r.clone()
+                        } else {
+                            bind(&p.r, &sub)
+                        };
+                        let own = a[m..].to_vec();
+                        return Ok(if own.is_empty() {
+                            r
+                        } else {
+                            let mut args = vec![r];
+                            args.extend(own);
+                            op("index", args)
+                        });
+                    }
+                }
+            }
+            let mut err = None;
+            let out = Expr::operator(n.map_children(&mut |c: &Expr| match restore_expr(c, ps) {
+                Ok(x) => x,
+                Err(er) => {
+                    err.get_or_insert(er);
+                    c.clone()
+                }
+            }));
+            match err {
+                Some(e) => Err(e),
+                None => Ok(out),
+            }
+        }
+        _ => Ok(e.clone()),
+    }
+}
+
+type Scope = Vec<(String, Option<RangeSpec>)>;
+type Found = IndexMap<String, (Expr, String, Scope)>;
+
+/// `e` with every reference read as an intermediate replaced by a
+/// placeholder (operator_refs.jl `_abstract_refs`): array-valued ones, and a
+/// scalar one that binds an array parameter to an argument reading `v`. A
+/// placeholder's cells are its scope dimensions (the indices bound around
+/// it that its bindings read, in the order they are bound), then its own.
+pub(crate) fn abstract_refs(
+    l: &RefLayer,
+    e: &Expr,
+    ctx: &Ctx,
+    v: Option<&str>,
+) -> R<(Expr, Vec<Placeholder>)> {
+    let mut found: Found = IndexMap::new();
+    let out = abstract_walk(l, e, &mut found, &Vec::new(), v)?;
     let mut ps = Vec::new();
-    for (_, (r, name)) in found {
+    for (_, (r, name, sc)) in found {
         let n = ref_node(&r).unwrap();
         let d = l.def(n.name.as_deref().unwrap_or(""))?;
-        let (ext, org) = l.ref_extents(&d, n.bindings.as_ref().unwrap_or(&HashMap::new()), ctx)?;
-        ps.push(Placeholder { name, r, ext, org });
+        let (ext, org) = if d.rank > 0 {
+            l.ref_extents(&d, n.bindings.as_ref().unwrap_or(&HashMap::new()), ctx)?
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let (mut sext, mut sorg) = (Vec::new(), Vec::new());
+        for (nm, spec) in &sc {
+            let (lo, hi) = scope_range(spec.as_ref(), nm, &d.name, ctx)?;
+            sext.push(hi - lo + 1);
+            sorg.push(lo);
+        }
+        sext.extend(ext);
+        sorg.extend(org);
+        let scope = sc.into_iter().map(|(n, _)| n).collect();
+        ps.push(Placeholder {
+            name,
+            r,
+            ext: sext,
+            org: sorg,
+            scope,
+        });
     }
     Ok((out, ps))
+}
+
+/// The static `[lo, hi]` of a scope index's range.
+fn scope_range(spec: Option<&RangeSpec>, nm: &str, dname: &str, ctx: &Ctx) -> R<(i64, i64)> {
+    match spec {
+        Some(r @ (RangeSpec::Interval(_) | RangeSpec::IndexSetRef { .. })) => {
+            crate::bands::range_of(r, ctx)
+        }
+        _ => Err(BandError(format!(
+            "operator reference to `{dname}` binds an argument that reads the index `{nm}` \
+             bound around it, whose range is not a static interval or index set; not supported"
+        ))),
+    }
+}
+
+fn reads_through_array(d: &DefInfo, b: &HashMap<String, Expr>, v: Option<&str>) -> bool {
+    let Some(v) = v else { return false };
+    d.params
+        .iter()
+        .any(|p| d.array.contains(p) && b.get(p).is_some_and(|x| free_vars(x).contains(v)))
+}
+
+fn placeholder_of(r: &Expr, found: &mut Found, scope: &Scope) -> (String, Vec<String>) {
+    let fv = free_vars(r);
+    let sc: Scope = scope
+        .iter()
+        .filter(|(n, _)| fv.contains(n))
+        .cloned()
+        .collect();
+    let key = format!(
+        "{}\0{}",
+        skey(r),
+        sc.iter()
+            .map(|(n, s)| format!(
+                "{n}={}",
+                s.as_ref().map(|x| format!("{x:?}")).unwrap_or_default()
+            ))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let len = found.len();
+    let ent = found
+        .entry(key)
+        .or_insert_with(|| (r.clone(), format!("§ref{}", len + 1), sc));
+    (
+        ent.1.clone(),
+        ent.2.iter().map(|(n, _)| n.clone()).collect(),
+    )
 }
 
 fn abstract_walk(
     l: &RefLayer,
     e: &Expr,
-    found: &mut IndexMap<String, (Expr, String)>,
-    scope: &HashSet<String>,
+    found: &mut Found,
+    scope: &Scope,
+    v: Option<&str>,
 ) -> R<Expr> {
     let Expr::Operator(n) = e else {
         return Ok(e.clone());
     };
+    // `index(ref, i…)` of an array-valued reference: its own indices follow
+    // its scope dimensions
+    if n.op == "index" {
+        if let Some(r @ Expr::Operator(rn)) = n.args.first() {
+            if REF_OPS.contains(&rn.op.as_str())
+                && l.def(rn.name.as_deref().unwrap_or(""))?.rank > 0
+            {
+                let own: Vec<Expr> = n.args[1..]
+                    .iter()
+                    .map(|x| abstract_walk(l, x, found, scope, v))
+                    .collect::<R<_>>()?;
+                let (name, sc) = placeholder_of(r, found, scope);
+                let mut args = vec![Expr::Variable(name)];
+                args.extend(sc.into_iter().map(Expr::Variable));
+                args.extend(own);
+                return Ok(op("index", args));
+            }
+        }
+    }
     if REF_OPS.contains(&n.op.as_str()) {
         let d = l.def(n.name.as_deref().unwrap_or(""))?;
-        if d.rank > 0 {
-            let fv = free_vars(e);
-            if fv.iter().any(|x| scope.contains(x)) {
+        let empty = HashMap::new();
+        if d.rank > 0 || reads_through_array(&d, n.bindings.as_ref().unwrap_or(&empty), v) {
+            let (name, sc) = placeholder_of(e, found, scope);
+            if sc.is_empty() {
+                return Ok(Expr::Variable(name));
+            }
+            if d.rank > 0 {
                 return Err(BandError(format!(
                     "the array-valued operator reference `{}` binds an argument that reads an \
-                     index bound around it; not supported",
-                    d.name
+                     index bound around it ({}) and is read whole, not through `index`; not \
+                     supported",
+                    d.name,
+                    sc.join(", ")
                 )));
             }
-            let k = skey(e);
-            let len = found.len();
-            let name = found
-                .entry(k)
-                .or_insert_with(|| (e.clone(), format!("§ref{}", len + 1)))
-                .1
-                .clone();
-            return Ok(Expr::Variable(name));
+            let mut args = vec![Expr::Variable(name)];
+            args.extend(sc.into_iter().map(Expr::Variable));
+            return Ok(op("index", args));
         }
     }
     let mut scope2 = scope.clone();
-    if n.op == "faq" {
-        scope2.extend(binders(n));
+    if let (true, Some(rs)) = (n.op == "faq", n.ranges.as_ref()) {
+        for bname in binders(n) {
+            scope2.retain(|(x, _)| x != &bname);
+            scope2.push((bname.clone(), rs.get(&bname).cloned()));
+        }
     }
     let mut err = None;
     let out = Expr::operator(n.map_children(&mut |c: &Expr| match abstract_walk(
-        l, c, found, &scope2,
+        l, c, found, &scope2, v,
     ) {
         Ok(x) => x,
         Err(er) => {
@@ -1137,7 +1358,7 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
         return bands_in(rhs, v, ctx, shape_u, co);
     };
     with_layer(&Some(l.clone()), || {
-        let (rhs2, ps) = abstract_refs(&l, rhs, ctx)?;
+        let (rhs2, ps) = abstract_refs(&l, rhs, ctx, Some(v))?;
         if ps.is_empty() {
             return bands_in(rhs, v, ctx, shape_u, co);
         }
@@ -1150,8 +1371,6 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
         if fv.contains(v) {
             out.extend(bands_in(&rhs2, v, &ctx2, shape_u, co)?);
         }
-        let restore: HashMap<String, Expr> =
-            ps.iter().map(|p| (p.name.clone(), p.r.clone())).collect();
         for p in &ps {
             if !fv.contains(&p.name) || !earthsci_ast::free_variables(&p.r).contains(v) {
                 continue;
@@ -1160,10 +1379,14 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
             if inner.is_empty() {
                 continue;
             }
+            let inner: Vec<Band> = inner
+                .into_iter()
+                .map(|b| one_hot_band(p.with_scope(b), v, ctx))
+                .collect::<R<_>>()?;
             let outer = bands_in(&rhs2, &p.name, &ctx2, shape_u, co)?;
             out.extend(compose(&outer, &inner, co)?);
         }
-        Ok(out.into_iter().map(|b| restore_band(b, &restore)).collect())
+        out.into_iter().map(|b| restore_band(b, &ps)).collect()
     })
 }
 
@@ -1187,7 +1410,24 @@ pub(crate) fn ref_value_bands(
         if !earthsci_ast::free_variables(arg).contains(v) {
             continue;
         }
-        let db = l.def_bands(&d, &sk, p, co)?;
+        let db = if d.rank == 0 && !d.array.contains(p) {
+            // a value parameter of a scalar definition: `D.d_p`, one band
+            let t = if co { l.dparam(&d, p)? } else { placeholder() };
+            if co && is_zero(&t) {
+                continue;
+            }
+            Rc::new(vec![Band {
+                rows: vec![],
+                ridx: vec![],
+                cidx: vec![],
+                coef: t,
+                contracted: vec![],
+                guard: None,
+                join: None,
+            }])
+        } else {
+            l.def_bands(&d, &sk, p, co)?
+        };
         if db.is_empty() {
             continue;
         }

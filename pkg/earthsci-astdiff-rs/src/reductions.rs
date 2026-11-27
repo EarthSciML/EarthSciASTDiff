@@ -354,6 +354,20 @@ pub(crate) fn split_guard(g: &Expr, names: &[String], bx: &[(i64, i64)]) -> Vec<
 /// A one-hot band: column indices, coefficient and contracted dimensions.
 pub(crate) type OneHot = (Vec<Expr>, Expr, Vec<(String, i64, i64)>);
 
+thread_local! {
+    static INDEX_PARAMS: std::cell::RefCell<Vec<Option<HashSet<String>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with `ps` read as index names by [`one_hot`] (a scalar
+/// definition's value parameters, while its site bands are read).
+pub(crate) fn with_index_params<T>(ps: Option<HashSet<String>>, f: impl FnOnce() -> T) -> T {
+    INDEX_PARAMS.with(|s| s.borrow_mut().push(ps));
+    let out = f();
+    INDEX_PARAMS.with(|s| s.borrow_mut().pop());
+    out
+}
+
 /// A column index that reads a value — `x[κ(u) + d]` with `κ` a level
 /// search — is integer-valued, hence piecewise constant (the §3.2 `floor`
 /// rule): its own derivative is 0, and the read is the one-hot sum
@@ -378,6 +392,14 @@ pub(crate) fn one_hot(
         })
         .collect();
     bound.extend(contracted.iter().map(|(n, _, _)| n.clone()));
+    // a scalar definition's value parameters, while its site bands are read
+    // (§3.6): bound to an index or a value at each use, where the band is
+    // made one-hot again if need be
+    INDEX_PARAMS.with(|s| {
+        if let Some(Some(ps)) = s.borrow().last() {
+            bound.extend(ps.iter().cloned());
+        }
+    });
     let hot: Vec<usize> = cidx
         .iter()
         .enumerate()

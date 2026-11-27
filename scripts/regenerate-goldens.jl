@@ -120,6 +120,19 @@ let name = "two_shape_stencil"
     write(evpath, stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries))))
     println("wrote ", path, ", ", evpath)
 end
+# a scalar definition read through its array parameters, at a use whose
+# bindings read the row index (spec §3.6): band definitions per site,
+# `pair.d_w.s<k>@<shape>`, composed at the use
+let name = "ref_array_param"
+    flat = EarthSciAST.flatten(EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm")))
+    sv = sysview(flat)
+    entries = jacobian_bands(sv)
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    evpath = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
+    write(evpath, stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries))))
+    println("wrote ", path, ", ", evpath)
+end
 # Time bands with data held fixed (spec §4.2): the band list only, which
 # every binding must reproduce byte for byte (tests/README.md).
 let name = "tgrad_data_fixed"

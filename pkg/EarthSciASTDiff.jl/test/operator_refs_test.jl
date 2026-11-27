@@ -310,3 +310,41 @@ end
     @test J.rownames == Jref.rownames
     @test Matrix(J.J) ≈ Matrix(Jref.J) rtol = 1.0e-12
 end
+
+# A scalar definition read through its array parameters: at sites directly,
+# under a sum in its body, and through a nested definition it passes one to
+# whole; used inside each row's own faq with bindings that read the row index
+# (an intermediate over that index), once with an argument that is itself an
+# array expression (spec §3.6).
+@testset "operator references: a scalar definition through its array parameters" begin
+    file = fixture("ref_array_param.esm")
+    flat = EarthSciAST.flatten(file)
+    expanded = EarthSciAST.expand_flattened_refs(flat)
+    sv = sysview(flat)
+    function pts(es)
+        out = Set{Any}()
+        for en in es
+            EarthSciASTDiff._foreach_point(en.band) do cell, _, ci
+                push!(out, (en.u, en.v, copy(cell), ci))
+            end
+        end
+        return sort!(collect(out))
+    end
+    for co in (true, false)
+        @test pts(jacobian_bands(sv; coefficients = co)) ==
+            pts(jacobian_bands(sysview(expanded); coefficients = co))
+    end
+    entries = jacobian_bands(sv)
+    golden = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "ref_array_param.bands.json")
+    @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) == read(golden, String)
+    names = collect(keys(sv.refs.derived))
+    @test any(startswith("pair.d_w.s1@"), names) && any(startswith("pair.d_q.s1@"), names)
+    @test any(startswith("inner.d_w.s1@"), names)
+    f!, u0, p, _, _ = tw_build(flat)
+    u = u0 .* (0.5 .+ rand(length(u0)))
+    J = doc_jacobian(flat; u = u, p = p)
+    Je = doc_jacobian(expanded; u = u, p = p)
+    @test J.pattern == Je.pattern
+    @test Matrix(J.J) ≈ Matrix(Je.J) rtol = 1.0e-12
+    @test Matrix(J.J) ≈ Matrix(ad_jacobian(f!, u, p, 0.0)) rtol = 1.0e-10 atol = 1.0e-14
+end

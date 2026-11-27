@@ -1,0 +1,291 @@
+{
+  "esm": "2.4.0",
+  "metadata": {
+    "name": "RefArrayParam",
+    "description": "A scalar definition whose body reads its array parameters at sites (directly, under a sum over `i`, and through a nested definition it passes one to whole), used inside each row's own faq with bindings that read the row index, once with an array argument that is an expression (spec \u00a73.6).",
+    "authors": [
+      "EarthSciML Authors and Contributors"
+    ]
+  },
+  "index_sets": {
+    "x": {
+      "kind": "interval",
+      "size": 4
+    },
+    "y": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "M": {
+      "operators": {
+        "inner": {
+          "params": [
+            "w",
+            "k"
+          ],
+          "body": {
+            "op": "*",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "w",
+                  "k"
+                ]
+              },
+              {
+                "op": "index",
+                "args": [
+                  "w",
+                  "k"
+                ]
+              }
+            ]
+          }
+        },
+        "pair": {
+          "params": [
+            "k",
+            "w",
+            "q"
+          ],
+          "body": {
+            "op": "+",
+            "args": [
+              {
+                "op": "*",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "w",
+                      "k"
+                    ]
+                  },
+                  {
+                    "op": "faq",
+                    "output_idx": [],
+                    "reduce": "+",
+                    "args": [],
+                    "ranges": {
+                      "i": {
+                        "from": "y"
+                      }
+                    },
+                    "expr": {
+                      "op": "*",
+                      "args": [
+                        {
+                          "op": "index",
+                          "args": [
+                            "q",
+                            "k",
+                            "i"
+                          ]
+                        },
+                        {
+                          "op": "index",
+                          "args": [
+                            "q",
+                            "k",
+                            "i"
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "op": "apply_operator",
+                "args": [],
+                "name": "inner",
+                "bindings": {
+                  "w": "w",
+                  "k": "k"
+                }
+              },
+              {
+                "op": "/",
+                "args": [
+                  1.0,
+                  {
+                    "op": "+",
+                    "args": [
+                      1.0,
+                      {
+                        "op": "index",
+                        "args": [
+                          "w",
+                          "k"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "shape": [
+            "x"
+          ],
+          "default": 0.5
+        },
+        "Q": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 0.3
+        },
+        "k0": {
+          "type": "parameter",
+          "default": 0.2
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "u"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "-",
+                  "args": [
+                    "k0"
+                  ]
+                },
+                {
+                  "op": "apply_operator",
+                  "args": [],
+                  "name": "pair",
+                  "bindings": {
+                    "k": "k",
+                    "w": "u",
+                    "q": "Q"
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "Q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "x"
+              },
+              "i": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    -0.1,
+                    {
+                      "op": "index",
+                      "args": [
+                        "Q",
+                        "k",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.01,
+                    {
+                      "op": "apply_operator",
+                      "args": [],
+                      "name": "pair",
+                      "bindings": {
+                        "k": "k",
+                        "q": "Q",
+                        "w": {
+                          "op": "faq",
+                          "output_idx": [
+                            "j"
+                          ],
+                          "args": [],
+                          "ranges": {
+                            "j": {
+                              "from": "x"
+                            }
+                          },
+                          "expr": {
+                            "op": "*",
+                            "args": [
+                              2.0,
+                              {
+                                "op": "index",
+                                "args": [
+                                  "u",
+                                  "j"
+                                ]
+                              },
+                              {
+                                "op": "index",
+                                "args": [
+                                  "u",
+                                  "j"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
