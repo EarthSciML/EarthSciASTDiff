@@ -1,0 +1,68 @@
+{
+ "description": "Exact derivatives of guarded_quotient.esm with the guard holding (c = 0: s = 0, the quotient lg is infinite, the composed derivative must still be finite) and open (c = 1, where they match central differences).",
+ "t": 0.0,
+ "points": [
+  {
+   "params": {
+    "c": 0.0
+   },
+   "u": {
+    "x[1]": 0.5,
+    "x[2]": 2.0
+   },
+   "entries": [
+    [
+     "x[1]",
+     "x[1]",
+     -1.0
+    ],
+    [
+     "x[1]",
+     "x[2]",
+     0.0
+    ],
+    [
+     "x[2]",
+     "x[1]",
+     0.0
+    ],
+    [
+     "x[2]",
+     "x[2]",
+     -1.0
+    ]
+   ]
+  },
+  {
+   "params": {
+    "c": 1.0
+   },
+   "u": {
+    "x[1]": 0.5,
+    "x[2]": 2.0
+   },
+   "entries": [
+    [
+     "x[1]",
+     "x[1]",
+     -2.1687894226929063
+    ],
+    [
+     "x[1]",
+     "x[2]",
+     0.14597405755794815
+    ],
+    [
+     "x[2]",
+     "x[1]",
+     -2.3355849209271704
+    ],
+    [
+     "x[2]",
+     "x[2]",
+     -1.0009969622293209
+    ]
+   ]
+  }
+ ]
+}

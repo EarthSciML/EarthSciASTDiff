@@ -1,0 +1,146 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "guarded_quotient",
+    "description": "A guarded quotient, as MOSAIC's MTEM sulfate-poor log gamma is (spec \u00a73.6, named steps): s = c (x[1] + x[2]) with c = 0, lg = x[1] / s (0/0 or infinite), g = ifelse(s > 0, 10^lg, 1). The right-hand side reads g, which the guard holds at 1, so it is finite, and so must its derivative be: the composed derivative of g through lg is ifelse(s > 0, 10^lg log(10) _du_lg, 0), never 0 times the NaN of _du_lg."
+  },
+  "index_sets": {
+    "k": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Gq": {
+      "variables": {
+        "x": {
+          "type": "unknown",
+          "shape": [
+            "k"
+          ],
+          "default": [
+            0.5,
+            2.0
+          ]
+        },
+        "c": {
+          "type": "parameter",
+          "default": 0.0
+        },
+        "s": {
+          "type": "unknown"
+        },
+        "lg": {
+          "type": "unknown"
+        },
+        "g": {
+          "type": "unknown"
+        }
+      },
+      "equations": [
+        {
+          "lhs": "s",
+          "rhs": {
+            "op": "*",
+            "args": [
+              "c",
+              {
+                "op": "+",
+                "args": [
+                  {
+                    "op": "index",
+                    "args": [
+                      "x",
+                      1
+                    ]
+                  },
+                  {
+                    "op": "index",
+                    "args": [
+                      "x",
+                      2
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "lhs": "lg",
+          "rhs": {
+            "op": "/",
+            "args": [
+              {
+                "op": "index",
+                "args": [
+                  "x",
+                  1
+                ]
+              },
+              "s"
+            ]
+          }
+        },
+        {
+          "lhs": "g",
+          "rhs": {
+            "op": "ifelse",
+            "args": [
+              {
+                "op": ">",
+                "args": [
+                  "s",
+                  0.0
+                ]
+              },
+              {
+                "op": "^",
+                "args": [
+                  10.0,
+                  "lg"
+                ]
+              },
+              1.0
+            ]
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "x"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "k"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "g",
+                {
+                  "op": "index",
+                  "args": [
+                    "x",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

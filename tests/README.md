@@ -188,6 +188,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
+  - `guarded_quotient.esm` — a guarded quotient, as MOSAIC's MTEM
+    sulfate-poor log gamma is (spec §3.6): `lg = x[1]/s` with `s = 0`, read
+    only through `g = ifelse(s > 0, 10^lg, 1)`. The composed derivative of
+    `g` through `lg` must keep the guard outside the product with `_du_lg`,
+    which is NaN there. Its golden, `guarded_quotient.points.json`, holds
+    the exact derivatives with the guard holding (`c = 0`) and open
+    (`c = 1`, matching central differences); every binding checks them
   - `makearray_of_reads.esm` — an observed `m[k, i]` read from a
     `makearray` at `i` whose region values are cell reads of states (`u[k]`
     on region 1, `v[k]` broadcast over regions 2–3). Each value is a scalar

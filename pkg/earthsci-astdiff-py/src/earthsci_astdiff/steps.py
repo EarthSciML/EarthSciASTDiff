@@ -414,6 +414,42 @@ def _int_lit(e):
     return None
 
 
+def _is_guard(e) -> bool:
+    """Whether ``e`` is an ``ifelse`` with a literal-zero branch: a guard."""
+    return (
+        isinstance(e, ExprNode)
+        and e.op == "ifelse"
+        and len(e.args) == 3
+        and (is_zero(e.args[1]) or is_zero(e.args[2]))
+    )
+
+
+def guarded_mul(outer, inner):
+    """``outer · inner``, with a guard of ``outer`` (an ``ifelse`` with a
+    literal-zero branch, ``outer`` itself or the first such factor of a
+    product) kept outside the product: ``ifelse(c, a, 0) · y`` is
+    ``ifelse(c, a · y, 0)``. The guard of a definition
+    (``ifelse(s > 0, …/s, …)``) then also guards its composed derivative
+    where the inner derivative ``y`` is NaN (spec §3.6)."""
+    if _is_guard(outer):
+        return op(
+            "ifelse",
+            outer.args[0],
+            guarded_mul(outer.args[1], inner),
+            guarded_mul(outer.args[2], inner),
+        )
+    if isinstance(outer, ExprNode) and outer.op == "*":
+        k = next((i for i, a in enumerate(outer.args) if _is_guard(a)), None)
+        if k is not None:
+            g = outer.args[k]
+
+            def branch(x):
+                return guarded_mul(mul(*outer.args[:k], x, *outer.args[k + 1 :]), inner)
+
+            return op("ifelse", g.args[0], branch(g.args[1]), branch(g.args[2]))
+    return mul(outer, inner)
+
+
 def compose(outer: list, inner: list, co: bool) -> list:
     """The chain rule through an intermediate array ``W`` (operator_refs.jl
     ``_compose``): ``outer`` are bands of an expression with respect to ``W``
@@ -505,7 +541,7 @@ def compose(outer: list, inner: list, co: bool) -> list:
             if tie:
                 g = conj(g, conj_list(tie))
             cidx = [canon_lits(simplify_jl(sub(c))) for c in b.cidx]
-            coef = simp(mul(o.coef, sub(b.coef))) if co else None
+            coef = simp(guarded_mul(o.coef, sub(b.coef))) if co else None
             if co and is_zero(coef):
                 continue
             contracted = list(o.contracted) + bcon
