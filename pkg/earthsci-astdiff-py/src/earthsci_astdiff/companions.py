@@ -41,24 +41,30 @@ class Companions:
     extents; ``bands[o]`` the companion's time bands once computed (empty:
     ``∂o/∂t ≡ 0``, and a read of ``o`` contributes nothing)."""
 
-    def __init__(self, names, cols, inline, obs, ctx, scalars, co):
+    def __init__(self, names, cols, inline, obs, rank_obs, ctx, scalars, co):
         self.names = names
         self.cols = cols
         self.inline = inline
-        self.obs = obs
+        self.obs = obs  # the observed definitions, recurrences left out
+        self.rank_obs = rank_obs  # every observed definition (ranks, extents)
         self.ctx = ctx
         self.scalars = scalars
         self.co = co
         self.bands: dict[str, list[Band]] = {}
+        self.pending: set[str] = set()  # companions whose bands are being built
 
 
 def companion_names(sv, moving) -> dict[str, str]:
     """The companion name of each observed in ``moving``, in name order:
     ``_dt_<o>`` (``P._dt_<v>`` for a scoped ``P.v``, so it lives in ``o``'s
-    own component), with ``_`` appended until clear of every variable and
-    index-set name of the source and of the companion names before it."""
+    own component), with ``_`` appended until clear of every variable,
+    component path and index-set name of the source and of the companion
+    names before it."""
     taken = {str(n) for n in sv.variables}
     taken |= {str(n) for n in sv.index_sets}
+    # a companion named like a component path would be both a variable and a
+    # subsystem of a derived model
+    component_paths(taken, sv.variables)
     out = {}
     for o in sorted(moving):
         i = o.rfind(".")
@@ -67,18 +73,35 @@ def companion_names(sv, moving) -> dict[str, str]:
     return out
 
 
-def companion_setup(sv, ctx: Ctx, obs: dict, scalars, co: bool) -> Companions:
+def component_paths(taken: set, names) -> set:
+    """Every component path of the scoped names ``names`` (``A`` and ``A.B``
+    of ``A.B.v``), added to ``taken``."""
+    for n in names:
+        n = str(n)
+        for i, ch in enumerate(n):
+            if ch == ".":
+                taken.add(n[:i])
+    return taken
+
+
+def companion_setup(
+    sv, ctx: Ctx, obs: dict, scalars, co: bool, rank_obs: dict | None = None
+) -> Companions:
     """The companion layout of the time pass over the view. ``obs`` is every
     observed definition with the recurrences left out (the pass never
-    inlines a recurrence); ``scalars`` the declared scalars that are not
-    observed."""
+    inlines a recurrence), ``rank_obs`` every observed definition,
+    recurrences included (what an elementwise read at a cell and an
+    undeclared shape are ranked from); ``scalars`` the declared scalars that
+    are not observed."""
+    if rank_obs is None:
+        rank_obs = obs
     moving = _moving_observed(obs, {"t"})
     sub = _subscript_observed(set(), obs, sv.equations, sorted(moving))
     cols = moving - sub
     shapes = dict(ctx.shapes)
     memo: dict = {}
     for o in sorted(cols):
-        ext = _obs_extents(o, sv, obs, ctx, memo, set())
+        ext = _obs_extents(o, sv, rank_obs, ctx, memo, set())
         if ext:
             shapes[o] = ext
     ctx2 = replace(ctx, shapes=shapes)
@@ -87,6 +110,7 @@ def companion_setup(sv, ctx: Ctx, obs: dict, scalars, co: bool) -> Companions:
         cols,
         {n: obs[n] for n in sub},
         obs,
+        rank_obs,
         ctx2,
         set(scalars),
         co,
@@ -103,8 +127,10 @@ def _refuse(o: str) -> BandError:
 def _obs_extents(o: str, sv, obs: dict, ctx: Ctx, memo: dict, seen: set) -> list[int]:
     """The extents of observed ``o``: declared, or inferred from its
     definition — a ``faq``'s output ranges, a ``makearray``'s regions, or the
-    first operand of an elementwise definition that has extents. A
-    definition whose extents cannot be read at build time is refused."""
+    one extent list every array operand of an elementwise definition shares.
+    A definition whose extents cannot be read at build time (operands of
+    different extents, whose union needs index-set names; a partial
+    ``index`` read) is refused."""
     if o in ctx.shapes:
         return list(ctx.shapes[o])
     var = sv.variables.get(o)
@@ -151,12 +177,23 @@ def _expr_extents(e, o: str, sv, obs: dict, ctx: Ctx, memo: dict, seen: set) -> 
                 out[d] = max(out[d], region_bound(r[1]))
         return out
     if e.op == "index":
+        # a read at a cell is a scalar; a read with fewer indices than its
+        # array's rank is an array slice, whose extents are not read here
+        args = e.args or []
+        if args and isinstance(args[0], str):
+            ext = _obs_extents(args[0], sv, obs, ctx, memo, seen)
+            if len(args) - 1 < len(ext):
+                raise _refuse(o)
         return []
+    out: list[int] = []
     for a in e.args or []:
         ext = _expr_extents(a, o, sv, obs, ctx, memo, seen)
-        if ext:
-            return ext
-    return []
+        if not ext:
+            continue
+        if out and out != ext:
+            raise _refuse(o)
+        out = ext
+    return out
 
 
 def _faq_over(names: list, shape: list, body) -> ExprNode:
@@ -174,6 +211,11 @@ def companion_bands(cs: Companions, o: str) -> list[Band]:
     once."""
     if o in cs.bands:
         return cs.bands[o]
+    # moving observed that read each other (an algebraic loop that is not a
+    # recognized recurrence) have no companion: refused, never followed
+    if o in cs.pending:
+        raise BandError(f"cyclic observed definition through `{o}`")
+    cs.pending.add(o)
     shape = cs.ctx.shapes.get(o, [])
     d = cs.obs[o]
     if not shape:
@@ -184,6 +226,7 @@ def companion_bands(cs: Companions, o: str) -> list[Band]:
     inl = dict(cs.inline)
     inl[o] = d
     bs = time_row_bands(cs, rhs, inl, shape)
+    cs.pending.discard(o)
     cs.bands[o] = bs
     return bs
 
@@ -207,7 +250,7 @@ def time_row_bands(cs: Companions, rhs, inl: dict, shape_u: list) -> list[Band]:
     observed's companion, summed where they share a box, in column-name
     order."""
     ctx = cs.ctx
-    rhs = inline_observed(rhs, inl, [None], ctx.shapes, cs.obs, cs.scalars)
+    rhs = inline_observed(rhs, inl, [None], ctx.shapes, cs.rank_obs, cs.scalars)
     out: list[Band] = []
     for v in sorted(x for x in free_variables(rhs) if x == "t" or x in cs.cols):
         raw = bands_in(rhs, v, ctx, shape_u, cs.co)
@@ -221,11 +264,22 @@ def time_row_bands(cs: Companions, rhs, inl: dict, shape_u: list) -> list[Band]:
             continue
         shape_v = ctx.shapes.get(v, [])
         for b in bs:
-            out.append(_through_companion(b, cs.names[v], shape_v, cs.co))
+            out.append(_through_companion(b, v, cs.names[v], shape_v, cs.co))
     return [normalize_band(b) for b in merge_bands(_sum_same_box(out, cs.co))]
 
 
-def _through_companion(b: Band, name: str, shape: list, co: bool) -> Band:
+def _check_read_rank(b: Band, o: str, shape: list) -> None:
+    """A band's column index must read every dimension of the moving
+    observed ``o``, whose extents are ``shape``: a read of another rank has
+    no companion cell (an undeclared observed whose extents were read wrong,
+    or a malformed read), refused rather than read out of bounds."""
+    if len(b.cidx) != len(shape):
+        raise BandError(
+            f"observed `{o}` of rank {len(shape)} is read with {len(b.cidx)} indices; declare its shape"
+        )
+
+
+def _through_companion(b: Band, o: str, name: str, shape: list, co: bool) -> Band:
     """Band ``b`` (column: a moving observed of shape ``shape``, read at
     ``b.cidx``) composed with that observed's companion ``name``: column
     ``t``, coefficient ``coef · name[cidx…]`` (the bare name for a scalar).
@@ -233,6 +287,7 @@ def _through_companion(b: Band, name: str, shape: list, co: bool) -> Band:
     box guards the term by ``1 <= φ_d <= n_d``. Contracted dimensions become
     a scalar ``faq`` sum over their ranges, the band's ``where`` its filter,
     so a time band keeps the row's shape."""
+    _check_read_rank(b, o, shape)
     if not co:
         return Band(list(b.rows), list(b.ridx), [], None, [], b.guard if not b.contracted else None)
     read = name if not b.cidx else op("index", name, *b.cidx)
@@ -358,6 +413,17 @@ def time_companions(sv, bands: list[Band]) -> list:
     out: list = []
     if not bands:
         return out
+    # Every companion name's last segment starts with `_dt_`: a list none of
+    # whose coefficients reads such a name (every block of another axis)
+    # reads no companion, and the analysis below is skipped.
+    cand = []
+    for b in bands:
+        for x in (b.coef, b.guard):
+            if x is None:
+                continue
+            cand.extend(n for n in free_variables(x) if n.rsplit(".", 1)[-1].startswith("_dt_"))
+    if not cand:
+        return out
     obs = observed_defs(sv)
     ctx = ctx_of(sv)
     rn = {r.name for r in recurrences(sv, obs, ctx)}
@@ -367,15 +433,10 @@ def time_companions(sv, bands: list[Band]) -> list:
         return out
     names = companion_names(sv, moving)
     byname = {n: o for o, n in names.items()}
-    read = []
-    for b in bands:
-        for x in (b.coef, b.guard):
-            if x is None:
-                continue
-            read.extend(n for n in free_variables(x) if n in byname)
+    read = [n for n in cand if n in byname]
     if not read:
         return out
-    cs = companion_setup(sv, ctx, obs2, declared_scalars(sv, obs), True)
+    cs = companion_setup(sv, ctx, obs2, declared_scalars(sv, obs), True, rank_obs=obs)
     defs: dict = {}
     while read:
         n = read.pop()

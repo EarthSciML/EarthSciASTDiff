@@ -287,7 +287,12 @@ def _extended_pass(
 
         names = {r.name for r in recs}
         cs = companion_setup(
-            sv, ctx, {k: v for k, v in src_obs.items() if k not in names}, scalars, co
+            sv,
+            ctx,
+            {k: v for k, v in src_obs.items() if k not in names},
+            scalars,
+            co,
+            rank_obs=src_obs,
         )
         entries: list[JacEntry] = []
         row_eq: list[int] = []

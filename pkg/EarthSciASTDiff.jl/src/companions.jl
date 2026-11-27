@@ -27,20 +27,25 @@ struct _Companions
     names::Dict{String, String}
     cols::Set{String}
     inline::Dict{String, ASTExpr}
-    obs::Dict{String, ASTExpr}           # every observed definition (ranks)
+    obs::Dict{String, ASTExpr}           # the observed definitions, recurrences left out
+    rank_obs::Dict{String, ASTExpr}      # every observed definition (ranks, extents)
     ctx::Ctx
     scalars::Set{String}
     co::Bool
     bands::Dict{String, Vector{Band}}
+    pending::Set{String}                 # companions whose bands are being built
 end
 
 # The companion name of each observed in `moving`, in name order: `_dt_<o>`
 # (`P._dt_<v>` for a scoped `P.v`, so it lives in `o`'s own component), with
-# `_` appended until clear of every variable and index-set name of the source
-# and of the companion names before it.
+# `_` appended until clear of every variable, component path and index-set
+# name of the source and of the companion names before it.
 function _companion_names(sv::SysView, moving)::Dict{String, String}
     taken = Set{String}(String(n) for n in keys(sv.variables))
     union!(taken, String(n) for n in keys(sv.index_sets))
+    # a companion named like a component path would be both a variable and a
+    # subsystem of a derived model
+    _component_paths!(taken, keys(sv.variables))
     out = Dict{String, String}()
     for o in sort!(collect(String, moving))
         i = findlast('.', o)
@@ -51,31 +56,50 @@ function _companion_names(sv::SysView, moving)::Dict{String, String}
     return out
 end
 
+# Every component path of the scoped names `names` (`A` and `A.B` of
+# `A.B.v`), added to `taken`.
+function _component_paths!(taken::Set{String}, names)
+    for n in names
+        n = String(n)
+        for (i, ch) in pairs(n)
+            ch == '.' && push!(taken, n[1:prevind(n, i)])
+        end
+    end
+    return taken
+end
+
 # The companion layout of the time pass over the view. `obs` is every
 # observed definition with the recurrences left out (the pass never inlines a
-# recurrence); `scalars` the declared scalars that are not observed.
-function _companion_setup(sv::SysView, ctx::Ctx, obs::Dict{String, ASTExpr}, scalars, co::Bool)
+# recurrence), `rank_obs` every observed definition, recurrences included
+# (what an elementwise read at a cell and an undeclared shape are ranked
+# from); `scalars` the declared scalars that are not observed.
+function _companion_setup(
+        sv::SysView, ctx::Ctx, obs::Dict{String, ASTExpr}, scalars, co::Bool;
+        rank_obs::Dict{String, ASTExpr} = obs
+    )
     moving = _moving_observed(obs, Set{String}(["t"]))
     sub = _subscript_observed!(Set{String}(), obs, sv.equations, moving)
     cols = setdiff(moving, sub)
     shapes = copy(ctx.shapes)
     memo = Dict{String, Vector{Int}}()
     for o in sort!(collect(cols))
-        ext = _obs_extents(o, sv, obs, ctx, memo, Set{String}())
+        ext = _obs_extents(o, sv, rank_obs, ctx, memo, Set{String}())
         isempty(ext) || (shapes[o] = ext)
     end
     ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, ctx.refs, ctx.origins)
     return _Companions(
         _companion_names(sv, moving), cols,
-        Dict{String, ASTExpr}(n => obs[n] for n in sub), obs, ctx2,
-        Set{String}(scalars), co, Dict{String, Vector{Band}}()
+        Dict{String, ASTExpr}(n => obs[n] for n in sub), obs, rank_obs, ctx2,
+        Set{String}(scalars), co, Dict{String, Vector{Band}}(), Set{String}()
     )
 end
 
 # The extents of observed `o`: declared, or inferred from its definition —
-# a `faq`'s output ranges, a `makearray`'s regions, or the first operand of
-# an elementwise definition that has extents. A definition whose extents
-# cannot be read at build time is refused: its companion has no shape.
+# a `faq`'s output ranges, a `makearray`'s regions, an array-valued
+# reference's body extents, or the one extent list every array operand of an
+# elementwise definition shares. A definition whose extents cannot be read at
+# build time (operands of different extents, whose union needs index-set
+# names; a partial `index` read) is refused: its companion has no shape.
 function _obs_extents(o::String, sv::SysView, obs, ctx::Ctx, memo, seen::Set{String})::Vector{Int}
     haskey(ctx.shapes, o) && return ctx.shapes[o]
     var = get(sv.variables, o, nothing)
@@ -118,23 +142,44 @@ function _expr_extents(e::ASTExpr, o::String, sv::SysView, obs, ctx::Ctx, memo, 
         end
         return out
     elseif e.op == "index"
+        # a read at a cell is a scalar; a read with fewer indices than its
+        # array's rank is an array slice, whose extents are not read here
+        a = e.args[1]
+        a isa VarExpr || return Int[]
+        ext = _obs_extents(a.name, sv, obs, ctx, memo, seen)
+        length(e.args) - 1 < length(ext) && refuse()
         return Int[]
     elseif _is_ref(e)
         L = ctx.refs
         L === nothing && return Int[]
-        _with_layer(() -> _def!(L, e.name), L).rank == 0 && return Int[]
-        refuse()
+        D = _with_layer(() -> _def!(L, e.name), L)
+        D.rank == 0 && return Int[]
+        ext, org = try
+            _with_layer(() -> _ref_extents(L, D, something(e.bindings, Dict{String, ASTExpr}()), ctx), L)
+        catch err
+            err isa BandError || rethrow()
+            refuse()
+        end
+        all(==(1), org) || refuse()
+        return ext
     end
+    out = Int[]
     for a in e.args
         ext = _expr_extents(a, o, sv, obs, ctx, memo, seen)
-        isempty(ext) || return ext
+        isempty(ext) && continue
+        isempty(out) || out == ext || refuse()
+        out = ext
     end
-    return Int[]
+    return out
 end
 
 # The time bands of companion `o` (row `o` over its shape), computed once.
 function _companion_bands!(cs::_Companions, o::String)::Vector{Band}
     haskey(cs.bands, o) && return cs.bands[o]
+    # moving observed that read each other (an algebraic loop that is not a
+    # recognized recurrence) have no companion: refused, never followed
+    o in cs.pending && throw(BandError("cyclic observed definition through `$o`"))
+    push!(cs.pending, o)
     shape = get(cs.ctx.shapes, o, Int[])
     def = cs.obs[o]
     rhs = if isempty(shape)
@@ -151,6 +196,7 @@ function _companion_bands!(cs::_Companions, o::String)::Vector{Band}
     inl = copy(cs.inline)
     inl[o] = def
     bs = _time_row_bands(cs, rhs, inl, shape)
+    delete!(cs.pending, o)
     cs.bands[o] = bs
     return bs
 end
@@ -177,7 +223,7 @@ function _time_row_bands(cs::_Companions, rhs::ASTExpr, inl, shape_u::Vector{Int
     ctx = cs.ctx
     rhs = _with_layer(ctx.refs) do
         inline_observed(
-            rhs, inl; shapes = ctx.shapes, rank_obs = cs.obs, scalars = cs.scalars
+            rhs, inl; shapes = ctx.shapes, rank_obs = cs.rank_obs, scalars = cs.scalars
         )
     end
     out = Band[]
@@ -190,7 +236,7 @@ function _time_row_bands(cs::_Companions, rhs::ASTExpr, inl, shape_u::Vector{Int
         isempty(_companion_bands!(cs, v)) && continue
         sv_shape = get(ctx.shapes, v, Int[])
         for b in bs
-            push!(out, _through_companion(b, cs.names[v], sv_shape, cs.co))
+            push!(out, _through_companion(b, v, cs.names[v], sv_shape, cs.co))
         end
     end
     return Band[normalize_band(b) for b in merge_bands(_sum_same_box(out, cs.co))]
@@ -204,7 +250,8 @@ end
 # nothing). Contracted dimensions become a scalar `faq` sum over their
 # ranges, the band's `where` its filter, so a time band keeps the row's
 # shape.
-function _through_companion(b::Band, name::String, shape::Vector{Int}, co::Bool)
+function _through_companion(b::Band, o::String, name::String, shape::Vector{Int}, co::Bool)
+    _check_read_rank(b, o, shape)
     if !co
         return Band(
             b.rows, b.ridx, ASTExpr[], nothing, Tuple{String, Int, Int}[],
@@ -230,6 +277,20 @@ function _through_companion(b::Band, name::String, shape::Vector{Int}, co::Bool)
         filter = b.guard
     )
     return Band(b.rows, b.ridx, ASTExpr[], sum, Tuple{String, Int, Int}[], nothing)
+end
+
+# A band's column index must read every dimension of the moving observed
+# `o`, whose extents are `shape`: a read of another rank has no companion
+# cell (an undeclared observed whose extents were read wrong, or a malformed
+# read), refused rather than read out of bounds.
+function _check_read_rank(b::Band, o::String, shape::Vector{Int})
+    length(b.cidx) == length(shape) || throw(
+        BandError(
+            "observed `$o` of rank $(length(shape)) is read with $(length(b.cidx)) " *
+                "indices; declare its shape"
+        )
+    )
+    return
 end
 
 # Bands of one row with the same box (rows, row names and `where`) summed
@@ -312,29 +373,34 @@ end
 # order — what the block's `companions` field and every derived document of
 # the list carry (spec §4.2, §8.1). Empty unless some coefficient (or
 # `where`) reads a companion name, which no source name can be.
-function _time_companions(sv::SysView, entries)
+function _time_companions(sv::SysView, entries; info::Union{Nothing, _RecInfo} = nothing)
     out = Tuple{String, String, ASTExpr}[]
     isempty(entries) && return out
-    obs = _observed_defs(sv)
-    ctx = _ctx(sv)
-    recs = recurrences(sv, obs, ctx)
+    # Every companion name's last segment starts with `_dt_`: a list none of
+    # whose coefficients reads such a name (every block of another axis)
+    # reads no companion, and the analysis below is skipped.
+    cand = Set{String}()
+    for en in entries
+        for x in (en.band.coef, en.band.guard)
+            x === nothing && continue
+            for n in free_variables(x)
+                i = findlast('.', n)
+                startswith(i === nothing ? n : n[nextind(n, i):end], "_dt_") && push!(cand, n)
+            end
+        end
+    end
+    isempty(cand) && return out
+    info === nothing && (info = _rec_info(sv))
+    obs, ctx, recs = info.obs, info.ctx, info.recs
     rn = Set{String}(r.name for r in recs)
     obs2 = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in rn))
     moving = _moving_observed(obs2, Set{String}(["t"]))
     isempty(moving) && return out
     names = _companion_names(sv, moving)
     byname = Dict{String, String}(n => o for (o, n) in names)
-    read = Set{String}()
-    for en in entries
-        for x in (en.band.coef, en.band.guard)
-            x === nothing && continue
-            for n in free_variables(x)
-                haskey(byname, n) && push!(read, n)
-            end
-        end
-    end
+    read = Set{String}(n for n in cand if haskey(byname, n))
     isempty(read) && return out
-    cs = _companion_setup(sv, ctx, obs2, _declared_scalars(sv, obs), true)
+    cs = _companion_setup(sv, ctx, obs2, _declared_scalars(sv, obs), true; rank_obs = obs)
     defs = Dict{String, ASTExpr}()
     work = collect(read)
     while !isempty(work)

@@ -124,6 +124,81 @@ fn elementwise_read_at_a_cell_refuses_what_it_cannot_read() {
     );
 }
 
+#[test]
+fn companion_extents_are_read_or_refused() {
+    // operands of different extents: an undeclared shape is their union by
+    // index-set name, which extents alone cannot give
+    let mixed = variant(|m| {
+        let cos = jr_t()["args"][1].clone();
+        m["equations"][0]["rhs"] =
+            json!({"op": "+", "args": [{"op": "*", "args": ["Ea", cos]}, "Eb"]});
+    });
+    let err = jacobian_bands(&mixed, Some("Box"), Wrt::Time).unwrap_err();
+    assert!(err.to_string().contains("cannot be read"), "{err}");
+}
+
+#[test]
+fn moving_observed_that_read_each_other_are_refused() {
+    let text = fs::read_to_string(root().join("tests/valid/tgrad_data_fixed.esm")).unwrap();
+    let mut d: Value = serde_json::from_str(&text).unwrap();
+    let m = &mut d["models"]["Box"];
+    let cell = |v: &str| json!({"op": "index", "args": [v, "i", "j"]});
+    let each = |e: Value| {
+        json!({"op": "faq", "args": [], "output_idx": ["i", "j"],
+               "ranges": {"i": {"from": "x"}, "j": {"from": "y"}}, "expr": e})
+    };
+    m["variables"]["jr"]["shape"] = json!(["x", "y"]);
+    m["variables"]["q"] = json!({"type": "unknown", "shape": ["x", "y"]});
+    let cos = jr_t()["args"][1].clone();
+    m["equations"][0]["rhs"] = each(json!({"op": "+", "args": [cos, cell("q")]}));
+    m["equations"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"lhs": "q", "rhs": each(json!({"op": "*", "args": [2, cell("jr")]}))}));
+    // EarthSciAST's loader may refuse the cycle itself; if it loads, the
+    // companion pass refuses it, never recursing without end
+    if let Ok(file) = earthsci_ast::load_string(&d.to_string()) {
+        let err = jacobian_bands(&file, Some("Box"), Wrt::Time).unwrap_err();
+        assert!(err.to_string().contains("cyclic"), "{err}");
+    }
+}
+
+#[test]
+fn undeclared_observed_defined_by_an_array_reference() {
+    // g = sq(wt) (an array-valued operator reference, declared without a
+    // shape) moves with t through wt: its extents are the reference body's,
+    // and the band reads its companion
+    let text = fs::read_to_string(root().join("tests/valid/two_shape_stencil.esm")).unwrap();
+    let mut d: Value = serde_json::from_str(&text).unwrap();
+    let m = &mut d["models"]["M"];
+    m["variables"]["wt"] = json!({"type": "unknown", "shape": ["x"]});
+    m["variables"]["g"] = json!({"type": "unknown"});
+    let eqs = m["equations"].as_array_mut().unwrap();
+    eqs.push(json!({"lhs": "wt", "rhs": {"op": "faq", "args": [], "output_idx": ["i"],
+        "ranges": {"i": {"from": "x"}},
+        "expr": {"op": "+", "args": [2, {"op": "cos", "args": [{"op": "*", "args": ["k", "t", "i"]}]}]}}}));
+    eqs.push(
+        json!({"lhs": "g", "rhs": {"op": "apply_operator", "args": [], "name": "sq",
+        "bindings": {"f": "wt", "n": 6}}}),
+    );
+    let body = eqs[0]["rhs"]["expr"].clone();
+    eqs[0]["rhs"]["expr"] = json!({"op": "+", "args": [body, {"op": "index", "args": ["g", "i"]}]});
+    let file = earthsci_ast::load_string(&d.to_string()).expect("variant loads");
+    let entries = jacobian_bands(&file, Some("M"), Wrt::Time).unwrap();
+    assert_eq!(
+        entries.iter().map(|e| e.u.as_str()).collect::<Vec<_>>(),
+        ["a"]
+    );
+    let block = jacobian_block(&file, Some("M"), Wrt::Time, true, 12).unwrap();
+    let names: Vec<&str> = block["companions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["_dt_g", "_dt_wt"]);
+}
+
 /// The names `_dt_<o>` an expression's free variables hold, sorted.
 fn companion_reads(e: &Value) -> Vec<String> {
     fn walk(e: &Value, acc: &mut std::collections::BTreeSet<String>) {

@@ -92,6 +92,10 @@ end
     comps = EarthSciASTDiff._time_companions(sv, jacobian_bands(sv; wrt = :time))
     @test [n for (n, _, _) in comps] == ["_dt_Tb", "_dt_kr", "_dt_w_"]
     @test EarthSciASTDiff._companion_names(sv, ["P.v", "w"]) == Dict("P.v" => "P._dt_v", "w" => "_dt_w_")
+    # a component path is taken too: `P._dt_v` names a subsystem of a source
+    # with a variable `P._dt_v.x`
+    taken = EarthSciASTDiff._component_paths!(Set{String}(), ["P._dt_v.x", "w"])
+    @test taken == Set(["P", "P._dt_v"])
 end
 
 @testset "time bands: companions against a central difference in t" begin
@@ -161,7 +165,7 @@ end
     partial = _data_fixed_variant() do m
         _jrdef!(m, Dict("op" => "+", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1])]))
     end
-    @test_throws EarthSciASTDiff.InlineError jacobian_bands(sysview(partial, "Box"); wrt = :time)
+    @test_throws EarthSciASTDiff.BandError jacobian_bands(sysview(partial, "Box"); wrt = :time)
     # a global named like the read site's index `j`: the read is a column
     # (spec §4.2, companions), not inlined, and the companion row of `jr`
     # names its own indices clear of `j`, so nothing is captured
@@ -179,6 +183,84 @@ end
         _jrdef!(m, Dict("op" => "*", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1, 2])]))
     end
     @test length(jacobian_bands(sysview(full, "Box"); wrt = :time)) == 1
+end
+
+@testset "time bands: a companion's extents are read or refused, never guessed" begin
+    BE = EarthSciASTDiff.BandError
+    # operands of different extents: an undeclared shape is their union by
+    # index-set name, which extents alone cannot give
+    mixed = _data_fixed_variant() do m
+        _jrdef!(m, Dict("op" => "+", "args" => Any[Dict("op" => "*", "args" => Any["Ea", _JR_T["args"][2]]), "Eb"]))
+    end
+    @test_throws BE jacobian_bands(sysview(mixed, "Box"); wrt = :time)
+    # a partial index (still an array) inside the definition
+    partial = _data_fixed_variant() do m
+        _jrdef!(m, Dict("op" => "+", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1])]))
+    end
+    @test_throws BE jacobian_bands(sysview(partial, "Box"); wrt = :time)
+    # a band whose column index does not read every dimension of the observed
+    b = EarthSciASTDiff.Band(
+        [(1, 3)], Any["i"], ASTExpr[VarExpr("i")], EarthSciASTDiff.lit(1),
+        Tuple{String, Int, Int}[], nothing
+    )
+    @test_throws BE EarthSciASTDiff._through_companion(b, "jr", "_dt_jr", [3, 2], true)
+end
+
+@testset "time bands: moving observed that read each other are refused" begin
+    loop = _data_fixed_variant() do m
+        m["variables"]["jr"]["shape"] = Any["x", "y"]
+        m["variables"]["q"] = Dict{String, Any}("type" => "unknown", "shape" => Any["x", "y"])
+        cell(v) = Dict("op" => "index", "args" => Any[v, "i", "j"])
+        each(e) = Dict(
+            "op" => "faq", "args" => Any[], "output_idx" => Any["i", "j"],
+            "ranges" => Dict("i" => Dict("from" => "x"), "j" => Dict("from" => "y")), "expr" => e
+        )
+        _jrdef!(m, each(Dict("op" => "+", "args" => Any[_JR_T["args"][2], cell("q")])))
+        push!(m["equations"], Dict("lhs" => "q", "rhs" => each(Dict("op" => "*", "args" => Any[2, cell("jr")]))))
+    end
+    err = try
+        jacobian_bands(sysview(loop, "Box"); wrt = :time)
+        nothing
+    catch e
+        e
+    end
+    @test err isa EarthSciASTDiff.BandError && occursin("cyclic", err.msg)
+end
+
+@testset "time bands: an undeclared observed defined by an array reference" begin
+    # g = sq(wt) (an array-valued operator reference, declared without a
+    # shape) moves with t through wt: its extents are the reference body's,
+    # and the band reads its companion
+    d = EarthSciASTDiff.JSON3.read(read(joinpath(@__DIR__, "..", "..", "..", "tests", "valid", "two_shape_stencil.esm"), String), Dict{String, Any})
+    m = d["models"]["M"]
+    m["variables"]["wt"] = Dict{String, Any}("type" => "unknown", "shape" => Any["x"])
+    m["variables"]["g"] = Dict{String, Any}("type" => "unknown")
+    push!(
+        m["equations"], Dict(
+            "lhs" => "wt", "rhs" => Dict(
+                "op" => "faq", "args" => Any[], "output_idx" => Any["i"], "ranges" => Dict("i" => Dict("from" => "x")),
+                "expr" => Dict("op" => "+", "args" => Any[2, Dict("op" => "cos", "args" => Any[Dict("op" => "*", "args" => Any["k", "t", "i"])])])
+            )
+        )
+    )
+    push!(m["equations"], Dict("lhs" => "g", "rhs" => Dict("op" => "apply_operator", "args" => Any[], "name" => "sq", "bindings" => Dict("f" => "wt", "n" => 6))))
+    m["equations"][1]["rhs"]["expr"] = Dict(
+        "op" => "+", "args" => Any[m["equations"][1]["rhs"]["expr"], Dict("op" => "index", "args" => Any["g", "i"])]
+    )
+    file = EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(d))
+    sv = sysview(file, "M")
+    entries = jacobian_bands(sv; wrt = :time)
+    @test [en.u for en in entries] == ["a"]
+    comps = EarthSciASTDiff._time_companions(sv, entries)
+    @test [(n, o) for (n, o, _) in comps] == [("_dt_g", "g"), ("_dt_wt", "wt")]
+    f!, u0, p, _, _ = tw_build(file)
+    u = [0.2 + 0.1 * i for i in eachindex(u0)]
+    for τ in (0.4, 1.3)
+        dT = Vector(doc_jacobian(file; wrt = :time, u = u, t = τ).J[:, 1])
+        h = 1.0e-5; up = similar(u); um = similar(u)
+        f!(up, u, p, τ + h); f!(um, u, p, τ - h)
+        @test dT ≈ (up .- um) ./ 2h rtol = 1.0e-6
+    end
 end
 
 @testset "time bands: empty list for an autonomous model (f_t ≡ 0)" begin

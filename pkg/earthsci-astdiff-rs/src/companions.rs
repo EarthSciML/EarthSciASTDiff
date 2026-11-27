@@ -48,20 +48,29 @@ pub(crate) struct Companions {
     names: HashMap<String, String>,
     cols: HashSet<String>,
     pub(crate) inline: HashMap<String, Expr>,
+    /// The observed definitions, recurrences left out.
     obs: HashMap<String, Expr>,
+    /// Every observed definition, recurrences included (ranks, extents).
+    rank_obs: HashMap<String, Expr>,
     pub(crate) ctx: Ctx,
     scalars: HashSet<String>,
     co: bool,
     bands: HashMap<String, Vec<Band>>,
+    /// The companions whose bands are being built.
+    pending: HashSet<String>,
 }
 
 /// The companion name of each observed in `moving`, in name order:
 /// `_dt_<o>` (`P._dt_<v>` for a scoped `P.v`, so it lives in `o`'s own
-/// component), with `_` appended until clear of every variable and
-/// index-set name of the source and of the companion names before it.
+/// component), with `_` appended until clear of every variable, component
+/// path and index-set name of the source and of the companion names before
+/// it.
 pub(crate) fn companion_names(sv: &SysView, moving: &HashSet<String>) -> HashMap<String, String> {
     let mut taken: HashSet<String> = sv.variables.keys().cloned().collect();
     taken.extend(sv.index_sets.keys().cloned());
+    // a companion named like a component path would be both a variable and
+    // a subsystem of a derived model
+    component_paths(&mut taken, sv.variables.keys());
     let mut sorted: Vec<&String> = moving.iter().collect();
     sorted.sort();
     let mut out = HashMap::new();
@@ -75,14 +84,31 @@ pub(crate) fn companion_names(sv: &SysView, moving: &HashSet<String>) -> HashMap
     out
 }
 
+/// Every component path of the scoped names `names` (`A` and `A.B` of
+/// `A.B.v`), added to `taken`.
+pub(crate) fn component_paths<'a>(
+    taken: &mut HashSet<String>,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    for n in names {
+        for (i, ch) in n.char_indices() {
+            if ch == '.' {
+                taken.insert(n[..i].to_string());
+            }
+        }
+    }
+}
+
 /// The companion layout of the time pass over the view. `obs` is every
 /// observed definition with the recurrences left out (the pass never
-/// inlines a recurrence); `scalars` the declared scalars that are not
-/// observed.
+/// inlines a recurrence), `rank_obs` every observed definition, recurrences
+/// included (what an elementwise read at a cell and an undeclared shape are
+/// ranked from); `scalars` the declared scalars that are not observed.
 pub(crate) fn companion_setup(
     sv: &SysView,
     ctx: &Ctx,
     obs: HashMap<String, Expr>,
+    rank_obs: HashMap<String, Expr>,
     scalars: &HashSet<String>,
     co: bool,
 ) -> R<Companions> {
@@ -98,7 +124,7 @@ pub(crate) fn companion_setup(
     let mut sorted: Vec<&String> = cols.iter().collect();
     sorted.sort();
     for o in sorted {
-        let ext = obs_extents(o, sv, &obs, ctx, &mut memo, &mut HashSet::new())?;
+        let ext = obs_extents(o, sv, &rank_obs, ctx, &mut memo, &mut HashSet::new())?;
         if !ext.is_empty() {
             ctx2.shapes.insert(o.clone(), ext);
         }
@@ -109,10 +135,12 @@ pub(crate) fn companion_setup(
         cols,
         inline,
         obs,
+        rank_obs,
         ctx: ctx2,
         scalars: scalars.clone(),
         co,
         bands: HashMap::new(),
+        pending: HashSet::new(),
     })
 }
 
@@ -124,9 +152,12 @@ fn refuse(o: &str) -> BandError {
 }
 
 /// The extents of observed `o`: declared, or inferred from its definition —
-/// a `faq`'s output ranges, a `makearray`'s regions, or the first operand of
-/// an elementwise definition that has extents. A definition whose extents
-/// cannot be read at build time is refused: its companion has no shape.
+/// a `faq`'s output ranges, a `makearray`'s regions, an array-valued
+/// reference's body extents, or the one extent list every array operand of
+/// an elementwise definition shares. A definition whose extents cannot be
+/// read at build time (operands of different extents, whose union needs
+/// index-set names; a partial `index` read) is refused: its companion has
+/// no shape.
 fn obs_extents(
     o: &str,
     sv: &SysView,
@@ -205,6 +236,14 @@ fn expr_extents(
         return Ok(out);
     }
     if n.op == "index" {
+        // a read at a cell is a scalar; a read with fewer indices than its
+        // array's rank is an array slice, whose extents are not read here
+        if let Some(Expr::Variable(a)) = n.args.first() {
+            let ext = obs_extents(a, sv, obs, ctx, memo, seen)?;
+            if n.args.len() - 1 < ext.len() {
+                return Err(refuse(o));
+            }
+        }
         return Ok(Vec::new());
     }
     if let Some(rn) = ref_node(e) {
@@ -212,19 +251,30 @@ fn expr_extents(
             return Ok(Vec::new());
         };
         let name = rn.name.clone().unwrap_or_default();
-        let rank = with_layer(&ctx.refs, || l.def(&name))?.rank;
-        if rank == 0 {
+        let d = with_layer(&ctx.refs, || l.def(&name))?;
+        if d.rank == 0 {
             return Ok(Vec::new());
         }
-        return Err(refuse(o));
+        let bindings = rn.bindings.clone().unwrap_or_default();
+        let (ext, org) =
+            with_layer(&ctx.refs, || l.ref_extents(&d, &bindings, ctx)).map_err(|_| refuse(o))?;
+        if org.iter().any(|&x| x != 1) {
+            return Err(refuse(o));
+        }
+        return Ok(ext);
     }
+    let mut out: Vec<i64> = Vec::new();
     for a in &n.args {
         let ext = expr_extents(a, o, sv, obs, ctx, memo, seen)?;
-        if !ext.is_empty() {
-            return Ok(ext);
+        if ext.is_empty() {
+            continue;
         }
+        if !out.is_empty() && out != ext {
+            return Err(refuse(o));
+        }
+        out = ext;
     }
-    Ok(Vec::new())
+    Ok(out)
 }
 
 fn faq_over(names: &[String], shape: &[i64], body: Expr) -> Expr {
@@ -253,6 +303,13 @@ pub(crate) fn companion_bands(cs: &mut Companions, o: &str) -> R<Vec<Band>> {
     if let Some(b) = cs.bands.get(o) {
         return Ok(b.clone());
     }
+    // moving observed that read each other (an algebraic loop that is not a
+    // recognized recurrence) have no companion: refused, never followed
+    if !cs.pending.insert(o.to_string()) {
+        return Err(BandError(format!(
+            "cyclic observed definition through `{o}`"
+        )));
+    }
     let shape = cs.ctx.shapes.get(o).cloned().unwrap_or_default();
     let def = cs.obs[o].clone();
     let rhs = if shape.is_empty() {
@@ -268,6 +325,7 @@ pub(crate) fn companion_bands(cs: &mut Companions, o: &str) -> R<Vec<Band>> {
     let mut inl = cs.inline.clone();
     inl.insert(o.to_string(), def);
     let bs = time_row_bands(cs, &rhs, &inl, &shape)?;
+    cs.pending.remove(o);
     cs.bands.insert(o.to_string(), bs.clone());
     Ok(bs)
 }
@@ -310,7 +368,7 @@ pub(crate) fn time_row_bands(
             inl,
             &mut obs_names,
             &cs.ctx.shapes,
-            &cs.obs,
+            &cs.rank_obs,
             &cs.scalars,
         )
     })
@@ -339,7 +397,7 @@ pub(crate) fn time_row_bands(
         let shape_v = cs.ctx.shapes.get(v).cloned().unwrap_or_default();
         let name = cs.names[v].clone();
         for b in &bs {
-            out.push(through_companion(b, &name, &shape_v, cs.co));
+            out.push(through_companion(b, v, &name, &shape_v, cs.co)?);
         }
     }
     Ok(merge_bands(sum_same_box(out, cs.co))
@@ -355,9 +413,10 @@ pub(crate) fn time_row_bands(
 /// by `1 <= φ_d <= n_d`. Contracted dimensions become a scalar `faq` sum
 /// over their ranges, the band's `where` its filter, so a time band keeps
 /// the row's shape.
-fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
+pub(crate) fn through_companion(b: &Band, o: &str, name: &str, shape: &[i64], co: bool) -> R<Band> {
+    check_read_rank(b, o, shape)?;
     if !co {
-        return Band {
+        return Ok(Band {
             rows: b.rows.clone(),
             ridx: b.ridx.clone(),
             cidx: Vec::new(),
@@ -368,7 +427,7 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
             } else {
                 None
             },
-        };
+        });
     }
     let read = if b.cidx.is_empty() {
         Expr::Variable(name.to_string())
@@ -391,14 +450,14 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
         term = op("ifelse", vec![g, term, Expr::Integer(0)]);
     }
     if b.contracted.is_empty() {
-        return Band {
+        return Ok(Band {
             rows: b.rows.clone(),
             ridx: b.ridx.clone(),
             cidx: Vec::new(),
             coef: term,
             contracted: Vec::new(),
             guard: b.guard.clone(),
-        };
+        });
     }
     let ranges: HashMap<String, RangeSpec> = b
         .contracted
@@ -414,14 +473,29 @@ fn through_companion(b: &Band, name: &str, shape: &[i64], co: bool) -> Band {
         filter: b.guard.clone().map(Box::new),
         ..Default::default()
     });
-    Band {
+    Ok(Band {
         rows: b.rows.clone(),
         ridx: b.ridx.clone(),
         cidx: Vec::new(),
         coef: sum,
         contracted: Vec::new(),
         guard: None,
+    })
+}
+
+/// A band's column index must read every dimension of the moving observed
+/// `o`, whose extents are `shape`: a read of another rank has no companion
+/// cell (an undeclared observed whose extents were read wrong, or a
+/// malformed read), refused rather than read out of bounds.
+pub(crate) fn check_read_rank(b: &Band, o: &str, shape: &[i64]) -> R<()> {
+    if b.cidx.len() != shape.len() {
+        return Err(BandError(format!(
+            "observed `{o}` of rank {} is read with {} indices; declare its shape",
+            shape.len(),
+            b.cidx.len()
+        )));
     }
+    Ok(())
 }
 
 /// Bands of one row with the same box (rows, row names and `where`) summed
@@ -568,6 +642,23 @@ pub(crate) fn time_companions(sv: &SysView, bands: &[&Band]) -> R<Vec<(String, S
     if bands.is_empty() {
         return Ok(out);
     }
+    // Every companion name's last segment starts with `_dt_`: a list none of
+    // whose coefficients reads such a name (every block of another axis)
+    // reads no companion, and the analysis below is skipped.
+    let mut cand: Vec<String> = Vec::new();
+    for b in bands {
+        for x in std::iter::once(&b.coef).chain(b.guard.iter()) {
+            for n in free_variables(x) {
+                let last = n.rsplit('.').next().unwrap_or(&n);
+                if last.starts_with("_dt_") {
+                    cand.push(n);
+                }
+            }
+        }
+    }
+    if cand.is_empty() {
+        return Ok(out);
+    }
     let obs = crate::system::observed_defs(sv)?;
     let ctx = crate::system::ctx_of(sv)?;
     let recs = crate::recurrence::recurrences(sv, &obs, &ctx)?;
@@ -582,21 +673,15 @@ pub(crate) fn time_companions(sv: &SysView, bands: &[&Band]) -> R<Vec<(String, S
     }
     let names = companion_names(sv, &moving);
     let byname: HashMap<&String, &String> = names.iter().map(|(o, n)| (n, o)).collect();
-    let mut read: Vec<String> = Vec::new();
-    for b in bands {
-        for x in std::iter::once(&b.coef).chain(b.guard.iter()) {
-            for n in free_variables(x) {
-                if byname.contains_key(&n) {
-                    read.push(n);
-                }
-            }
-        }
-    }
+    let mut read: Vec<String> = cand
+        .into_iter()
+        .filter(|n| byname.contains_key(n))
+        .collect();
     if read.is_empty() {
         return Ok(out);
     }
     let scalars = declared_scalars(sv, &obs);
-    let mut cs = companion_setup(sv, &ctx, obs2, &scalars, true)?;
+    let mut cs = companion_setup(sv, &ctx, obs2, obs.clone(), &scalars, true)?;
     let mut defs: BTreeMap<String, Expr> = BTreeMap::new();
     while let Some(n) = read.pop() {
         if defs.contains_key(&n) {
@@ -667,4 +752,31 @@ pub(crate) fn companions_field(comps: &[(String, String, Expr)]) -> Value {
             .map(|(n, o, d)| json!({"name": n, "of": o, "rhs": ser_expr(d)}))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_read_of_another_rank_is_refused() {
+        let b = Band {
+            rows: vec![(1, 3)],
+            ridx: vec![RIdx::Name("i".into())],
+            cidx: vec![Expr::Variable("i".into())],
+            coef: Expr::Integer(1),
+            contracted: Vec::new(),
+            guard: None,
+        };
+        assert!(through_companion(&b, "jr", "_dt_jr", &[3, 2], true).is_err());
+        assert!(through_companion(&b, "jr", "_dt_jr", &[3], true).is_ok());
+    }
+
+    #[test]
+    fn component_paths_are_taken() {
+        let mut taken = HashSet::new();
+        component_paths(&mut taken, &["P._dt_v.x".to_string(), "w".to_string()]);
+        let want: HashSet<String> = ["P", "P._dt_v"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(taken, want);
+    }
 }

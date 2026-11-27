@@ -500,7 +500,8 @@ pub(crate) fn extended_pass_in(
         for r in &recs {
             nr.remove(&r.name);
         }
-        let mut cs = crate::companions::companion_setup(sv, ctx, nr, &scalars, co)?;
+        let mut cs =
+            crate::companions::companion_setup(sv, ctx, nr, src_obs.clone(), &scalars, co)?;
         let mut entries = Vec::new();
         let mut row_eq = Vec::new();
         for (q, eq) in sv.equations.iter().enumerate() {

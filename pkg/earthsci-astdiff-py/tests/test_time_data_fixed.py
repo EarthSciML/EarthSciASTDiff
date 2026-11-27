@@ -141,18 +141,55 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
         assert _companion_reads(ser_expr(en.band.coef)) == []
 
 
+def test_companion_extents_are_read_or_refused(valid_dir):
+    # operands of different extents: an undeclared shape is their union by
+    # index-set name, which extents alone cannot give
+    def mixed(m):
+        m["equations"][0]["rhs"] = {"op": "+", "args": [{"op": "*", "args": ["Ea", _COS_T]}, "Eb"]}
+
+    with pytest.raises(BandError):
+        jacobian_bands(_variant(valid_dir, mixed), "Box", wrt="time")
+    # a band whose column index does not read every dimension of the observed
+    from earthsci_astdiff.bands import Band
+    from earthsci_astdiff.companions import _through_companion
+
+    with pytest.raises(BandError):
+        _through_companion(Band([(1, 3)], ["i"], ["i"], 1, [], None), "jr", "_dt_jr", [3, 2], True)
+
+
+def test_moving_observed_that_read_each_other_are_refused(valid_dir):
+    # EarthSciAST's loader refuses an observed cycle; the companion pass
+    # refuses one too (a companion reached again while its bands are being
+    # built), never recursing without end
+    from earthsci_astdiff import sysview
+    from earthsci_astdiff.companions import companion_bands, companion_setup, declared_scalars
+    from earthsci_astdiff.system import ctx_of, observed_defs
+
+    sv = sysview(ea.load_path(str(valid_dir / "tgrad_named_steps.esm")))
+    obs = observed_defs(sv)
+    cs = companion_setup(sv, ctx_of(sv), obs, declared_scalars(sv, obs), True)
+    cs.pending.add("Tb")
+    with pytest.raises(BandError, match="cyclic"):
+        companion_bands(cs, "kr")
+
+
 def test_companion_name_is_clear_of_the_source(valid_dir):
     d = json.loads((valid_dir / "tgrad_named_steps.esm").read_text())
     d["models"]["Column"]["variables"]["_dt_w"] = {"type": "parameter", "default": 1.0}
     file = ea.load_string(json.dumps(d))
     comps = jacobian_block(file, "Column", wrt="time")["companions"]
     assert [c["name"] for c in comps] == ["_dt_Tb", "_dt_kr", "_dt_w_"]
+    # a component path is taken too: `P._dt_v` names a subsystem of a source
+    # with a variable `P._dt_v.x`
+    from earthsci_astdiff.companions import component_paths
+
+    assert component_paths(set(), ["P._dt_v.x", "w"]) == {"P", "P._dt_v"}
 
 
 def test_companions_match_a_central_difference_in_t(valid_dir, golden_dir):
     # The composed f_t at the value golden's point equals the derivative in
     # t of the source right-hand side, which EarthSciAST evaluates.
-    from docvals import _Doc, state_cells
+    from docvals import _Doc, doc_jacobian, state_cells
     from earthsci_astdiff import sysview
 
     file = ea.load_path(str(valid_dir / "tgrad_named_steps.esm"))
@@ -163,6 +200,10 @@ def test_companions_match_a_central_difference_in_t(valid_dir, golden_dir):
     up = src.call(g["u"], g["params"], g["t"] + h, {})
     dn = src.call(g["u"], g["params"], g["t"] - h, {})
     assert len(g["entries"]) == 12
+    # this binding's own bands and companions, through its own JvpEval
+    # document (not the reference's numbers)
+    mine = doc_jacobian(file, "Column", wrt="time", states=g["u"], params=g["params"], t=g["t"]).J
     for row, _, j in g["entries"]:
         fd = (up(row) - dn(row)) / (2 * h)
         assert j == pytest.approx(fd, rel=1e-6, abs=1e-12), row
+        assert mine[(row, "t")] == pytest.approx(fd, rel=1e-6, abs=1e-12), row

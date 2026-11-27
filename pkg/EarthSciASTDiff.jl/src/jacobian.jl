@@ -341,7 +341,7 @@ function _extended_pass(
         rn = Set{String}(r.name for r in recs)
         cs = _companion_setup(
             sv, ctx, Dict{String, ASTExpr}(k => v for (k, v) in src_obs if !(k in rn)),
-            scalars, co
+            scalars, co; rank_obs = src_obs
         )
         entries = JacEntry[]
         row_eq = Int[]

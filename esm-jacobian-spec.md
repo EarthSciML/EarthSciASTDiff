@@ -751,18 +751,26 @@ differentiated again in each of them.
   through an `index` subscript, or read by such an observed's body, to a
   fixpoint over the equations and the bodies of the moving observed). Those
   few are inlined, as on every other axis. Each remaining observed `o` is a
-  **column** of the time pass beside `t`, and has a companion.
+  **column** of the time pass beside `t`, and has a companion. Columns
+  that read each other (an observed cycle that is not a recognized
+  recurrence) have no companion and are refused.
 - *Name.* `o`'s companion is `_dt_<o>`; for a scoped `o` = `P.v` it is
   `P._dt_<v>`, a variable of `o`'s own component. `_` is appended until the
-  name is clear of every variable and index-set name of the source and of
-  the companion names assigned before it. Names are assigned over every
+  name is clear of every variable name, component path (`A` and `A.B` of a
+  variable `A.B.v`) and index-set name of the source and of the companion
+  names assigned before it. Names are assigned over every
   observed that moves with `t`, in code-point order, so a name never
   depends on which companions a block reads.
 - *Shape.* `o`'s shape: its declared `shape`, or, for an observed declared
   without one, the extents its definition gives — a `faq`'s output ranges
   (each starting at 1), a `makearray`'s regions (the largest upper bound per
-  dimension), else the first operand, in argument order, that has extents.
-  A producer MUST refuse an observed whose extents it cannot read so.
+  dimension), an array-valued operator reference's body extents at its
+  bindings (each starting at 1), else the extents its array operands share
+  (an `index` at a cell is a scalar). A producer MUST refuse an observed
+  whose extents it cannot read so: array operands of different extents
+  (their union needs index-set names), an `index` with fewer indices than
+  its operand's rank. A band whose column index does not read every
+  dimension of `o` is refused too.
 - *The bands of a row.* A row's right-hand side (only the observed a column
   index needs inlined) is differentiated with respect to `t` and to every
   companion-bearing observed it reads, columns in code-point order, by the

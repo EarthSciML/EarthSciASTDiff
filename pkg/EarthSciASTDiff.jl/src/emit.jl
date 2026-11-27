@@ -228,9 +228,10 @@ function _jacobian_block(
         String(wrt), entries, rect ? _columns_field(sv, wrt, forcing) : nothing,
         structure, cse, cse_min_nodes
     )
-    aux = _auxiliary(_rec_info!(memo, sv), entries)
+    info = _rec_info!(memo, sv)
+    aux = _auxiliary(info, entries)
     isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
-    comps = _time_companions(sv, entries)
+    comps = _time_companions(sv, entries; info = info)
     isempty(comps) || (block["companions"] = _companions_field(comps))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
@@ -688,8 +689,9 @@ function _evaluation_document(
     doc = _base_document(sv, "JacobianEval")
     m = doc["models"]["JacobianEval"]
     ctx = _ctx(sv)
-    aux = _auxiliary(_rec_info(sv, _observed_defs(sv), ctx), entries)
-    comps = _time_companions(sv, entries)
+    info = _rec_info(sv, _observed_defs(sv), ctx)
+    aux = _auxiliary(info, entries)
+    comps = _time_companions(sv, entries; info = info)
     roots = ASTExpr[en.band.coef for en in entries]
     append!(roots, last.(aux))
     append!(roots, last.(comps))
