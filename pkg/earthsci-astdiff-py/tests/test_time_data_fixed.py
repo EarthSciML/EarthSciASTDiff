@@ -159,6 +159,13 @@ def test_companion_extents_are_read_or_refused(valid_dir):
 
     with pytest.raises(BandError):
         _through_companion(Band([(1, 3)], ["i"], ["i"], 1, [], None), "jr", "_dt_jr", [3, 2], True)
+    # and in a time pair: the first `n` column indices are the pair's own
+    from earthsci_astdiff.companions import _pair_through_companion
+
+    b = Band([(1, 3)], ["i"], ["i"], 1, [], None)
+    with pytest.raises(BandError):
+        _pair_through_companion(b, 0, "jr", "_dt_jr", [3, 2])
+    assert _pair_through_companion(b, 0, "jr", "_dt_jr", [3]).cidx == []
 
 
 def test_moving_observed_that_read_each_other_are_refused(valid_dir):

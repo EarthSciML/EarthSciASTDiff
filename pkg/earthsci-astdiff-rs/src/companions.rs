@@ -961,6 +961,12 @@ mod tests {
         };
         assert!(through_companion(&b, "jr", "_dt_jr", &[3, 2], true).is_err());
         assert!(through_companion(&b, "jr", "_dt_jr", &[3], true).is_ok());
+        // and in a time pair: the first `n` column indices are the pair's own
+        assert!(pair_through_companion(&b, 0, "jr", "_dt_jr", &[3, 2]).is_err());
+        assert!(pair_through_companion(&b, 0, "jr", "_dt_jr", &[3])
+            .unwrap()
+            .cidx
+            .is_empty());
     }
 
     #[test]

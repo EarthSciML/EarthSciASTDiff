@@ -207,6 +207,9 @@ end
         Tuple{String, Int, Int}[], nothing
     )
     @test_throws BE EarthSciASTDiff._through_companion(b, "jr", "_dt_jr", [3, 2], true)
+    # and in a time pair: the first `n` column indices are the pair's own
+    @test_throws BE EarthSciASTDiff._pair_through_companion(b, 0, "jr", "_dt_jr", [3, 2])
+    @test EarthSciASTDiff._pair_through_companion(b, 0, "jr", "_dt_jr", [3]).cidx == ASTExpr[]
 end
 
 @testset "time bands: moving observed that read each other are refused" begin
