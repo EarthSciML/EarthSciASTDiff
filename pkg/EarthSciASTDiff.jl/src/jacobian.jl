@@ -318,10 +318,7 @@ function _extended_pass(
     src_obs = obs
     # declared scalars that are not observed: an elementwise observed read at
     # a cell reads them unchanged (`_gather_cell`)
-    scalars = Set{String}(
-        String(n) for (n, v) in sv.variables
-            if (v.shape === nothing || isempty(v.shape)) && !haskey(src_obs, String(n))
-    )
+    scalars = _declared_scalars(sv, src_obs)
     targets = _targets(sv, wrt, forcing, obs)
     tset = Set{String}(targets)
     recs = info.recs
@@ -356,7 +353,7 @@ function _extended_pass(
                 )
                 continue
             end
-            for b in _time_row_bands(cs, eq.rhs, cs.inline, get(ctx.shapes, u, Int[]))
+            for b in _time_row_bands(cs, eq.rhs, u, cs.inline, get(ctx.shapes, u, Int[]))
                 push!(entries, JacEntry(u, "t", b))
                 push!(row_eq, q)
             end
@@ -436,13 +433,7 @@ function _row_bands!(
         rank_obs = obs, scalars = Set{String}()
     )
     shape_u = get(ctx.shapes, u, Int[])
-    # under the view's layer: inlining reads definitions' ranks
-    rhs = _with_layer(ctx.refs) do
-        inline_observed(
-            rhs, obs; obs_names = obs_names, shapes = ctx.shapes,
-            rank_obs = rank_obs, scalars = scalars
-        )
-    end
+    rhs = _inline_row(rhs, u, obs, ctx; obs_names = obs_names, rank_obs = rank_obs, scalars = scalars)
     hits = sort!(String[v for v in free_variables(rhs) if v in cols])
     for v in hits
         for b in merge_bands(_ref_bands(rhs, v, ctx, shape_u, co))
@@ -451,6 +442,33 @@ function _row_bands!(
     end
     return out
 end
+
+# The right-hand side `rhs` of row variable `u` ready for the band calculus:
+# observed inlined under the view's layer (inlining reads definitions' ranks),
+# an elementwise observed read at a cell aligned by index-set name, and the
+# operands of its whole-array terms aligned with `u` (`align_whole`).
+function _inline_row(
+        rhs::ASTExpr, u::String, obs, ctx::Ctx;
+        obs_names = Ref{Union{Nothing, Set{String}}}(nothing), rank_obs = obs,
+        scalars = Set{String}()
+    )
+    return _with_layer(ctx.refs) do
+        align_whole(
+            inline_observed(
+                rhs, obs; obs_names = obs_names, shapes = ctx.shapes, axes = ctx.axes,
+                rank_obs = rank_obs, scalars = scalars
+            ), u, ctx
+        )
+    end
+end
+
+# The variables declared without a shape that have no observed definition in
+# `obs`: an elementwise observed read at a cell reads them unchanged
+# (`_gather_cell`).
+_declared_scalars(sv::SysView, obs) = Set{String}(
+    String(n) for (n, v) in sv.variables
+        if (v.shape === nothing || isempty(v.shape)) && !haskey(obs, String(n))
+)
 
 _intern_entries(entries::Vector{JacEntry}, t::_Interner = _Interner()) =
     JacEntry[JacEntry(en.u, en.v, _intern_band(t, en.band)) for en in entries]

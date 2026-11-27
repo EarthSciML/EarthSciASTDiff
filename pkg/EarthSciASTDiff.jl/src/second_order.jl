@@ -135,7 +135,7 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
             for (n, (_, ext, org)) in ps
                 shapes[n] = ext; origins[n] = org
             end
-            ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins)
+            ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, L, origins, ctx.axes)
             fv = free_variables(body2)
             got = Band[]
             w in fv && append!(got, _coef_site_bands(b, [(rows2, body2)], w, ctx2))

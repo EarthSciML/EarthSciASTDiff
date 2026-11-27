@@ -405,11 +405,13 @@ end
 
 # The self bands of `rec`, from its definition with every other observed
 # inlined (no recurrence): the line operator `G`, independent of the axis a
-# pass differentiates for.
-function _self_bands(rec::Recurrence, obs, recs::Vector{Recurrence}, ctx::Ctx)
+# pass differentiates for. Inlined as a row's right-hand side is
+# (`_inline_row`), so a cell read in it aligns by index-set name; `scalars`
+# are the view's declared scalars that are not observed.
+function _self_bands(rec::Recurrence, obs, recs::Vector{Recurrence}, ctx::Ctx, scalars)
     names = Set{String}(r.name for r in recs)
     m = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in names))
-    d = _with_layer(() -> inline_observed(obs[rec.name], m), ctx.refs)
+    d = _inline_row(obs[rec.name], rec.name, m, ctx; rank_obs = obs, scalars = scalars)
     shape = get(ctx.shapes, rec.name, Int[])
     # through `_ref_bands`: the definition may hold operator references
     return Band[normalize_band(b) for b in merge_bands(_ref_bands(d, rec.name, ctx, shape, true))]
@@ -425,15 +427,20 @@ function _transfer_j(rec::Recurrence, bs::Vector{Band})
 end
 
 """
-    transfer_definition(rec::Recurrence, obs, recs, ctx, tname) -> ASTExpr
+    transfer_definition(rec::Recurrence, obs, recs, ctx, tname; scalars) -> ASTExpr
 
 The transfer recurrence `T` of `rec` (esm-jacobian-spec.md §4.5): over the
 frame plus one output index `j` on the axis, `T[o, k, j] = [k == j] +
 Σ_{self bands} coef · T[o, k − lag, j]`, so `T[o, ·, ·] = (I − G)⁻¹` on each
-line. Lower triangular on each line.
+line. Lower triangular on each line. `scalars` names the view's variables declared
+without a shape that are not observed (an elementwise observed read at a cell
+in the definition reads them unchanged).
 """
-function transfer_definition(rec::Recurrence, obs, recs::Vector{Recurrence}, ctx::Ctx, tname::String)
-    bs = _self_bands(rec, obs, recs, ctx)
+function transfer_definition(
+        rec::Recurrence, obs, recs::Vector{Recurrence}, ctx::Ctx, tname::String;
+        scalars::AbstractSet = Set{String}()
+    )
+    bs = _self_bands(rec, obs, recs, ctx, scalars)
     j = _transfer_j(rec, bs)
     d = rec.dim
     at = _vars(rec.frame)
@@ -777,13 +784,15 @@ end
     _RecInfo
 
 The recurrence analysis of one view, computed once per emission and shared
-by its passes and blocks: the observed definitions, the context, every
-recurrence (`recurrences`), their transfer names (`_transfer_names`) and,
-filled on first use, their transfer definitions.
+by its passes and blocks: the observed definitions, the context, the declared
+scalars that are not observed, every recurrence (`recurrences`), their
+transfer names (`_transfer_names`) and, filled on first use, their transfer
+definitions.
 """
 struct _RecInfo
     obs::Dict{String, ASTExpr}
     ctx::Ctx
+    scalars::Set{String}
     recs::Vector{Recurrence}
     transfer::Dict{String, String}
     defs::Dict{String, ASTExpr}
@@ -792,7 +801,7 @@ end
 function _rec_info(sv::SysView, obs = _observed_defs(sv), ctx = _ctx(sv))
     recs = recurrences(sv, obs, ctx)
     names = isempty(recs) ? Dict{String, String}() : _transfer_names(sv, recs)
-    return _RecInfo(obs, ctx, recs, names, Dict{String, ASTExpr}())
+    return _RecInfo(obs, ctx, _declared_scalars(sv, obs), recs, names, Dict{String, ASTExpr}())
 end
 
 # The `auxiliary` definitions a band list reads (esm-jacobian-spec.md §4.5):
@@ -816,7 +825,7 @@ function _auxiliary(info::_RecInfo, entries)
         t = info.transfer[rec.name]
         t in read || continue
         d = get!(info.defs, t) do
-            transfer_definition(rec, info.obs, info.recs, info.ctx, t)
+            transfer_definition(rec, info.obs, info.recs, info.ctx, t; scalars = info.scalars)
         end
         push!(out, (t, [rec.shape; rec.shape[rec.dim]], d))
     end

@@ -316,6 +316,12 @@ fn lift_axis(
     }
 }
 
+/// A synthetic index set the pointwise lift names (esm-spec §10.5,
+/// esm-libraries-spec §4.7.5): `_liftdim<d>_<extent>`.
+pub(crate) fn is_liftdim(x: &str) -> bool {
+    x.starts_with("_liftdim")
+}
+
 pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
     let mut ctx = Ctx::default();
     for (n, s) in &sv.index_sets {
@@ -339,6 +345,17 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
                     })
                     .collect();
                 ctx.shapes.insert(n.clone(), dims?);
+                // the index-set names, when every dimension names a declared
+                // one (§4.3.4 aligns an elementwise operand by them); a
+                // synthetic `_liftdim<d>_<extent>` set of the pointwise lift
+                // is an anonymous dimension of known extent, so such a
+                // variable aligns by position
+                if shape
+                    .iter()
+                    .all(|x| x.parse::<i64>().is_err() && !is_liftdim(x))
+                {
+                    ctx.axes.insert(n.clone(), shape.clone());
+                }
             }
         }
         if var.var_type == VariableType::Parameter {

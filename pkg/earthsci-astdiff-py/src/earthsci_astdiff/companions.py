@@ -225,7 +225,7 @@ def companion_bands(cs: Companions, o: str) -> list[Band]:
         rhs = _faq_over(names, shape, op("index", o, *names))
     inl = dict(cs.inline)
     inl[o] = d
-    bs = time_row_bands(cs, rhs, inl, shape)
+    bs = time_row_bands(cs, rhs, o, inl, shape)
     cs.pending.discard(o)
     cs.bands[o] = bs
     return bs
@@ -243,14 +243,16 @@ def _row_names_of(d, k: int) -> list[str]:
     return [fresh(taken, f"_r{i}", "_") for i in range(1, k + 1)]
 
 
-def time_row_bands(cs: Companions, rhs, inl: dict, shape_u: list) -> list[Band]:
+def time_row_bands(cs: Companions, rhs, u: str, inl: dict, shape_u: list) -> list[Band]:
     """The time bands of one row (a state equation's right-hand side
     ``rhs``, or a companion row), all with column ``t``: the direct bands in
     ``t`` and each band of a moving-observed column composed with that
     observed's companion, summed where they share a box, in column-name
     order."""
     ctx = cs.ctx
-    rhs = inline_observed(rhs, inl, [None], ctx.shapes, cs.rank_obs, cs.scalars)
+    from .jacobian import inline_row
+
+    rhs = inline_row(rhs, u, inl, ctx, rank_obs=cs.rank_obs, scalars=cs.scalars)
     out: list[Band] = []
     for v in sorted(x for x in free_variables(rhs) if x == "t" or x in cs.cols):
         raw = bands_in(rhs, v, ctx, shape_u, cs.co)
@@ -436,6 +438,8 @@ def time_companions(sv, bands: list[Band]) -> list:
     read = [n for n in cand if n in byname]
     if not read:
         return out
+    from .jacobian import declared_scalars
+
     cs = companion_setup(sv, ctx, obs2, declared_scalars(sv, obs), True, rank_obs=obs)
     defs: dict = {}
     while read:
@@ -451,16 +455,6 @@ def time_companions(sv, bands: list[Band]) -> list:
         if n in defs:
             out.append((n, o, defs[n]))
     return out
-
-
-def declared_scalars(sv, obs: dict) -> set:
-    """The declared scalars that are not observed: an elementwise observed
-    read at a cell reads them unchanged."""
-    return {
-        str(n)
-        for n, v in sv.variables.items()
-        if not getattr(v, "shape", None) and str(n) not in obs
-    }
 
 
 def add_companions(m: dict, sv, comps: list) -> None:
@@ -497,6 +491,7 @@ def time_pair_bands(sv, a2: str, forcing, memo, t2) -> list | None:
     only with ``t`` stays an opaque read there and is reached through its
     companion. ``None`` when a recurrence is active on either axis: that
     pair keeps the inlining path, as the time axis does."""
+    from .jacobian import declared_scalars
     from .recurrence import active, recurrences
     from .second_order import JacEntry2
     from .system import ctx_of, observed_defs
@@ -534,7 +529,7 @@ def _time_coef_bands(cs: Companions, b: Band) -> list[Band]:
     from .second_order import _coef_bands
 
     ctx = cs.ctx
-    coef = inline_observed(b.coef, cs.inline, [None], ctx.shapes, cs.rank_obs, cs.scalars)
+    coef = inline_observed(b.coef, cs.inline, [None], ctx.shapes, cs.rank_obs, cs.scalars, ctx.axes)
     b0 = replace(b, coef=coef)
     n = len(b.cidx)
     out: list[Band] = []

@@ -86,7 +86,7 @@ function _companion_setup(
         ext = _obs_extents(o, sv, rank_obs, ctx, memo, Set{String}())
         isempty(ext) || (shapes[o] = ext)
     end
-    ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, ctx.refs, ctx.origins)
+    ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, ctx.refs, ctx.origins, ctx.axes)
     return _Companions(
         _companion_names(sv, moving), cols,
         Dict{String, ASTExpr}(n => obs[n] for n in sub), obs, rank_obs, ctx2,
@@ -195,7 +195,7 @@ function _companion_bands!(cs::_Companions, o::String)::Vector{Band}
     end
     inl = copy(cs.inline)
     inl[o] = def
-    bs = _time_row_bands(cs, rhs, inl, shape)
+    bs = _time_row_bands(cs, rhs, o, inl, shape)
     delete!(cs.pending, o)
     cs.bands[o] = bs
     return bs
@@ -218,14 +218,13 @@ end
 # The time bands of one row (a state equation's right-hand side `rhs`, or a
 # companion row), all with column `t`: the direct bands in `t` and each band
 # of a moving-observed column composed with that observed's companion, summed
-# where they share a box (`_sum_same_box`), in column-name order.
-function _time_row_bands(cs::_Companions, rhs::ASTExpr, inl, shape_u::Vector{Int})
+# where they share a box (`_sum_same_box`), in column-name order. `u` is the
+# row's variable (the state, or the companion's observed): an elementwise
+# observed read at a cell and the operands of a whole-array term are aligned
+# with it by index-set name (`_inline_row`).
+function _time_row_bands(cs::_Companions, rhs::ASTExpr, u::String, inl, shape_u::Vector{Int})
     ctx = cs.ctx
-    rhs = _with_layer(ctx.refs) do
-        inline_observed(
-            rhs, inl; shapes = ctx.shapes, rank_obs = cs.rank_obs, scalars = cs.scalars
-        )
-    end
+    rhs = _inline_row(rhs, u, inl, ctx; rank_obs = cs.rank_obs, scalars = cs.scalars)
     out = Band[]
     for v in sort!(String[x for x in free_variables(rhs) if x == "t" || x in cs.cols])
         bs = Band[normalize_band(b) for b in merge_bands(_ref_bands(rhs, v, ctx, shape_u, cs.co))]
@@ -420,13 +419,6 @@ function _time_companions(sv::SysView, entries; info::Union{Nothing, _RecInfo} =
     return out
 end
 
-# The declared scalars that are not observed: an elementwise observed read at
-# a cell reads them unchanged.
-_declared_scalars(sv::SysView, obs) = Set{String}(
-    String(n) for (n, v) in sv.variables
-        if (v.shape === nothing || isempty(v.shape)) && !haskey(obs, String(n))
-)
-
 # The companions as observed of a derived model (spec §8.1): each declared
 # like its observed (`{"type": "unknown"}`, with the observed's declared
 # `shape` when it has one) and defined by a bare-LHS equation, after the
@@ -488,7 +480,8 @@ function _time_coef_bands(cs::_Companions, b::Band)
     ctx = cs.ctx
     coef = _with_layer(ctx.refs) do
         inline_observed(
-            b.coef, cs.inline; shapes = ctx.shapes, rank_obs = cs.rank_obs, scalars = cs.scalars
+            b.coef, cs.inline; shapes = ctx.shapes, axes = ctx.axes,
+            rank_obs = cs.rank_obs, scalars = cs.scalars
         )
     end
     b0 = _rebuild(b; coef = coef)

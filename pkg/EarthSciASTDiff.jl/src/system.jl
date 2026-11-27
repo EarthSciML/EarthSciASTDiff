@@ -166,20 +166,31 @@ function _check_lifted_shape(name::String, shape, extents, isets::Dict{String, A
     return nothing
 end
 
+# A synthetic index set the pointwise lift names (esm-spec §10.5,
+# esm-libraries-spec §4.7.5): `_liftdim<d>_<extent>`.
+_is_liftdim(x) = startswith(String(x), "_liftdim")
+
 function _ctx(sv::SysView)
     isets = Dict{String, Int}()
     for (n, s) in sv.index_sets
         s.size === nothing || (isets[String(n)] = s.size)
     end
     shapes = Dict{String, Vector{Int}}(); params = Set{String}()
+    axes = Dict{String, Vector{String}}()
     for (n, var) in sv.variables
         if var.shape !== nothing && !isempty(var.shape)
             shapes[String(n)] =
                 [x isa Integer ? Int(x) : isets[String(x)] for x in var.shape]
+            # the index-set names, when every dimension names a declared one
+            # (§4.3.4 aligns an elementwise operand by them); a synthetic
+            # `_liftdim<d>_<extent>` set of the pointwise lift is an anonymous
+            # dimension of known extent, so such a variable aligns by position
+            all(x -> !(x isa Integer) && !_is_liftdim(x), var.shape) &&
+                (axes[String(n)] = String[String(x) for x in var.shape])
         end
         var.type == EarthSciAST.ParameterVariable && push!(params, String(n))
     end
-    return Ctx(isets, shapes, params, sv.refs)
+    return Ctx(isets, shapes, params, sv.refs, Dict{String, Vector{Int}}(), axes)
 end
 
 """

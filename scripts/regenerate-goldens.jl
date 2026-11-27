@@ -129,6 +129,15 @@ let name = "tgrad_data_fixed"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
+# An elementwise observed read at a cell, its operands aligned by index-set
+# name (esm-spec §4.3.4): the band list only (tests/README.md).
+let name = "elementwise_aligned"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(sysview(file, "Box"))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

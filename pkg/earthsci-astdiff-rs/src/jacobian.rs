@@ -7,10 +7,10 @@ use std::rc::Rc;
 use earthsci_ast::free_variables;
 use earthsci_ast::{EsmFile, Expr, VariableType};
 
-use crate::bands::{merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
+use crate::bands::{align_whole, merge_bands, normalize_band, placeholder, Band, BandError, Ctx};
 use crate::clip::RIdx;
 use crate::hashcons::Interner;
-use crate::inline::inline_observed_ranked;
+use crate::inline::inline_observed_aligned;
 use crate::recurrence::{
     active, lag, materialize, materialize_eq, recurrences, transfer_names, ExtendedBands,
 };
@@ -472,12 +472,7 @@ pub(crate) fn extended_pass_in(
     let src_obs = obs;
     // declared scalars that are not observed: an elementwise observed read at
     // a cell reads them unchanged (inline.rs `gather_cell`)
-    let scalars: HashSet<String> = sv
-        .variables
-        .iter()
-        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !src_obs.contains_key(*n))
-        .map(|(n, _)| n.clone())
-        .collect();
+    let scalars = declared_scalars(sv, src_obs);
     let targets = targets(sv, wrt, forcing, obs)?;
     let tset: HashSet<String> = targets.into_iter().collect();
     let recs = recurrences(sv, obs, ctx)?;
@@ -513,7 +508,7 @@ pub(crate) fn extended_pass_in(
             };
             let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
             let inl = cs.inline.clone();
-            for b in crate::companions::time_row_bands(&mut cs, &eq.rhs, &inl, &shape_u)? {
+            for b in crate::companions::time_row_bands(&mut cs, &eq.rhs, &u, &inl, &shape_u)? {
                 entries.push(JacEntry {
                     u: u.clone(),
                     v: "t".to_string(),
@@ -633,6 +628,46 @@ pub(crate) fn extended_pass_in(
     })
 }
 
+/// The right-hand side `rhs` of row variable `u` ready for the band calculus
+/// (jacobian.jl `_inline_row`): observed inlined under the view's layer
+/// (inlining reads definitions' ranks), an elementwise observed read at a
+/// cell aligned by index-set name, and the operands of its whole-array terms
+/// aligned with `u` (`align_whole`).
+pub(crate) fn inline_row(
+    rhs: &Expr,
+    u: &str,
+    obs: &HashMap<String, Expr>,
+    obs_names: &mut Option<HashSet<String>>,
+    ctx: &Ctx,
+    rank_obs: &HashMap<String, Expr>,
+    scalars: &HashSet<String>,
+) -> Result<Expr, BandError> {
+    let e = crate::operator_refs::with_layer(&ctx.refs, || {
+        inline_observed_aligned(
+            rhs,
+            obs,
+            obs_names,
+            &ctx.shapes,
+            rank_obs,
+            scalars,
+            &ctx.axes,
+        )
+    })
+    .map_err(|e| BandError(e.0))?;
+    align_whole(&e, u, ctx)
+}
+
+/// The variables declared without a shape that have no observed definition
+/// in `obs`: an elementwise observed read at a cell reads them unchanged
+/// (inline.rs `gather_cell`).
+pub(crate) fn declared_scalars(sv: &SysView, obs: &HashMap<String, Expr>) -> HashSet<String> {
+    sv.variables
+        .iter()
+        .filter(|(n, v)| v.shape.as_ref().is_none_or(|s| s.is_empty()) && !obs.contains_key(*n))
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
 /// The bands of one row variable `u` (a state, or a recurrence over its
 /// own definition) with respect to every column in `cols` its inlined
 /// right-hand side reads, in sorted column order; structure-only (spec
@@ -651,11 +686,7 @@ fn row_bands(
     scalars: &HashSet<String>,
 ) -> Result<(), BandError> {
     let shape_u = ctx.shapes.get(u).cloned().unwrap_or_default();
-    // under the view's layer: inlining reads definitions' ranks (jacobian.jl)
-    let rhs = crate::operator_refs::with_layer(&ctx.refs, || {
-        inline_observed_ranked(rhs, obs, obs_names, &ctx.shapes, rank_obs, scalars)
-    })
-    .map_err(|e| BandError(e.0))?;
+    let rhs = inline_row(rhs, u, obs, obs_names, ctx, rank_obs, scalars)?;
     // Structural occurrence gate, driven from the equation: intersect the
     // RHS's free variables with the column set (a per-equation scan of
     // every target is quadratic on scalar-lowered documents). Sorting the
