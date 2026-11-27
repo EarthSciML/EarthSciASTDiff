@@ -340,7 +340,9 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
 
 /// Classify the band list as `"block_diagonal"`, `"banded"` or `"general"`
 /// (or `"empty"` / `"other"`), read off the column-index expressions without
-/// evaluating anything. Use it to choose a matrix type.
+/// evaluating anything. Use it to choose a matrix type. A band whose column
+/// and row have different ranks is `"general"`: its column is not its row in
+/// every dimension.
 pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'static str {
     if entries.is_empty() {
         return "empty";
@@ -355,6 +357,11 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
         let b = &en.band;
         if b.cidx.is_empty() {
             continue;
+        }
+        // a column of another rank than its row is not the row in every
+        // dimension, whatever the shared dimensions say
+        if b.cidx.len() != b.ridx.len() {
+            return "general";
         }
         for (c, r) in b.cidx.iter().zip(b.ridx.iter()) {
             match offset_class(c, r) {
@@ -384,6 +391,214 @@ pub fn detect_structure_along(
 ) -> Result<&'static str, crate::bands::BandError> {
     let st = detect_structure(entries, ctx);
     refine_structure(st, entries, sv, ctx, column_axis)
+}
+
+/// [`detect_structure_along`] given optional cell axes too (index-set names,
+/// from the caller): `"cell_block"` in place of `"banded"` or `"general"`,
+/// and before `"column_block"`, when every coupling stays inside one cell
+/// of those axes ([`cell_blocks`]).
+pub fn detect_structure_with(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    column_axis: Option<&str>,
+    cell_axes: Option<&[String]>,
+) -> Result<&'static str, crate::bands::BandError> {
+    let st = detect_structure(entries, ctx);
+    if st == "empty" || st == "block_diagonal" {
+        return Ok(st);
+    }
+    if let Some(axes) = cell_axes {
+        if cell_blocks(entries, sv, ctx, axes)?.is_some() {
+            return Ok("cell_block");
+        }
+    }
+    refine_structure(st, entries, sv, ctx, column_axis)
+}
+
+/// The per-cell block structure of a state Jacobian whose couplings all stay
+/// inside one cell of the index sets `cell_axes` (structure.jl
+/// `cell_blocks`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellBlocks {
+    /// The cell axes, as given.
+    pub cell_axes: Vec<String>,
+    /// Every row and column variable, sorted.
+    pub block_vars: Vec<String>,
+    /// The block's rows (and columns) in natural order: each variable in
+    /// name order, its elements along its other axes column-major
+    /// (1-based indices).
+    pub elements: Vec<(String, Vec<i64>)>,
+    /// The union over cells of the block's pattern, natural order,
+    /// diagonal included.
+    pub pattern: Vec<Vec<bool>>,
+}
+
+struct CellVar {
+    pos: Vec<usize>,
+    other: Vec<usize>,
+    ext: Vec<i64>,
+    full: Vec<i64>,
+    off: usize,
+}
+
+impl CellVar {
+    fn local(&self, idx: &[i64]) -> usize {
+        let (mut k, mut stride) = (0i64, 1i64);
+        for (&d, &x) in self.other.iter().zip(&self.ext) {
+            k += (idx[d] - 1) * stride;
+            stride *= x;
+        }
+        self.off + k as usize
+    }
+}
+
+/// The per-cell blocks of a state Jacobian over `cell_axes`, or `None` when
+/// a coupling leaves its cell: every row and column variable is an array
+/// whose shape holds each cell axis exactly once, and at every band point
+/// the column's index on each cell axis (paired by index-set name) equals
+/// the row's. A point whose column falls outside its variable's extent is a
+/// ghost read and does not count.
+pub fn cell_blocks(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    cell_axes: &[String],
+) -> Result<Option<CellBlocks>, crate::bands::BandError> {
+    let axes: Vec<String> = cell_axes.to_vec();
+    let unique: HashSet<&String> = axes.iter().collect();
+    if entries.is_empty() || axes.is_empty() || unique.len() != axes.len() {
+        return Ok(None);
+    }
+    let mut vars: Vec<String> = entries
+        .iter()
+        .flat_map(|en| [en.u.clone(), en.v.clone()])
+        .collect();
+    vars.sort();
+    vars.dedup();
+    let size = |x: &str| -> Result<i64, crate::bands::BandError> {
+        ctx.index_sets
+            .get(x)
+            .copied()
+            .ok_or_else(|| crate::bands::BandError(format!("unknown index set `{x}`")))
+    };
+    let mut info: HashMap<String, CellVar> = HashMap::new();
+    let mut elements: Vec<(String, Vec<i64>)> = Vec::new();
+    for v in &vars {
+        let Some(sh) = sv
+            .variables
+            .get(v)
+            .and_then(|x| x.shape.as_ref())
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        let mut pos = Vec::new();
+        for a in &axes {
+            let k: Vec<usize> = sh
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| *x == a)
+                .map(|(d, _)| d)
+                .collect();
+            if k.len() != 1 {
+                return Ok(None);
+            }
+            pos.push(k[0]);
+        }
+        let other: Vec<usize> = (0..sh.len()).filter(|d| !pos.contains(d)).collect();
+        let ext: Vec<i64> = other
+            .iter()
+            .map(|&d| size(&sh[d]))
+            .collect::<Result<_, _>>()?;
+        let full: Vec<i64> = sh.iter().map(|x| size(x)).collect::<Result<_, _>>()?;
+        let off = elements.len();
+        let n: i64 = ext.iter().product();
+        for k in 0..n {
+            let (mut rem, mut idx) = (k, Vec::new());
+            for &x in &ext {
+                idx.push(rem % x + 1);
+                rem /= x;
+            }
+            elements.push((v.clone(), idx));
+        }
+        info.insert(
+            v.clone(),
+            CellVar {
+                pos,
+                other,
+                ext,
+                full,
+                off,
+            },
+        );
+    }
+    let ns = elements.len();
+    let mut p = vec![vec![false; ns]; ns];
+    for (i, row) in p.iter_mut().enumerate() {
+        row[i] = true; // W = I − γJ has the diagonal
+    }
+    for en in entries {
+        let (iu, iv) = (&info[&en.u], &info[&en.v]);
+        let ok = crate::points::all_points(&en.band, &mut |cell, _, _, cidx| {
+            if cidx.len() != iv.full.len() {
+                return Ok(false);
+            }
+            for d in 0..cidx.len() {
+                if cidx[d] < 1 || cidx[d] > iv.full[d] {
+                    return Ok(true); // ghost read
+                }
+            }
+            for k in 0..axes.len() {
+                if cidx[iv.pos[k]] != cell[iu.pos[k]] {
+                    return Ok(false);
+                }
+            }
+            p[iu.local(cell)][iv.local(cidx)] = true;
+            Ok(true)
+        })?;
+        if !ok {
+            return Ok(None);
+        }
+    }
+    Ok(Some(CellBlocks {
+        cell_axes: axes,
+        block_vars: vars,
+        elements,
+        pattern: p,
+    }))
+}
+
+/// The per-cell block LU of a `"cell_block"` Jacobian (factorization.jl's
+/// `CellBlockPlan`): the block's elements in Markowitz order, the 1-based
+/// ordering of the natural block order, and the permuted pattern and its
+/// fill-in LU pattern.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellBlockLu {
+    pub cell_axes: Vec<String>,
+    pub block_vars: Vec<String>,
+    pub elements: Vec<(String, Vec<i64>)>,
+    pub ordering: Vec<usize>,
+    pub pattern: Vec<Vec<bool>>,
+    pub lu: Vec<Vec<bool>>,
+}
+
+/// The block LU of [`cell_blocks`]' blocks.
+pub fn cell_block_lu(cb: &CellBlocks) -> CellBlockLu {
+    let ordering = markowitz_ordering(&cb.pattern);
+    let idx: Vec<usize> = ordering.iter().map(|o| o - 1).collect();
+    let pp: Vec<Vec<bool>> = idx
+        .iter()
+        .map(|&i| idx.iter().map(|&j| cb.pattern[i][j]).collect())
+        .collect();
+    CellBlockLu {
+        cell_axes: cb.cell_axes.clone(),
+        block_vars: cb.block_vars.clone(),
+        elements: idx.iter().map(|&i| cb.elements[i].clone()).collect(),
+        ordering,
+        lu: lu_fill(&pp),
+        pattern: pp,
+    }
 }
 
 fn refine_structure(
@@ -764,12 +979,13 @@ pub fn block_diagonal_plan(entries: &[JacEntry]) -> Value {
 }
 
 /// The structure classes [`detect_structure`] reports (spec §4).
-pub const STRUCTURE_CLASSES: [&str; 5] = [
+pub const STRUCTURE_CLASSES: [&str; 6] = [
     "empty",
     "block_diagonal",
     "banded",
     "general",
     "column_block",
+    "cell_block",
 ];
 
 /// Symbolic factorization info for one structure class (factorization.jl's
@@ -782,6 +998,8 @@ pub enum FactorizationPlan {
     BlockDiagonal(BlockLu),
     /// The line-by-line plan of a `"column_block"` Jacobian.
     ColumnBlock(ColumnLines),
+    /// The per-cell block LU of a `"cell_block"` Jacobian.
+    CellBlock(CellBlockLu),
 }
 
 /// Symbolic factorization info for the band list's structure class: the
@@ -821,6 +1039,23 @@ pub fn plan_factorization_along(
     structure: Option<&str>,
     column_axis: Option<&str>,
 ) -> Result<Option<FactorizationPlan>, crate::bands::BandError> {
+    plan_factorization_with(entries, sv, ctx, structure, column_axis, None)
+}
+
+/// [`plan_factorization_along`] given optional cell axes too (the ones
+/// [`detect_structure_with`] was given): a `"cell_block"` class gives its
+/// per-cell block LU ([`FactorizationPlan::CellBlock`]).
+///
+/// Errors, besides [`plan_factorization_along`]'s: a `"cell_block"` class
+/// with no cell axes, or one the band list is not cell-block over.
+pub fn plan_factorization_with(
+    entries: &[JacEntry],
+    sv: &SysView,
+    ctx: &Ctx,
+    structure: Option<&str>,
+    column_axis: Option<&str>,
+    cell_axes: Option<&[String]>,
+) -> Result<Option<FactorizationPlan>, crate::bands::BandError> {
     let structure = match structure {
         Some(s) if STRUCTURE_CLASSES.contains(&s) => s,
         Some(s) => {
@@ -828,7 +1063,7 @@ pub fn plan_factorization_along(
                 "unknown structure class `{s}` (expected one of {STRUCTURE_CLASSES:?})"
             )))
         }
-        None => detect_structure_along(entries, sv, ctx, column_axis)?,
+        None => detect_structure_with(entries, sv, ctx, column_axis, cell_axes)?,
     };
     if let Some(en) = entries.iter().find(|en| {
         sv.variables
@@ -856,6 +1091,18 @@ pub fn plan_factorization_along(
             })?;
             Ok(Some(FactorizationPlan::ColumnBlock(cl)))
         }
+        "cell_block" => {
+            let axes = cell_axes.ok_or_else(|| {
+                crate::bands::BandError("a `cell_block` plan needs its cell axes".into())
+            })?;
+            let cb = cell_blocks(entries, sv, ctx, axes)?.ok_or_else(|| {
+                crate::bands::BandError(format!(
+                    "the Jacobian is not `cell_block` over `{}`",
+                    axes.join(", ")
+                ))
+            })?;
+            Ok(Some(FactorizationPlan::CellBlock(cell_block_lu(&cb))))
+        }
         _ => Ok(None),
     }
 }
@@ -874,6 +1121,15 @@ pub fn serialize_plan(plan: &FactorizationPlan) -> Value {
         FactorizationPlan::BlockDiagonal(b) => json!({
             "type": "block_diagonal_lu",
             "block_vars": b.block_vars,
+            "ordering": b.ordering,
+            "pattern": nzpairs(&b.pattern),
+            "lu_pattern": nzpairs(&b.lu),
+        }),
+        FactorizationPlan::CellBlock(b) => json!({
+            "type": "cell_block_lu",
+            "cell_axes": b.cell_axes,
+            "block_vars": b.block_vars,
+            "elements": b.elements.iter().map(|(v, c)| json!([v, c])).collect::<Vec<_>>(),
             "ordering": b.ordering,
             "pattern": nzpairs(&b.pattern),
             "lu_pattern": nzpairs(&b.lu),

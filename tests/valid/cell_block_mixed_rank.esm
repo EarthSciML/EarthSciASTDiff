@@ -1,0 +1,196 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "cell_block_mixed_rank",
+    "description": "Per-cell blocks over cell axes [lev, bin] (esm-jacobian-spec \u00a74, \u00a76): w over [bin, lev] (its axes in the other order) reads every salt of its own cell of s over [lev, bin, salt] through a sum, and s reads w of its own cell, so the Jacobian is one 4 x 4 block per (lev, bin) cell (w and three salts). Without cell axes it is general: w's band onto s has a column of another rank than its row (the old classification called it block diagonal)."
+  },
+  "index_sets": {
+    "lev": {
+      "kind": "interval",
+      "size": 2
+    },
+    "bin": {
+      "kind": "interval",
+      "size": 2
+    },
+    "salt": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Phase": {
+      "variables": {
+        "w": {
+          "type": "unknown",
+          "shape": [
+            "bin",
+            "lev"
+          ],
+          "default": 1.0
+        },
+        "s": {
+          "type": "unknown",
+          "shape": [
+            "lev",
+            "bin",
+            "salt"
+          ],
+          "default": 0.5
+        },
+        "kappa": {
+          "type": "parameter",
+          "default": 0.5
+        },
+        "T": {
+          "type": "parameter",
+          "default": 2.0
+        },
+        "K": {
+          "type": "parameter",
+          "default": 1.0
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "w"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "b",
+              "k"
+            ],
+            "args": [],
+            "ranges": {
+              "b": {
+                "from": "bin"
+              },
+              "k": {
+                "from": "lev"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    "kappa",
+                    {
+                      "op": "faq",
+                      "output_idx": [],
+                      "args": [],
+                      "ranges": {
+                        "j": {
+                          "from": "salt"
+                        }
+                      },
+                      "expr": {
+                        "op": "-",
+                        "args": [
+                          "T",
+                          {
+                            "op": "index",
+                            "args": [
+                              "s",
+                              "k",
+                              "b",
+                              "j"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "w",
+                    "b",
+                    "k"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "s"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "k",
+              "b",
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "k": {
+                "from": "lev"
+              },
+              "b": {
+                "from": "bin"
+              },
+              "j": {
+                "from": "salt"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "/",
+                  "args": [
+                    {
+                      "op": "-",
+                      "args": [
+                        "T",
+                        {
+                          "op": "index",
+                          "args": [
+                            "s",
+                            "k",
+                            "b",
+                            "j"
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "*",
+                      "args": [
+                        "K",
+                        {
+                          "op": "index",
+                          "args": [
+                            "w",
+                            "b",
+                            "k"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                1
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}
