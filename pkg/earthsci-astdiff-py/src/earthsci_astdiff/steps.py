@@ -387,32 +387,59 @@ def intermediates(sv, bands: list, forcing=None) -> list:
     recs = recurrences(sv, obs, ctx)
     rn = {r.name for r in recs}
     scalars = declared_scalars(sv, obs)
+
+    # A pair's second-axis step of a first-axis intermediate (§4.4) is named
+    # after that intermediate (`_dp__du_o_1_1`): the intermediates whose
+    # observed is a source observed are resolved first, then those over them,
+    # each level's passes taking the levels below as observed (steps.jl).
+    def level(n):
+        o = inter_parse(n)[1]
+        return 0 if inter_parse(o) is None else 1 + level(o)
+
+    def chain(acc, n):
+        acc.append(n)
+        o = inter_parse(n)[1]
+        if inter_parse(o) is not None:
+            chain(acc, o)
+
     passes: dict = {}
     defs: dict = {}
-    while work:
-        n = work.pop()
-        if n in defs:
-            continue
-        wrt, o = inter_parse(n)
-        if wrt not in passes:
-            letter = {"states": "u", "parameters": "p", "forcing": "f"}[wrt]
-            passes[wrt] = steps_setup(
-                sv,
-                ctx,
-                {k: v for k, v in obs.items() if k not in rn},
-                _targets(sv, wrt, forcing, obs),
-                scalars,
-                True,
-                letter,
-            )
-        st = passes[wrt]
-        if n not in st.inters:
-            steps_composed(st, o)
-        hit = st.inters.get(n)
-        if hit is None:
-            raise BandError(f"no named intermediate `{n}` (observed `{o}`)")
-        defs[n] = hit
-        work += [m for m in free_variables(hit[1]) if inter_parse(m) is not None and m not in defs]
+    pending: list = []
+    for n in work:
+        chain(pending, n)
+    base = {k: v for k, v in obs.items() if k not in rn}
+    while pending:
+        lv = min(level(n) for n in pending)
+        passes = {k: v for k, v in passes.items() if k[1] <= lv}
+        here = [n for n in pending if level(n) == lv]
+        pending = [n for n in pending if level(n) != lv]
+        while here:
+            n = here.pop()
+            if n in defs:
+                continue
+            wrt, o = inter_parse(n)
+            if (wrt, lv) not in passes:
+                letter = {"states": "u", "parameters": "p", "forcing": "f"}[wrt]
+                o2 = dict(base)
+                if lv > 0:
+                    o2.update({m: d for m, (_, d, _) in defs.items()})
+                passes[(wrt, lv)] = steps_setup(
+                    sv, ctx, o2, _targets(sv, wrt, forcing, obs), scalars, True, letter
+                )
+            st = passes[(wrt, lv)]
+            if n not in st.inters:
+                steps_composed(st, o)
+            hit = st.inters.get(n)
+            if hit is None:
+                raise BandError(f"no named intermediate `{n}` (observed `{o}`)")
+            for m in free_variables(hit[1]):
+                if inter_parse(m) is None or m in defs:
+                    continue
+                if level(m) == lv:
+                    here.append(m)
+                else:
+                    chain(pending, m)
+            defs[n] = hit
     extra = {n: d for n, (_, d, _) in defs.items()}
     out = [(n, o, d, 0) for n, o, d in time_companions(sv, bands, extra)]
     out += [(n, o, d, c) for n, (o, d, c) in defs.items()]

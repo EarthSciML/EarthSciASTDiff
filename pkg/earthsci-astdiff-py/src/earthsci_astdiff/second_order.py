@@ -119,6 +119,17 @@ def _bands2(sv: SysView, a1: str, a2: str, forcing, memo: _FirstOrder | None = N
                 for en in tp:
                     _check_closed_col2(en)
             return ExtendedBands(), tp
+    # A pair with no active recurrence keeps both axes' named steps (§4.4).
+    if a1 != "time":
+        from .recurrence import ExtendedBands
+
+        pp = _pair_steps_bands(sv, a1, a2, forcing, t2)
+        if pp is not None:
+            e1, ps = pp
+            if a2 in ("parameters", "forcing"):
+                for en in ps:
+                    _check_closed_col2(en)
+            return e1, ps
     e1 = memo.ext(sv, a1, a2, forcing, seed=t2)
     tset = set(t2) | {r.name for r in e1.recurrences}
     out: list[JacEntry2] = []
@@ -131,6 +142,64 @@ def _bands2(sv: SysView, a1: str, a2: str, forcing, memo: _FirstOrder | None = N
             if not e1.is_recurrence(en.w):
                 _check_closed_col2(en)
     return e1, out
+
+
+def _pair_steps_bands(sv: SysView, a1: str, a2: str, forcing, t2) -> list | None:
+    """A pair ``[a1, a2]`` (a1 not time) by named steps (second_order.jl
+    ``_pair_steps_bands``): the ``a1`` pass keeps its named steps, its named
+    intermediates are observed of a named-steps pass over the ``a2``
+    targets, and each coefficient's bands w.r.t. a column of that pass are
+    composed with the column's composed ``a2`` bands. ``None`` through an
+    active recurrence."""
+    from .inline import inline_observed
+    from .jacobian import _extended_pass, declared_scalars
+    from .recurrence import active, recurrences
+    from .steps import (
+        _steps_combine,
+        _steps_sum_free,
+        compose,
+        intermediates,
+        steps_composed,
+        steps_setup,
+    )
+
+    ctx = ctx_of(sv)
+    obs = observed_defs(sv)
+    recs = recurrences(sv, obs, ctx)
+    if recs and active(recs, obs, set(_targets(sv, a1, forcing, obs)) | set(t2)):
+        return None
+    ext = _extended_pass(sv, ctx, obs, a1, forcing, [], companions=True)
+    e1 = ext.rows
+    inter = {n: d for n, _, d, k in intermediates(sv, [en.band for en in e1], forcing) if k == 1}
+    rn = {r.name for r in recs}
+    obs2 = {**{k: v for k, v in obs.items() if k not in rn}, **inter}
+    letter = {"states": "u", "parameters": "p", "forcing": "f"}[a2]
+    st = steps_setup(sv, ctx, obs2, t2, declared_scalars(sv, obs), True, letter)
+    sctx = st.ctx
+    rank = {**obs, **inter}
+    out: list[JacEntry2] = []
+    for en in e1:
+        b = en.band
+        n = len(b.cidx)
+        coef = inline_observed(b.coef, st.inline, [None], sctx.shapes, rank, st.scalars, sctx.axes)
+        b0 = replace(b, coef=coef)
+        bycol: dict = {}
+        for x in sorted(v for v in free_variables(coef) if v in st.targets or v in st.cols):
+            bs = _coef_bands(b0, x, sctx)
+            if x in st.targets:
+                bycol.setdefault(x, []).extend(bs)
+                continue
+            inner = steps_composed(st, x)
+            outer = [replace(y, cidx=list(y.cidx[n:])) for y in bs]
+            for w in sorted({e.v for e in inner}):
+                ib = [e.band for e in inner if e.v == w]
+                for z in compose(outer, ib, True):
+                    z2 = replace(z, cidx=list(b.cidx) + list(z.cidx))
+                    bycol.setdefault(w, []).append(_steps_sum_free(z2, True))
+        for w in sorted(bycol):
+            for y in merge_bands(_steps_combine(bycol[w], True)):
+                out.append(JacEntry2(en.u, en.v, w, normalize_band(y), n))
+    return ext, out
 
 
 def _coef_bands(b: Band, w: str, ctx: Ctx) -> list[Band]:

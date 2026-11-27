@@ -382,21 +382,46 @@ function _intermediates(sv::SysView, entries; forcing = nothing, info = nothing)
     obs = _observed_defs(sv)
     recs = recurrences(sv, obs, ctx)
     scalars = _declared_scalars(sv, obs)
-    passes = Dict{Symbol, _Steps}()
     defs = Dict{String, Tuple{String, ASTExpr, Int}}()
-    while !isempty(work)
-        n = pop!(work)
-        haskey(defs, n) && continue
-        wrt, o = _inter_parse(n)
-        st = get!(passes, wrt) do
-            _steps_pass(sv, ctx, obs, recs, wrt, forcing, _targets(sv, wrt, forcing, obs), scalars, true)
-        end
-        haskey(st.inters, n) || _steps_composed!(st, o)
-        hit = get(st.inters, n, nothing)
-        hit === nothing && throw(BandError("no named intermediate `$n` (observed `$o`, $(wrt))"))
-        defs[n] = hit
-        for m in free_variables(hit[2])
-            _inter_parse(m) === nothing || haskey(defs, m) || push!(work, m)
+    # A pair's second-axis step of a first-axis intermediate (§4.4) is named
+    # after that intermediate (`_dp__du_o_1_1`): the intermediates whose
+    # observed is a source observed are resolved first, then those over them,
+    # each level's passes taking the levels below as observed.
+    level(n) = (o = _inter_parse(n)[2]; _inter_parse(o) === nothing ? 0 : 1 + level(o))
+    passes = Dict{Tuple{Symbol, Int}, _Steps}()
+    # a nested name's own observed is an intermediate of the level below
+    function chain!(acc, n)
+        push!(acc, n)
+        o = _inter_parse(n)[2]
+        _inter_parse(o) === nothing || chain!(acc, o)
+        return acc
+    end
+    pending = String[]
+    foreach(n -> chain!(pending, n), work)
+    while !isempty(pending)
+        lv = minimum(level, pending)
+        # passes over this level's names are rebuilt with the levels below
+        filter!(kv -> kv[1][2] <= lv, passes)
+        here = String[n for n in pending if level(n) == lv]
+        filter!(n -> level(n) != lv, pending)
+        while !isempty(here)
+            n = pop!(here)
+            haskey(defs, n) && continue
+            wrt, o = _inter_parse(n)
+            st = get!(passes, (wrt, lv)) do
+                obs2 = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in Set(r.name for r in recs)))
+                lv == 0 || merge!(obs2, Dict{String, ASTExpr}(m => d for (m, (_, d, _)) in defs))
+                lv == 0 ? _steps_pass(sv, ctx, obs, recs, wrt, forcing, _targets(sv, wrt, forcing, obs), scalars, true) :
+                    _steps_setup(sv, ctx, obs2, _targets(sv, wrt, forcing, obs), scalars, true; letter = _STEP_LETTER[wrt])
+            end
+            haskey(st.inters, n) || _steps_composed!(st, o)
+            hit = get(st.inters, n, nothing)
+            hit === nothing && throw(BandError("no named intermediate `$n` (observed `$o`, $(wrt))"))
+            defs[n] = hit
+            for m in free_variables(hit[2])
+                (_inter_parse(m) === nothing || haskey(defs, m)) && continue
+                level(m) == lv ? push!(here, m) : chain!(pending, m)
+            end
         end
     end
     extra = Dict{String, ASTExpr}(n => d for (n, (_, d, _)) in defs)

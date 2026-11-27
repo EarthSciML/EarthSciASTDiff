@@ -92,6 +92,15 @@ function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder
             return ExtendedBands(Recurrence[], JacEntry[], JacEntry[], Int[], Dict{String, String}()), tp
         end
     end
+    # A pair with no active recurrence keeps both axes' named steps (§4.4).
+    pp = _pair_steps_bands(sv, a1, a2, forcing, memo, t2)
+    if pp !== nothing
+        e1, ps = pp
+        a2 in (:parameters, :forcing) && foreach(_check_closed_col2, ps)
+        t = _Interner()
+        ps = JacEntry2[JacEntry2(en.u, en.v, en.w, _intern_band(t, en.band), en.ncol) for en in ps]
+        return e1, ps
+    end
     e1 = _first_order_ext!(memo, sv, a1, a2, forcing, t2)
     tset = union(Set{String}(t2), Set{String}(r.name for r in e1.recurrences))
     out = JacEntry2[]
@@ -112,6 +121,70 @@ function _bands2(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo::_FirstOrder
     t = _Interner()
     out = JacEntry2[JacEntry2(en.u, en.v, en.w, _intern_band(t, en.band), en.ncol) for en in out]
     return e1, out
+end
+
+# A pair `[a1, a2]` (a1 not `"time"`) by named steps (§4.4, §4.6): the `a1`
+# pass keeps its named steps, and its named intermediates are observed of a
+# named-steps pass over the `a2` targets. Each first-order coefficient's
+# bands with respect to an `a2` target are its own; with respect to an
+# observed or intermediate that moves with `a2`, they are composed with that
+# column's composed `a2` bands — nothing is inlined. The first-order column
+# indices come first in every band's `cidx` (the pair's `col_idx`). Bands of
+# one entry and second column are combined and merged as on a first-order
+# row. `nothing` when a recurrence is active on either axis: that pair keeps
+# the inlining path.
+function _pair_steps_bands(sv::SysView, a1::Symbol, a2::Symbol, forcing, memo, t2)
+    info = _rec_info!(memo, sv)
+    if !isempty(info.recs)
+        t1 = _targets(sv, a1, forcing, info.obs)
+        isempty(_active(info.recs, info.obs, union(Set{String}(t1), Set{String}(t2)))) || return nothing
+    end
+    ext = _extended_pass(sv, info.ctx, info.obs, a1, forcing, String[]; info = info)
+    e1 = ext.rows
+    inter = Dict{String, ASTExpr}(
+        n => d for (n, _, d, k) in _intermediates(sv, e1; forcing = forcing, info = info) if k == 1
+    )
+    rn = Set{String}(r.name for r in info.recs)
+    obs = Dict{String, ASTExpr}(k => v for (k, v) in info.obs if !(k in rn))
+    merge!(obs, inter)
+    st = _steps_setup(
+        sv, info.ctx, obs, t2, _declared_scalars(sv, info.obs), true; letter = _STEP_LETTER[a2]
+    )
+    ctx = st.ctx
+    out = JacEntry2[]
+    for en in e1
+        b = en.band
+        n = length(b.cidx)
+        coef = _with_layer(ctx.refs) do
+            inline_observed(
+                b.coef, st.inline; shapes = ctx.shapes, axes = ctx.axes,
+                rank_obs = merge(info.obs, inter), scalars = st.scalars
+            )
+        end
+        b0 = _rebuild(b; coef = coef)
+        bycol = Dict{String, Vector{Band}}()
+        for x in sort!(String[v for v in free_variables(coef) if v in st.targets || v in st.cols])
+            bs = _coef_bands(b0, x, ctx)
+            if x in st.targets
+                append!(get!(bycol, x, Band[]), bs)
+                continue
+            end
+            inner = _steps_composed!(st, x)
+            outer = Band[_rebuild(y; cidx = y.cidx[(n + 1):end]) for y in bs]
+            for w in sort!(unique(String[e.v for e in inner]))
+                ib = Band[e.band for e in inner if e.v == w]
+                for z in _compose(outer, ib, w, ctx, true)
+                    push!(get!(bycol, w, Band[]), _steps_sum_free(_rebuild(z; cidx = vcat(b.cidx, z.cidx)), true))
+                end
+            end
+        end
+        for w in sort!(collect(keys(bycol)))
+            for y in merge_bands(_steps_combine(bycol[w], true))
+                push!(out, JacEntry2(en.u, en.v, w, normalize_band(y), n))
+            end
+        end
+    end
+    return ext, out
 end
 
 # One band per site of `w` in a first-order coefficient, broadcast over the

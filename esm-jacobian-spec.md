@@ -1072,11 +1072,24 @@ derivative of `f_t` when the method passes it.
 the `a1` axis, the producer differentiates `e.coef` with respect to every
 site of every `a2` target, treating it as a scalar body broadcast over
 `e.rows`: region clipping, re-merging of equal-coefficient entries and
-singleton pinning as for any scalar body. The first-order pass inlines the
-observed that move with either axis (§4.3's seeding, over the union of the
-two target sets): an observed rate that reads only parameters is an opaque
-read on the state axis and would hide its parameter sites from the second
-derivative. The non-smooth policy (§3.2) applies again — `ifelse`
+singleton pinning as for any scalar body. With no recurrence active on
+either axis, the first-order pass keeps its named steps (§4.6), and its
+named intermediates are observed of a named-steps pass over the `a2`
+targets (definitions as in the block's `intermediates`, declared without a
+shape, extents their definitions'). An `a2` target `e.coef` reads is
+differentiated at its sites; an observed or intermediate that moves with
+`a2` (an observed rate that reads only parameters is one: opaque on the
+state axis, it would otherwise hide its parameter sites) is a column whose
+bands are composed with its composed `a2` bands, never inlined. Those
+bands' coefficients are named steps of the `a2` pass, named after the
+intermediate they step through (`_dp__du_o_1_1`, a parameters step of
+`_du_o_1`); a consumer resolves the intermediates level by level, those
+over source observed first. The first-order column indices lead every
+band's column indices; bands of one entry and second column are combined,
+merged and normalized as on a first-order row. Through an active
+recurrence the first-order pass inlines the observed that move with
+either axis (§4.3's seeding, over the union of the two target sets).
+The non-smooth policy (§3.2) applies again — `ifelse`
 differentiates branch-wise with the condition's Dirac term dropped, ties of
 `max`/`min` keep the earlier argument — and the pattern is the structural,
 global union over branches (§2). A piecewise-linear limiter therefore has an

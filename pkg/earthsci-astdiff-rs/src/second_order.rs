@@ -158,6 +158,18 @@ pub(crate) fn bands2_memo(
             return Ok((e1, tp));
         }
     }
+    // A pair with no active recurrence keeps both axes' named steps (§4.4).
+    if a1 != Wrt::Time {
+        if let Some((e1, mut ps)) = pair_steps_bands(sv, ctx, obs, a1, a2, forcing, &t2)? {
+            if a2.has_columns() {
+                for en in &ps {
+                    check_closed_col2(en)?;
+                }
+            }
+            crate::jacobian::intern_entries(ps.iter_mut().map(|en| &mut en.band));
+            return Ok((Rc::new(e1), ps));
+        }
+    }
     let e1 = memo.ext(sv, ctx, obs, a1, Some(a2), forcing, &t2)?;
     // a recurrence is a second column too (spec §4.5): its rows and columns
     // are the extended system's
@@ -199,6 +211,129 @@ pub(crate) fn bands2_memo(
     // subtrees band after band: intern them as the first-order pass is.
     crate::jacobian::intern_entries(out.iter_mut().map(|en| &mut en.band));
     Ok((e1, out))
+}
+
+/// A pair `[a1, a2]` (a1 not time) by named steps (second_order.jl
+/// `_pair_steps_bands`): the `a1` pass keeps its named steps, its named
+/// intermediates are observed of a named-steps pass over the `a2` targets,
+/// and each coefficient's bands w.r.t. a column of that pass are composed
+/// with the column's composed `a2` bands. `None` through an active
+/// recurrence.
+fn pair_steps_bands(
+    sv: &SysView,
+    ctx: &Ctx,
+    obs: &HashMap<String, Expr>,
+    a1: Wrt,
+    a2: Wrt,
+    forcing: Option<&[String]>,
+    t2: &[String],
+) -> R<Option<(ExtendedBands, Vec<JacEntry2>)>> {
+    let recs = crate::recurrence::recurrences(sv, obs, ctx)?;
+    if !recs.is_empty() {
+        let mut s: HashSet<String> = targets(sv, a1, forcing, obs)?.into_iter().collect();
+        s.extend(t2.iter().cloned());
+        if !crate::recurrence::active(&recs, obs, &s).is_empty() {
+            return Ok(None);
+        }
+    }
+    let ext = crate::jacobian::extended_pass(sv, ctx, obs, a1, forcing, &[], true)?;
+    let e1 = &ext.rows;
+    let eb: Vec<&Band> = e1.iter().map(|en| &en.band).collect();
+    let inter: HashMap<String, Expr> = crate::steps::intermediates(sv, &eb, forcing)?
+        .into_iter()
+        .filter(|x| x.3 == 1)
+        .map(|(n, _, d, _)| (n, d))
+        .collect();
+    let mut nr = obs.clone();
+    for r in &recs {
+        nr.remove(&r.name);
+    }
+    nr.extend(inter.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut rank = obs.clone();
+    rank.extend(inter);
+    let tset: HashSet<String> = t2.iter().cloned().collect();
+    let letter = match a2 {
+        Wrt::States => "u",
+        Wrt::Parameters => "p",
+        _ => "f",
+    };
+    let scalars = crate::jacobian::declared_scalars(sv, obs);
+    let mut st = crate::steps::steps_setup(sv, ctx, nr, &tset, &scalars, true, letter)?;
+    let sctx = st.ctx.clone();
+    let mut out = Vec::new();
+    for en in e1 {
+        let b = &en.band;
+        let n = b.cidx.len();
+        let mut obs_names = None;
+        let coef = with_layer(&sctx.refs, || {
+            crate::inline::inline_observed_aligned(
+                &b.coef,
+                &st.inline,
+                &mut obs_names,
+                &sctx.shapes,
+                &rank,
+                &st.scalars,
+                &sctx.axes,
+            )
+        })
+        .map_err(|e| BandError(e.0))?;
+        let mut b0 = b.clone();
+        b0.coef = coef;
+        let mut xs: Vec<String> = free_variables(&b0.coef)
+            .into_iter()
+            .filter(|v| st.targets.contains(v) || st.cols.contains(v))
+            .collect();
+        xs.sort();
+        let mut bycol: HashMap<String, Vec<Band>> = HashMap::new();
+        for x in &xs {
+            let occ = RefCell::new(OccIndex::new(x));
+            let mut sm = SimpMemo::default();
+            let bs = coef_bands(&b0, x, &sctx, &occ, &mut sm)?;
+            if st.targets.contains(x) {
+                bycol.entry(x.clone()).or_default().extend(bs);
+                continue;
+            }
+            let inner = crate::steps::steps_composed(&mut st, x)?;
+            let outer: Vec<Band> = bs
+                .into_iter()
+                .map(|mut y| {
+                    y.cidx = y.cidx[n..].to_vec();
+                    y
+                })
+                .collect();
+            let mut ws: Vec<String> = inner.iter().map(|e| e.v.clone()).collect();
+            ws.sort();
+            ws.dedup();
+            for w in ws {
+                let ib: Vec<Band> = inner
+                    .iter()
+                    .filter(|e| e.v == w)
+                    .map(|e| e.band.clone())
+                    .collect();
+                for mut z in compose(&outer, &ib, true)? {
+                    z.cidx = [b.cidx.clone(), z.cidx].concat();
+                    bycol
+                        .entry(w.clone())
+                        .or_default()
+                        .push(crate::steps::steps_sum_free(&z, true));
+                }
+            }
+        }
+        let mut ws: Vec<&String> = bycol.keys().collect();
+        ws.sort();
+        for w in ws {
+            for y in merge_bands(crate::steps::steps_combine(bycol[w].clone(), true)) {
+                out.push(JacEntry2 {
+                    u: en.u.clone(),
+                    v: en.v.clone(),
+                    w: w.clone(),
+                    band: normalize_band(&y),
+                    ncol: n,
+                });
+            }
+        }
+    }
+    Ok(Some((ext, out)))
 }
 
 /// One band per site of `w` in a first-order coefficient, broadcast over the
