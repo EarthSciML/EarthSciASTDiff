@@ -57,7 +57,7 @@ end
     @test detect_structure(entries, sv) == :block_diagonal
 end
 
-@testset "structure: dimensions pair by index-set name (the shared golden)" begin
+@testset "structure: the positional classes (the shared golden)" begin
     file = EarthSciAST.load_path(joinpath(FIXTURES, "named_dims.esm"))
     out = Dict{String, Any}()
     for mname in sort!(collect(keys(file.models)))
@@ -73,20 +73,83 @@ end
     # a over [cell, salt] reading b over [cell, el] at the same indices is
     # diagonal by position only
     @test out["Mismatch"]["structure"] == "general"
-    # p over [x, y] reading q over [y, x] at q[j, i] is diagonal by name only
-    @test out["Transposed"]["structure"] == "block_diagonal"
+    # p over [x, y] reading q over [y, x] at q[j, i] is diagonal by name
+    # only, and the classes are positional: q[j, i] is not stored at p's
+    # position (i, j), though x and y have one size
+    @test out["Transposed"]["structure"] == "general"
+    @test out["Transposed"]["factorization"] === nothing
 end
 
-@testset "cell blocks: the emitted block takes the cell axes" begin
-    file = EarthSciAST.load_path(joinpath(FIXTURES, "cell_block_mixed_rank.esm"))
-    doc = jacobian_document(file, "Phase"; cell_axes = ["lev", "bin"])
-    block = doc["jacobians"]["Phase"]
-    @test stable_json(block) == read(joinpath(_CB_GOLDENS, "cell_block_mixed_rank.cell-lev-bin.block.json"), String)
-    @test block["structure"] == "cell_block"
-    sv = sysview(file, "Phase")
-    plan = plan_factorization(jacobian_bands(sv), sv; cell_axes = ["lev", "bin"])
-    @test stable_json(block["factorization"]) == stable_json(serialize_plan(plan))
-    # without cell axes: general, and no plan
-    b0 = jacobian_document(file, "Phase")["jacobians"]["Phase"]
-    @test b0["structure"] == "general" && !haskey(b0, "factorization")
+@testset "structure: block_diagonal is positional; cell_block pairs by name" begin
+    file = EarthSciAST.load_path(joinpath(FIXTURES, "named_dims.esm"))
+    sv = sysview(file, "Transposed")
+    entries = jacobian_bands(sv)
+    @test detect_structure(entries, sv) == :general
+    # the lane-block scatter plan would place ∂p[i, j]/∂q[j, i] in lane
+    # (i, j)'s slot for q[i, j]: refused
+    err = try
+        scatter_plan(file, LaneBlocks(); model_name = "Transposed"); nothing
+    catch e
+        e
+    end
+    @test err isa ArgumentError && occursin("block_diagonal", sprint(showerror, err))
+    # over the cell axes [x, y] the axes pair by name: one 2-element block
+    # per cell, p and q of that cell
+    @test detect_structure(entries, sv; cell_axes = ["x", "y"]) == :cell_block
+    cb = cell_blocks(entries, sv, ["x", "y"])
+    @test cb.block_vars == ["p", "q"]
+    @test cb.elements == [("p", Int[]), ("q", Int[])]
+    @test cb.pattern == Bool[1 1; 0 1]
+end
+
+@testset "second-order structure: positional, as first order" begin
+    # Mismatch: ∂²a/∂a∂b has a second column on b over [cell, el], the
+    # row over [cell, salt]: by position the column is the row's, by index
+    # set it is not. Even with the first-order class taken as block
+    # diagonal, the pair block is not.
+    file = EarthSciAST.load_path(joinpath(FIXTURES, "named_dims.esm"))
+    sv = sysview(file, "Mismatch")
+    e1 = jacobian_bands(sv)
+    e2 = jacobian_bands2(sv)
+    @test any(en -> en.w == "b", e2)
+    memo = EarthSciASTDiff._FirstOrder()
+    memo.structure[e1] = :block_diagonal
+    @test EarthSciASTDiff._structure2(e1, e2, sv, :states, memo) === nothing
+    # a positional pair block keeps the class
+    _, sv0, e10 = _cb_load("bd_chem")
+    memo0 = EarthSciASTDiff._FirstOrder()
+    @test EarthSciASTDiff._structure2(e10, jacobian_bands2(sv0), sv0, :states, memo0) == :block_diagonal
+end
+
+@testset "cell axes: a lone name is one axis" begin
+    file, sv, entries = _cb_load("cell_block_mixed_rank")
+    for lone in ("lev", :lev)
+        # the axis `lev`, not the axes `l`, `e`, `v`
+        @test cell_blocks(entries, sv, lone) == cell_blocks(entries, sv, ["lev"])
+        @test detect_structure(entries, sv; cell_axes = lone) ==
+            detect_structure(entries, sv; cell_axes = ["lev"])
+        @test stable_json(jacobian_document(file, "Phase"; cell_axes = lone)) ==
+            stable_json(jacobian_document(file, "Phase"; cell_axes = ["lev"]))
+    end
+    # a one-axis cell_block Jacobian, planned from a lone name
+    f = EarthSciAST.load_path(joinpath(FIXTURES, "named_dims.esm"))
+    tsv = sysview(f, "Transposed")
+    te = jacobian_bands(tsv)
+    for lone in ("x", :x)
+        @test detect_structure(te, tsv; cell_axes = lone) == :cell_block
+        @test serialize_plan(plan_factorization(te, tsv; cell_axes = lone)) ==
+            serialize_plan(plan_factorization(te, tsv; cell_axes = ["x"]))
+    end
+end
+
+@testset "cell blocks: a shape over an undeclared index set" begin
+    _, sv, entries = _cb_load("cell_block_mixed_rank")
+    var = sv.variables["w"]
+    sv.variables["w"] = EarthSciAST.ModelVariable(var.type; shape = vcat(var.shape, ["foo"]))
+    err = try
+        cell_blocks(entries, sv, ["lev"]); nothing
+    catch e
+        e
+    end
+    @test err isa EarthSciASTDiff.BandError && err.msg == "unknown index set `foo` in shape"
 end

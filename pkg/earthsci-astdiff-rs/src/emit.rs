@@ -340,11 +340,12 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
 
 /// Classify the band list as `"block_diagonal"`, `"banded"` or `"general"`
 /// (or `"empty"` / `"other"`), read off the column-index expressions without
-/// evaluating anything. Use it to choose a matrix type. A column is compared
-/// with its row dimension by dimension, the dimensions paired by index-set
-/// name (`ctx.axes`; by position when either variable's names are not
-/// known), so a band whose column and row have different ranks, or whose
-/// column is over an index set its row is not, is `"general"`.
+/// evaluating anything. Use it to choose a matrix type. The classes are
+/// positional (their consumers pair row and column cells by storage
+/// position): a band whose column and row have different ranks, whose
+/// column is over an index set its row is not, or whose column is over the
+/// row's index sets in another order (`ctx.axes`; by position when either
+/// variable's names are not known) is `"general"`.
 pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'static str {
     if entries.is_empty() {
         return "empty";
@@ -365,13 +366,14 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
         if b.cidx.len() != b.ridx.len() {
             return "general";
         }
-        // dimensions pair by index-set name (esm-spec §4.3.4): a column on
-        // an index set its row is not over is not the row there
-        let Some(pairs) = dim_pairs(ctx, &en.u, &en.v) else {
+        // the classes are positional (their consumers pair row and column
+        // cells by storage position): a column over other index sets than
+        // its row, or over them in another order, is not the row
+        if !positional(ctx, &en.u, &en.v) {
             return "general";
-        };
-        for (d, c) in b.cidx.iter().enumerate() {
-            match offset_class(c, &b.ridx[pairs[d]]) {
+        }
+        for (c, r) in b.cidx.iter().zip(&b.ridx) {
+            match offset_class(c, r) {
                 "other" | "fixed" => return "general",
                 "affine" => seen_affine = true,
                 _ => {}
@@ -385,27 +387,17 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
     }
 }
 
-/// For each dimension of column variable `v`, the dimension of row variable
-/// `u` on the same index set, the `j`-th dimension of `v` on index set `X`
-/// pairing with the `j`-th of `u` on `X`; `None` when an index set of `v`
-/// has no such partner in `u`. When either variable's index-set names are
-/// not known (`ctx.axes`), the dimensions pair by position. The ranks are
-/// equal.
-fn dim_pairs(ctx: &Ctx, u: &str, v: &str) -> Option<Vec<usize>> {
-    let n = ctx.shapes.get(v).map_or(0, Vec::len);
-    let (Some(axu), Some(axv)) = (ctx.axes.get(u), ctx.axes.get(v)) else {
-        return Some((0..n).collect());
-    };
-    if axu == axv {
-        return Some((0..n).collect());
+/// Whether column variable `v` lies over row variable `u`'s index sets in
+/// the same order, so that pairing their dimensions by position (what
+/// `"block_diagonal"` and `"banded"`, and the lane-block scatter plan and
+/// the block-diagonal LU plan that read them, do) is pairing them by
+/// index-set name; `true` when either variable's index-set names are not
+/// known (`ctx.axes`).
+pub(crate) fn positional(ctx: &Ctx, u: &str, v: &str) -> bool {
+    match (ctx.axes.get(u), ctx.axes.get(v)) {
+        (Some(axu), Some(axv)) => axu == axv,
+        _ => true,
     }
-    let mut out = Vec::with_capacity(n);
-    for d in 0..n {
-        let j = axv[..=d].iter().filter(|x| **x == axv[d]).count();
-        let k: Vec<usize> = (0..axu.len()).filter(|&i| axu[i] == axv[d]).collect();
-        out.push(*k.get(j - 1)?);
-    }
-    Some(out)
 }
 
 /// [`detect_structure`] given an optional column axis (an index-set name,

@@ -17,7 +17,7 @@ from .bands import Band, BandError
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
-from .structure import cell_blocks, column_lines
+from .structure import cell_axes_list, cell_blocks, column_lines
 from .system import sysview
 
 
@@ -295,7 +295,7 @@ def _jacobian_block(
     # Line-by-line structure is a property of the square state matrix.
     # The one point walk both the class and its plan read.
     # So is per-cell structure, tried first (as detect_structure does).
-    cells = cell_axes if wrt == "states" else None
+    cells = cell_axes_list(cell_axes) if wrt == "states" else None
     cb = (
         None
         if cells is None or structure in ("empty", "block_diagonal")

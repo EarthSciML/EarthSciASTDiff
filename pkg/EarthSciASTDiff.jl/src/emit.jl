@@ -227,7 +227,7 @@ function _jacobian_block(
     # Line-by-line structure is a property of the square state matrix.
     # The one point walk both the class and its plan read.
     # So is per-cell structure, tried before it (as `detect_structure` does).
-    cells = wrt == :states ? cell_axes : nothing
+    cells = wrt == :states ? _cell_axes_list(cell_axes) : nothing
     cb = cells === nothing || structure in (:empty, :block_diagonal) ? nothing :
         cell_blocks(entries, sv, cells)
     cb === nothing || (structure = :cell_block)

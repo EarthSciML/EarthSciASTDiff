@@ -2,7 +2,7 @@
   "esm": "1.1.0",
   "metadata": {
     "name": "named_dims",
-    "description": "Structure classes read dimension by dimension, the dimensions paired by index-set name (esm-jacobian-spec \u00a74). Mismatch: a over [cell, salt] reads b over [cell, el] at the same index expressions (salt and el have the same size), so by position the band is diagonal, but its column is over an index set its row is not: general. Transposed: p over [x, y] reads q over [y, x] at q[j, i]: by position the column indices are not the row's, by name they are: block diagonal."
+    "description": "The structure classes block_diagonal and banded are positional (esm-jacobian-spec \u00a74): a band is read only when its column variable lies over its row variable's index sets in the same order. Mismatch: a over [cell, salt] reads itself and b over [cell, el] at the same index expressions (salt and el have the same size), so by position the b band is diagonal, but its column is over an index set its row is not: general; the product gives the second-order block a second column on b too. Transposed: p over [x, y] reads q over [y, x] at q[j, i] (x and y have the same size, so p and q share one cell shape): by name the column is the row's cell, but q[j, i] is not stored at p's position (i, j): general. Over the cell axes [x, y] it is cell_block, whose plan pairs the axes by name."
   },
   "index_sets": {
     "cell": {
@@ -23,7 +23,7 @@
     },
     "y": {
       "kind": "interval",
-      "size": 3
+      "size": 2
     }
   },
   "models": {
@@ -79,6 +79,14 @@
               "args": [
                 -1,
                 "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "a",
+                    "i",
+                    "j"
+                  ]
+                },
                 {
                   "op": "index",
                   "args": [

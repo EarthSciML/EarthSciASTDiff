@@ -319,7 +319,7 @@ let name = "cell_block_mixed_rank"
     write(path, stable_json(doc["jacobians"][mname]))
     println("wrote ", path)
 end
-# structure classes with the dimensions paired by index-set name (spec §4):
+# the positional structure classes (spec §4):
 # one class (and plan, where one exists) per model of the fixture
 let name = "named_dims"
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))

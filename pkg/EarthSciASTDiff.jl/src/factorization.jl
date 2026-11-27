@@ -46,6 +46,7 @@ function plan_factorization(
             "unknown structure class :$structure (expected one of $STRUCTURE_CLASSES)"
         )
     )
+    cell_axes = _cell_axes_list(cell_axes)
     for en in entries
         var = get(sv.variables, en.v, nothing)
         (var !== nothing && var.type == EarthSciAST.ParameterVariable) && throw(

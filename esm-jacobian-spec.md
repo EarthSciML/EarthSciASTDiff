@@ -566,19 +566,23 @@ error, and a consumer MUST refuse the block rather than skip the point.
 `structure` (optional, derived): `"block_diagonal"` | `"banded"` |
 `"general"` | `"column_block"` | `"cell_block"` — a *classification* of the
 exact pattern for consumers choosing a matrix type; the pattern itself is
-always recoverable from the entries. `"block_diagonal"` and `"banded"` read
-each entry's column index against its row index dimension by dimension, the
-dimensions paired by index-set name as esm-spec §4.3.4 aligns operands: the
-`j`-th dimension of the column variable on index set `X` pairs with the
-`j`-th dimension of the row variable on `X` (by position when either
-variable's index-set names are not known). So an entry whose column and row
-have different ranks (a variable over `cell` reading one over
-`cell × salt`), or whose column is over an index set its row is not (a
-variable over `cell × salt` reading one over `cell × el` at the same index
-expressions), is neither: its column is not its row in every dimension, and
-the Jacobian is `"general"` unless cell axes make it `"cell_block"`. A column
-over the row's index sets in another order (a variable over `x × y` reading
-one over `y × x` at `[j, i]`) pairs by name. `"column_block"` is reported only when the producer is
+always recoverable from the entries. `"block_diagonal"` and `"banded"` are
+POSITIONAL: they read each entry's column index against its row index
+dimension by dimension at the same position, since their consumers (the
+lane-block scatter plan of §8, the block-diagonal plan of §6) pair a row
+cell with the column cell at the same storage position. An entry is
+compared only when its column variable lies over its row variable's index
+sets in the same order (always when either variable's index-set names are
+not known), so that pairing by position is pairing by index-set name as
+esm-spec §4.3.4 aligns operands. So an entry whose column and row have
+different ranks (a variable over `cell` reading one over `cell × salt`),
+whose column is over an index set its row is not (a variable over
+`cell × salt` reading one over `cell × el` at the same index expressions),
+or whose column is over the row's index sets in another order (a variable
+over `x × y` reading one over `y × x` at `[j, i]`, whose column cell is not
+its row cell by storage position) is neither: the Jacobian is `"general"`
+unless cell axes make it `"cell_block"`, the one class whose plan pairs
+dimensions by index-set name. `"column_block"` is reported only when the producer is
 told a column axis (an index-set name, e.g. by an integrator's locality
 pass: a name carries no vertical meaning by itself), in place of `"banded"`
 or `"general"`, when every coupling stays within one LINE along it: every
@@ -1081,7 +1085,8 @@ time (§4.3).
 `"parameters"` or `"forcing"` (§4's form and canonical ordinal), absent
 otherwise. `structure` is `"block_diagonal"` when `a1` is `"states"`, the
 first-order state block is block-diagonal and every `col2_idx` equals the
-row index (`col2` an array of the row's rank, or both scalar): the
+row index position by position (`col2` an array over the row's index sets
+in the same order, as for the first-order class, or both scalar): the
 contraction is then lane-local. Otherwise it is omitted. There is no
 `factorization`. `expression_templates` (§4.1) apply unchanged.
 

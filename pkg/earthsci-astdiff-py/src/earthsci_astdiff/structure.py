@@ -50,19 +50,34 @@ def detect_structure(
 
     Given ``cell_axes`` (index-set names, from the caller), ``"cell_block"``
     replaces ``"banded"`` / ``"general"``, before ``"column_block"``, when
-    every coupling stays inside one CELL of those axes (:func:`cell_blocks`).
-    A column is compared with its row dimension by dimension, the dimensions
-    paired by index-set name (by position when either variable's names are
-    not known), so a band whose column and row have different ranks, or whose
-    column is over an index set its row is not, is ``"general"``."""
+    every coupling stays inside one CELL of those axes (:func:`cell_blocks`),
+    whose plan pairs the cell axes by index-set name. ``"block_diagonal"``
+    and ``"banded"`` are positional (their consumers pair row and column
+    cells by storage position): a band whose column and row have different
+    ranks, whose column is over an index set its row is not, or whose column
+    is over the row's index sets in another order is ``"general"`` (by
+    position when either variable's names are not known). A lone ``str``
+    ``cell_axes`` is one axis."""
     st = _detect_structure(entries, sv)
     if st in ("empty", "block_diagonal"):
         return st
+    cell_axes = cell_axes_list(cell_axes)
     if cell_axes is not None and cell_blocks(entries, sv, cell_axes) is not None:
         return "cell_block"
     if column_axis is None:
         return st
     return st if column_lines(entries, sv, str(column_axis)) is None else "column_block"
+
+
+def cell_axes_list(cell_axes) -> list[str] | None:
+    """The caller's cell axes as index-set names: a lone name (a ``str``) is
+    one axis, not a sequence of one-character names (structure.jl
+    ``_cell_axes_list``)."""
+    if cell_axes is None:
+        return None
+    if isinstance(cell_axes, str):
+        return [cell_axes]
+    return [str(a) for a in cell_axes]
 
 
 def cell_blocks(entries: list[JacEntry], sv: SysView, cell_axes) -> dict | None:
@@ -79,7 +94,7 @@ def cell_blocks(entries: list[JacEntry], sv: SysView, cell_axes) -> dict | None:
     union over cells of the block pattern, diagonal included)."""
     from .emit import foreach_point
 
-    axes = [str(a) for a in cell_axes]
+    axes = cell_axes_list(cell_axes)
     if not entries or not axes or len(set(axes)) != len(axes):
         return None
     sizes = ctx_of(sv).index_sets
@@ -286,25 +301,15 @@ def _rank1_term(b, dim: int):
     return _split_rank1(b.coef, kap, {r for r in b.ridx if isinstance(r, str)})
 
 
-def _dim_pairs(ctx, u: str, v: str) -> list[int] | None:
-    """For each dimension of column variable ``v``, the dimension of row
-    variable ``u`` on the same index set (the ``j``-th dimension of ``v`` on
-    index set ``X`` pairs with the ``j``-th of ``u`` on ``X``); ``None`` when
-    an index set of ``v`` has no such partner in ``u``. When either
-    variable's index-set names are not known (``ctx.axes``), the dimensions
-    pair by position. The ranks are equal (structure.jl ``_dim_pairs``)."""
-    n = len(ctx.shapes.get(v, []))
+def _positional(ctx, u: str, v: str) -> bool:
+    """Whether column variable ``v`` lies over row variable ``u``'s index
+    sets in the same order, so that pairing their dimensions by position
+    (what ``"block_diagonal"`` and ``"banded"``, and the lane-block scatter
+    plan and the block-diagonal LU plan that read them, do) is pairing them
+    by index-set name; ``True`` when either variable's index-set names are
+    not known (``ctx.axes``) (structure.jl ``_positional``)."""
     axu, axv = ctx.axes.get(u), ctx.axes.get(v)
-    if axu is None or axv is None or list(axu) == list(axv):
-        return list(range(n))
-    out = []
-    for d in range(n):
-        j = sum(1 for x in axv[: d + 1] if x == axv[d])
-        k = [i for i, x in enumerate(axu) if x == axv[d]]
-        if len(k) < j:
-            return None
-        out.append(k[j - 1])
-    return out
+    return axu is None or axv is None or list(axu) == list(axv)
 
 
 def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
@@ -324,12 +329,12 @@ def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
         # dimension, whatever the shared dimensions say
         if len(b.cidx) != len(b.ridx):
             return "general"
-        # dimensions pair by index-set name (esm-spec §4.3.4): a column on
-        # an index set its row is not over is not the row there
-        pairs = _dim_pairs(ctx, en.u, en.v)
-        if pairs is None:
+        # the classes are positional (their consumers pair row and column
+        # cells by storage position): a column over other index sets than
+        # its row, or over them in another order, is not the row
+        if not _positional(ctx, en.u, en.v):
             return "general"
-        per = [_offset_class(c, b.ridx[pairs[d]]) for d, c in enumerate(b.cidx)]
+        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx, strict=True)]
         if any(p in ("other", "fixed") for p in per):
             return "general"
         if any(p == "affine" for p in per):

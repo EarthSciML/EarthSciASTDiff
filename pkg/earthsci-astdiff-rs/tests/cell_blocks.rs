@@ -116,7 +116,7 @@ fn other_classes_are_kept() {
 }
 
 #[test]
-fn dimensions_pair_by_index_set_name() {
+fn the_positional_classes_shared_golden() {
     let file = load("named_dims");
     let mut out = serde_json::Map::new();
     let mut names: Vec<&String> = file.models.as_ref().unwrap().keys().collect();
@@ -160,4 +160,58 @@ fn the_emitted_block_takes_the_cell_axes() {
     .unwrap();
     assert_eq!(b0["structure"], json!("general"));
     assert!(b0.get("factorization").is_none());
+}
+
+/// p over [x, y] reading q over [y, x] at q[j, i], x and y of one size: diagonal
+/// by name only, and the classes are positional, so the lane-block scatter
+/// plan (which would place dp[i, j]/dq[j, i] in lane (i, j)'s slot for
+/// q[i, j]) is refused; over the cell axes [x, y] the axes pair by name.
+#[test]
+fn block_diagonal_is_positional_cell_block_pairs_by_name() {
+    let file = load("named_dims");
+    let sv = sysview(&file, Some("Transposed")).unwrap();
+    let ctx = ctx_of(&sv).unwrap();
+    let entries = jacobian_bands(&file, Some("Transposed"), Wrt::States).unwrap();
+    assert_eq!(detect_structure(&entries, &ctx), "general");
+    let Err(err) = earthsci_astdiff::ScatterPlan::from_file(
+        &file,
+        Some("Transposed"),
+        &earthsci_astdiff::Layout::LaneBlocks,
+    ) else {
+        panic!("the lane-block plan is refused");
+    };
+    assert!(format!("{err}").contains("block_diagonal"), "{err}");
+    let axes = vec!["x".to_string(), "y".to_string()];
+    assert_eq!(
+        detect_structure_with(&entries, &sv, &ctx, None, Some(&axes)).unwrap(),
+        "cell_block"
+    );
+    let cb = cell_blocks(&entries, &sv, &ctx, &axes).unwrap().unwrap();
+    assert_eq!(cb.block_vars, vec!["p".to_string(), "q".to_string()]);
+    assert_eq!(
+        cb.elements,
+        vec![("p".to_string(), vec![]), ("q".to_string(), vec![])]
+    );
+}
+
+/// A variable shaped over an undeclared index set: the context refuses it,
+/// and `cell_blocks` given a context that lacks it does too.
+#[test]
+fn a_shape_over_an_undeclared_index_set() {
+    let mut file = load("cell_block_mixed_rank");
+    let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
+    let ctx = ctx_of(&sysview(&file, None).unwrap()).unwrap();
+    for m in file.models.as_mut().unwrap().values_mut() {
+        let w = m.variables.get_mut("w").unwrap();
+        w.shape.as_mut().unwrap().push("foo".into());
+    }
+    let sv = sysview(&file, None).unwrap();
+    assert_eq!(
+        ctx_of(&sv).err().unwrap().0,
+        "unknown index set `foo` in shape"
+    );
+    let err = cell_blocks(&entries, &sv, &ctx, &["lev".to_string()])
+        .err()
+        .unwrap();
+    assert_eq!(err.0, "unknown index set `foo`");
 }

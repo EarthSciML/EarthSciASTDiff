@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .jacobian import JacEntry
-from .structure import cell_blocks, column_lines, detect_structure
+from .structure import cell_axes_list, cell_blocks, column_lines, detect_structure
 from .system import SysView, _var_type
 
 
@@ -120,6 +120,7 @@ def plan_factorization(
     plan), or when a column of ``entries`` is a parameter: a parameters or
     forcing band list is a rectangular matrix, which no plan factorizes.
     """
+    cell_axes = cell_axes_list(cell_axes)
     if structure is None:
         structure = detect_structure(entries, sv, column_axis=column_axis, cell_axes=cell_axes)
     elif structure not in STRUCTURE_CLASSES:

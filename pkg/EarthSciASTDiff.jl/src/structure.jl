@@ -56,14 +56,18 @@ Classify the Jacobian's structure from the band list:
     variable along the other axes (a species or salt axis summed inside the
     cell, variables of different ranks), factorized cell by cell.
 
-A band's column is compared with its row dimension by dimension, the
-dimensions paired by index-set name (by position when either variable's
-names are not known). So a band whose column and row have different ranks (a
-variable over `cell` reading one over `cell × salt`), or whose column is
-over an index set its row is not (a variable over `cell × salt` reading one
-over `cell × el` with matching indices), is never `:block_diagonal` or
-`:banded`: it is `:general` unless `cell_axes` makes it `:cell_block`. A
-column over the row's index sets in another order pairs by name.
+`:block_diagonal` and `:banded` are POSITIONAL: a band's column is compared
+with its row dimension by dimension at the same position, because their
+consumers (the lane-block scatter plan, the block-diagonal LU plan) pair a
+row cell with the column cell at the same storage position. So a band whose
+column and row have different ranks (a variable over `cell` reading one
+over `cell × salt`), whose column is over an index set its row is not (a
+variable over `cell × salt` reading one over `cell × el` with matching
+indices), or whose column is over the row's index sets in another order (a
+variable over `x × y` reading one over `y × x` at `[j, i]`) is never
+`:block_diagonal` or `:banded`: it is `:general` unless `cell_axes` makes it
+`:cell_block`, whose plan pairs the cell axes by index-set name. When either
+variable's index-set names are not known, the dimensions pair by position.
 
 `column_axis` and `cell_axes` come from the caller (an integrator's locality
 pass): an index-set name carries no vertical or cell meaning by itself.
@@ -76,33 +80,27 @@ function detect_structure(
     )::Symbol
     st = _detect_structure(entries, sv)
     st in (:empty, :block_diagonal) && return st
+    cell_axes = _cell_axes_list(cell_axes)
     cell_axes === nothing || cell_blocks(entries, sv, cell_axes) === nothing || return :cell_block
     column_axis === nothing && return st
     return column_lines(entries, sv, String(column_axis)) === nothing ? st : :column_block
 end
 
 """
-    _dim_pairs(ctx, u, v) -> Union{Vector{Int}, Nothing}
+    _positional(ctx, u, v) -> Bool
 
-For each dimension of column variable `v`, the dimension of row variable `u`
-on the same index set, the `j`-th dimension of `v` on index set `X` pairing
-with the `j`-th of `u` on `X`; `nothing` when an index set of `v` has no such
-partner in `u`. When either variable's index-set names are not known
-(`ctx.axes`), the dimensions pair by position. The ranks are equal.
+Whether column variable `v` lies over row variable `u`'s index sets in the
+same order, so that pairing their dimensions by position (what
+`:block_diagonal` and `:banded`, and the lane-block scatter plan and the
+block-diagonal LU plan that read them, do) is pairing them by index-set name
+(esm-spec §4.3.4). A column over an index set its row is not, or over the
+row's sets in another order, is not positional. When either variable's
+index-set names are not known (`ctx.axes`), it is.
 """
-function _dim_pairs(ctx, u::String, v::String)
+function _positional(ctx, u::String, v::String)
     axu = get(ctx.axes, u, nothing)
     axv = get(ctx.axes, v, nothing)
-    n = length(ctx.shapes[v])
-    (axu === nothing || axv === nothing || axu == axv) && return collect(1:n)
-    out = Int[]
-    for d in 1:n
-        j = count(==(axv[d]), axv[1:d])
-        k = findall(==(axv[d]), axu)
-        length(k) >= j || return nothing
-        push!(out, k[j])
-    end
-    return out
+    return axu === nothing || axv === nothing || axu == axv
 end
 
 function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
@@ -118,11 +116,11 @@ function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
         # a column of another rank than its row is not the row in every
         # dimension, whatever the shared dimensions say
         length(b.cidx) == length(b.ridx) || return :general
-        # dimensions pair by index-set name (esm-spec §4.3.4): a column on
-        # an index set its row is not over is not the row there
-        pairs = _dim_pairs(ctx, en.u, en.v)
-        pairs === nothing && return :general
-        per = [_offset_class(b.cidx[d], b.ridx[pairs[d]]) for d in eachindex(b.cidx)]
+        # the classes are positional (their consumers pair row and column
+        # cells by storage position): a column over other index sets than
+        # its row, or over them in another order, is not the row
+        _positional(ctx, en.u, en.v) || return :general
+        per = [_offset_class(b.cidx[d], b.ridx[d]) for d in eachindex(b.cidx)]
         any(==(:other), per) && return :general
         any(==(:fixed), per) && return :general
         any(==(:affine), per) && (seen_affine = true)
@@ -218,6 +216,12 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
     )
 end
 
+# The caller's cell axes as index-set names: a lone name (a String or a
+# Symbol) is one axis, not a sequence of one-character names.
+_cell_axes_list(::Nothing) = nothing
+_cell_axes_list(a::Union{AbstractString, Symbol}) = String[String(a)]
+_cell_axes_list(a) = String[string(x) for x in a]
+
 """
     cell_blocks(entries, sv, cell_axes) -> Union{NamedTuple, Nothing}
 
@@ -236,7 +240,7 @@ diagonal included (`W = I − γJ` always has it). Returns
 `(cell_axes, block_vars, elements, pattern)`.
 """
 function cell_blocks(entries::Vector{JacEntry}, sv::SysView, cell_axes)
-    axes = String[string(a) for a in cell_axes]
+    axes = _cell_axes_list(cell_axes)
     (isempty(entries) || isempty(axes) || !allunique(axes)) && return nothing
     sizes = _ctx(sv).index_sets
     vars = sort!(unique(vcat([en.u for en in entries], [en.v for en in entries])))

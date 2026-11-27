@@ -170,6 +170,12 @@ end
 # esm-libraries-spec §4.7.5): `_liftdim<d>_<extent>`.
 _is_liftdim(x) = startswith(String(x), "_liftdim")
 
+# One dimension's extent: a literal, or a declared index set's size.
+_shape_extent(isets, x::Integer) = Int(x)
+_shape_extent(isets, x) = get(isets, String(x)) do
+    throw(BandError("unknown index set `$x` in shape"))
+end
+
 function _ctx(sv::SysView)
     isets = Dict{String, Int}()
     for (n, s) in sv.index_sets
@@ -179,8 +185,7 @@ function _ctx(sv::SysView)
     axes = Dict{String, Vector{String}}()
     for (n, var) in sv.variables
         if var.shape !== nothing && !isempty(var.shape)
-            shapes[String(n)] =
-                [x isa Integer ? Int(x) : isets[String(x)] for x in var.shape]
+            shapes[String(n)] = Int[_shape_extent(isets, x) for x in var.shape]
             # the index-set names, when every dimension names a declared one
             # (§4.3.4 aligns an elementwise operand by them); a synthetic
             # `_liftdim<d>_<extent>` set of the pointwise lift is an anonymous

@@ -18,7 +18,7 @@ use crate::bands::{
 };
 use crate::branches::SimpMemo;
 use crate::clip::{clip_regions, RIdx};
-use crate::emit::{block_fields, columns_field, offset_class, serialize_band};
+use crate::emit::{block_fields, columns_field, offset_class, positional, serialize_band};
 use crate::helpers::{is_zero, ser_expr, OccIndex, SiteScan};
 use crate::jacobian::{check_closed, expr_json, targets, FirstOrder, JacEntry, Wrt};
 use crate::operator_refs::{abstract_refs, compose, ref_value_bands, restore_band, with_layer};
@@ -371,6 +371,7 @@ pub(crate) fn structure2(
             continue;
         }
         if c2.len() != en.band.ridx.len()
+            || !positional(ctx, &en.u, &en.w)
             || !c2
                 .iter()
                 .zip(&en.band.ridx)
@@ -518,4 +519,41 @@ pub(crate) fn recurrences_field(recs: &[Recurrence]) -> Value {
             .map(|r| json!({"name": r.name, "dim": r.dim + 1}))
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load(name: &str) -> EsmFile {
+        let p = format!(
+            "{}/../../tests/valid/{name}.esm",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        earthsci_ast::load_path(&p).unwrap()
+    }
+
+    /// Mismatch: ∂²a/∂a∂b has a second column on b over [cell, el], the row
+    /// over [cell, salt]: by position the column is the row's, by index set
+    /// it is not. Even with the first-order class taken as block diagonal,
+    /// the pair block is not; a positional pair block keeps the class.
+    #[test]
+    fn second_order_structure_is_positional() {
+        let file = load("named_dims");
+        let sv = crate::system::sysview(&file, Some("Mismatch")).unwrap();
+        let ctx = crate::system::ctx_of(&sv).unwrap();
+        let e2 = jacobian_bands2(&file, Some("Mismatch"), (Wrt::States, Wrt::States)).unwrap();
+        assert!(e2.iter().any(|en| en.w == "b"));
+        assert_eq!(
+            structure2(|| "block_diagonal", &e2, &ctx, Wrt::States),
+            None
+        );
+        let file = load("bd_chem");
+        let ctx = crate::system::ctx_of(&crate::system::sysview(&file, None).unwrap()).unwrap();
+        let e2 = jacobian_bands2(&file, None, (Wrt::States, Wrt::States)).unwrap();
+        assert_eq!(
+            structure2(|| "block_diagonal", &e2, &ctx, Wrt::States),
+            Some("block_diagonal")
+        );
+    }
 }

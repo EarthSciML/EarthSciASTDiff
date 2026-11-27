@@ -208,6 +208,7 @@ function _structure2(
         c2 = col2_idx(en)
         isempty(c2) && continue
         length(c2) == length(en.band.ridx) || return nothing
+        _positional(ctx, en.u, en.w) || return nothing
         all(((c, r),) -> _offset_class(c, r) == :diag, zip(c2, en.band.ridx)) ||
             return nothing
     end
