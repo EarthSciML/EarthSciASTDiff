@@ -263,15 +263,42 @@ def _range_origin(r) -> int:
 def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None:
     """The rank of an array-valued `makearray` region value and, per dim it
     spans, the index at which the value starts (its ORIGIN): a faq node's own
-    range start for each output index, 1 for any other array. ``None`` when
-    the rank cannot be read here (an `index` value, a variable of no known
-    shape): such a value is read at the region's free rank."""
+    range start for each output index, 1 for any other array. An ``index``
+    value is its base's rank less its subscripts (0 for a cell read: a scalar
+    broadcast over the region); a base whose rank is not read here is ranked
+    by :func:`_index_base_rank`, and refused when it has none. ``None`` for a
+    bare variable of no known shape: such a value is read at the region's
+    free rank."""
     if isinstance(val, ExprNode) and val.op == "faq":
         vr = val.ranges or {}
         oidx = [str(n) for n in val.output_idx or []]
         return len(oidx), [_range_origin(vr[n]) if n in vr else 1 for n in oidx]
     if isinstance(val, ExprNode) and val.op == "makearray":
         return (len(val.regions[0]), [1] * len(val.regions[0])) if val.regions else None
+    if isinstance(val, ExprNode) and val.op == "index" and val.args:
+        # a read of a variable: its rank less the subscripts it is read at
+        # (0 for a cell read, a scalar broadcast over the region)
+        base = val.args[0]
+        b = _value_rank(base, fresh, scope)
+        if b is None:
+            if isinstance(base, str) and base in scope:
+                raise InlineError(f"a makearray region value reads `index` of the index `{base}`")
+            n = _index_base_rank(base, fresh)
+            b = (n, [1] * n)
+        nsub = len(val.args) - 1
+        r = b[0] - nsub
+        if r < 0:
+            raise InlineError(
+                f"a makearray region value reads an array of rank {b[0]} with {nsub} subscripts"
+            )
+        # a partial read of an array whose ranges do not all start at 1: where
+        # its remaining dims start is not read here, so it is refused
+        if r > 0 and any(o != 1 for o in b[1]):
+            raise InlineError(
+                "a makearray region value is a partial read of an array whose ranges "
+                "do not all start at 1; read it at a cell or as a whole"
+            )
+        return r, [1] * r
     if isinstance(val, str) and val not in scope:
         if val in fresh.shapes:
             n = len(fresh.shapes[val])
@@ -284,6 +311,22 @@ def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None
             n = len(d.regions[0])
             return n, [1] * n
     return None
+
+
+def _index_base_rank(base, fresh: _Fresh) -> int:
+    """The rank of the base of an ``index`` makearray value that
+    :func:`_value_rank` does not read: a variable ranked as an operand of an
+    elementwise definition (:func:`_cell_rank`: declared, an observed, ``t``
+    or a declared scalar), or a literal table. Anything else is refused,
+    never guessed. (Python expands operator references at load.)"""
+    if isinstance(base, str):
+        return _cell_rank(base, fresh, set())
+    if isinstance(base, ExprNode) and base.op == "const":
+        return _lit_rank(base.value)
+    what = f"a `{base.op}`" if isinstance(base, ExprNode) else "a literal"
+    raise InlineError(
+        f"a makearray region value reads `index` of {what}, whose rank is not read here"
+    )
 
 
 def _index_makearray(
@@ -316,7 +359,10 @@ def _index_makearray(
             # so a dim it spans is read at `idx − lo + origin`, the shift
             # `_bands_makearray` applies to the value's bands.
             rank, origins = _value_rank(val, fresh, scope) or (len(nonsing), [1] * len(nonsing))
-            if rank == len(idx):
+            scalar = rank == 0 and not (isinstance(val, ExprNode) and val.op == "faq")
+            if scalar:
+                dims = []
+            elif rank == len(idx):
                 dims = list(range(len(idx)))
             elif rank == len(nonsing):
                 dims = nonsing
@@ -326,7 +372,11 @@ def _index_makearray(
                     f"{len(idx)} nor the region free rank {len(nonsing)}"
                 )
             tgt = [add(idx[k], o - los[k]) for k, o in zip(dims, origins, strict=True)]
-            if isinstance(val, ExprNode) and val.op == "faq":
+            if scalar:
+                # a scalar value (a cell read): broadcast over the region,
+                # never wrapped in an `index` with no subscripts
+                v = val
+            elif isinstance(val, ExprNode) and val.op == "faq":
                 v = _beta_faq(val, tgt, fresh, scope)
             else:
                 v = _inline_once(op("index", val, *tgt), obs, fresh, scope)

@@ -297,9 +297,12 @@ _ones_rank(n::Int) = (n, ones(Int, n))
 
 # The rank of an array-valued `makearray` region value and, per dim it spans,
 # the index at which the value starts (its ORIGIN): a faq node's own range
-# start for each output index, 1 for any other array. `nothing` when the rank
-# cannot be read here (an `index` value, a variable of no known shape): such a
-# value is read at the region's free rank.
+# start for each output index, 1 for any other array. An `index` value is its
+# base's rank less its subscripts (0 for a cell read: a scalar broadcast over
+# the region); a base whose rank is not read here is ranked as an operand of
+# an elementwise definition (`_cell_rank`), and refused when it has none.
+# `nothing` for a bare variable of no known shape: such a value is read at
+# the region's free rank.
 function _value_rank(val, fresh::_Fresh, scope)
     if val isa OpExpr && val.op == "faq"
         vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
@@ -311,6 +314,33 @@ function _value_rank(val, fresh::_Fresh, scope)
     elseif val isa OpExpr && val.op == "makearray"
         (val.regions === nothing || isempty(val.regions)) && return nothing
         return _ones_rank(length(val.regions[1]))
+    elseif val isa OpExpr && val.op == "index" && !isempty(val.args)
+        # a read of a variable: its rank less the subscripts it is read at
+        # (0 for a cell read, a scalar broadcast over the region)
+        base = val.args[1]
+        b = _value_rank(base, fresh, scope)
+        if b === nothing
+            base isa VarExpr && base.name in scope && throw(
+                InlineError("a makearray region value reads `index` of the index `$(base.name)`")
+            )
+            b = _ones_rank(_index_base_rank(base, fresh))
+        end
+        nsub = length(val.args) - 1
+        r = b[1] - nsub
+        r < 0 && throw(
+            InlineError(
+                "a makearray region value reads an array of rank $(b[1]) with $nsub subscripts"
+            )
+        )
+        # a partial read of an array whose ranges do not all start at 1: where
+        # its remaining dims start is not read here, so it is refused
+        r > 0 && any(!=(1), b[2]) && throw(
+            InlineError(
+                "a makearray region value is a partial read of an array whose ranges " *
+                    "do not all start at 1; read it at a cell or as a whole"
+            )
+        )
+        return _ones_rank(r)
     elseif val isa VarExpr && !(val.name in scope)
         haskey(fresh.shapes, val.name) && return _ones_rank(length(fresh.shapes[val.name]))
         d = get(fresh.obs, val.name, nothing)
@@ -322,6 +352,23 @@ function _value_rank(val, fresh::_Fresh, scope)
         end
     end
     return nothing
+end
+
+# The rank of the base of an `index` makearray value that `_value_rank` does
+# not read: a variable ranked as an operand of an elementwise definition
+# (`_cell_rank`: declared, an observed, `t` or a declared scalar), a literal
+# table, or an operator reference. Anything else is refused, never guessed.
+function _index_base_rank(base, fresh::_Fresh)::Int
+    base isa VarExpr && return _cell_rank(base, fresh, Set{String}())
+    base isa OpExpr && base.op == "const" && return _lit_rank(base.value)
+    _is_ref(base) && return _def!(_layer(), base.name).rank
+    throw(
+        InlineError(
+            "a makearray region value reads `index` of " *
+                (base isa OpExpr ? "a `$(base.op)`" : "a literal") *
+                ", whose rank is not read here"
+        )
+    )
 end
 
 function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::ASTExpr
@@ -359,7 +406,9 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
             # applies to the value's bands.
             vr = _value_rank(val, fresh, scope)
             rank, origins = vr === nothing ? _ones_rank(length(nonsing)) : vr
-            dims = rank == length(idx) ? collect(1:length(idx)) :
+            scalar = rank == 0 && !(val isa OpExpr && val.op == "faq")
+            dims = scalar ? Int[] :
+                rank == length(idx) ? collect(1:length(idx)) :
                 rank == length(nonsing) ? nonsing :
                 throw(
                     InlineError(
@@ -369,7 +418,11 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
                     )
                 )
             tgt = ASTExpr[add(idx[k], lit(o - los[k])) for (k, o) in zip(dims, origins)]
-            if val isa OpExpr && val.op == "faq"
+            if scalar
+                # a scalar value (a cell read): broadcast over the region,
+                # never wrapped in an `index` with no subscripts
+                val
+            elseif val isa OpExpr && val.op == "faq"
                 _beta_faq(val, tgt, fresh, scope)
             else
                 _inline_once(op("index", val, tgt...), obs, fresh, scope)

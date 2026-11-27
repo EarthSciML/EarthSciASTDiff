@@ -444,10 +444,91 @@ fn needs_inline(e: &Expr, scope: &HashSet<String>) -> bool {
 
 /// The rank of an array-valued `makearray` region value and, per dim it
 /// spans, the index at which the value starts (its ORIGIN): a faq node's own
-/// range start for each output index, 1 for any other array. `None` when the
-/// rank cannot be read here (an `index` value, a variable of no known
-/// shape): such a value is read at the region's free rank.
-fn value_rank(val: &Expr, fresh: &Fresh, scope: &HashSet<String>) -> Option<(usize, Vec<i64>)> {
+/// range start for each output index, 1 for any other array. An `index`
+/// value is its base's rank less its subscripts (0 for a cell read: a scalar
+/// broadcast over the region); a base whose rank is not read here is ranked
+/// by [`index_base_rank`], and refused when it has none. `None` for a bare
+/// variable of no known shape: such a value is read at the region's free
+/// rank.
+fn value_rank(
+    val: &Expr,
+    fresh: &mut Fresh,
+    scope: &HashSet<String>,
+) -> Result<Option<(usize, Vec<i64>)>, InlineError> {
+    if let Expr::Operator(vn) = val {
+        if vn.op == "index" && !vn.args.is_empty() {
+            let base = &vn.args[0];
+            let (b, origins) = match value_rank_plain(base, fresh, scope) {
+                Some(x) => x,
+                None => {
+                    if let Expr::Variable(nm) = base {
+                        if scope.contains(nm) {
+                            return Err(InlineError(format!(
+                                "a makearray region value reads `index` of the index `{nm}`"
+                            )));
+                        }
+                    }
+                    let r = index_base_rank(base, fresh)?;
+                    (r, vec![1; r])
+                }
+            };
+            let nsub = vn.args.len() - 1;
+            if b < nsub {
+                return Err(InlineError(format!(
+                    "a makearray region value reads an array of rank {b} with {nsub} subscripts"
+                )));
+            }
+            let r = b - nsub;
+            // a partial read of an array whose ranges do not all start at 1:
+            // where its remaining dims start is not read here, so it is refused
+            if r > 0 && origins.iter().any(|&o| o != 1) {
+                return Err(InlineError(
+                    "a makearray region value is a partial read of an array whose ranges \
+                     do not all start at 1; read it at a cell or as a whole"
+                        .into(),
+                ));
+            }
+            return Ok(Some((r, vec![1; r])));
+        }
+    }
+    Ok(value_rank_plain(val, fresh, scope))
+}
+
+/// The rank of the base of an `index` makearray value that [`value_rank`]
+/// does not read: a variable ranked as an operand of an elementwise
+/// definition ([`var_rank`]: declared, an observed, `t` or a declared
+/// scalar), a literal table, or an operator reference. Anything else is
+/// refused, never guessed.
+fn index_base_rank(base: &Expr, fresh: &mut Fresh) -> Result<usize, InlineError> {
+    match base {
+        Expr::Variable(nm) => var_rank(nm, fresh, &mut HashSet::new()),
+        Expr::Operator(n) if n.op == "const" => Ok(lit_rank(
+            &serde_json::to_value(n.value.as_ref()).unwrap_or(serde_json::Value::Null),
+        )),
+        Expr::Operator(n) if crate::operator_refs::is_ref(base) => {
+            let layer = crate::operator_refs::current_layer().ok_or_else(|| {
+                InlineError("an operator reference with no registry in scope".into())
+            })?;
+            let dname = n.name.clone().unwrap_or_default();
+            Ok(layer.def(&dname).map_err(|e| InlineError(e.0))?.rank)
+        }
+        Expr::Operator(n) => Err(InlineError(format!(
+            "a makearray region value reads `index` of a `{}`, whose rank is not read here",
+            n.op
+        ))),
+        _ => Err(InlineError(
+            "a makearray region value reads `index` of a literal, whose rank is not read here"
+                .into(),
+        )),
+    }
+}
+
+/// [`value_rank`] for every value but an `index` read.
+fn value_rank_plain(
+    val: &Expr,
+    fresh: &Fresh,
+    scope: &HashSet<String>,
+) -> Option<(usize, Vec<i64>)> {
     let ones = |r: usize| Some((r, vec![1; r]));
     match val {
         Expr::Operator(vn) if vn.op == "faq" => {
@@ -531,9 +612,13 @@ fn index_makearray(
             // element at index `origin + p` lands on region index `lo + p`,
             // so a dim it spans is read at `idx − lo + origin`, the shift
             // `bands_makearray` applies to the value's bands.
-            let (rank, origins) = value_rank(val, fresh, scope)
+            let (rank, origins) = value_rank(val, fresh, scope)?
                 .unwrap_or_else(|| (nonsing.len(), vec![1; nonsing.len()]));
-            let dims: Vec<usize> = if rank == idx.len() {
+            let is_faq = matches!(val, Expr::Operator(vn) if vn.op == "faq");
+            let scalar = rank == 0 && !is_faq;
+            let dims: Vec<usize> = if scalar {
+                Vec::new()
+            } else if rank == idx.len() {
                 (0..idx.len()).collect()
             } else if rank == nonsing.len() {
                 nonsing.clone()
@@ -552,6 +637,9 @@ fn index_makearray(
                 .map(|(&k, o)| add(vec![idx[k].clone(), Expr::Integer(o - los[k])]))
                 .collect();
             match val {
+                // a scalar value (a cell read): broadcast over the region,
+                // never wrapped in an `index` with no subscripts
+                _ if scalar => val.clone(),
                 Expr::Operator(vn) if vn.op == "faq" => beta_faq(vn, &tgt, fresh, scope)?,
                 _ => {
                     let mut args = vec![val.clone()];
@@ -710,31 +798,7 @@ fn cell_rank<'a>(
     seen: &mut HashSet<String>,
 ) -> Result<usize, InlineError> {
     match e {
-        Expr::Variable(nm) => {
-            if nm == "t" || fresh.scalars.contains(nm) {
-                return Ok(0);
-            }
-            if let Some(sh) = fresh.shapes.get(nm) {
-                return Ok(sh.len());
-            }
-            if let Some(&r) = fresh.ranks.get(nm) {
-                return Ok(r);
-            }
-            let ro: &'a HashMap<String, Expr> = fresh.rank_obs;
-            let Some(d) = ro.get(nm) else {
-                return Err(InlineError(format!(
-                    "`{nm}`, read in an elementwise observed definition read at a cell, \
-                     has no known rank (not a declared variable, nor an observed)"
-                )));
-            };
-            if !seen.insert(nm.clone()) {
-                return Err(InlineError(format!("cyclic observed `{nm}`")));
-            }
-            let r = def_rank(d, fresh, seen, Some(nm))?;
-            seen.remove(nm);
-            fresh.ranks.insert(nm.clone(), r);
-            Ok(r)
-        }
+        Expr::Variable(nm) => var_rank(nm, fresh, seen),
         Expr::Operator(_) => {
             let key = e as *const Expr;
             if let Some(&r) = fresh.op_ranks.get(&key) {
@@ -746,6 +810,38 @@ fn cell_rank<'a>(
         }
         _ => Ok(0),
     }
+}
+
+/// The rank of variable `nm` in an elementwise position (the variable arm
+/// of [`cell_rank`]).
+fn var_rank<'a>(
+    nm: &str,
+    fresh: &mut Fresh<'a>,
+    seen: &mut HashSet<String>,
+) -> Result<usize, InlineError> {
+    if nm == "t" || fresh.scalars.contains(nm) {
+        return Ok(0);
+    }
+    if let Some(sh) = fresh.shapes.get(nm) {
+        return Ok(sh.len());
+    }
+    if let Some(&r) = fresh.ranks.get(nm) {
+        return Ok(r);
+    }
+    let ro: &'a HashMap<String, Expr> = fresh.rank_obs;
+    let Some(d) = ro.get(nm) else {
+        return Err(InlineError(format!(
+            "`{nm}`, read in an elementwise observed definition read at a cell, \
+             has no known rank (not a declared variable, nor an observed)"
+        )));
+    };
+    if !seen.insert(nm.to_string()) {
+        return Err(InlineError(format!("cyclic observed `{nm}`")));
+    }
+    let r = def_rank(d, fresh, seen, Some(nm))?;
+    seen.remove(nm);
+    fresh.ranks.insert(nm.to_string(), r);
+    Ok(r)
 }
 
 /// The rank of a literal array value (its nesting depth).
