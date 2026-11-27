@@ -24,6 +24,7 @@ from .eval_cse import Hoisted, hoist_observed
 from .expr_helpers import Site, ckey, skey, stable_json
 from .factorization import (
     BlockDiagonalPlan,
+    CellBlockPlan,
     ColumnBlockPlan,
     lu_fill,
     markowitz_ordering,
@@ -55,7 +56,7 @@ from .scatter import (
 )
 from .second_order import JacEntry2, jacobian_bands2, parse_band2
 from .simplify_branches import canon_lits, simp, simplify_branches
-from .structure import column_lines, detect_structure
+from .structure import cell_blocks, column_lines, detect_structure
 from .system import SysView, ctx_of, sysview
 
 __all__ = [
@@ -63,6 +64,7 @@ __all__ = [
     "BandError",
     "BlockDiagonalPlan",
     "BoundScatter",
+    "CellBlockPlan",
     "ColumnBanded",
     "ColumnBandedPlan",
     "ColumnBlockPlan",
@@ -88,6 +90,7 @@ __all__ = [
     "bands",
     "bind_plan",
     "canon_lits",
+    "cell_blocks",
     "ckey",
     "clip_regions",
     "clip_summands",

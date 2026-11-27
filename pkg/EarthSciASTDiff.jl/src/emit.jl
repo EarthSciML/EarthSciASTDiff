@@ -94,10 +94,12 @@ end
 
 """
     jacobian_document(file::EsmFile, model_name; wrt = :states, forcing = nothing,
-                      cse = false, cse_min_nodes = 12, column_axis = nothing) -> Dict
+                      cse = false, cse_min_nodes = 12, column_axis = nothing,
+                      cell_axes = nothing) -> Dict
     jacobian_document(flat::FlattenedSystem; wrt = :states, forcing = nothing,
                       name = "Flattened", cse = false, cse_min_nodes = 12,
-                      column_axis = nothing, data_sources = nothing) -> Dict
+                      column_axis = nothing, cell_axes = nothing,
+                      data_sources = nothing) -> Dict
 
 The serialized input document plus the draft `"jacobians"` top-level block
 (esm-jacobian-spec.md §4): per model, the differentiation axis, the band
@@ -125,7 +127,11 @@ block-local `expression_templates` of a block an earlier version wrote.
 `column_axis` (an index-set name) lets the state block report the
 `"column_block"` structure class with its line-by-line factorization plan
 when every coupling stays within one line along that axis
-([`detect_structure`](@ref), [`column_lines`](@ref)).
+([`detect_structure`](@ref), [`column_lines`](@ref)). `cell_axes` (index-set
+names) lets it report the `"cell_block"` class with its per-cell block plan
+when every coupling stays inside one cell of those axes ([`cell_blocks`](@ref)),
+the class and plan [`detect_structure`](@ref) and
+[`plan_factorization`](@ref) give with the same `cell_axes`.
 
 The flattened form builds its model from the system, keeping each data-fed
 parameter's `data` rules (esm-jacobian-spec.md §8.1), so it also declares the
@@ -135,13 +141,13 @@ source that is not found is a `BandError`.
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, cell_axes = nothing
     )
     sv = sysview(file, model_name)
     doc = EarthSciAST.serialize_esm_file(file)
     _attach_jacobians!(
         doc, sv, String(model_name); wrt = wrt, forcing = forcing,
-        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
+        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis, cell_axes = cell_axes
     )
     return doc
 end
@@ -149,14 +155,14 @@ end
 function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing,
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, cell_axes = nothing,
         data_sources = nothing
     )
     sv = sysview(flat; data_sources = data_sources)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
-        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis
+        cse = cse, cse_min_nodes = cse_min_nodes, column_axis = column_axis, cell_axes = cell_axes
     )
     # `_base_document` keeps the data-fed parameters' rules, so the document
     # declares the sources they name (a `FlattenedSystem` carries none: pass
@@ -169,7 +175,7 @@ end
 
 function _attach_jacobians!(
         doc, sv::SysView, model_name::String; wrt, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, cell_axes = nothing
     )
     # One axis may be spelled as a Symbol or a String; iterating a String
     # would split it into one-character "axes". A Pair is one axis PAIR
@@ -191,7 +197,7 @@ function _attach_jacobians!(
     blocks = Any[
         _jacobian_block(
             sv, w, memo; forcing = forcing, cse = cse, cse_min_nodes = cse_min_nodes,
-            column_axis = column_axis
+            column_axis = column_axis, cell_axes = cell_axes
         )
             for w in axes
     ]
@@ -208,7 +214,7 @@ _axis_key(w::Union{Tuple, AbstractVector, Pair}) = _axis_pair(w)
 # shares the first-order pass with the pairs of the same emission.
 function _jacobian_block(
         sv::SysView, wrt::Symbol, memo::_FirstOrder = _FirstOrder(); forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, cell_axes = nothing
     )
     _check_axis(wrt)
     entries = _first_order!(memo, sv, wrt, nothing, forcing)
@@ -220,8 +226,13 @@ function _jacobian_block(
     structure = rect ? nothing : _structure!(memo, entries, sv)
     # Line-by-line structure is a property of the square state matrix.
     # The one point walk both the class and its plan read.
+    # So is per-cell structure, tried before it (as `detect_structure` does).
+    cells = wrt == :states ? _cell_axes_list(cell_axes) : nothing
+    cb = cells === nothing || structure in (:empty, :block_diagonal) ? nothing :
+        cell_blocks(entries, sv, cells)
+    cb === nothing || (structure = :cell_block)
     cax = wrt == :states ? column_axis : nothing
-    cl = cax === nothing || structure in (:empty, :block_diagonal) ? nothing :
+    cl = cb !== nothing || cax === nothing || structure in (:empty, :block_diagonal) ? nothing :
         column_lines(entries, sv, String(cax))
     cl === nothing || (structure = :column_block)
     block = _block(
@@ -234,7 +245,8 @@ function _jacobian_block(
     comps = _time_companions(sv, entries; info = info)
     isempty(comps) || (block["companions"] = _companions_field(comps))
     if !rect
-        plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
+        plan = cb !== nothing ? _cell_block_plan(cb) :
+            cl === nothing ? plan_factorization(entries, sv; structure = structure) :
             _column_block_plan(cl)
         plan === nothing || (block["factorization"] = serialize_plan(plan))
     end

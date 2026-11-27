@@ -17,7 +17,7 @@ from .bands import Band, BandError
 from .expr_helpers import ser_expr
 from .jacobian import JacEntry, _data_rules, _rule_reads, jacobian_bands, jacobian_columns
 from .second_order import JacEntry2, axis_pair, jacobian_block2, parse_band2, serialize_band2
-from .structure import column_lines
+from .structure import cell_axes_list, cell_blocks, column_lines
 from .system import sysview
 
 
@@ -219,6 +219,7 @@ def jacobian_block(
     cse_min_nodes: int = 12,
     forcing=None,
     column_axis: str | None = None,
+    cell_axes: list[str] | None = None,
 ):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default) and the block-local `expression_templates`; on the state and
@@ -239,7 +240,10 @@ def jacobian_block(
     ``column_axis`` (an index-set name) lets the state block report the
     ``"column_block"`` structure class with its line-by-line factorization
     plan when every coupling stays within one line along that axis
-    (:func:`~earthsci_astdiff.structure.column_lines`)."""
+    (:func:`~earthsci_astdiff.structure.column_lines`). ``cell_axes``
+    (index-set names) lets it report the ``"cell_block"`` class with its
+    per-cell block plan when every coupling stays inside one cell of those
+    axes (:func:`~earthsci_astdiff.structure.cell_blocks`), tried first."""
     from .jacobian import _FirstOrder
     from .system import sysview
 
@@ -253,26 +257,30 @@ def jacobian_block(
     memo = _FirstOrder()
     # One axis is a str (iterating it would split it into characters).
     if isinstance(wrt, str):
-        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo, column_axis)
+        return _block_of(sv, wrt, forcing, cse, cse_min_nodes, memo, column_axis, cell_axes)
     axes = [_axis_key(w) for w in wrt]
     if not axes or len(set(axes)) != len(axes):
         raise ValueError(f"wrt must name one or more distinct axes, got {wrt}")
-    return [_block_of(sv, w, forcing, cse, cse_min_nodes, memo, column_axis) for w in axes]
+    return [
+        _block_of(sv, w, forcing, cse, cse_min_nodes, memo, column_axis, cell_axes) for w in axes
+    ]
 
 
 def _axis_key(w):
     return axis_pair(w) if isinstance(w, (tuple, list)) else str(w)
 
 
-def _block_of(sv, w, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None) -> dict:
+def _block_of(
+    sv, w, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None, cell_axes=None
+) -> dict:
     if isinstance(w, tuple):
         # a pair block has no structure class to refine
         return jacobian_block2(sv, w, forcing, cse, cse_min_nodes, memo)
-    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo, column_axis)
+    return _jacobian_block(sv, w, forcing, cse, cse_min_nodes, memo, column_axis, cell_axes)
 
 
 def _jacobian_block(
-    sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None
+    sv, wrt: str, forcing, cse: bool, cse_min_nodes: int, memo, column_axis=None, cell_axes=None
 ) -> dict:
     from .jacobian import _AXES
 
@@ -286,10 +294,19 @@ def _jacobian_block(
     structure = None if rect else memo.structure(entries, sv)
     # Line-by-line structure is a property of the square state matrix.
     # The one point walk both the class and its plan read.
+    # So is per-cell structure, tried first (as detect_structure does).
+    cells = cell_axes_list(cell_axes) if wrt == "states" else None
+    cb = (
+        None
+        if cells is None or structure in ("empty", "block_diagonal")
+        else cell_blocks(entries, sv, cells)
+    )
+    if cb is not None:
+        structure = "cell_block"
     cax = column_axis if wrt == "states" else None
     cl = (
         None
-        if cax is None or structure in ("empty", "block_diagonal")
+        if cb is not None or cax is None or structure in ("empty", "block_diagonal")
         else column_lines(entries, sv, str(cax))
     )
     if cl is not None:
@@ -315,13 +332,19 @@ def _jacobian_block(
     if comps:
         block["companions"] = companions_field(comps)
     if not rect:
-        from .factorization import _column_block_plan, plan_factorization, serialize_plan
-
-        plan = (
-            plan_factorization(entries, sv, structure=structure)
-            if cl is None
-            else _column_block_plan(cl)
+        from .factorization import (
+            _cell_block_plan,
+            _column_block_plan,
+            plan_factorization,
+            serialize_plan,
         )
+
+        if cb is not None:
+            plan = _cell_block_plan(cb)
+        elif cl is not None:
+            plan = _column_block_plan(cl)
+        else:
+            plan = plan_factorization(entries, sv, structure=structure)
         if plan is not None:
             block["factorization"] = serialize_plan(plan)
     return block

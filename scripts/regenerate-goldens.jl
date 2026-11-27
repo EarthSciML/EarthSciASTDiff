@@ -298,6 +298,54 @@ for name in ("recurrence_sweep", "pbl_rank1")
     write(path, stable_json(doc["jacobians"][mname]))
     println("wrote ", path)
 end
+# per-cell blocks over caller-named cell axes (spec §4, §6): the structure
+# class and the plan of the state Jacobian with no cell axes (`general`: a
+# band whose column has another rank than its row is never diagonal), and
+# with each listed choice of cell axes
+for (name, choices) in (("cell_block_mixed_rank", (nothing, ["lev", "bin"], ["lev"], ["salt"])),)
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    mname = first(keys(file.models))
+    sv = sysview(file, mname)
+    entries = jacobian_bands(sv)
+    cases = map(choices) do axes
+        st = detect_structure(entries, sv; cell_axes = axes)
+        plan = st in (:block_diagonal, :cell_block) ?
+            serialize_plan(plan_factorization(entries, sv; cell_axes = axes, structure = st)) : nothing
+        Dict{String, Any}("cell_axes" => axes, "structure" => String(st), "factorization" => plan)
+    end
+    path = joinpath(root, "tests", "goldens", "$name.cell_blocks.json")
+    write(path, stable_json(Any[cases...]))
+    println("wrote ", path)
+end
+# the state block emitted with cell axes (spec §4, §6): `cell_block` and its
+# per-cell block plan, the class and plan `detect_structure` and
+# `plan_factorization` give with the same cell axes
+let name = "cell_block_mixed_rank"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    mname = first(keys(file.models))
+    doc = jacobian_document(file, mname; cell_axes = ["lev", "bin"])
+    path = joinpath(root, "tests", "goldens", "$name.cell-lev-bin.block.json")
+    write(path, stable_json(doc["jacobians"][mname]))
+    println("wrote ", path)
+end
+# the positional structure classes (spec §4):
+# one class (and plan, where one exists) per model of the fixture
+let name = "named_dims"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    out = Dict{String, Any}()
+    for mname in sort!(collect(keys(file.models)))
+        sv = sysview(file, mname)
+        entries = jacobian_bands(sv)
+        st = detect_structure(entries, sv)
+        plan = plan_factorization(entries, sv; structure = st)
+        out[mname] = Dict{String, Any}(
+            "structure" => String(st), "factorization" => plan === nothing ? nothing : serialize_plan(plan)
+        )
+    end
+    path = joinpath(root, "tests", "goldens", "$name.structure.json")
+    write(path, stable_json(out))
+    println("wrote ", path)
+end
 # the float goldens: `[bits, text]` pairs, the bits the corpus (ties, powers
 # of two, RFC 8785 Appendix B, subnormals, layout switches; tests/README.md)
 # and the text this writer's. Add a case by adding its bits, then run this.

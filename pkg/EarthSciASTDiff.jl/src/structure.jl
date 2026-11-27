@@ -49,19 +49,58 @@ Classify the Jacobian's structure from the band list:
     LINE along that axis (see [`column_lines`](@ref)) — a column scan, a
     contraction over the axis, a stencil along it — so a solver can
     factorize line by line.
+  - `:cell_block`      — only when `cell_axes` (index-set names) is given, in
+    place of `:banded` or `:general` and before `:column_block`: every
+    coupling stays inside one CELL of those axes (see [`cell_blocks`](@ref)),
+    so the matrix is one block per cell holding every element of every
+    variable along the other axes (a species or salt axis summed inside the
+    cell, variables of different ranks), factorized cell by cell.
 
-`column_axis` comes from the caller (an integrator's locality pass): an
-index-set name carries no vertical meaning by itself.
+`:block_diagonal` and `:banded` are POSITIONAL: a band's column is compared
+with its row dimension by dimension at the same position, because their
+consumers (the lane-block scatter plan, the block-diagonal LU plan) pair a
+row cell with the column cell at the same storage position. So a band whose
+column and row have different ranks (a variable over `cell` reading one
+over `cell × salt`), whose column is over an index set its row is not (a
+variable over `cell × salt` reading one over `cell × el` with matching
+indices), or whose column is over the row's index sets in another order (a
+variable over `x × y` reading one over `y × x` at `[j, i]`) is never
+`:block_diagonal` or `:banded`: it is `:general` unless `cell_axes` makes it
+`:cell_block`, whose plan pairs the cell axes by index-set name. When either
+variable's index-set names are not known, the dimensions pair by position.
+
+`column_axis` and `cell_axes` come from the caller (an integrator's locality
+pass): an index-set name carries no vertical or cell meaning by itself.
 
 This is a CLASSIFICATION of the exact pattern, not an approximation — the
 pattern itself is always available via [`jacobian_pattern`](@ref).
 """
 function detect_structure(
-        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing
+        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing, cell_axes = nothing
     )::Symbol
     st = _detect_structure(entries, sv)
-    (column_axis === nothing || st in (:empty, :block_diagonal)) && return st
+    st in (:empty, :block_diagonal) && return st
+    cell_axes = _cell_axes_list(cell_axes)
+    cell_axes === nothing || cell_blocks(entries, sv, cell_axes) === nothing || return :cell_block
+    column_axis === nothing && return st
     return column_lines(entries, sv, String(column_axis)) === nothing ? st : :column_block
+end
+
+"""
+    _positional(ctx, u, v) -> Bool
+
+Whether column variable `v` lies over row variable `u`'s index sets in the
+same order, so that pairing their dimensions by position (what
+`:block_diagonal` and `:banded`, and the lane-block scatter plan and the
+block-diagonal LU plan that read them, do) is pairing them by index-set name
+(esm-spec §4.3.4). A column over an index set its row is not, or over the
+row's sets in another order, is not positional. When either variable's
+index-set names are not known (`ctx.axes`), it is.
+"""
+function _positional(ctx, u::String, v::String)
+    axu = get(ctx.axes, u, nothing)
+    axv = get(ctx.axes, v, nothing)
+    return axu === nothing || axv === nothing || axu == axv
 end
 
 function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
@@ -74,7 +113,14 @@ function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
         rowarr != colarr && return :general       # scalar ↔ array coupling
         b = en.band
         isempty(b.cidx) && continue               # scalar–scalar: its own block
-        per = [_offset_class(c, r) for (c, r) in zip(b.cidx, b.ridx)]
+        # a column of another rank than its row is not the row in every
+        # dimension, whatever the shared dimensions say
+        length(b.cidx) == length(b.ridx) || return :general
+        # the classes are positional (their consumers pair row and column
+        # cells by storage position): a column over other index sets than
+        # its row, or over them in another order, is not the row
+        _positional(ctx, en.u, en.v) || return :general
+        per = [_offset_class(b.cidx[d], b.ridx[d]) for d in eachindex(b.cidx)]
         any(==(:other), per) && return :general
         any(==(:fixed), per) && return :general
         any(==(:affine), per) && (seen_affine = true)
@@ -168,6 +214,88 @@ function column_lines(entries::Vector{JacEntry}, sv::SysView, axis::String)
         axis = axis, dim = dim, line_length = N, block_vars = vars,
         kl = kl, ku = ku, pattern = pattern, rank1 = rank1, rank1_undecided = undecided,
     )
+end
+
+# The caller's cell axes as index-set names: a lone name (a String or a
+# Symbol) is one axis, not a sequence of one-character names.
+_cell_axes_list(::Nothing) = nothing
+_cell_axes_list(a::Union{AbstractString, Symbol}) = String[String(a)]
+_cell_axes_list(a) = String[string(x) for x in a]
+
+"""
+    cell_blocks(entries, sv, cell_axes) -> Union{NamedTuple, Nothing}
+
+The per-cell block structure of a state Jacobian whose couplings all stay
+inside one cell of the index sets `cell_axes`, or `nothing` when one does
+not: every row and column variable is an array whose shape holds each cell
+axis exactly once, and at every band point the column's index on each cell
+axis equals the row's (the axes are paired by index-set name, so variables
+of different ranks and orders pair). A point whose column falls outside its
+variable's extent is a ghost read and does not count. The block of a cell
+holds, for each variable in name order, its elements along its other axes,
+column-major (first index fastest): `elements` lists them as
+`(variable, indices along the other axes)`, 1-based, and `pattern` is the
+union over cells of the block's structural pattern in that order, its
+diagonal included (`W = I − γJ` always has it). Returns
+`(cell_axes, block_vars, elements, pattern)`.
+"""
+function cell_blocks(entries::Vector{JacEntry}, sv::SysView, cell_axes)
+    axes = _cell_axes_list(cell_axes)
+    (isempty(entries) || isempty(axes) || !allunique(axes)) && return nothing
+    sizes = _ctx(sv).index_sets
+    vars = sort!(unique(vcat([en.u for en in entries], [en.v for en in entries])))
+    info = Dict{String, Any}()
+    elements = Tuple{String, Vector{Int}}[]
+    for v in vars
+        s = get(sv.variables, v, nothing)
+        (s === nothing || s.shape === nothing || isempty(s.shape)) && return nothing
+        sh = String[string(x) for x in s.shape]
+        pos = Int[]
+        for a in axes
+            k = findall(==(a), sh)
+            length(k) == 1 || return nothing
+            push!(pos, only(k))
+        end
+        other = [d for d in eachindex(sh) if !(d in pos)]
+        ext = Int[sizes[sh[d]] for d in other]
+        info[v] = (pos = pos, other = other, ext = ext, full = Int[sizes[x] for x in sh], off = length(elements))
+        if isempty(ext)
+            push!(elements, (v, Int[]))
+        else
+            for ci in CartesianIndices(Tuple(ext))
+                push!(elements, (v, collect(Int, Tuple(ci))))
+            end
+        end
+    end
+    ns = length(elements)
+    P = falses(ns, ns)
+    for i in 1:ns
+        P[i, i] = true
+    end
+    _local(I, idx) = begin
+        k = 1; stride = 1
+        for (d, x) in zip(I.other, I.ext)
+            k += (idx[d] - 1) * stride
+            stride *= x
+        end
+        I.off + k
+    end
+    for en in entries
+        iu, iv = info[en.u], info[en.v]
+        ok = _all_points(en.band) do cell, _, cidx
+            length(cidx) == length(iv.full) || return false
+            for d in eachindex(cidx)
+                1 <= cidx[d] <= iv.full[d] || return true    # ghost read
+            end
+            for k in eachindex(axes)
+                cidx[iv.pos[k]] == cell[iu.pos[k]] || return false
+            end
+            P[_local(iu, cell), _local(iv, cidx)] = true
+            return true
+        end
+        ok || return nothing
+    end
+    return (cell_axes = axes, block_vars = vars, elements = elements, pattern = P)
 end
 
 # The factors of a product: numerator and denominator factors, `*` and `/`

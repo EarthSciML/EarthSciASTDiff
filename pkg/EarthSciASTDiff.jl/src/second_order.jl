@@ -208,6 +208,7 @@ function _structure2(
         c2 = col2_idx(en)
         isempty(c2) && continue
         length(c2) == length(en.band.ridx) || return nothing
+        _positional(ctx, en.u, en.w) || return nothing
         all(((c, r),) -> _offset_class(c, r) == :diag, zip(c2, en.band.ridx)) ||
             return nothing
     end
@@ -252,7 +253,8 @@ _with_band(en::JacEntry2, b::Band) = JacEntry2(en.u, en.v, en.w, b, en.ncol)
 function _jacobian_block(
         sv::SysView, wrt::Tuple{Symbol, Symbol}, memo::_FirstOrder = _FirstOrder();
         forcing = nothing, cse::Bool = false, cse_min_nodes::Int = 12,
-        column_axis = nothing       # a pair block has no structure class to refine
+        column_axis = nothing,      # a pair block has no structure class to refine
+        cell_axes = nothing
     )
     a1, a2 = wrt
     e1, entries = _bands2(sv, a1, a2, forcing, memo)

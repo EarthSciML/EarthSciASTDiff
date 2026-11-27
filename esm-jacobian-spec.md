@@ -570,9 +570,25 @@ is no ghost read: a column that does not resolve to a cell of `col` is an
 error, and a consumer MUST refuse the block rather than skip the point.
 
 `structure` (optional, derived): `"block_diagonal"` | `"banded"` |
-`"general"` | `"column_block"` — a *classification* of the exact pattern for
-consumers choosing a matrix type; the pattern itself is always recoverable
-from the entries. `"column_block"` is reported only when the producer is
+`"general"` | `"column_block"` | `"cell_block"` — a *classification* of the
+exact pattern for consumers choosing a matrix type; the pattern itself is
+always recoverable from the entries. `"block_diagonal"` and `"banded"` are
+POSITIONAL: they read each entry's column index against its row index
+dimension by dimension at the same position, since their consumers (the
+lane-block scatter plan of §8, the block-diagonal plan of §6) pair a row
+cell with the column cell at the same storage position. An entry is
+compared only when its column variable lies over its row variable's index
+sets in the same order (always when either variable's index-set names are
+not known), so that pairing by position is pairing by index-set name as
+esm-spec §4.3.4 aligns operands. So an entry whose column and row have
+different ranks (a variable over `cell` reading one over `cell × salt`),
+whose column is over an index set its row is not (a variable over
+`cell × salt` reading one over `cell × el` at the same index expressions),
+or whose column is over the row's index sets in another order (a variable
+over `x × y` reading one over `y × x` at `[j, i]`, whose column cell is not
+its row cell by storage position) is neither: the Jacobian is `"general"`
+unless cell axes make it `"cell_block"`, the one class whose plan pairs
+dimensions by index-set name. `"column_block"` is reported only when the producer is
 told a column axis (an index-set name, e.g. by an integrator's locality
 pass: a name carries no vertical meaning by itself), in place of `"banded"`
 or `"general"`, when every coupling stays within one LINE along it: every
@@ -580,6 +596,20 @@ entry couples two array states of one common shape that holds the axis
 once, and at every point the column equals the row in every other
 dimension (a point past the axis's extent is a ghost read). Its §6 plan
 names the per-line pattern.
+`"cell_block"` is reported only when the producer is told cell axes
+(index-set names, e.g. by an integrator's locality pass), in place of
+`"banded"` or `"general"` and before `"column_block"`, when every coupling
+stays inside one CELL of those axes: every row and column variable is an
+array whose shape holds each cell axis exactly once, and at every point the
+column's index on each cell axis equals the row's, the axes paired by
+index-set name (so variables of different ranks and dimension orders pair;
+a point past its column variable's extent is a ghost read). The matrix is
+then one identically patterned block per cell, holding every element of
+every variable along its other axes (a species or salt axis summed inside
+the cell). Its §6 plan names the block. A producer emitting a block is told
+the cell axes as it is told a column axis, and the emitted `structure` and
+`factorization` are then the class and plan the classification and the
+planner give with the same cell axes.
 Omitted, with `factorization`, on the `parameters` and `forcing` axes: the
 classes describe square matrices.
 
@@ -1061,7 +1091,8 @@ time (§4.3).
 `"parameters"` or `"forcing"` (§4's form and canonical ordinal), absent
 otherwise. `structure` is `"block_diagonal"` when `a1` is `"states"`, the
 first-order state block is block-diagonal and every `col2_idx` equals the
-row index (`col2` an array of the row's rank, or both scalar): the
+row index position by position (`col2` an array over the row's index sets
+in the same order, as for the first-order class, or both scalar): the
 contraction is then lane-local. Otherwise it is omitted. There is no
 `factorization`. `expression_templates` (§4.1) apply unchanged.
 
@@ -1457,6 +1488,32 @@ A `"column_block"` structure (§4) carries a line-by-line plan:
   entry off distance 0 has the shape of such a term (one contracted name,
   the line position, no `where`), the pattern depends on the coefficients,
   and a producer MUST NOT plan the line block from them.
+
+A `"cell_block"` structure (§4) carries a per-cell block LU:
+
+```json
+"factorization": {
+  "type": "cell_block_lu", "cell_axes": ["lev", "bin"],
+  "block_vars": ["s", "w"],
+  "elements": [["s", [1]], ["s", [2]], ["s", [3]], ["w", []]],
+  "ordering": [1, 2, 3, 4],
+  "pattern":    [[1,1], [1,4], [2,2], [2,4], [3,3], [3,4], [4,1], [4,2], [4,3], [4,4]],
+  "lu_pattern": [[1,1], [1,4], [2,2], [2,4], [3,3], [3,4], [4,1], [4,2], [4,3], [4,4]]
+}
+```
+
+- `cell_axes` — the index sets whose cells are the blocks, as the producer
+  was told them.
+- `block_vars` — the block's variables, sorted.
+- `elements` — the block's rows (and columns) in permuted block order: the
+  variable and its 1-based indices along its axes other than the cell axes,
+  in its shape's order (`[]` for a variable over the cell axes alone). The
+  natural block order, which `ordering` permutes, is the variables sorted,
+  each one's elements column-major (first index fastest).
+- `ordering`, `pattern`, `lu_pattern` — as for `"block_diagonal_lu"`, over
+  the block's elements: the Markowitz ordering of the natural order, the
+  union over cells of the block pattern in permuted order (diagonal
+  included), and its no-pivoting LU pattern including fill-in.
 
 ## 7. Out of scope (this draft)
 

@@ -27,9 +27,10 @@ Symbolic factorization info for the detected structure class, or `nothing`
 when no plan is implemented for that class (the Jacobian itself is still
 fully usable — a plan is an optimization, never a requirement).
 
-Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref), and
+Currently implemented: `:block_diagonal` → [`BlockDiagonalPlan`](@ref),
 `:column_block` (which needs the `column_axis` it was detected with) →
-[`ColumnBlockPlan`](@ref).
+[`ColumnBlockPlan`](@ref), and `:cell_block` (which needs the `cell_axes` it
+was detected with) → [`CellBlockPlan`](@ref).
 
 Throws an `ArgumentError` when `structure` is not one of
 `STRUCTURE_CLASSES` (a misspelled class never silently gives no
@@ -37,14 +38,15 @@ plan), or when a column of `entries` is a parameter: a `:parameters` or
 `:forcing` band list is a rectangular matrix, which no plan factorizes.
 """
 function plan_factorization(
-        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing,
-        structure::Symbol = detect_structure(entries, sv; column_axis = column_axis)
+        entries::Vector{JacEntry}, sv::SysView; column_axis = nothing, cell_axes = nothing,
+        structure::Symbol = detect_structure(entries, sv; column_axis = column_axis, cell_axes = cell_axes)
     )
     structure in STRUCTURE_CLASSES || throw(
         ArgumentError(
             "unknown structure class :$structure (expected one of $STRUCTURE_CLASSES)"
         )
     )
+    cell_axes = _cell_axes_list(cell_axes)
     for en in entries
         var = get(sv.variables, en.v, nothing)
         (var !== nothing && var.type == EarthSciAST.ParameterVariable) && throw(
@@ -55,6 +57,15 @@ function plan_factorization(
         )
     end
     structure == :block_diagonal && return _block_diagonal_plan(entries, sv)
+    if structure == :cell_block
+        cell_axes === nothing &&
+            throw(ArgumentError("a :cell_block plan needs its `cell_axes`"))
+        cb = cell_blocks(entries, sv, cell_axes)
+        cb === nothing && throw(
+            ArgumentError("the Jacobian is not :cell_block over `$(join(string.(cell_axes), ", "))`")
+        )
+        return _cell_block_plan(cb)
+    end
     if structure == :column_block
         column_axis === nothing &&
             throw(ArgumentError("a :column_block plan needs its `column_axis`"))
@@ -78,7 +89,7 @@ _column_block_plan(cl) =
     ColumnBlockPlan(cl.axis, cl.line_length, cl.block_vars, cl.pattern, cl.kl, cl.ku, cl.rank1)
 
 "The structure classes [`detect_structure`](@ref) reports (spec §4)."
-const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block)
+const STRUCTURE_CLASSES = (:empty, :block_diagonal, :banded, :general, :column_block, :cell_block)
 
 "Serialize a plan into the `\"factorization\"` field of the document block."
 function serialize_plan end
@@ -227,6 +238,56 @@ function serialize_plan(p::BlockDiagonalPlan)
     return OrderedDict{String, Any}(
         "type" => "block_diagonal_lu",
         "block_vars" => p.block_vars,
+        "ordering" => p.ordering,
+        "pattern" => nzpairs(p.pattern),
+        "lu_pattern" => nzpairs(p.lu),
+    )
+end
+
+# ── cell blocks: one block per cell of the caller's cell axes ───────────────
+
+"""
+    CellBlockPlan <: FactorizationPlan
+
+Per-cell block factorization info for a `:cell_block` Jacobian: every
+coupling stays inside one cell of `cell_axes`, so the matrix is one
+identically patterned block per cell, holding every element of every
+variable along the other axes ([`cell_blocks`](@ref)):
+
+  - `cell_axes`  — the index sets whose cells are the blocks.
+  - `block_vars` — the block's variables, sorted.
+  - `elements`   — the block's rows (and columns) in permuted block order:
+    `(variable, indices along its other axes)`, 1-based.
+  - `ordering`   — the Markowitz elimination ordering of the natural block
+    order (variables sorted, each one's elements column-major).
+  - `pattern`    — the block's pattern in permuted order, diagonal included.
+  - `lu`         — its no-pivoting LU pattern including fill-in.
+"""
+struct CellBlockPlan <: FactorizationPlan
+    cell_axes::Vector{String}
+    block_vars::Vector{String}
+    elements::Vector{Tuple{String, Vector{Int}}}
+    pattern::BitMatrix
+    ordering::Vector{Int}
+    lu::BitMatrix
+end
+
+function _cell_block_plan(cb)
+    ordering = markowitz_ordering(cb.pattern)
+    Pp = cb.pattern[ordering, ordering]
+    return CellBlockPlan(cb.cell_axes, cb.block_vars, cb.elements[ordering], Pp, ordering, lu_fill(Pp))
+end
+
+function serialize_plan(p::CellBlockPlan)
+    nzpairs(M) = Any[
+        Any[ij[1], ij[2]] for ij in
+            sort!([(i, j) for i in 1:size(M, 1), j in 1:size(M, 2) if M[i, j]])
+    ]
+    return OrderedDict{String, Any}(
+        "type" => "cell_block_lu",
+        "cell_axes" => p.cell_axes,
+        "block_vars" => p.block_vars,
+        "elements" => Any[Any[v, Any[c...]] for (v, c) in p.elements],
         "ordering" => p.ordering,
         "pattern" => nzpairs(p.pattern),
         "lu_pattern" => nzpairs(p.lu),

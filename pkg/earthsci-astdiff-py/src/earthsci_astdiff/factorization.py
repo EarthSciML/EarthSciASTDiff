@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .jacobian import JacEntry
-from .structure import column_lines, detect_structure
+from .structure import cell_axes_list, cell_blocks, column_lines, detect_structure
 from .system import SysView, _var_type
 
 
@@ -42,6 +42,23 @@ class ColumnBlockPlan:
     # the rank-one terms of a "diag_plus_rank1" line block (spec §6): each
     # {"entry": 1-based entry index, "u": row factor, "v": line factor}
     rank1: list = field(default_factory=list)
+
+
+@dataclass
+class CellBlockPlan:
+    """Per-cell block LU of a ``"cell_block"`` Jacobian: every coupling stays
+    inside one cell of ``cell_axes``, so the matrix is one identically
+    patterned block per cell holding every element of every variable along
+    the other axes. ``elements`` are the block's rows in Markowitz order,
+    ``ordering`` the 1-based ordering of the natural block order, ``pattern``
+    the permuted pattern and ``lu`` its fill-in LU pattern."""
+
+    cell_axes: list[str]
+    block_vars: list[str]
+    elements: list
+    pattern: list[list[bool]]
+    ordering: list[int]
+    lu: list[list[bool]]
 
 
 def lu_fill(pattern: list[list[bool]]) -> list[list[bool]]:
@@ -81,7 +98,7 @@ def markowitz_ordering(pattern: list[list[bool]]) -> list[int]:
 
 
 #: The structure classes :func:`detect_structure` reports (spec §4).
-STRUCTURE_CLASSES = ("empty", "block_diagonal", "banded", "general", "column_block")
+STRUCTURE_CLASSES = ("empty", "block_diagonal", "banded", "general", "column_block", "cell_block")
 
 
 def plan_factorization(
@@ -89,6 +106,7 @@ def plan_factorization(
     sv: SysView,
     structure: str | None = None,
     column_axis: str | None = None,
+    cell_axes: list[str] | None = None,
 ):
     """Symbolic factorization info for the detected structure.
 
@@ -102,8 +120,9 @@ def plan_factorization(
     plan), or when a column of ``entries`` is a parameter: a parameters or
     forcing band list is a rectangular matrix, which no plan factorizes.
     """
+    cell_axes = cell_axes_list(cell_axes)
     if structure is None:
-        structure = detect_structure(entries, sv, column_axis=column_axis)
+        structure = detect_structure(entries, sv, column_axis=column_axis, cell_axes=cell_axes)
     elif structure not in STRUCTURE_CLASSES:
         raise ValueError(
             f"unknown structure class {structure!r} (expected one of {STRUCTURE_CLASSES})"
@@ -124,7 +143,29 @@ def plan_factorization(
         if cl is None:
             raise ValueError(f"the Jacobian is not column_block along `{column_axis}`")
         return _column_block_plan(cl)
+    if structure == "cell_block":
+        if cell_axes is None:
+            raise ValueError("a cell_block plan needs its `cell_axes`")
+        cb = cell_blocks(entries, sv, cell_axes)
+        if cb is None:
+            raise ValueError(f"the Jacobian is not cell_block over `{', '.join(cell_axes)}`")
+        return _cell_block_plan(cb)
     return None
+
+
+def _cell_block_plan(cb: dict) -> CellBlockPlan:
+    P = cb["pattern"]
+    ordering = markowitz_ordering(P)
+    idx = [o - 1 for o in ordering]
+    Pp = [[P[i][j] for j in idx] for i in idx]
+    return CellBlockPlan(
+        list(cb["cell_axes"]),
+        list(cb["block_vars"]),
+        [cb["elements"][i] for i in idx],
+        Pp,
+        ordering,
+        lu_fill(Pp),
+    )
 
 
 def _column_block_plan(cl: dict) -> ColumnBlockPlan:
@@ -171,6 +212,17 @@ def serialize_plan(p) -> dict:
             [i + 1, j + 1]
             for i, j in sorted((i, j) for i in range(len(M)) for j in range(len(M[i])) if M[i][j])
         ]
+
+    if isinstance(p, CellBlockPlan):
+        return {
+            "type": "cell_block_lu",
+            "cell_axes": list(p.cell_axes),
+            "block_vars": list(p.block_vars),
+            "elements": [[v, list(c)] for v, c in p.elements],
+            "ordering": list(p.ordering),
+            "pattern": nzpairs(p.pattern),
+            "lu_pattern": nzpairs(p.lu),
+        }
 
     return {
         "type": "block_diagonal_lu",

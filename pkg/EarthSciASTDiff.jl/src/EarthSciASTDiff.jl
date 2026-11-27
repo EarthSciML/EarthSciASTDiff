@@ -25,7 +25,8 @@ Layered API, lowest to highest:
   - [`jacobian_document`](@ref)    — original document + serialized `"jacobians"` block
   - [`jacobian_pattern`](@ref)     — structural sparsity pattern (`SparseMatrixCSC{Bool}`)
   - [`detect_structure`](@ref)     — `:block_diagonal` / `:banded` / `:general`
-                                     (`:column_block` given a `column_axis`)
+                                     (`:column_block` given a `column_axis`,
+                                     `:cell_block` given `cell_axes`)
   - [`plan_factorization`](@ref)   — symbolic factorization info (general interface;
                                      per-cell block LU is the first implementation)
   - [`evaluation_document`](@ref)  — the band fields of `J` as an ESM document
@@ -71,8 +72,8 @@ export Site, dscalar, simplify_branches,
     JacEntry2, jacobian_bands2, col_idx, col2_idx,
     Recurrence, ExtendedBands, recurrences, extended_bands, transfer_definition,
     jvp_document, vjp_document, hvp_document,
-    detect_structure, column_lines, jac_prototype,
-    FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, plan_factorization,
+    detect_structure, column_lines, cell_blocks, jac_prototype,
+    FactorizationPlan, BlockDiagonalPlan, ColumnBlockPlan, CellBlockPlan, plan_factorization,
     serialize_plan, lu_fill,
     StorageLayout, LaneBlocks, LaneSparseBlocks, ColumnBanded, Csr,
     ScatterPlan, scatter_plan, serialize_scatter_plan,

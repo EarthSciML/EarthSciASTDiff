@@ -62,6 +62,7 @@ end
     include("recurrence_test.jl")
     include("structure_test.jl")
     include("factorization_test.jl")
+    include("cell_block_test.jl")
     include("scatter_test.jl")
     include("source_layout_test.jl")
     include("operator_refs_test.jl")

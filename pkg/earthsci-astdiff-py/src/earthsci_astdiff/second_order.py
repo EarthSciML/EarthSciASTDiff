@@ -29,7 +29,7 @@ from .jacobian import JacEntry, _check_closed, _FirstOrder, _json, _targets
 from .reductions import conj, one_hot
 from .scalar_rules import dscalar
 from .simplify_branches import simp
-from .structure import _offset_class
+from .structure import _offset_class, _positional
 from .system import SysView, ctx_of, observed_defs, sysview
 
 
@@ -187,7 +187,7 @@ def structure2(
         c2 = en.col2_idx
         if not c2:
             continue
-        if len(c2) != len(en.band.ridx):
+        if len(c2) != len(en.band.ridx) or not _positional(ctx, en.u, en.w):
             return None
         if not all(_offset_class(c, r) == "diag" for c, r in zip(c2, en.band.ridx, strict=True)):
             return None

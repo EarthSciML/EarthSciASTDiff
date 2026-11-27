@@ -33,7 +33,12 @@ def _offset_class(c: Expr, r) -> str:
     return "other"
 
 
-def detect_structure(entries: list[JacEntry], sv: SysView, column_axis: str | None = None) -> str:
+def detect_structure(
+    entries: list[JacEntry],
+    sv: SysView,
+    column_axis: str | None = None,
+    cell_axes: list[str] | None = None,
+) -> str:
     """Classify the band list: ``"block_diagonal"``, ``"banded"``, ``"general"``
     (or ``"empty"`` / ``"other"``), read off the column-index expressions
     without evaluating anything. Use it to choose a matrix type.
@@ -41,11 +46,113 @@ def detect_structure(entries: list[JacEntry], sv: SysView, column_axis: str | No
     Given ``column_axis`` (an index-set name, from the caller's locality
     pass), ``"column_block"`` replaces ``"banded"`` / ``"general"`` when
     every coupling stays within one LINE along that axis
-    (:func:`column_lines`), so a solver can factorize line by line."""
+    (:func:`column_lines`), so a solver can factorize line by line.
+
+    Given ``cell_axes`` (index-set names, from the caller), ``"cell_block"``
+    replaces ``"banded"`` / ``"general"``, before ``"column_block"``, when
+    every coupling stays inside one CELL of those axes (:func:`cell_blocks`),
+    whose plan pairs the cell axes by index-set name. ``"block_diagonal"``
+    and ``"banded"`` are positional (their consumers pair row and column
+    cells by storage position): a band whose column and row have different
+    ranks, whose column is over an index set its row is not, or whose column
+    is over the row's index sets in another order is ``"general"`` (by
+    position when either variable's names are not known). A lone ``str``
+    ``cell_axes`` is one axis."""
     st = _detect_structure(entries, sv)
-    if column_axis is None or st in ("empty", "block_diagonal"):
+    if st in ("empty", "block_diagonal"):
+        return st
+    cell_axes = cell_axes_list(cell_axes)
+    if cell_axes is not None and cell_blocks(entries, sv, cell_axes) is not None:
+        return "cell_block"
+    if column_axis is None:
         return st
     return st if column_lines(entries, sv, str(column_axis)) is None else "column_block"
+
+
+def cell_axes_list(cell_axes) -> list[str] | None:
+    """The caller's cell axes as index-set names: a lone name (a ``str``) is
+    one axis, not a sequence of one-character names (structure.jl
+    ``_cell_axes_list``)."""
+    if cell_axes is None:
+        return None
+    if isinstance(cell_axes, str):
+        return [cell_axes]
+    return [str(a) for a in cell_axes]
+
+
+def cell_blocks(entries: list[JacEntry], sv: SysView, cell_axes) -> dict | None:
+    """The per-cell block structure of a state Jacobian whose couplings all
+    stay inside one cell of the index sets ``cell_axes``, or ``None`` when one
+    does not (structure.jl ``cell_blocks``): every row and column variable is
+    an array whose shape holds each cell axis exactly once, and at every band
+    point the column's index on each cell axis (paired by index-set name)
+    equals the row's; a point whose column falls outside its variable's
+    extent is a ghost read. Returns a dict with ``cell_axes``,
+    ``block_vars`` (sorted), ``elements`` (the block's rows in natural order:
+    each variable in name order, its elements along its other axes
+    column-major, as ``(variable, [1-based indices])``) and ``pattern`` (the
+    union over cells of the block pattern, diagonal included)."""
+    from .emit import foreach_point
+
+    axes = cell_axes_list(cell_axes)
+    if not entries or not axes or len(set(axes)) != len(axes):
+        return None
+    sizes = ctx_of(sv).index_sets
+    vars = sorted({en.u for en in entries} | {en.v for en in entries})
+    info = {}
+    elements: list = []
+    for v in vars:
+        var = sv.variables.get(v)
+        s = None if var is None else getattr(var, "shape", None)
+        if not s:
+            return None
+        sh = [str(x) for x in s]
+        pos = []
+        for a in axes:
+            k = [d for d, x in enumerate(sh) if x == a]
+            if len(k) != 1:
+                return None
+            pos.append(k[0])
+        other = [d for d in range(len(sh)) if d not in pos]
+        ext = [sizes[sh[d]] for d in other]
+        info[v] = {
+            "pos": pos,
+            "other": other,
+            "ext": ext,
+            "full": [sizes[x] for x in sh],
+            "off": len(elements),
+        }
+        n = 1
+        for x in ext:
+            n *= x
+        for k in range(n):
+            rem, idx = k, []
+            for x in ext:
+                idx.append(rem % x + 1)
+                rem //= x
+            elements.append((v, idx))
+    ns = len(elements)
+    P = [[i == j for j in range(ns)] for i in range(ns)]
+
+    def local(var, idx):
+        k, stride = 0, 1
+        for d, x in zip(var["other"], var["ext"], strict=True):
+            k += (idx[d] - 1) * stride
+            stride *= x
+        return var["off"] + k
+
+    for en in entries:
+        iu, iv = info[en.u], info[en.v]
+        for cell, _, _, cidx in foreach_point(en.band):
+            if len(cidx) != len(iv["full"]):
+                return None
+            if any(not (1 <= cidx[d] <= iv["full"][d]) for d in range(len(cidx))):
+                continue  # ghost read
+            for k in range(len(axes)):
+                if cidx[iv["pos"][k]] != cell[iu["pos"][k]]:
+                    return None
+            P[local(iu, cell)][local(iv, cidx)] = True
+    return {"cell_axes": axes, "block_vars": vars, "elements": elements, "pattern": P}
 
 
 def column_lines(entries: list[JacEntry], sv: SysView, axis: str) -> dict | None:
@@ -194,6 +301,17 @@ def _rank1_term(b, dim: int):
     return _split_rank1(b.coef, kap, {r for r in b.ridx if isinstance(r, str)})
 
 
+def _positional(ctx, u: str, v: str) -> bool:
+    """Whether column variable ``v`` lies over row variable ``u``'s index
+    sets in the same order, so that pairing their dimensions by position
+    (what ``"block_diagonal"`` and ``"banded"``, and the lane-block scatter
+    plan and the block-diagonal LU plan that read them, do) is pairing them
+    by index-set name; ``True`` when either variable's index-set names are
+    not known (``ctx.axes``) (structure.jl ``_positional``)."""
+    axu, axv = ctx.axes.get(u), ctx.axes.get(v)
+    return axu is None or axv is None or list(axu) == list(axv)
+
+
 def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
     if not entries:
         return "empty"
@@ -207,7 +325,16 @@ def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
         b = en.band
         if not b.cidx:
             continue
-        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx, strict=False)]
+        # a column of another rank than its row is not the row in every
+        # dimension, whatever the shared dimensions say
+        if len(b.cidx) != len(b.ridx):
+            return "general"
+        # the classes are positional (their consumers pair row and column
+        # cells by storage position): a column over other index sets than
+        # its row, or over them in another order, is not the row
+        if not _positional(ctx, en.u, en.v):
+            return "general"
+        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx, strict=True)]
         if any(p in ("other", "fixed") for p in per):
             return "general"
         if any(p == "affine" for p in per):

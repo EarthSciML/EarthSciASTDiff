@@ -179,6 +179,28 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     by a `const` mask (a `where` gather)
   - `pbl_rank1.esm` — mixing toward a column mean plus per-cell titration:
     the `column_block` plan's `diag_plus_rank1` pattern (spec §6)
+- `valid/cell_block_mixed_rank.esm` — per-cell blocks over caller-named cell
+  axes (spec §4, §6): `w` over `[bin, lev]` reads every salt of its own cell
+  of `s` over `[lev, bin, salt]` through a sum, and `s` reads `w` of its own
+  cell. Without cell axes the state Jacobian is `general` (a column of
+  another rank than its row is never diagonal; the old classification called
+  it `block_diagonal`).
+- `valid/named_dims.esm` — the positional structure classes (spec §4):
+  `block_diagonal` and `banded` read a band only when its column variable
+  lies over its row's index sets in the same order. Model `Mismatch` (a
+  variable over `[cell, salt]` reading itself and one over `[cell, el]` at
+  the same indices: `general`; its second-order block has a second column
+  on the `[cell, el]` variable) and model `Transposed` (a variable over
+  `[x, y]` reading one over `[y, x]` at `[j, i]`, `x` and `y` of one size:
+  `general`, and `cell_block` over the cell axes `[x, y]`). Golden
+  `goldens/named_dims.structure.json` (each model's class and plan).
+- `goldens/cell_block_mixed_rank.cell-lev-bin.block.json` — the state block
+  emitted with cell axes `[lev, bin]` (`cell_block` and its plan).
+- `goldens/` — `<fixture>.cell_blocks.json`: the structure class and plan of
+  the state Jacobian with no cell axes and with each listed choice of cell
+  axes (`[lev, bin]`, `[lev]`, `[salt]`), for `cell_block_mixed_rank`;
+  byte-compared by `test/cell_block_test.jl`, `tests/cell_blocks.rs` and
+  `tests/test_cell_blocks.py`.
 - `goldens/` — `<fixture>.column-<axis>.block.json`: the state block emitted
   with a column axis (`column_block` and its plan), for `recurrence_sweep`
   and `pbl_rank1`.
