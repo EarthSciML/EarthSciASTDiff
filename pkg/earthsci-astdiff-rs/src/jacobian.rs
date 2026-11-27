@@ -532,6 +532,43 @@ pub(crate) fn extended_pass_in(
             transfer: HashMap::new(),
         });
     }
+    // Structure-only passes on the other axes compose their bands through
+    // the observed graph (named steps, spec §4.6, steps.rs). A pair's first
+    // pass (`seed`) and a pass through an active recurrence inline, as below.
+    if !co && seed.is_empty() {
+        let mut nr = src_obs.clone();
+        for r in &recs {
+            nr.remove(&r.name);
+        }
+        let mut st = crate::steps::steps_setup(sv, ctx, nr, &tset, &scalars, co)?;
+        let mut entries = Vec::new();
+        let mut row_eq = Vec::new();
+        for (q, eq) in sv.equations.iter().enumerate() {
+            let Some(u) = lhs_state(eq) else {
+                if is_derivative(eq) {
+                    return Err(unsupported_derivative(eq));
+                }
+                continue;
+            };
+            let shape_u = ctx.shapes.get(&u).cloned().unwrap_or_default();
+            let inl = st.inline.clone();
+            let es = crate::steps::steps_row(&mut st, &u, &eq.rhs, &inl, &shape_u)?;
+            row_eq.resize(row_eq.len() + es.len(), q);
+            entries.extend(es);
+        }
+        if wrt.has_columns() {
+            for en in &entries {
+                check_closed_columns(en)?;
+            }
+        }
+        return Ok(ExtendedBands {
+            recurrences: Vec::new(),
+            rows: entries,
+            rec_rows: Vec::new(),
+            row_eq,
+            transfer: HashMap::new(),
+        });
+    }
     // Inline only the observed that can move with THIS `wrt`'s targets (and
     // the seed's); the rest have an identically-zero derivative and stay
     // opaque reads. Time is pruned from `{"t"}` too: `f_t` is the partial

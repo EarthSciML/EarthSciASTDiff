@@ -207,7 +207,7 @@ def time_row_bands(cs: Companions, rhs, inl: dict, shape_u: list) -> list[Band]:
     observed's companion, summed where they share a box, in column-name
     order."""
     ctx = cs.ctx
-    rhs = inline_observed(rhs, inl, [None], ctx.shapes, cs.obs, cs.scalars)
+    rhs = inline_observed(rhs, inl, [None], ctx.shapes, cs.obs, cs.scalars, ctx.axes)
     out: list[Band] = []
     for v in sorted(x for x in free_variables(rhs) if x == "t" or x in cs.cols):
         raw = bands_in(rhs, v, ctx, shape_u, cs.co)
@@ -468,7 +468,7 @@ def _time_coef_bands(cs: Companions, b: Band) -> list[Band]:
     from .second_order import _coef_bands
 
     ctx = cs.ctx
-    coef = inline_observed(b.coef, cs.inline, [None], ctx.shapes, cs.obs, cs.scalars)
+    coef = inline_observed(b.coef, cs.inline, [None], ctx.shapes, cs.obs, cs.scalars, ctx.axes)
     b0 = replace(b, coef=coef)
     n = len(b.cidx)
     out: list[Band] = []

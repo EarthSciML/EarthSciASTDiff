@@ -107,6 +107,11 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     are checked byte for byte (values to 1e-10) by every binding, and each
     checks `f_t` against a central difference in `t` of the source
     right-hand side
+  - `diamond_chain.esm` — named steps (spec §4.6): twelve levels of two
+    observed, each reading both of the level below (2^12 paths when
+    inlined). Its structure-only golden, `diamond_chain.structure.bands.json`,
+    is checked byte for byte by every binding, and the Julia reference
+    checks its points against the inlined right-hand side's
   - `elementwise_aligned.esm` — an elementwise observed read at a cell whose
     array operands are aligned by index-set name (esm-spec §4.3.4): `w` over
     `[x, y]` is `c·q + k + r`, with `q` over `[y]` (the second axis, so

@@ -313,7 +313,7 @@ end
 function _extended_pass(
         sv::SysView, ctx::Ctx, obs, wrt::Symbol, forcing, seed;
         coefficients::Bool = true, info::_RecInfo = _rec_info(sv, obs, ctx),
-        companions::Bool = false
+        companions::Bool = false, steps::Bool = true
     )
     src_obs = obs
     # declared scalars that are not observed: an elementwise observed read at
@@ -373,6 +373,38 @@ function _extended_pass(
     # partial derivative with every parameter, data-fed ones included, held
     # fixed (spec §4.2), so an observed whose only time dependence comes
     # through data has a zero partial derivative and is not followed.
+    # Structure-only passes on the other axes compose their bands through the
+    # observed graph (named steps, spec §4.6, steps.jl): each observed that
+    # moves with a target is a column, its bands composed once. A pair's first
+    # pass (`seed`) and a pass through an active recurrence inline, as below.
+    if steps && !co && isempty(seed)
+        rn = Set{String}(r.name for r in recs)
+        st = _steps_setup(
+            sv, ctx, Dict{String, ASTExpr}(k => v for (k, v) in src_obs if !(k in rn)),
+            targets, scalars, co
+        )
+        entries = JacEntry[]
+        row_eq = Int[]
+        for (q, eq) in enumerate(sv.equations)
+            u = lhs_state(eq)
+            if u === nothing
+                _is_derivative(eq) && throw(
+                    BandError(
+                        "unsupported derivative LHS $(JSON3.write(EarthSciAST.serialize_expression(eq.lhs))) " *
+                            "(a state's derivative is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                    )
+                )
+                continue
+            end
+            es = _steps_row(st, u, eq.rhs, st.inline, get(ctx.shapes, u, Int[]))
+            append!(entries, es)
+            append!(row_eq, fill(q, length(es)))
+        end
+        if _closed_axis(wrt)
+            foreach(_check_closed_columns, entries)
+        end
+        return ExtendedBands(Recurrence[], entries, JacEntry[], row_eq, Dict{String, String}())
+    end
     obs = inlinable_observed(obs, sv.equations, Set{String}(vcat(targets, seed)))
     if !isempty(recs)
         rn = Set{String}(r.name for r in recs)

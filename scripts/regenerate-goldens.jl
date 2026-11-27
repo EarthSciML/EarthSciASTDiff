@@ -78,7 +78,7 @@ end
 # entries without coefficients, for every model fixture above and the
 # flattened coupled document (the list the tests check, shared with them)
 include(joinpath(root, "pkg", "EarthSciASTDiff.jl", "test", "structure_fixtures.jl"))
-for name in (STRUCTURE_FIXTURES..., "recurrence_sweep", "pbl_rank1")
+for name in (STRUCTURE_FIXTURES..., "recurrence_sweep", "pbl_rank1", "diamond_chain")
     src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     sv = name == "coupled_chem_advection" ? sysview(EarthSciAST.flatten(src)) :
         sysview(src, first(keys(src.models)))

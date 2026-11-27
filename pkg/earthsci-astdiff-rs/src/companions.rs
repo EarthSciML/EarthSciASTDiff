@@ -29,7 +29,7 @@ use crate::bands::{
 use crate::branches::simp;
 use crate::clip::{index_bounds, index_box, RIdx};
 use crate::helpers::{mul, op, ser_expr, skey};
-use crate::inline::{all_names, inline_observed_ranked};
+use crate::inline::{all_names, inline_observed_aligned};
 use crate::operator_refs::{ref_node, with_layer};
 use crate::reductions::{conj_list, conjuncts, fresh};
 use crate::system::{moving_observed, subscript_observed, SysView};
@@ -134,7 +134,7 @@ fn refuse(o: &str) -> BandError {
 /// a `faq`'s output ranges, a `makearray`'s regions, or the first operand of
 /// an elementwise definition that has extents. A definition whose extents
 /// cannot be read at build time is refused: its companion has no shape.
-fn obs_extents(
+pub(crate) fn obs_extents(
     o: &str,
     sv: &SysView,
     obs: &HashMap<String, Expr>,
@@ -234,7 +234,7 @@ fn expr_extents(
     Ok(Vec::new())
 }
 
-fn faq_over(names: &[String], shape: &[i64], body: Expr) -> Expr {
+pub(crate) fn faq_over(names: &[String], shape: &[i64], body: Expr) -> Expr {
     let ranges: HashMap<String, RangeSpec> = names
         .iter()
         .zip(shape)
@@ -249,7 +249,7 @@ fn faq_over(names: &[String], shape: &[i64], body: Expr) -> Expr {
     })
 }
 
-fn index_of(name: &str, idx: Vec<Expr>) -> Expr {
+pub(crate) fn index_of(name: &str, idx: Vec<Expr>) -> Expr {
     let mut args = vec![Expr::Variable(name.to_string())];
     args.extend(idx);
     op("index", args)
@@ -282,7 +282,7 @@ pub(crate) fn companion_bands(cs: &mut Companions, o: &str) -> R<Vec<Band>> {
 /// The row index names of a companion row: the definition's own output
 /// indices when it is a `faq` naming one per dimension, else `_r<d>` clear
 /// of every name of the definition.
-fn row_names_of(def: &Expr, k: usize) -> Vec<String> {
+pub(crate) fn row_names_of(def: &Expr, k: usize) -> Vec<String> {
     if let Expr::Operator(n) = def {
         if n.op == "faq" {
             let oi = n.output_idx.clone().unwrap_or_default();
@@ -312,13 +312,14 @@ pub(crate) fn time_row_bands(
 ) -> R<Vec<Band>> {
     let mut obs_names = None;
     let rhs = with_layer(&cs.ctx.refs, || {
-        inline_observed_ranked(
+        inline_observed_aligned(
             rhs,
             inl,
             &mut obs_names,
             &cs.ctx.shapes,
             &cs.obs,
             &cs.scalars,
+            &cs.ctx.axes,
         )
     })
     .map_err(|e| BandError(e.0))?;
@@ -737,13 +738,14 @@ pub(crate) fn time_pair_bands(
 fn time_coef_bands(cs: &mut Companions, b: &Band) -> R<Vec<Band>> {
     let mut obs_names = None;
     let coef = with_layer(&cs.ctx.refs, || {
-        inline_observed_ranked(
+        inline_observed_aligned(
             &b.coef,
             &cs.inline,
             &mut obs_names,
             &cs.ctx.shapes,
             &cs.obs,
             &cs.scalars,
+            &cs.ctx.axes,
         )
     })
     .map_err(|e| BandError(e.0))?;

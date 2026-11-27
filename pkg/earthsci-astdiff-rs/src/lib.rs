@@ -22,6 +22,7 @@ pub mod rules;
 pub mod scatter;
 pub mod second_order;
 pub mod simplify_port;
+pub(crate) mod steps;
 pub mod system;
 
 pub use bands::{bands, merge_bands, normalize_band, Band, BandError, Ctx};

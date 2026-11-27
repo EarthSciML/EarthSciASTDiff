@@ -122,6 +122,10 @@ Julia source map (`pkg/EarthSciASTDiff.jl/src/`):
   observed's own; a pair `["time", a2]` takes `t` second, as the time bands
   of each `a2` entry's coefficient by the same rule (spec §4.4) (Rust
   `companions.rs`, Python `companions.py`)
+- `steps.jl`        — named steps (spec §4.6): the bands of a row composed
+  through the observed graph, each observed differentiated once and its
+  composed bands memoized; structure-only passes on the states, parameters
+  and forcing axes (Rust `steps.rs`, Python `steps.py`)
 - `recurrence.jl`   — causal recurrences (spec §4.5): recognition, the
   transfer recurrence `T = (I − G)⁻¹`, `materialize` (the chain rule
   through `T`) and the tangent/adjoint sweeps products.jl's §9.7 documents

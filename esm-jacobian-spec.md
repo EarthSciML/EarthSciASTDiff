@@ -1205,6 +1205,54 @@ block carries `recurrences` (§4: each active recurrence's `name` and its
 
 **Fixtures.** `recurrence_sweep.esm` (§5).
 
+### 4.6 Named steps (composition through the observed graph)
+
+A chain of observed is never inlined into each row that reads it and then
+differentiated there: that copies every observed once per path to it, and a
+chain whose levels read the level below more than once grows as the number
+of paths, not as its size. Each observed is differentiated once, as its own
+named step, and a row reaches it by the chain rule. The time companions
+(§4.2) are the time axis's case of this mechanism.
+
+**Columns.** On an axis with targets `T` (the states, the parameter or
+forcing columns, or `t`), the columns of the pass are `T` and every observed
+that moves with `T` (the reader closure of §4.3's inlining rule), except the
+observed a column index needs at build time (the subscript clause of §4.3,
+which stay inlined, as on every axis) and the recurrences (§4.5).
+
+**Direct bands.** A row's right-hand side, and each column observed `o`'s
+own definition (the row `o` over its shape, written as a companion row is,
+§4.2), are differentiated with respect to every column they read, by the
+ordinary calculus (§3, §3.5), with only the observed a column index needs
+inlined. Each observed's are computed once.
+
+**Composition.** The bands of `o` onto `T` are its direct bands onto `T`
+and, for each direct band onto another column observed `o′`, that band
+composed with the bands of `o′` onto `T` (in column-name order). The bands
+of a row are composed the same way from its direct bands. Each observed's
+composed bands are computed once and reused by every reader. The
+composition of an outer band (column `o′` at index `φ`) with an inner band
+(rows `o′`) is §3.6's: the inner row names read `φ`, contractions
+concatenate (the inner's renamed apart), the inner row box joins the
+`where`, decided over the outer box (§2.2), and a read outside the inner box
+contributes nothing.
+
+**Combination.** Within one row (a state's, or an observed's) and one
+target column, bands of the same structure — the same `rows`, `row_idx`,
+`col_idx`, `contracted` and `where` — reached by different paths are one
+band (their coefficients summed, an n-ary `+` in the order reached); the
+list is then re-merged and normalized as any band list. This keeps the work
+linear in the number of observed, whatever the number of paths.
+
+**Scope.** A structure-only pass (§2.1) on the `"states"`, `"parameters"`
+and `"forcing"` axes composes as above; its points equal those the inlined
+right-hand side gives. A pass through an active recurrence and the first
+pass of a pair inline the observed that move with the axis, as before.
+
+**Fixtures.** `diamond_chain.esm` (§5): twelve levels of two observed,
+each reading both of the level below, so the inlined right-hand side has
+2¹² paths while the composed bands stay at a handful.
+
 ## 5. Conformance
 
 Fixture corpus in `tests/` of this repository:

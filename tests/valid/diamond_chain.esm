@@ -1,0 +1,1230 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "DiamondChain",
+    "description": "Named steps (spec \u00a74.6): 12 levels of observed, each level's two observed reading both of the level below, so the inlined right-hand side doubles per level (2^12 paths) while the composed bands stay linear in the levels. The top level is read pointwise by u and through a contraction by v."
+  },
+  "index_sets": {
+    "z": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Chain": {
+      "variables": {
+        "u": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.3
+        },
+        "v": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ],
+          "default": 0.6
+        },
+        "p": {
+          "type": "parameter",
+          "default": 0.9
+        },
+        "a1": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b1": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a2": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b2": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a3": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b3": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a4": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b4": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a5": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b5": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a6": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b6": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a7": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b7": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a8": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b8": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a9": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b9": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a10": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b10": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a11": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b11": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "a12": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        },
+        "b12": {
+          "type": "unknown",
+          "shape": [
+            "z"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "a1",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                "p",
+                {
+                  "op": "sin",
+                  "args": [
+                    {
+                      "op": "index",
+                      "args": [
+                        "u",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b1",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "cos",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "v",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a2",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a1",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b1",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b2",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a1",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b1",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a2",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b2",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b3",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a2",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b2",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a3",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b3",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b4",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a3",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b3",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a5",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a4",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b4",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b5",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a4",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b4",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a6",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a5",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b5",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b6",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a5",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b5",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a7",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a6",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b6",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b7",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a6",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b6",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a8",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a7",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b7",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b8",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a7",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b7",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a9",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a8",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b8",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b9",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a8",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b8",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a10",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a9",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b9",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b10",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a9",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b9",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a11",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a10",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b10",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b11",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a10",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b10",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "a12",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                0.5,
+                {
+                  "op": "index",
+                  "args": [
+                    "a11",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "b11",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "b12",
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "*",
+                  "args": [
+                    0.5,
+                    {
+                      "op": "index",
+                      "args": [
+                        "a11",
+                        "i"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.25,
+                    {
+                      "op": "index",
+                      "args": [
+                        "b11",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "u"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "a12",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "u",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "v"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "z"
+              }
+            },
+            "expr": {
+              "op": "+",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "b12",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    0.1,
+                    {
+                      "op": "faq",
+                      "output_idx": [],
+                      "args": [],
+                      "ranges": {
+                        "k": {
+                          "from": "z"
+                        }
+                      },
+                      "expr": {
+                        "op": "index",
+                        "args": [
+                          "a12",
+                          "k"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

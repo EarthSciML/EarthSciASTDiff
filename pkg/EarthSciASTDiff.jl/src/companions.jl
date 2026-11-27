@@ -64,7 +64,7 @@ function _companion_setup(sv::SysView, ctx::Ctx, obs::Dict{String, ASTExpr}, sca
         ext = _obs_extents(o, sv, obs, ctx, memo, Set{String}())
         isempty(ext) || (shapes[o] = ext)
     end
-    ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, ctx.refs, ctx.origins)
+    ctx2 = Ctx(ctx.index_sets, shapes, ctx.params, ctx.refs, ctx.origins, ctx.axes)
     return _Companions(
         _companion_names(sv, moving), cols,
         Dict{String, ASTExpr}(n => obs[n] for n in sub), obs, ctx2,
@@ -177,7 +177,7 @@ function _time_row_bands(cs::_Companions, rhs::ASTExpr, inl, shape_u::Vector{Int
     ctx = cs.ctx
     rhs = _with_layer(ctx.refs) do
         inline_observed(
-            rhs, inl; shapes = ctx.shapes, rank_obs = cs.obs, scalars = cs.scalars
+            rhs, inl; shapes = ctx.shapes, axes = ctx.axes, rank_obs = cs.obs, scalars = cs.scalars
         )
     end
     out = Band[]
@@ -422,7 +422,7 @@ function _time_coef_bands(cs::_Companions, b::Band)
     ctx = cs.ctx
     coef = _with_layer(ctx.refs) do
         inline_observed(
-            b.coef, cs.inline; shapes = ctx.shapes, rank_obs = cs.obs, scalars = cs.scalars
+            b.coef, cs.inline; shapes = ctx.shapes, axes = ctx.axes, rank_obs = cs.obs, scalars = cs.scalars
         )
     end
     b0 = _rebuild(b; coef = coef)

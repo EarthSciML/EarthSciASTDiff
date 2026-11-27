@@ -92,6 +92,7 @@ include("system.jl")         # SysView over Model / FlattenedSystem, expansion
 include("recurrence.jl")     # causal recurrences: extended system, transfer, sweeps
 include("companions.jl")     # time companions: d/dt of each moving observed, named once
 include("jacobian.jl")       # jacobian_bands driver
+include("steps.jl")          # named steps: bands composed through the observed graph
 include("eval_cse.jl")       # evaluation-model CSE (hoisted observed buffers)
 include("emit.jl")           # "jacobians" document block: emit / parse / goldens
 include("assemble.jl")       # structural pattern over the source layout

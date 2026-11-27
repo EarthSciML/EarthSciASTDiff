@@ -65,4 +65,5 @@ end
     include("scatter_test.jl")
     include("source_layout_test.jl")
     include("operator_refs_test.jl")
+    include("steps_test.jl")
 end

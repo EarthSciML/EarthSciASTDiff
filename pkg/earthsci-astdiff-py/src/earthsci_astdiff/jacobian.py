@@ -308,6 +308,34 @@ def _extended_pass(
     # rest have an identically-zero derivative and stay opaque reads. Time is
     # pruned from {"t"} too: f_t is the partial derivative with every
     # parameter, data-fed ones included, held fixed (spec §4.2).
+    # Structure-only passes on the other axes compose their bands through the
+    # observed graph (named steps, spec §4.6, steps.py). A pair's first pass
+    # (`seed`) and a pass through an active recurrence inline, as below.
+    if not co and not seed:
+        from .steps import steps_row, steps_setup
+
+        names = {r.name for r in recs}
+        st = steps_setup(
+            sv, ctx, {k: v for k, v in src_obs.items() if k not in names}, targets, scalars, co
+        )
+        entries: list[JacEntry] = []
+        row_eq: list[int] = []
+        for q, eq in enumerate(sv.equations):
+            u = lhs_state(eq)
+            if u is None:
+                if is_derivative(eq):
+                    raise BandError(
+                        f"unsupported derivative LHS {eq.lhs!r} (a state's derivative "
+                        "is `D(u)` or the lifted `faq{D(index(u, i…))}`)"
+                    )
+                continue
+            es = steps_row(st, u, eq.rhs, st.inline, ctx.shapes.get(u, []))
+            entries.extend(es)
+            row_eq.extend([q] * len(es))
+        if wrt in ("parameters", "forcing"):
+            for en in entries:
+                _check_closed_columns(en)
+        return ExtendedBands([], entries, [], row_eq)
     obs = inlinable_observed(obs, sv.equations, tset | set(seed))
     if recs:
         names = {r.name for r in recs}
