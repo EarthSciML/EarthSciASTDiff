@@ -574,7 +574,7 @@ names). A consumer evaluates them, with the source document's own observed
 and esm-spec §4.3.1.1's recurrence semantics, before any coefficient.
 `recurrences` (a pair block through a recurrence, §4.5): `[{"name": …,
 "dim": d}]`.
-`companions` (present only on a `"time"` block, or a pair block whose first
+`intermediates` (present only on a `"time"` block, or a pair block whose first
 axis is `"time"` (§4.4), whose coefficients read a time companion, §4.2): `[{"name": …, "of": …, "rhs": <Expression>}]`, one
 per companion some coefficient reads, directly or through another
 companion's `rhs`, in the code-point order of `of` — each the definition
@@ -815,7 +815,7 @@ differentiated again in each of them.
   A sum of one term is the term; otherwise an n-ary `+` in band order.
 - *Where they appear.* Entries' coefficients read companions by name; the
   block carries every companion read, directly or through another
-  companion's definition, in its `companions` field (§4), and the
+  companion's definition, in its `intermediates` field (§4), and the
   evaluation document (§8.1) and every product document of the time axis
   (§9.1) declare them as observed. The band list itself (an entries list,
   §5) carries no definitions: a producer regenerates them from the source.
@@ -1617,7 +1617,7 @@ The derived model is named `JacobianEval` and holds:
   observed, after the source's equations and the recurrence auxiliaries:
   each declared as its observed is, `{"type": "unknown"}` with the
   observed's declared `shape` when it has one, and defined by the bare-LHS
-  equation `name ~ rhs` of the block's `companions` field. A scoped
+  equation `name ~ rhs` of the block's `intermediates` field. A scoped
   companion (`P._dt_v`) is laid out in its component like any scoped
   variable (below). The observed the companions' definitions read are kept
   like those the coefficients read;

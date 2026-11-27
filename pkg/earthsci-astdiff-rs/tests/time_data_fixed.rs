@@ -110,7 +110,7 @@ fn elementwise_read_at_a_cell_refuses_what_it_cannot_read() {
         1
     );
     let block = jacobian_block(&capture, Some("Box"), Wrt::Time, true, 12).unwrap();
-    let rhs = &block["companions"][0]["rhs"];
+    let rhs = &block["intermediates"][0]["rhs"];
     assert_eq!(rhs["output_idx"], json!(["_r1", "_r2"]));
     assert!(stable_json(rhs).contains("\"j\""));
     // the full index of an array inside the definition is a scalar
@@ -162,7 +162,7 @@ fn companions_keep_the_chain_as_named_steps() {
         fs::read_to_string(root().join("tests/goldens/tgrad_named_steps.time.bands.json")).unwrap();
     assert_eq!(text, want);
     let block = jacobian_block(&file, Some("Column"), Wrt::Time, true, 12).unwrap();
-    let comps = block["companions"].as_array().unwrap();
+    let comps = block["intermediates"].as_array().unwrap();
     let names: Vec<&str> = comps.iter().map(|c| c["name"].as_str().unwrap()).collect();
     let of: Vec<&str> = comps.iter().map(|c| c["of"].as_str().unwrap()).collect();
     assert_eq!(names, ["_dt_Tb", "_dt_kr", "_dt_w"]);
@@ -187,7 +187,7 @@ fn companions_keep_the_chain_as_named_steps() {
         12,
     )
     .unwrap();
-    let pnames: Vec<&str> = pblk["companions"]
+    let pnames: Vec<&str> = pblk["intermediates"]
         .as_array()
         .unwrap()
         .iter()
@@ -203,7 +203,7 @@ fn companion_name_is_clear_of_the_source() {
     d["models"]["Column"]["variables"]["_dt_w"] = json!({"type": "parameter", "default": 1.0});
     let file = earthsci_ast::load_string(&d.to_string()).expect("variant loads");
     let block = jacobian_block(&file, Some("Column"), Wrt::Time, true, 12).unwrap();
-    let names: Vec<&str> = block["companions"]
+    let names: Vec<&str> = block["intermediates"]
         .as_array()
         .unwrap()
         .iter()

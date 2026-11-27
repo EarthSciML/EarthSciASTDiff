@@ -260,7 +260,7 @@ def jacobian_block2(
 
     comps = time_companions(sv, [en.band for en in entries])
     if comps:
-        block["companions"] = companions_field(comps)
+        block["intermediates"] = companions_field(comps)
     return block
 
 

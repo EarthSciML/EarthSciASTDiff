@@ -313,7 +313,7 @@ def _jacobian_block(
 
     comps = time_companions(sv, [en.band for en in entries])
     if comps:
-        block["companions"] = companions_field(comps)
+        block["intermediates"] = companions_field(comps)
     if not rect:
         from .factorization import _column_block_plan, plan_factorization, serialize_plan
 

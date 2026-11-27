@@ -69,8 +69,8 @@ end
     @test reads(defs["_dt_Tb"]) == ["_dt_w"]
     @test isempty(reads(defs["_dt_w"]))
     block = jacobian_document(file, "Column"; wrt = :time)["jacobians"]["Column"]
-    @test [c["name"] for c in block["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
-    @test [c["of"] for c in block["companions"]] == ["Tb", "kr", "w"]
+    @test [c["name"] for c in block["intermediates"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    @test [c["of"] for c in block["intermediates"]] == ["Tb", "kr", "w"]
     # the evaluation document declares each like its observed
     doc, _ = _evaluation_document(sv, entries)
     vars = doc["models"]["JacobianEval"]["variables"]
@@ -81,7 +81,7 @@ end
     e2 = jacobian_bands2(sv; wrt = :time => :states)
     @test !isempty(e2) && all(en -> en.v == "t" && !isempty(reads(en.band.coef)), e2)
     pblk = jacobian_document(file, "Column"; wrt = :time => :states)["jacobians"]["Column"]
-    @test [c["name"] for c in pblk["companions"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
+    @test [c["name"] for c in pblk["intermediates"]] == ["_dt_Tb", "_dt_kr", "_dt_w"]
     # structure-only entries: the same points
     so = jacobian_bands(sv; wrt = :time, coefficients = false)
     @test [(en.u, en.band.rows) for en in so] == [(en.u, en.band.rows) for en in entries]

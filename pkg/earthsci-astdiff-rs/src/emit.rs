@@ -1126,7 +1126,7 @@ fn axis_block(
     let comps = crate::companions::time_companions(sv, &eb)?;
     if !comps.is_empty() {
         block.insert(
-            "companions".into(),
+            "intermediates".into(),
             crate::companions::companions_field(&comps),
         );
     }

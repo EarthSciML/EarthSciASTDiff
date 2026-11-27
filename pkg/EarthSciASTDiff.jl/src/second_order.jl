@@ -265,7 +265,7 @@ function _jacobian_block(
     )
     through && (block["recurrences"] = _recurrences_field(e1.recurrences))
     comps = _time_companions(sv, entries)
-    isempty(comps) || (block["companions"] = _companions_field(comps))
+    isempty(comps) || (block["intermediates"] = _companions_field(comps))
     return block
 end
 

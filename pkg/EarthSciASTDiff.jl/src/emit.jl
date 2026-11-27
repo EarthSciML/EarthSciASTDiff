@@ -231,7 +231,7 @@ function _jacobian_block(
     aux = _auxiliary(_rec_info!(memo, sv), entries)
     isempty(aux) || (block["auxiliary"] = _auxiliary_field(aux))
     comps = _time_companions(sv, entries)
-    isempty(comps) || (block["companions"] = _companions_field(comps))
+    isempty(comps) || (block["intermediates"] = _companions_field(comps))
     if !rect
         plan = cl === nothing ? plan_factorization(entries, sv; structure = structure) :
             _column_block_plan(cl)
