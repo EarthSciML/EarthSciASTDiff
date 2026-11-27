@@ -199,7 +199,7 @@ Textbook rules, with these bindings-relevant details:
 | `-` (unary/binary), `neg` | `−d[a₁]` / `d[a₁] − d[a₂]` |
 | `*` (n-ary) | `Σᵢ d[aᵢ]·Πⱼ≠ᵢ aⱼ` |
 | `/` | `d[n]/m − n·d[m]/m²` |
-| `^`, `pow` | `x·b^(x−1)·d[b] + b^x·log(b)·d[x]`; a term with structurally-zero inner derivative MUST be omitted (so a constant exponent never evaluates `log(b)`) |
+| `^`, `pow` | `x·b^(x−1)·d[b] + b^x·log(b)·d[x]`; a term with structurally-zero inner derivative MUST be omitted (so a constant exponent never evaluates `log(b)`). The first term's factor `x·b^(x−1)` is `0·0^(−1)`, NaN, at `b = 0`, `x = 0`, where the derivative of `b^0` is 0: with a literal exponent 0 the first term is omitted, with any other literal it is as written, and with an exponent that is not a literal the exponent is guarded, `x·b^(ifelse(x == 0, 1, x − 1))`, which is 0 at `x = 0` and never forms `0^(−1)`, even in an evaluator that computes both branches of an `ifelse` |
 | `exp log log10 sqrt sin cos tan asin acos atan`(1–2)`/atan2 sinh cosh tanh asinh acosh atanh` | standard chain rule |
 
 ### 3.2 Non-smooth operators (policy)

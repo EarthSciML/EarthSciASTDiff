@@ -81,7 +81,17 @@ def dscalar(e: Expr, s: Site) -> Expr:
     if o in ("^", "pow"):
         b, x = a[0], a[1]
         db, dx = d(b), d(x)
-        t1 = 0 if is_zero(db) else mul(x, op("^", b, add(x, -1)), db)
+        # x·b^(x−1) is 0·0^(−1) = NaN at b = 0, x = 0, where the derivative of
+        # b^0 is 0: a literal exponent 0 gives 0, any other literal the usual
+        # form, and an exponent that is not a literal is guarded in the
+        # exponent, x·b^(ifelse(x == 0, 1, x − 1)), so no evaluator (one that
+        # computes both branches of an ifelse included) forms 0^(−1) (spec §3).
+        if is_zero(db) or is_zero(x):
+            t1 = 0
+        elif isinstance(x, (int, float)) and not isinstance(x, bool):
+            t1 = mul(x, op("^", b, add(x, -1)), db)
+        else:
+            t1 = mul(x, op("^", b, op("ifelse", op("==", x, 0), 1, add(x, -1))), db)
         t2 = 0 if is_zero(dx) else mul(op("^", b, x), op("log", b), dx)
         return add(t1, t2)
     if o == "exp":

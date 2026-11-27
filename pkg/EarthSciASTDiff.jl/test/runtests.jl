@@ -67,4 +67,5 @@ end
     include("source_layout_test.jl")
     include("operator_refs_test.jl")
     include("makearray_of_reads_test.jl")
+    include("zero_power_test.jl")
 end

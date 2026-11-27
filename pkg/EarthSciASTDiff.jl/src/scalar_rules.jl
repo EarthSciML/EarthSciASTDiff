@@ -151,7 +151,18 @@ function _dscalar_op(e::OpExpr, s::Site, occ::_Occ)::ASTExpr
         return add(t1, t2)
     elseif o == "^" || o == "pow"
         b, x = a[1], a[2]; db, dx = d(b), d(x)
-        t1 = iszero_lit(db) ? lit(0) : mul(x, op("^", b, add(x, lit(-1))), db)
+        # x·b^(x−1) is 0·0^(−1) = NaN at b = 0, x = 0, where the derivative of
+        # b^0 is 0: a literal exponent 0 gives 0, any other literal the usual
+        # form, and an exponent that is not a literal is guarded in the
+        # exponent, x·b^(ifelse(x == 0, 1, x − 1)), so no evaluator (one that
+        # computes both branches of an ifelse included) forms 0^(−1) (spec §3).
+        t1 = if iszero_lit(db) || iszero_lit(x)
+            lit(0)
+        elseif x isa NumExpr || x isa IntExpr
+            mul(x, op("^", b, add(x, lit(-1))), db)
+        else
+            mul(x, op("^", b, op("ifelse", op("==", x, lit(0)), lit(1), add(x, lit(-1)))), db)
+        end
         t2 = iszero_lit(dx) ? lit(0) : mul(op("^", b, x), op("log", b), dx)
         return add(t1, t2)
     elseif o == "exp"
