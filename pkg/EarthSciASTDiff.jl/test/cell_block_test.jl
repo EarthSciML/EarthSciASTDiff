@@ -56,3 +56,37 @@ end
     _, sv, entries = _cb_load("bd_chem")
     @test detect_structure(entries, sv) == :block_diagonal
 end
+
+@testset "structure: dimensions pair by index-set name (the shared golden)" begin
+    file = EarthSciAST.load_path(joinpath(FIXTURES, "named_dims.esm"))
+    out = Dict{String, Any}()
+    for mname in sort!(collect(keys(file.models)))
+        sv = sysview(file, mname)
+        entries = jacobian_bands(sv)
+        st = detect_structure(entries, sv)
+        plan = plan_factorization(entries, sv; structure = st)
+        out[mname] = Dict{String, Any}(
+            "structure" => String(st), "factorization" => plan === nothing ? nothing : serialize_plan(plan)
+        )
+    end
+    @test stable_json(out) == read(joinpath(_CB_GOLDENS, "named_dims.structure.json"), String)
+    # a over [cell, salt] reading b over [cell, el] at the same indices is
+    # diagonal by position only
+    @test out["Mismatch"]["structure"] == "general"
+    # p over [x, y] reading q over [y, x] at q[j, i] is diagonal by name only
+    @test out["Transposed"]["structure"] == "block_diagonal"
+end
+
+@testset "cell blocks: the emitted block takes the cell axes" begin
+    file = EarthSciAST.load_path(joinpath(FIXTURES, "cell_block_mixed_rank.esm"))
+    doc = jacobian_document(file, "Phase"; cell_axes = ["lev", "bin"])
+    block = doc["jacobians"]["Phase"]
+    @test stable_json(block) == read(joinpath(_CB_GOLDENS, "cell_block_mixed_rank.cell-lev-bin.block.json"), String)
+    @test block["structure"] == "cell_block"
+    sv = sysview(file, "Phase")
+    plan = plan_factorization(jacobian_bands(sv), sv; cell_axes = ["lev", "bin"])
+    @test stable_json(block["factorization"]) == stable_json(serialize_plan(plan))
+    # without cell axes: general, and no plan
+    b0 = jacobian_document(file, "Phase")["jacobians"]["Phase"]
+    @test b0["structure"] == "general" && !haskey(b0, "factorization")
+end

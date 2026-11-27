@@ -340,9 +340,11 @@ pub(crate) fn offset_class(c: &Expr, r: &RIdx) -> &'static str {
 
 /// Classify the band list as `"block_diagonal"`, `"banded"` or `"general"`
 /// (or `"empty"` / `"other"`), read off the column-index expressions without
-/// evaluating anything. Use it to choose a matrix type. A band whose column
-/// and row have different ranks is `"general"`: its column is not its row in
-/// every dimension.
+/// evaluating anything. Use it to choose a matrix type. A column is compared
+/// with its row dimension by dimension, the dimensions paired by index-set
+/// name (`ctx.axes`; by position when either variable's names are not
+/// known), so a band whose column and row have different ranks, or whose
+/// column is over an index set its row is not, is `"general"`.
 pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'static str {
     if entries.is_empty() {
         return "empty";
@@ -363,8 +365,13 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
         if b.cidx.len() != b.ridx.len() {
             return "general";
         }
-        for (c, r) in b.cidx.iter().zip(b.ridx.iter()) {
-            match offset_class(c, r) {
+        // dimensions pair by index-set name (esm-spec §4.3.4): a column on
+        // an index set its row is not over is not the row there
+        let Some(pairs) = dim_pairs(ctx, &en.u, &en.v) else {
+            return "general";
+        };
+        for (d, c) in b.cidx.iter().enumerate() {
+            match offset_class(c, &b.ridx[pairs[d]]) {
                 "other" | "fixed" => return "general",
                 "affine" => seen_affine = true,
                 _ => {}
@@ -376,6 +383,29 @@ pub fn detect_structure(entries: &[JacEntry], ctx: &crate::bands::Ctx) -> &'stat
     } else {
         "block_diagonal"
     }
+}
+
+/// For each dimension of column variable `v`, the dimension of row variable
+/// `u` on the same index set, the `j`-th dimension of `v` on index set `X`
+/// pairing with the `j`-th of `u` on `X`; `None` when an index set of `v`
+/// has no such partner in `u`. When either variable's index-set names are
+/// not known (`ctx.axes`), the dimensions pair by position. The ranks are
+/// equal.
+fn dim_pairs(ctx: &Ctx, u: &str, v: &str) -> Option<Vec<usize>> {
+    let n = ctx.shapes.get(v).map_or(0, Vec::len);
+    let (Some(axu), Some(axv)) = (ctx.axes.get(u), ctx.axes.get(v)) else {
+        return Some((0..n).collect());
+    };
+    if axu == axv {
+        return Some((0..n).collect());
+    }
+    let mut out = Vec::with_capacity(n);
+    for d in 0..n {
+        let j = axv[..=d].iter().filter(|x| **x == axv[d]).count();
+        let k: Vec<usize> = (0..axu.len()).filter(|&i| axu[i] == axv[d]).collect();
+        out.push(*k.get(j - 1)?);
+    }
+    Some(out)
 }
 
 /// [`detect_structure`] given an optional column axis (an index-set name,
@@ -1189,6 +1219,11 @@ pub struct BlockOptions<'a> {
     /// plan, when every coupling stays within one line along it
     /// ([`column_lines`]). Ignored on every other axis.
     pub column_axis: Option<&'a str>,
+    /// Index-set names whose cells the state block may report as the
+    /// `"cell_block"` structure class with its per-cell block plan, when
+    /// every coupling stays inside one cell of them ([`cell_blocks`]); tried
+    /// before `column_axis`. Ignored on every other axis.
+    pub cell_axes: Option<&'a [String]>,
 }
 
 impl Default for BlockOptions<'_> {
@@ -1198,6 +1233,7 @@ impl Default for BlockOptions<'_> {
             cse: true,
             cse_min_nodes: 12,
             column_axis: None,
+            cell_axes: None,
         }
     }
 }
@@ -1263,6 +1299,7 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
         cse,
         cse_min_nodes,
         column_axis: None,
+        cell_axes: None,
     };
     jacobian_blocks_with(file, model_name, wrt, &opts)
 }
@@ -1322,6 +1359,7 @@ pub fn jacobian_block_with_forcing(
         cse,
         cse_min_nodes,
         column_axis: None,
+        cell_axes: None,
     };
     jacobian_block_with(file, model_name, wrt, &opts)
 }
@@ -1347,20 +1385,29 @@ fn axis_block(
     } else {
         (None, Some(memo.structure(wrt, None, &entries, ctx)))
     };
-    // Line-by-line structure is a property of the square state matrix.
-    let cax = if wrt == Wrt::States {
-        opts.column_axis
+    // Per-cell and line-by-line structure are properties of the square state
+    // matrix, the cells tried first (as `detect_structure_with` does).
+    let (cells, cax) = if wrt == Wrt::States {
+        (opts.cell_axes, opts.column_axis)
     } else {
-        None
+        (None, None)
     };
-    // The one point walk both the class and its plan read.
+    // The one point walk each class and its plan read.
+    let blocks = match (structure, cells) {
+        (Some(st), Some(axes)) if st != "empty" && st != "block_diagonal" => {
+            cell_blocks(&entries, sv, ctx, axes)?
+        }
+        _ => None,
+    };
     let lines = match (structure, cax) {
-        (Some(st), Some(axis)) if st != "empty" && st != "block_diagonal" => {
+        (Some(st), Some(axis)) if blocks.is_none() && st != "empty" && st != "block_diagonal" => {
             column_lines(&entries, sv, ctx, axis)?
         }
         _ => None,
     };
-    let structure = if lines.is_some() {
+    let structure = if blocks.is_some() {
+        Some("cell_block")
+    } else if lines.is_some() {
         Some("column_block")
     } else {
         structure
@@ -1386,7 +1433,10 @@ fn axis_block(
             crate::companions::companions_field(&comps),
         );
     }
-    if let Some(cl) = lines {
+    if let Some(cb) = blocks {
+        let plan = FactorizationPlan::CellBlock(cell_block_lu(&cb));
+        block.insert("factorization".into(), serialize_plan(&plan));
+    } else if let Some(cl) = lines {
         // The plan from the point walk above, not a second one.
         let plan = FactorizationPlan::ColumnBlock(cl);
         block.insert("factorization".into(), serialize_plan(&plan));

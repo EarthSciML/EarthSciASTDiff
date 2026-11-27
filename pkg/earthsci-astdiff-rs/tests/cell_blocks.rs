@@ -114,3 +114,50 @@ fn other_classes_are_kept() {
     let entries = jacobian_bands(&file, None, Wrt::States).unwrap();
     assert_eq!(detect_structure(&entries, &ctx), "block_diagonal");
 }
+
+#[test]
+fn dimensions_pair_by_index_set_name() {
+    let file = load("named_dims");
+    let mut out = serde_json::Map::new();
+    let mut names: Vec<&String> = file.models.as_ref().unwrap().keys().collect();
+    names.sort();
+    for m in names {
+        let sv = sysview(&file, Some(m)).unwrap();
+        let ctx = ctx_of(&sv).unwrap();
+        let entries = jacobian_bands(&file, Some(m), Wrt::States).unwrap();
+        let st = detect_structure(&entries, &ctx);
+        let plan = earthsci_astdiff::plan_factorization(&entries, &sv, &ctx, Some(st)).unwrap();
+        out.insert(
+            m.clone(),
+            json!({"structure": st, "factorization": plan.map_or(Value::Null, |p| serialize_plan(&p))}),
+        );
+    }
+    let golden =
+        fs::read_to_string(root().join("tests/goldens/named_dims.structure.json")).unwrap();
+    assert_eq!(stable_json(&Value::Object(out)), golden);
+}
+
+#[test]
+fn the_emitted_block_takes_the_cell_axes() {
+    let file = load("cell_block_mixed_rank");
+    let axes = vec!["lev".to_string(), "bin".to_string()];
+    let opts = earthsci_astdiff::BlockOptions {
+        cell_axes: Some(&axes),
+        ..Default::default()
+    };
+    let block = earthsci_astdiff::jacobian_block_with(&file, None, Wrt::States, &opts).unwrap();
+    let golden = fs::read_to_string(
+        root().join("tests/goldens/cell_block_mixed_rank.cell-lev-bin.block.json"),
+    )
+    .unwrap();
+    assert_eq!(stable_json(&block), golden);
+    let b0 = earthsci_astdiff::jacobian_block_with(
+        &file,
+        None,
+        Wrt::States,
+        &earthsci_astdiff::BlockOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(b0["structure"], json!("general"));
+    assert!(b0.get("factorization").is_none());
+}

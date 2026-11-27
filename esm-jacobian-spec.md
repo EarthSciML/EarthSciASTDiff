@@ -567,11 +567,18 @@ error, and a consumer MUST refuse the block rather than skip the point.
 `"general"` | `"column_block"` | `"cell_block"` — a *classification* of the
 exact pattern for consumers choosing a matrix type; the pattern itself is
 always recoverable from the entries. `"block_diagonal"` and `"banded"` read
-each entry's column index against its row index dimension by dimension, so
-an entry whose column and row have different ranks (a variable over `cell`
-reading one over `cell × salt`) is neither: its column is not its row in
-every dimension, and the Jacobian is `"general"` unless cell axes make it
-`"cell_block"`. `"column_block"` is reported only when the producer is
+each entry's column index against its row index dimension by dimension, the
+dimensions paired by index-set name as esm-spec §4.3.4 aligns operands: the
+`j`-th dimension of the column variable on index set `X` pairs with the
+`j`-th dimension of the row variable on `X` (by position when either
+variable's index-set names are not known). So an entry whose column and row
+have different ranks (a variable over `cell` reading one over
+`cell × salt`), or whose column is over an index set its row is not (a
+variable over `cell × salt` reading one over `cell × el` at the same index
+expressions), is neither: its column is not its row in every dimension, and
+the Jacobian is `"general"` unless cell axes make it `"cell_block"`. A column
+over the row's index sets in another order (a variable over `x × y` reading
+one over `y × x` at `[j, i]`) pairs by name. `"column_block"` is reported only when the producer is
 told a column axis (an index-set name, e.g. by an integrator's locality
 pass: a name carries no vertical meaning by itself), in place of `"banded"`
 or `"general"`, when every coupling stays within one LINE along it: every
@@ -589,7 +596,10 @@ index-set name (so variables of different ranks and dimension orders pair;
 a point past its column variable's extent is a ghost read). The matrix is
 then one identically patterned block per cell, holding every element of
 every variable along its other axes (a species or salt axis summed inside
-the cell). Its §6 plan names the block.
+the cell). Its §6 plan names the block. A producer emitting a block is told
+the cell axes as it is told a column axis, and the emitted `structure` and
+`factorization` are then the class and plan the classification and the
+planner give with the same cell axes.
 Omitted, with `factorization`, on the `parameters` and `forcing` axes: the
 classes describe square matrices.
 

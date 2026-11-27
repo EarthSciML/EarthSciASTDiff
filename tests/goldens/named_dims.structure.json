@@ -1,0 +1,1 @@
+{"Mismatch":{"factorization":null,"structure":"general"},"Transposed":{"factorization":{"block_vars":["p","q"],"lu_pattern":[[1,1],[1,2],[2,2]],"ordering":[1,2],"pattern":[[1,1],[1,2],[2,2]],"type":"block_diagonal_lu"},"structure":"block_diagonal"}}

@@ -1,0 +1,243 @@
+{
+  "esm": "1.1.0",
+  "metadata": {
+    "name": "named_dims",
+    "description": "Structure classes read dimension by dimension, the dimensions paired by index-set name (esm-jacobian-spec \u00a74). Mismatch: a over [cell, salt] reads b over [cell, el] at the same index expressions (salt and el have the same size), so by position the band is diagonal, but its column is over an index set its row is not: general. Transposed: p over [x, y] reads q over [y, x] at q[j, i]: by position the column indices are not the row's, by name they are: block diagonal."
+  },
+  "index_sets": {
+    "cell": {
+      "kind": "interval",
+      "size": 2
+    },
+    "salt": {
+      "kind": "interval",
+      "size": 2
+    },
+    "el": {
+      "kind": "interval",
+      "size": 2
+    },
+    "x": {
+      "kind": "interval",
+      "size": 2
+    },
+    "y": {
+      "kind": "interval",
+      "size": 3
+    }
+  },
+  "models": {
+    "Mismatch": {
+      "variables": {
+        "a": {
+          "type": "unknown",
+          "shape": [
+            "cell",
+            "salt"
+          ],
+          "default": 1.0
+        },
+        "b": {
+          "type": "unknown",
+          "shape": [
+            "cell",
+            "el"
+          ],
+          "default": 1.0
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "a"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "cell"
+              },
+              "j": {
+                "from": "salt"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "b",
+                    "i",
+                    "j"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "b"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "m"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "cell"
+              },
+              "m": {
+                "from": "el"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "b",
+                    "i",
+                    "m"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "Transposed": {
+      "variables": {
+        "p": {
+          "type": "unknown",
+          "shape": [
+            "x",
+            "y"
+          ],
+          "default": 1.0
+        },
+        "q": {
+          "type": "unknown",
+          "shape": [
+            "y",
+            "x"
+          ],
+          "default": 1.0
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.5
+        }
+      },
+      "equations": [
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "p"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "i",
+              "j"
+            ],
+            "args": [],
+            "ranges": {
+              "i": {
+                "from": "x"
+              },
+              "j": {
+                "from": "y"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "j",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "output_idx": [
+              "j",
+              "i"
+            ],
+            "args": [],
+            "ranges": {
+              "j": {
+                "from": "y"
+              },
+              "i": {
+                "from": "x"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "j",
+                    "i"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -64,3 +64,30 @@ def test_other_classes_are_kept(valid_dir):
     assert detect_structure(entries, sv, cell_axes=["x"]) == "banded"
     sv, entries = _load(valid_dir, "bd_chem")
     assert detect_structure(entries, sv) == "block_diagonal"
+
+
+def test_dimensions_pair_by_index_set_name(valid_dir, golden_dir):
+    file = ea.load_path(str(valid_dir / "named_dims.esm"))
+    out = {}
+    for m in sorted(file.models):
+        sv = sysview(file, m)
+        entries = jacobian_bands(sv)
+        st = detect_structure(entries, sv)
+        plan = plan_factorization(entries, sv, structure=st)
+        out[m] = {
+            "structure": st,
+            "factorization": None if plan is None else serialize_plan(plan),
+        }
+    assert stable_json(out) == (golden_dir / "named_dims.structure.json").read_text()
+
+
+def test_the_emitted_block_takes_the_cell_axes(valid_dir, golden_dir):
+    from earthsci_astdiff import jacobian_block
+
+    file = ea.load_path(str(valid_dir / "cell_block_mixed_rank.esm"))
+    block = jacobian_block(file, cell_axes=["lev", "bin"])
+    golden = (golden_dir / "cell_block_mixed_rank.cell-lev-bin.block.json").read_text()
+    assert stable_json(block) == golden
+    b0 = jacobian_block(file)
+    assert b0["structure"] == "general"
+    assert "factorization" not in b0

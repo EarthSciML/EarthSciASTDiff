@@ -51,8 +51,10 @@ def detect_structure(
     Given ``cell_axes`` (index-set names, from the caller), ``"cell_block"``
     replaces ``"banded"`` / ``"general"``, before ``"column_block"``, when
     every coupling stays inside one CELL of those axes (:func:`cell_blocks`).
-    A band whose column and row have different ranks is ``"general"``: its
-    column is not its row in every dimension."""
+    A column is compared with its row dimension by dimension, the dimensions
+    paired by index-set name (by position when either variable's names are
+    not known), so a band whose column and row have different ranks, or whose
+    column is over an index set its row is not, is ``"general"``."""
     st = _detect_structure(entries, sv)
     if st in ("empty", "block_diagonal"):
         return st
@@ -284,6 +286,27 @@ def _rank1_term(b, dim: int):
     return _split_rank1(b.coef, kap, {r for r in b.ridx if isinstance(r, str)})
 
 
+def _dim_pairs(ctx, u: str, v: str) -> list[int] | None:
+    """For each dimension of column variable ``v``, the dimension of row
+    variable ``u`` on the same index set (the ``j``-th dimension of ``v`` on
+    index set ``X`` pairs with the ``j``-th of ``u`` on ``X``); ``None`` when
+    an index set of ``v`` has no such partner in ``u``. When either
+    variable's index-set names are not known (``ctx.axes``), the dimensions
+    pair by position. The ranks are equal (structure.jl ``_dim_pairs``)."""
+    n = len(ctx.shapes.get(v, []))
+    axu, axv = ctx.axes.get(u), ctx.axes.get(v)
+    if axu is None or axv is None or list(axu) == list(axv):
+        return list(range(n))
+    out = []
+    for d in range(n):
+        j = sum(1 for x in axv[: d + 1] if x == axv[d])
+        k = [i for i, x in enumerate(axu) if x == axv[d]]
+        if len(k) < j:
+            return None
+        out.append(k[j - 1])
+    return out
+
+
 def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
     if not entries:
         return "empty"
@@ -301,7 +324,12 @@ def _detect_structure(entries: list[JacEntry], sv: SysView) -> str:
         # dimension, whatever the shared dimensions say
         if len(b.cidx) != len(b.ridx):
             return "general"
-        per = [_offset_class(c, r) for c, r in zip(b.cidx, b.ridx, strict=False)]
+        # dimensions pair by index-set name (esm-spec §4.3.4): a column on
+        # an index set its row is not over is not the row there
+        pairs = _dim_pairs(ctx, en.u, en.v)
+        if pairs is None:
+            return "general"
+        per = [_offset_class(c, b.ridx[pairs[d]]) for d, c in enumerate(b.cidx)]
         if any(p in ("other", "fixed") for p in per):
             return "general"
         if any(p == "affine" for p in per):

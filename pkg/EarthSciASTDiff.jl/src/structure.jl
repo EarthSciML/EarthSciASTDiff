@@ -56,10 +56,14 @@ Classify the Jacobian's structure from the band list:
     variable along the other axes (a species or salt axis summed inside the
     cell, variables of different ranks), factorized cell by cell.
 
-A band whose column and row have different ranks (a variable over
-`cell` reading one over `cell × salt`) is never `:block_diagonal` or
-`:banded`: its column is not its row in every dimension, so it is
-`:general` unless `cell_axes` makes it `:cell_block`.
+A band's column is compared with its row dimension by dimension, the
+dimensions paired by index-set name (by position when either variable's
+names are not known). So a band whose column and row have different ranks (a
+variable over `cell` reading one over `cell × salt`), or whose column is
+over an index set its row is not (a variable over `cell × salt` reading one
+over `cell × el` with matching indices), is never `:block_diagonal` or
+`:banded`: it is `:general` unless `cell_axes` makes it `:cell_block`. A
+column over the row's index sets in another order pairs by name.
 
 `column_axis` and `cell_axes` come from the caller (an integrator's locality
 pass): an index-set name carries no vertical or cell meaning by itself.
@@ -77,6 +81,30 @@ function detect_structure(
     return column_lines(entries, sv, String(column_axis)) === nothing ? st : :column_block
 end
 
+"""
+    _dim_pairs(ctx, u, v) -> Union{Vector{Int}, Nothing}
+
+For each dimension of column variable `v`, the dimension of row variable `u`
+on the same index set, the `j`-th dimension of `v` on index set `X` pairing
+with the `j`-th of `u` on `X`; `nothing` when an index set of `v` has no such
+partner in `u`. When either variable's index-set names are not known
+(`ctx.axes`), the dimensions pair by position. The ranks are equal.
+"""
+function _dim_pairs(ctx, u::String, v::String)
+    axu = get(ctx.axes, u, nothing)
+    axv = get(ctx.axes, v, nothing)
+    n = length(ctx.shapes[v])
+    (axu === nothing || axv === nothing || axu == axv) && return collect(1:n)
+    out = Int[]
+    for d in 1:n
+        j = count(==(axv[d]), axv[1:d])
+        k = findall(==(axv[d]), axu)
+        length(k) >= j || return nothing
+        push!(out, k[j])
+    end
+    return out
+end
+
 function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
     isempty(entries) && return :empty
     ctx = _ctx(sv)
@@ -90,7 +118,11 @@ function _detect_structure(entries::Vector{JacEntry}, sv::SysView)::Symbol
         # a column of another rank than its row is not the row in every
         # dimension, whatever the shared dimensions say
         length(b.cidx) == length(b.ridx) || return :general
-        per = [_offset_class(c, r) for (c, r) in zip(b.cidx, b.ridx)]
+        # dimensions pair by index-set name (esm-spec §4.3.4): a column on
+        # an index set its row is not over is not the row there
+        pairs = _dim_pairs(ctx, en.u, en.v)
+        pairs === nothing && return :general
+        per = [_offset_class(b.cidx[d], b.ridx[pairs[d]]) for d in eachindex(b.cidx)]
         any(==(:other), per) && return :general
         any(==(:fixed), per) && return :general
         any(==(:affine), per) && (seen_affine = true)

@@ -174,6 +174,14 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   cell. Without cell axes the state Jacobian is `general` (a column of
   another rank than its row is never diagonal; the old classification called
   it `block_diagonal`).
+- `valid/named_dims.esm` — structure classes with the dimensions paired by
+  index-set name (spec §4): model `Mismatch` (a variable over `[cell, salt]`
+  reading one over `[cell, el]` at the same indices: `general`) and model
+  `Transposed` (a variable over `[x, y]` reading one over `[y, x]` at
+  `[j, i]`: `block_diagonal`). Golden `goldens/named_dims.structure.json`
+  (each model's class and plan).
+- `goldens/cell_block_mixed_rank.cell-lev-bin.block.json` — the state block
+  emitted with cell axes `[lev, bin]` (`cell_block` and its plan).
 - `goldens/` — `<fixture>.cell_blocks.json`: the structure class and plan of
   the state Jacobian with no cell axes and with each listed choice of cell
   axes (`[lev, bin]`, `[lev]`, `[salt]`), for `cell_block_mixed_rank`;
