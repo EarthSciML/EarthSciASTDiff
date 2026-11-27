@@ -268,6 +268,14 @@ def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None
         return len(oidx), [_range_origin(vr[n]) if n in vr else 1 for n in oidx]
     if isinstance(val, ExprNode) and val.op == "makearray":
         return (len(val.regions[0]), [1] * len(val.regions[0])) if val.regions else None
+    if isinstance(val, ExprNode) and val.op == "index" and val.args:
+        # a read of a variable: its rank less the subscripts it is read at
+        # (0 for a cell read, a scalar broadcast over the region)
+        b = _value_rank(val.args[0], fresh, scope)
+        if b is None:
+            return None
+        r = b[0] - (len(val.args) - 1)
+        return (r, [1] * r) if r >= 0 else None
     if isinstance(val, str) and val not in scope:
         if val in fresh.shapes:
             n = len(fresh.shapes[val])
@@ -312,7 +320,10 @@ def _index_makearray(
             # so a dim it spans is read at `idx − lo + origin`, the shift
             # `_bands_makearray` applies to the value's bands.
             rank, origins = _value_rank(val, fresh, scope) or (len(nonsing), [1] * len(nonsing))
-            if rank == len(idx):
+            scalar = rank == 0 and not (isinstance(val, ExprNode) and val.op == "faq")
+            if scalar:
+                dims = []
+            elif rank == len(idx):
                 dims = list(range(len(idx)))
             elif rank == len(nonsing):
                 dims = nonsing
@@ -322,7 +333,11 @@ def _index_makearray(
                     f"{len(idx)} nor the region free rank {len(nonsing)}"
                 )
             tgt = [add(idx[k], o - los[k]) for k, o in zip(dims, origins, strict=True)]
-            if isinstance(val, ExprNode) and val.op == "faq":
+            if scalar:
+                # a scalar value (a cell read): broadcast over the region,
+                # never wrapped in an `index` with no subscripts
+                v = val
+            elif isinstance(val, ExprNode) and val.op == "faq":
                 v = _beta_faq(val, tgt, fresh, scope)
             else:
                 v = _inline_once(op("index", val, *tgt), obs, fresh, scope)

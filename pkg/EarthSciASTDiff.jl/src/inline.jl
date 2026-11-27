@@ -307,6 +307,13 @@ function _value_rank(val, fresh::_Fresh, scope)
     elseif val isa OpExpr && val.op == "makearray"
         (val.regions === nothing || isempty(val.regions)) && return nothing
         return _ones_rank(length(val.regions[1]))
+    elseif val isa OpExpr && val.op == "index" && !isempty(val.args)
+        # a read of a variable: its rank less the subscripts it is read at
+        # (0 for a cell read, a scalar broadcast over the region)
+        b = _value_rank(val.args[1], fresh, scope)
+        b === nothing && return nothing
+        r = b[1] - (length(val.args) - 1)
+        return r >= 0 ? _ones_rank(r) : nothing
     elseif val isa VarExpr && !(val.name in scope)
         haskey(fresh.shapes, val.name) && return _ones_rank(length(fresh.shapes[val.name]))
         d = get(fresh.obs, val.name, nothing)
@@ -355,7 +362,9 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
             # applies to the value's bands.
             vr = _value_rank(val, fresh, scope)
             rank, origins = vr === nothing ? _ones_rank(length(nonsing)) : vr
-            dims = rank == length(idx) ? collect(1:length(idx)) :
+            scalar = rank == 0 && !(val isa OpExpr && val.op == "faq")
+            dims = scalar ? Int[] :
+                rank == length(idx) ? collect(1:length(idx)) :
                 rank == length(nonsing) ? nonsing :
                 throw(
                     InlineError(
@@ -365,7 +374,11 @@ function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::
                     )
                 )
             tgt = ASTExpr[add(idx[k], lit(o - los[k])) for (k, o) in zip(dims, origins)]
-            if val isa OpExpr && val.op == "faq"
+            if scalar
+                # a scalar value (a cell read): broadcast over the region,
+                # never wrapped in an `index` with no subscripts
+                val
+            elseif val isa OpExpr && val.op == "faq"
                 _beta_faq(val, tgt, fresh, scope)
             else
                 _inline_once(op("index", val, tgt...), obs, fresh, scope)
