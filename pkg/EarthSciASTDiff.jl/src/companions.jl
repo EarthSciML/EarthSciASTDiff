@@ -103,8 +103,10 @@ end
 function _obs_extents(o::String, sv::SysView, obs, ctx::Ctx, memo, seen::Set{String})::Vector{Int}
     haskey(ctx.shapes, o) && return ctx.shapes[o]
     var = get(sv.variables, o, nothing)
-    var === nothing && return Int[]
-    var.shape === nothing || return Int[]        # declared `[]`: a scalar
+    # a named intermediate (a time pair's `a2` steps, §4.4) is no variable of
+    # the view: declared without a shape, its extents are its definition's
+    var === nothing && !haskey(obs, o) && return Int[]
+    var === nothing || var.shape === nothing || return Int[]        # declared `[]`: a scalar
     haskey(obs, o) || return Int[]
     haskey(memo, o) && return memo[o]
     o in seen && throw(BandError("cyclic observed definition through `$o`"))
@@ -422,7 +424,10 @@ end
 # order — what the block's `intermediates` field and every derived document of
 # the list carry (spec §4.2, §8.1). Empty unless some coefficient (or
 # `where`) reads a companion name, which no source name can be.
-function _time_companions(sv::SysView, entries; info::Union{Nothing, _RecInfo} = nothing)
+function _time_companions(
+        sv::SysView, entries; info::Union{Nothing, _RecInfo} = nothing,
+        extra = Dict{String, ASTExpr}()
+    )
     out = Tuple{String, String, ASTExpr}[]
     isempty(entries) && return out
     # Every companion name's last segment starts with `_dt_`: a list none of
@@ -443,6 +448,9 @@ function _time_companions(sv::SysView, entries; info::Union{Nothing, _RecInfo} =
     obs, ctx, recs = info.obs, info.ctx, info.recs
     rn = Set{String}(r.name for r in recs)
     obs2 = Dict{String, ASTExpr}(k => v for (k, v) in obs if !(k in rn))
+    # a time pair's `a2` intermediates are observed of the time pass (§4.4)
+    merge!(obs2, extra)
+    obs = isempty(extra) ? obs : merge(obs, extra)
     moving = _moving_observed(obs2, Set{String}(["t"]))
     isempty(moving) && return out
     names = _companion_names(sv, moving)
@@ -477,10 +485,12 @@ function _add_companions!(m, sv::SysView, comps)
     for c in comps
         n, o = c[1], c[2]
         d = OrderedDict{String, Any}("type" => "unknown")
-        shp = sv.variables[o].shape
-        # a named step of another axis (§4.6) is declared without a shape:
-        # its definition gives its extents
-        noshape = length(c) >= 4 && c[4] != 0
+        var = get(sv.variables, o, nothing)
+        shp = var === nothing ? nothing : var.shape
+        # a named step of another axis (§4.6), and a time pair's companion of
+        # one (§4.4), is declared without a shape: its definition gives its
+        # extents
+        noshape = (length(c) >= 4 && c[4] != 0) || var === nothing
         noshape || shp === nothing || isempty(shp) || (d["shape"] = Any[x for x in shp])
         m["variables"][n] = d
     end
@@ -504,20 +514,28 @@ _companions_field(comps) = Any[
 # with `t` differentiated SECOND: each first-order entry of the `a2` axis has
 # its coefficient's time bands taken by the time pass's own rule — the
 # observed that move with `t` are columns composed with their companions,
-# never inlined. The `a2` pass already inlines the observed that move with
-# `a2`; one that moves only with `t` stays an opaque read there and is
-# reached through its companion. `nothing` when a recurrence is active on
-# either axis: that pair keeps the inlining path, as the time axis does.
+# never inlined. The `a2` pass keeps its named steps (§4.6), and its named
+# intermediates are observed of the time pass: one that moves with `t` is a
+# column composed with its own companion. `nothing` when a recurrence is
+# active on either axis: that pair keeps the inlining path, as the time axis
+# does.
 function _time_pair_bands(sv::SysView, a2::Symbol, forcing, memo, t2)
     info = _rec_info!(memo, sv)
     isempty(info.recs) ||
         isempty(_active(info.recs, info.obs, union(Set{String}(["t"]), t2))) || return nothing
-    # the a2 pass inlining the observed that move with a2 (not its named
-    # steps, §4.6): its coefficients are then differentiated in `t` here
-    e2 = _extended_pass(sv, info.ctx, info.obs, a2, forcing, String[]; info = info, steps = false).rows
+    # the a2 pass keeps its named steps (§4.6): its coefficients read named
+    # intermediates, which are observed of the time pass here, each moving
+    # with `t` a column composed with its own companion — never inlined
+    e2 = _extended_pass(sv, info.ctx, info.obs, a2, forcing, String[]; info = info).rows
+    inter = Dict{String, ASTExpr}(
+        n => d for (n, _, d, k) in _intermediates(sv, e2; forcing = forcing, info = info) if k == 1
+    )
     rn = Set{String}(r.name for r in info.recs)
     obs = Dict{String, ASTExpr}(k => v for (k, v) in info.obs if !(k in rn))
-    cs = _companion_setup(sv, info.ctx, obs, _declared_scalars(sv, info.obs), true; rank_obs = info.obs)
+    merge!(obs, inter)
+    cs = _companion_setup(
+        sv, info.ctx, obs, _declared_scalars(sv, info.obs), true; rank_obs = merge(info.obs, inter)
+    )
     out = JacEntry2[]
     for en in e2
         for b in _time_coef_bands(cs, en.band)

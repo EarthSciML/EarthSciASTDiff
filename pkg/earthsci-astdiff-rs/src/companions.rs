@@ -178,11 +178,13 @@ pub(crate) fn obs_extents(
     if let Some(s) = ctx.shapes.get(o) {
         return Ok(s.clone());
     }
-    let Some(var) = sv.variables.get(o) else {
-        return Ok(Vec::new());
-    };
-    if var.shape.is_some() {
-        return Ok(Vec::new()); // declared `[]`: a scalar
+    // a named intermediate (a time pair's `a2` steps, §4.4) is no variable
+    // of the view: declared without a shape, its extents are its
+    // definition's
+    match sv.variables.get(o) {
+        None if !obs.contains_key(o) => return Ok(Vec::new()),
+        Some(var) if var.shape.is_some() => return Ok(Vec::new()), // declared `[]`
+        _ => {}
     }
     let Some(def) = obs.get(o) else {
         return Ok(Vec::new());
@@ -748,7 +750,11 @@ pub(crate) fn region_array(regions: Vec<Vec<[i64; 2]>>, values: Vec<Expr>, shape
 /// derived document of the list carry (spec §4.2, §8.1). Empty unless some
 /// coefficient (or `where`) reads a companion name, which no source name
 /// can be.
-pub(crate) fn time_companions(sv: &SysView, bands: &[&Band]) -> R<Vec<(String, String, Expr)>> {
+pub(crate) fn time_companions(
+    sv: &SysView,
+    bands: &[&Band],
+    extra: &HashMap<String, Expr>,
+) -> R<Vec<(String, String, Expr)>> {
     let mut out = Vec::new();
     if bands.is_empty() {
         return Ok(out);
@@ -777,6 +783,10 @@ pub(crate) fn time_companions(sv: &SysView, bands: &[&Band]) -> R<Vec<(String, S
     for r in &recs {
         obs2.remove(&r.name);
     }
+    // a time pair's `a2` intermediates are observed of the time pass (§4.4)
+    obs2.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut obs = obs;
+    obs.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
     let t: HashSet<String> = ["t".to_string()].into_iter().collect();
     let moving = moving_observed(&obs2, &t);
     if moving.is_empty() {
@@ -872,9 +882,10 @@ pub(crate) fn companions_field(comps: &[(String, String, Expr, usize)]) -> Value
 /// partials commute: ∂²f/∂t∂x = ∂/∂t (∂f/∂x). Each first-order entry of the
 /// `a2` axis has its coefficient's time bands taken by the time pass's own
 /// rule — the observed that move with `t` are columns composed with their
-/// companions, never inlined. The `a2` pass already inlines the observed
-/// that move with `a2`; one that moves only with `t` stays an opaque read
-/// there and is reached through its companion. `None` when a recurrence is
+/// companions, never inlined. The `a2` pass keeps its named steps (§4.6),
+/// and its named intermediates are observed of the time pass: one that
+/// moves with `t` is a column composed with its own companion. `None` when a
+/// recurrence is
 /// active on either axis: that pair keeps the inlining path, as the time
 /// axis does.
 #[allow(clippy::too_many_arguments)]
@@ -895,15 +906,25 @@ pub(crate) fn time_pair_bands(
             return Ok(None);
         }
     }
-    // the a2 pass inlining the observed that move with a2 (not its named
-    // steps, §4.6): its coefficients are then differentiated in `t` here
+    // the a2 pass keeps its named steps (§4.6): its coefficients read named
+    // intermediates, which are observed of the time pass here, each moving
+    // with `t` a column composed with its own companion — never inlined
     let _ = &memo;
-    let e2 = crate::jacobian::extended_pass(sv, ctx, obs, a2, forcing, &[], false)?.rows;
+    let e2 = crate::jacobian::extended_pass(sv, ctx, obs, a2, forcing, &[], true)?.rows;
+    let eb: Vec<&Band> = e2.iter().map(|en| &en.band).collect();
+    let inter: HashMap<String, Expr> = crate::steps::intermediates(sv, &eb, forcing)?
+        .into_iter()
+        .filter(|x| x.3 == 1)
+        .map(|(n, _, d, _)| (n, d))
+        .collect();
     let mut nr = obs.clone();
     for r in &recs {
         nr.remove(&r.name);
     }
-    let mut cs = companion_setup(sv, ctx, nr, obs.clone(), &declared_scalars(sv, obs), true)?;
+    nr.extend(inter.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let mut rank = obs.clone();
+    rank.extend(inter);
+    let mut cs = companion_setup(sv, ctx, nr, rank, &declared_scalars(sv, obs), true)?;
     let mut out = Vec::new();
     for en in e2.iter() {
         for b in time_coef_bands(&mut cs, &en.band)? {

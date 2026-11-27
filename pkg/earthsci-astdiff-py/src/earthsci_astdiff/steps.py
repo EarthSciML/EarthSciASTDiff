@@ -338,6 +338,14 @@ _INTER_RE = re.compile(r"^_d([upf])_(.*)_([0-9]+)_*$")
 _AXIS = {"u": "states", "p": "parameters", "f": "forcing"}
 
 
+def dt_observed(n: str):
+    """The observed a companion name ``_dt_<o>`` (``P._dt_<v>`` for ``P.v``)
+    is of, or ``None`` for another name (steps.jl ``_dt_observed``)."""
+    i = n.rfind(".")
+    scope, base = ("", n) if i < 0 else (n[: i + 1], n[i + 1 :])
+    return scope + base[4:] if base.startswith("_dt_") else None
+
+
 def inter_parse(n: str):
     """The axis and observed of intermediate name ``n``, or ``None``."""
     i = n.rfind(".")
@@ -360,15 +368,20 @@ def intermediates(sv, bands: list, forcing=None) -> list:
     from .recurrence import recurrences
     from .system import ctx_of, observed_defs
 
-    out = [(n, o, d, 0) for n, o, d in time_companions(sv, bands)]
     work = []
     for b in bands:
         for x in (b.coef, b.guard):
             if x is None:
                 continue
-            work += [n for n in free_variables(x) if inter_parse(n) is not None]
+            for n in free_variables(x):
+                if inter_parse(n) is not None:
+                    work.append(n)
+                # a time pair's companion of a named intermediate (§4.4)
+                o = dt_observed(n)
+                if o is not None and inter_parse(o) is not None:
+                    work.append(o)
     if not work:
-        return out
+        return [(n, o, d, 0) for n, o, d in time_companions(sv, bands)]
     ctx = ctx_of(sv)
     obs = observed_defs(sv)
     recs = recurrences(sv, obs, ctx)
@@ -400,6 +413,8 @@ def intermediates(sv, bands: list, forcing=None) -> list:
             raise BandError(f"no named intermediate `{n}` (observed `{o}`)")
         defs[n] = hit
         work += [m for m in free_variables(hit[1]) if inter_parse(m) is not None and m not in defs]
+    extra = {n: d for n, (_, d, _) in defs.items()}
+    out = [(n, o, d, 0) for n, o, d in time_companions(sv, bands, extra)]
     out += [(n, o, d, c) for n, (o, d, c) in defs.items()]
     return sorted(out, key=lambda x: (x[1], x[0]))
 

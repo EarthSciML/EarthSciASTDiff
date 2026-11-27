@@ -1088,17 +1088,21 @@ of `f` is a smooth function, so on it the mixed partials commute:
 derivative is taken first (an `ifelse` keeps its condition, a `max`/`min` its
 tie rule), so both orders give the same tensor. A pair `["time", a2]` with
 no recurrence active on either axis is therefore produced with the time
-derivative second: for each first-order entry `e'` of the `a2` axis (§4.3's
-inlining, seeded from the `a2` targets only), in entry order, the producer
+derivative second: for each first-order entry `e'` of the `a2` axis (its
+named steps, §4.6), in entry order, the producer
 takes the time bands of `e'.coef`, broadcast over `e'.rows` with its
 contracted names bound, by §4.2's rule: `t` and every observed that moves
 with `t` and is not inlined are columns, in code-point order, each observed
 band composed with its time companion (coefficient `coef · _dt_o[φ…]`,
 gated where `φ` is not provably in `o`'s extent), the observed a column
-index needs inlined into `e'.coef` first. An observed that moves with `a2`
-is already inlined in `e'.coef`; one that moves only with `t` (a photolysis
-rate, a blend weight) stays an opaque read there and is reached through its
-companion, so the chain through it is written once, not in every row.
+index needs inlined into `e'.coef` first. The `a2` axis's named
+intermediates `e'.coef` reads are observed of this pass (definitions as in
+the block's `intermediates`, declared without a shape, their extents their
+definitions'): one that moves with `t` is a column composed with its own
+companion `_dt_<name>`, which the pair block's `intermediates` then
+declares with it. An observed that moves only with `t` (a photolysis rate,
+a blend weight) stays an opaque read in `e'.coef` and is reached through its
+companion, so the chain through either is written once, not in every row.
 Contracted dimensions a site under a nested sum adds (§3.5) stay
 `contracted`, not summed into the coefficient: `col2_idx` may read them.
 The bands of one `e'` with the same rows, row names, `col2_idx`,

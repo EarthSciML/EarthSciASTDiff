@@ -136,9 +136,11 @@ def _obs_extents(o: str, sv, obs: dict, ctx: Ctx, memo: dict, seen: set) -> list
     if o in ctx.shapes:
         return list(ctx.shapes[o])
     var = sv.variables.get(o)
-    if var is None:
+    # a named intermediate (a time pair's `a2` steps, §4.4) is no variable of
+    # the view: declared without a shape, its extents are its definition's
+    if var is None and o not in obs:
         return []
-    if getattr(var, "shape", None) is not None:
+    if var is not None and getattr(var, "shape", None) is not None:
         return []  # declared `[]`: a scalar
     if o not in obs:
         return []
@@ -461,7 +463,7 @@ def region_array(regions: list, values: list, shape: list):
     return _faq_over(names, shape, op("index", ma, *names))
 
 
-def time_companions(sv, bands: list[Band]) -> list:
+def time_companions(sv, bands: list[Band], extra: dict | None = None) -> list:
     """The companions the band list ``bands`` reads, directly or through
     other companions' definitions, as ``(name, observed, definition)`` in the
     observed's name order — what the block's ``intermediates`` field and every
@@ -489,6 +491,10 @@ def time_companions(sv, bands: list[Band]) -> list:
     ctx = ctx_of(sv)
     rn = {r.name for r in recurrences(sv, obs, ctx)}
     obs2 = {k: v for k, v in obs.items() if k not in rn}
+    # a time pair's `a2` intermediates are observed of the time pass (§4.4)
+    if extra:
+        obs2.update(extra)
+        obs = {**obs, **extra}
     moving = _moving_observed(obs2, {"t"})
     if not moving:
         return out
@@ -553,9 +559,9 @@ def time_pair_bands(sv, a2: str, forcing, memo, t2) -> list | None:
     first-order entry of the ``a2`` axis has its coefficient's time bands
     taken by the time pass's own rule — the observed that move with ``t``
     are columns composed with their companions, never inlined. The ``a2``
-    pass already inlines the observed that move with ``a2``; one that moves
-    only with ``t`` stays an opaque read there and is reached through its
-    companion. ``None`` when a recurrence is active on either axis: that
+    pass keeps its named steps (§4.6), and its named intermediates are
+    observed of the time pass: one that moves with ``t`` is a column composed
+    with its own companion. ``None`` when a recurrence is active on either axis: that
     pair keeps the inlining path, as the time axis does."""
     from .jacobian import declared_scalars
     from .recurrence import active, recurrences
@@ -567,19 +573,22 @@ def time_pair_bands(sv, a2: str, forcing, memo, t2) -> list | None:
     recs = recurrences(sv, obs, ctx)
     if recs and active(recs, obs, set(t2) | {"t"}):
         return None
-    # the a2 pass inlining the observed that move with a2 (not its named
-    # steps, §4.6): its coefficients are then differentiated in `t` here
+    # the a2 pass keeps its named steps (§4.6): its coefficients read named
+    # intermediates, which are observed of the time pass here, each moving
+    # with `t` a column composed with its own companion — never inlined
     from .jacobian import _extended_pass
+    from .steps import intermediates
 
-    e2 = _extended_pass(sv, ctx, obs, a2, forcing, [], companions=False).rows
+    e2 = _extended_pass(sv, ctx, obs, a2, forcing, [], companions=True).rows
+    inter = {n: d for n, _, d, k in intermediates(sv, [en.band for en in e2], forcing) if k == 1}
     names = {r.name for r in recs}
     cs = companion_setup(
         sv,
         ctx,
-        {k: v for k, v in obs.items() if k not in names},
+        {**{k: v for k, v in obs.items() if k not in names}, **inter},
         declared_scalars(sv, obs),
         True,
-        rank_obs=obs,
+        rank_obs={**obs, **inter},
     )
     out = []
     for en in e2:

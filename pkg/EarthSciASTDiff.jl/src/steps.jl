@@ -333,6 +333,15 @@ end
 const _INTER_RE = r"^_d([upf])_(.*)_([0-9]+)_*$"
 
 # The axis and observed of intermediate name `n`, or `nothing`.
+# The observed a companion name `_dt_<o>` (`P._dt_<v>` for `P.v`) is of, or
+# `nothing` for another name.
+function _dt_observed(n::AbstractString)
+    i = findlast('.', n)
+    scope, base = i === nothing ? ("", n) : (n[1:i], n[nextind(n, i):end])
+    startswith(base, "_dt_") || return nothing
+    return scope * base[5:end]
+end
+
 function _inter_parse(n::AbstractString)
     i = findlast('.', n)
     scope, base = i === nothing ? ("", n) : (n[1:i], n[nextind(n, i):end])
@@ -354,17 +363,21 @@ of the other axes (§4.6). What a block's `intermediates` field and every
 derived document of the list carry.
 """
 function _intermediates(sv::SysView, entries; forcing = nothing, info = nothing)
-    out = Tuple{String, String, ASTExpr, Int}[
-        (n, o, d, 0) for (n, o, d) in _time_companions(sv, entries; info = info)
-    ]
     work = String[]
     for en in entries, x in (en.band.coef, en.band.guard)
         x === nothing && continue
         for n in free_variables(x)
             _inter_parse(n) === nothing || push!(work, n)
+            # a time pair's companion of a named intermediate (§4.4)
+            o = _dt_observed(n)
+            o === nothing || _inter_parse(o) === nothing || push!(work, o)
         end
     end
-    isempty(work) && return out
+    if isempty(work)
+        return Tuple{String, String, ASTExpr, Int}[
+            (n, o, d, 0) for (n, o, d) in _time_companions(sv, entries; info = info)
+        ]
+    end
     ctx = _ctx(sv)
     obs = _observed_defs(sv)
     recs = recurrences(sv, obs, ctx)
@@ -386,6 +399,10 @@ function _intermediates(sv::SysView, entries; forcing = nothing, info = nothing)
             _inter_parse(m) === nothing || haskey(defs, m) || push!(work, m)
         end
     end
+    extra = Dict{String, ASTExpr}(n => d for (n, (_, d, _)) in defs)
+    out = Tuple{String, String, ASTExpr, Int}[
+        (n, o, d, 0) for (n, o, d) in _time_companions(sv, entries; info = info, extra = extra)
+    ]
     axis = sort!([(o, n, d, c) for (n, (o, d, c)) in defs])
     append!(out, Tuple{String, String, ASTExpr, Int}[(n, o, d, c) for (o, n, d, c) in axis])
     return sort!(out; by = x -> (x[2], x[1]))

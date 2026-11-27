@@ -373,6 +373,16 @@ fn inter_definition(b: &Band, dims: &[Dim]) -> Expr {
 
 /// The axis and observed of intermediate name `n`, or `None` (steps.jl
 /// `_inter_parse`).
+/// The observed a companion name `_dt_<o>` (`P._dt_<v>` for `P.v`) is of,
+/// or `None` for another name (steps.jl `_dt_observed`).
+pub(crate) fn dt_observed(n: &str) -> Option<String> {
+    let (scope, base) = match n.rfind('.') {
+        None => ("", n),
+        Some(i) => (&n[..=i], &n[i + 1..]),
+    };
+    base.strip_prefix("_dt_").map(|o| format!("{scope}{o}"))
+}
+
 pub(crate) fn inter_parse(n: &str) -> Option<(Wrt, String)> {
     let (scope, base) = match n.rfind('.') {
         None => ("", n),
@@ -402,23 +412,29 @@ pub(crate) fn intermediates(
     bands: &[&Band],
     forcing: Option<&[String]>,
 ) -> R<Vec<(String, String, Expr, usize)>> {
-    let mut out: Vec<(String, String, Expr, usize)> =
-        crate::companions::time_companions(sv, bands)?
-            .into_iter()
-            .map(|(n, o, d)| (n, o, d, 0))
-            .collect();
     let mut work: Vec<String> = Vec::new();
     for b in bands {
         for x in std::iter::once(&b.coef).chain(b.guard.iter()) {
             for n in free_variables(x) {
                 if inter_parse(&n).is_some() {
-                    work.push(n);
+                    work.push(n.clone());
+                }
+                // a time pair's companion of a named intermediate (§4.4)
+                if let Some(o) = dt_observed(&n) {
+                    if inter_parse(&o).is_some() {
+                        work.push(o);
+                    }
                 }
             }
         }
     }
     if work.is_empty() {
-        return Ok(out);
+        return Ok(
+            crate::companions::time_companions(sv, bands, &HashMap::new())?
+                .into_iter()
+                .map(|(n, o, d)| (n, o, d, 0))
+                .collect(),
+        );
     }
     let ctx = crate::system::ctx_of(sv)?;
     let obs = crate::system::observed_defs(sv)?;
@@ -463,6 +479,15 @@ pub(crate) fn intermediates(
         }
         defs.insert(n, hit);
     }
+    let extra: HashMap<String, Expr> = defs
+        .iter()
+        .map(|(n, (_, d, _))| (n.clone(), d.clone()))
+        .collect();
+    let mut out: Vec<(String, String, Expr, usize)> =
+        crate::companions::time_companions(sv, bands, &extra)?
+            .into_iter()
+            .map(|(n, o, d)| (n, o, d, 0))
+            .collect();
     for (n, (o, d, c)) in defs {
         out.push((n, o, d, c));
     }
