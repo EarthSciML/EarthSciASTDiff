@@ -281,7 +281,13 @@ index `origin + p` (a `faq` value's range start; 1 for a `makearray` or an
 array variable) is the region's element at `lo + p`, along every dim the
 value spans. A value spans either every region dim, singleton dims
 included, or only the non-singleton dims; both lowerings (bands and the
-per-cell `ifelse`) MUST read it this way.
+per-cell `ifelse`) MUST read it this way. A value that is an `index` read has its base's rank
+less its subscripts: a cell read (every dimension subscripted) is a scalar,
+broadcast over the region and read as itself. A producer MUST refuse, never
+guess, such a value whose base's rank it cannot read (neither declared, an
+observed, a literal table nor an operator reference), one with more
+subscripts than its base has dimensions, and a partial read of an array
+whose ranges do not all start at 1.
 
 **A `faq` node's operand list reads nothing.** A `faq` node's `args` is its
 operand list (esm-spec §4.3.1): a serializer's copy of the arrays its `expr`

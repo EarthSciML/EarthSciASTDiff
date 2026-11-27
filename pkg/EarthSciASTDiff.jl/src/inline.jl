@@ -297,9 +297,12 @@ _ones_rank(n::Int) = (n, ones(Int, n))
 
 # The rank of an array-valued `makearray` region value and, per dim it spans,
 # the index at which the value starts (its ORIGIN): a faq node's own range
-# start for each output index, 1 for any other array. `nothing` when the rank
-# cannot be read here (an `index` value, a variable of no known shape): such a
-# value is read at the region's free rank.
+# start for each output index, 1 for any other array. An `index` value is its
+# base's rank less its subscripts (0 for a cell read: a scalar broadcast over
+# the region); a base whose rank is not read here is ranked as an operand of
+# an elementwise definition (`_cell_rank`), and refused when it has none.
+# `nothing` for a bare variable of no known shape: such a value is read at
+# the region's free rank.
 function _value_rank(val, fresh::_Fresh, scope)
     if val isa OpExpr && val.op == "faq"
         vr = val.ranges === nothing ? Dict{String, Any}() : val.ranges
@@ -314,10 +317,30 @@ function _value_rank(val, fresh::_Fresh, scope)
     elseif val isa OpExpr && val.op == "index" && !isempty(val.args)
         # a read of a variable: its rank less the subscripts it is read at
         # (0 for a cell read, a scalar broadcast over the region)
-        b = _value_rank(val.args[1], fresh, scope)
-        b === nothing && return nothing
-        r = b[1] - (length(val.args) - 1)
-        return r >= 0 ? _ones_rank(r) : nothing
+        base = val.args[1]
+        b = _value_rank(base, fresh, scope)
+        if b === nothing
+            base isa VarExpr && base.name in scope && throw(
+                InlineError("a makearray region value reads `index` of the index `$(base.name)`")
+            )
+            b = _ones_rank(_index_base_rank(base, fresh))
+        end
+        nsub = length(val.args) - 1
+        r = b[1] - nsub
+        r < 0 && throw(
+            InlineError(
+                "a makearray region value reads an array of rank $(b[1]) with $nsub subscripts"
+            )
+        )
+        # a partial read of an array whose ranges do not all start at 1: where
+        # its remaining dims start is not read here, so it is refused
+        r > 0 && any(!=(1), b[2]) && throw(
+            InlineError(
+                "a makearray region value is a partial read of an array whose ranges " *
+                    "do not all start at 1; read it at a cell or as a whole"
+            )
+        )
+        return _ones_rank(r)
     elseif val isa VarExpr && !(val.name in scope)
         haskey(fresh.shapes, val.name) && return _ones_rank(length(fresh.shapes[val.name]))
         d = get(fresh.obs, val.name, nothing)
@@ -329,6 +352,23 @@ function _value_rank(val, fresh::_Fresh, scope)
         end
     end
     return nothing
+end
+
+# The rank of the base of an `index` makearray value that `_value_rank` does
+# not read: a variable ranked as an operand of an elementwise definition
+# (`_cell_rank`: declared, an observed, `t` or a declared scalar), a literal
+# table, or an operator reference. Anything else is refused, never guessed.
+function _index_base_rank(base, fresh::_Fresh)::Int
+    base isa VarExpr && return _cell_rank(base, fresh, Set{String}())
+    base isa OpExpr && base.op == "const" && return _lit_rank(base.value)
+    _is_ref(base) && return _def!(_layer(), base.name).rank
+    throw(
+        InlineError(
+            "a makearray region value reads `index` of " *
+                (base isa OpExpr ? "a `$(base.op)`" : "a literal") *
+                ", whose rank is not read here"
+        )
+    )
 end
 
 function _index_makearray(ma::OpExpr, idx::Vector{ASTExpr}, obs, fresh, scope)::ASTExpr

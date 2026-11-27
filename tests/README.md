@@ -165,8 +165,12 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     on region 1, `v[k]` broadcast over regions 2–3). Each value is a scalar
     and is read as itself, never wrapped in an `index` with no subscripts.
     Its only golden, `makearray_of_reads.bands.json` (the state bands), is
-    checked byte for byte by every binding, and the Julia reference checks
-    the values against ForwardDiff
+    checked byte for byte by every binding. The Julia reference checks the
+    values against ForwardDiff, and Rust and Python check their own JvpEval
+    documents against the Jacobian by hand. Each binding also checks a value
+    whose base is an observed declared without a shape (ranked, a scalar),
+    and refuses one with more subscripts than its base has dimensions and a
+    partial read of an array whose ranges do not all start at 1
   - `recurrence_sweep.esm` — causal recurrences (spec §4.5, §9.7): a Thomas
     solve per column (forward elimination, forward substitution, back
     substitution on the REVERSED axis: dense lines), a lag-2 recurrence with

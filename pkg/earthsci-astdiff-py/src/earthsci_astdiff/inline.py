@@ -263,9 +263,12 @@ def _range_origin(r) -> int:
 def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None:
     """The rank of an array-valued `makearray` region value and, per dim it
     spans, the index at which the value starts (its ORIGIN): a faq node's own
-    range start for each output index, 1 for any other array. ``None`` when
-    the rank cannot be read here (an `index` value, a variable of no known
-    shape): such a value is read at the region's free rank."""
+    range start for each output index, 1 for any other array. An ``index``
+    value is its base's rank less its subscripts (0 for a cell read: a scalar
+    broadcast over the region); a base whose rank is not read here is ranked
+    by :func:`_index_base_rank`, and refused when it has none. ``None`` for a
+    bare variable of no known shape: such a value is read at the region's
+    free rank."""
     if isinstance(val, ExprNode) and val.op == "faq":
         vr = val.ranges or {}
         oidx = [str(n) for n in val.output_idx or []]
@@ -275,11 +278,27 @@ def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None
     if isinstance(val, ExprNode) and val.op == "index" and val.args:
         # a read of a variable: its rank less the subscripts it is read at
         # (0 for a cell read, a scalar broadcast over the region)
-        b = _value_rank(val.args[0], fresh, scope)
+        base = val.args[0]
+        b = _value_rank(base, fresh, scope)
         if b is None:
-            return None
-        r = b[0] - (len(val.args) - 1)
-        return (r, [1] * r) if r >= 0 else None
+            if isinstance(base, str) and base in scope:
+                raise InlineError(f"a makearray region value reads `index` of the index `{base}`")
+            n = _index_base_rank(base, fresh)
+            b = (n, [1] * n)
+        nsub = len(val.args) - 1
+        r = b[0] - nsub
+        if r < 0:
+            raise InlineError(
+                f"a makearray region value reads an array of rank {b[0]} with {nsub} subscripts"
+            )
+        # a partial read of an array whose ranges do not all start at 1: where
+        # its remaining dims start is not read here, so it is refused
+        if r > 0 and any(o != 1 for o in b[1]):
+            raise InlineError(
+                "a makearray region value is a partial read of an array whose ranges "
+                "do not all start at 1; read it at a cell or as a whole"
+            )
+        return r, [1] * r
     if isinstance(val, str) and val not in scope:
         if val in fresh.shapes:
             n = len(fresh.shapes[val])
@@ -292,6 +311,22 @@ def _value_rank(val: Expr, fresh: _Fresh, scope) -> tuple[int, list[int]] | None
             n = len(d.regions[0])
             return n, [1] * n
     return None
+
+
+def _index_base_rank(base, fresh: _Fresh) -> int:
+    """The rank of the base of an ``index`` makearray value that
+    :func:`_value_rank` does not read: a variable ranked as an operand of an
+    elementwise definition (:func:`_cell_rank`: declared, an observed, ``t``
+    or a declared scalar), or a literal table. Anything else is refused,
+    never guessed. (Python expands operator references at load.)"""
+    if isinstance(base, str):
+        return _cell_rank(base, fresh, set())
+    if isinstance(base, ExprNode) and base.op == "const":
+        return _lit_rank(base.value)
+    what = f"a `{base.op}`" if isinstance(base, ExprNode) else "a literal"
+    raise InlineError(
+        f"a makearray region value reads `index` of {what}, whose rank is not read here"
+    )
 
 
 def _index_makearray(
