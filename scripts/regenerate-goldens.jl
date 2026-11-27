@@ -138,6 +138,15 @@ let name = "elementwise_aligned"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     println("wrote ", path)
 end
+# A makearray whose region values are cell reads (scalars), read at a cell
+# through an observed: the band list only (tests/README.md).
+let name = "makearray_of_reads"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    entries = jacobian_bands(sysview(file, "M"))
+    path = joinpath(root, "tests", "goldens", "$name.bands.json")
+    write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    println("wrote ", path)
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

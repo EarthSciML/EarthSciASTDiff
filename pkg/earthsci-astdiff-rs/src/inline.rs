@@ -463,6 +463,17 @@ fn value_rank(val: &Expr, fresh: &Fresh, scope: &HashSet<String>) -> Option<(usi
             Some((oidx.len(), origins))
         }
         Expr::Operator(vn) if vn.op == "makearray" => ones(vn.regions.as_ref()?.first()?.len()),
+        // a read of a variable: its rank less the subscripts it is read at
+        // (0 for a cell read, a scalar broadcast over the region)
+        Expr::Operator(vn) if vn.op == "index" && !vn.args.is_empty() => {
+            let (b, _) = value_rank(&vn.args[0], fresh, scope)?;
+            let sub = vn.args.len() - 1;
+            if b >= sub {
+                ones(b - sub)
+            } else {
+                None
+            }
+        }
         Expr::Variable(nm) if !scope.contains(nm) => {
             if let Some(sh) = fresh.shapes.get(nm) {
                 return ones(sh.len());
@@ -533,7 +544,11 @@ fn index_makearray(
             // `bands_makearray` applies to the value's bands.
             let (rank, origins) = value_rank(val, fresh, scope)
                 .unwrap_or_else(|| (nonsing.len(), vec![1; nonsing.len()]));
-            let dims: Vec<usize> = if rank == idx.len() {
+            let is_faq = matches!(val, Expr::Operator(vn) if vn.op == "faq");
+            let scalar = rank == 0 && !is_faq;
+            let dims: Vec<usize> = if scalar {
+                Vec::new()
+            } else if rank == idx.len() {
                 (0..idx.len()).collect()
             } else if rank == nonsing.len() {
                 nonsing.clone()
@@ -552,6 +567,9 @@ fn index_makearray(
                 .map(|(&k, o)| add(vec![idx[k].clone(), Expr::Integer(o - los[k])]))
                 .collect();
             match val {
+                // a scalar value (a cell read): broadcast over the region,
+                // never wrapped in an `index` with no subscripts
+                _ if scalar => val.clone(),
                 Expr::Operator(vn) if vn.op == "faq" => beta_faq(vn, &tgt, fresh, scope)?,
                 _ => {
                     let mut args = vec![val.clone()];

@@ -160,6 +160,13 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
   state (Julia-produced via `scripts/regenerate-value-goldens.jl`); bindings'
   value tests must reproduce the exact (row, col) key set and every
   value to 1e-10 relative — bit-equality across runtimes is not required.
+  - `makearray_of_reads.esm` — an observed `m[k, i]` read from a
+    `makearray` at `i` whose region values are cell reads of states (`u[k]`
+    on region 1, `v[k]` broadcast over regions 2–3). Each value is a scalar
+    and is read as itself, never wrapped in an `index` with no subscripts.
+    Its only golden, `makearray_of_reads.bands.json` (the state bands), is
+    checked byte for byte by every binding, and the Julia reference checks
+    the values against ForwardDiff
   - `recurrence_sweep.esm` — causal recurrences (spec §4.5, §9.7): a Thomas
     solve per column (forward elimination, forward substitution, back
     substitution on the REVERSED axis: dense lines), a lag-2 recurrence with
