@@ -914,6 +914,14 @@ not a parameter of the system resolves to no buffer, and the producer MUST
 fail. The two axes partition the parameters: a forcing-set member is a column
 of the forcing axis only.
 
+**The parameter set** is likewise an input: a list of parameter names, the
+columns of the parameters axis. When none is given it is every parameter
+outside the forcing set. A consumer that needs the gradient with respect to
+a few parameters (an adjoint's `wrt` list) names them, so the producer never
+differentiates with respect to the rest (a regrid's map projection, say). A
+name that is not a parameter of the system, or that is in the forcing set,
+MUST fail.
+
 **Columns.** A column is `(buffer name, multi-index over the declared
 shape)`, every dimension included. The canonical ordinal is §4's `columns`
 order: buffers sorted by name, each column-major. Column-index expressions

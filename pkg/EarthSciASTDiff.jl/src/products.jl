@@ -880,9 +880,9 @@ equality-filter scatter.
 """
 function jvp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     _check_axis(wrt)
     ext = _first_pass(sv, wrt, forcing)
     isempty(ext.recurrences) ||
@@ -892,9 +892,9 @@ end
 
 @doc (@doc jvp_document) function vjp_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = true, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     _check_axis(wrt)
     ext = _first_pass(sv, wrt, forcing)
     isempty(ext.recurrences) ||
@@ -919,10 +919,10 @@ first column instead (model `"HvpEvalSymmetric"`); both forms give the same
 function hvp_document(
         input; stages::Int, wrt = (:states, :states), form::Symbol = :contract,
         model_name = nothing, forcing = nothing, cse::Bool = true, cse_min_nodes::Int = 12,
-        data_sources = nothing
+        data_sources = nothing, parameters = nothing
     )
     a1, a2 = _axis_pair(wrt)
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     memo = _FirstOrder()   # the first pass, shared with the sweeps' (§9.7)
     _, entries = _bands2(sv, a1, a2, forcing, memo)
     return _hvp_document(

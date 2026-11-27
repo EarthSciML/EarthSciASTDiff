@@ -568,6 +568,7 @@ fn refuses_bad_sources() {
             domain: sv.domain,
             data_sources: sv.data_sources,
             refs: sv.refs.clone(),
+            parameters: None,
         }
     };
     let err = evaluation_document(&with(&["x"]), &entries, true, 12).unwrap_err();

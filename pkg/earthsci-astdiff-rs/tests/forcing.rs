@@ -387,3 +387,39 @@ fn a_block_without_wrt_is_refused() {
     let err = parse_jacobian_block(&block).unwrap_err();
     assert!(err.0.contains("without `wrt`"), "{}", err.0);
 }
+
+/// A chosen parameter set (spec §4.3): the forcing fixture's parameters axis
+/// over `E` and `k` only, byte-identical to the reference's goldens.
+#[test]
+fn chosen_parameter_set() {
+    let file = load("forcing_bracket");
+    let ps = vec!["E".to_string(), "k".to_string()];
+    let sv = earthsci_astdiff::sysview(&file, Some("Bracket"))
+        .unwrap()
+        .with_parameters(Some(&ps));
+    let sub = earthsci_astdiff::jacobian_bands_view(&sv, Wrt::Parameters, None).unwrap();
+    let text = stable_json(&Value::Array(
+        sub.iter().map(earthsci_astdiff::serialize_band).collect(),
+    ));
+    let gold = |k: &str| {
+        std::fs::read_to_string(root().join(format!(
+            "tests/goldens/forcing_bracket.parameters-subset.{k}.json"
+        )))
+        .unwrap()
+    };
+    assert_eq!(text, gold("bands"));
+    let opts = earthsci_astdiff::BlockOptions {
+        parameters: Some(&ps),
+        ..Default::default()
+    };
+    let block =
+        earthsci_astdiff::jacobian_block_with(&file, Some("Bracket"), Wrt::Parameters, &opts)
+            .unwrap();
+    assert_eq!(stable_json(&block), gold("block"));
+    for bad in ["F", "c"] {
+        let sv = earthsci_astdiff::sysview(&file, Some("Bracket"))
+            .unwrap()
+            .with_parameters(Some(&[bad.to_string()]));
+        assert!(earthsci_astdiff::jacobian_bands_view(&sv, Wrt::Parameters, None).is_err());
+    }
+}

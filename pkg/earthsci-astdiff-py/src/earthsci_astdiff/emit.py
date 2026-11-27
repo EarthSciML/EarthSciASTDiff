@@ -134,6 +134,7 @@ def jacobian_pattern(
     wrt: str = "states",
     forcing=None,
     coefficients: bool = True,
+    parameters=None,
 ):
     """The structural sparsity pattern as sorted (rowname, colname) pairs
     plus the entries — dependency-light (no scipy). On the ``"parameters"``
@@ -142,7 +143,7 @@ def jacobian_pattern(
     and a parameter column outside its variable's extent is a ghost read.
     ``coefficients=False`` builds it from structure-only entries (spec §2.1),
     a superset of the default pattern that costs no differentiation."""
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing, coefficients=coefficients)
     if wrt != "states":
         triples = scatter_pairs(sv, entries)
@@ -223,6 +224,7 @@ def jacobian_block(
     cse_min_nodes: int = 12,
     forcing=None,
     column_axis: str | None = None,
+    parameters=None,
 ):
     """The §4 `jacobians` block for one model: entries (template-CSE'd by
     default) and the block-local `expression_templates`; on the state and
@@ -253,7 +255,7 @@ def jacobian_block(
             '(["states", "forcing"]) and a second-order pair inside one '
             '([("states", "forcing")])'
         )
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     memo = _FirstOrder()
     # One axis is a str (iterating it would split it into characters).
     if isinstance(wrt, str):
@@ -693,6 +695,7 @@ def evaluation_document(
     cse: bool = True,
     cse_min_nodes: int = 12,
     data_sources=None,
+    parameters=None,
 ):
     """The derived evaluation document of the first-order bands on axis
     ``wrt`` (spec §8, model ``"JacobianEval"``): the source's observed the
@@ -712,7 +715,7 @@ def evaluation_document(
     ``EsmFile``'s own. A flattened system carries none, so pass the flattened
     document's ``data_sources`` when its parameters read data; a named source
     that is not found raises :class:`BandError`."""
-    sv = sysview(obj, model_name, data_sources)
+    sv = sysview(obj, model_name, data_sources, parameters=parameters)
     entries = jacobian_bands(sv, wrt=wrt, forcing=forcing)
     return _evaluation_document(sv, entries, cse=cse, cse_min_nodes=cse_min_nodes, forcing=forcing)
 

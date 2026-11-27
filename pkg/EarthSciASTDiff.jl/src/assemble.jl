@@ -272,14 +272,16 @@ _axis_columns(sv::SysView, wrt::Symbol, forcing) =
 
 # `data_sources = nothing` is the input's own: the document's for an `EsmFile`,
 # none for a `FlattenedSystem`, which does not carry them.
-_sv_src(file::EarthSciAST.EsmFile, model_name; data_sources = nothing) = (
-    sysview(
-        file, model_name === nothing ? _only_model(file) : model_name;
-        data_sources = data_sources === nothing ? file.data_sources : data_sources
+_sv_src(file::EarthSciAST.EsmFile, model_name; data_sources = nothing, parameters = nothing) = (
+    _with_parameters(
+        sysview(
+            file, model_name === nothing ? _only_model(file) : model_name;
+            data_sources = data_sources === nothing ? file.data_sources : data_sources
+        ), parameters
     ), file,
 )
-_sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing) =
-    (sysview(flat; data_sources = data_sources), flat)
+_sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing, parameters = nothing) =
+    (_with_parameters(sysview(flat; data_sources = data_sources), parameters), flat)
 
 # Build the ordinary RHS evaluator for the SAME model `_sv_src` selected: an
 # `EsmFile` threads `model_name` through `build_evaluator`'s own selection

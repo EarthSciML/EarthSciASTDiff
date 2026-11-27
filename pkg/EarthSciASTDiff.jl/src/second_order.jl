@@ -68,8 +68,8 @@ jacobian_bands2(file::EarthSciAST.EsmFile, model_name; kw...) =
     jacobian_bands2(sysview(file, model_name); kw...)
 jacobian_bands2(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands2(sysview(flat); kw...)
-jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing) =
-    last(_bands2(sv, _axis_pair(wrt)..., forcing))
+jacobian_bands2(sv::SysView; wrt = (:states, :states), forcing = nothing, parameters = nothing) =
+    last(_bands2(_with_parameters(sv, parameters), _axis_pair(wrt)..., forcing))
 
 # (extended first-order system, second-order entries). The first-order pass
 # inlines the observed that move with EITHER axis: one that reads only

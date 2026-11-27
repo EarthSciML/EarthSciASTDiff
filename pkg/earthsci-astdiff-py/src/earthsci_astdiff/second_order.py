@@ -75,7 +75,7 @@ def axis_pair(wrt) -> tuple[str, str]:
 
 
 def jacobian_bands2(
-    obj, model_name: str | None = None, wrt=("states", "states"), forcing=None
+    obj, model_name: str | None = None, wrt=("states", "states"), forcing=None, parameters=None
 ) -> list[JacEntry2]:
     """Second-order bands for the axis pair ``wrt = (a1, a2)``, ``a1`` in
     ``("states", "time")`` and ``a2`` in ``("states", "parameters",
@@ -92,7 +92,7 @@ def jacobian_bands2(
     index must be closed at build time (spec §4.3), else :class:`BandError`.
     """
     a1, a2 = axis_pair(wrt)
-    sv = sysview(obj, model_name)
+    sv = sysview(obj, model_name, parameters=parameters)
     return _bands2(sv, a1, a2, forcing)[1]
 
 

@@ -59,6 +59,19 @@ function _targets(sv::SysView, wrt::Symbol, forcing, obs)::Vector{String}
     wrt == :states && return view_states(sv, obs)
     fset = forcing_names(sv, forcing)
     wrt == :forcing && return fset
+    if sv.parameters !== nothing
+        # the chosen parameter set (§4.3): each a parameter, none forcing
+        for n in sv.parameters
+            v = get(sv.variables, n, nothing)
+            (v !== nothing && v.type == EarthSciAST.ParameterVariable) || throw(
+                BandError("parameter name `$n` is not a parameter of the system")
+            )
+            n in fset && throw(
+                BandError("parameter name `$n` is in the forcing set: it is a column of the forcing axis")
+            )
+        end
+        return copy(sv.parameters)
+    end
     return sort!(
         String[
             String(n) for (n, var) in sv.variables
@@ -76,7 +89,8 @@ field of the emitted block (esm-jacobian-spec.md §4). The canonical column
 ordinal enumerates these variables in order, each one's cells column-major
 (first index fastest).
 """
-function jacobian_columns(sv::SysView; wrt::Symbol, forcing = nothing)
+function jacobian_columns(sv::SysView; wrt::Symbol, forcing = nothing, parameters = nothing)
+    sv = _with_parameters(sv, parameters)
     wrt in (:parameters, :forcing) ||
         throw(ArgumentError("columns are defined for wrt = :parameters or :forcing, got $wrt"))
     ctx = _ctx(sv)
@@ -140,9 +154,11 @@ jacobian_bands(flat::EarthSciAST.FlattenedSystem; kw...) =
     jacobian_bands(sysview(flat); kw...)
 
 function jacobian_bands(
-        sv::SysView; wrt::Symbol = :states, forcing = nothing, coefficients::Bool = true
+        sv::SysView; wrt::Symbol = :states, forcing = nothing, coefficients::Bool = true,
+        parameters = nothing
     )
     _check_axis(wrt)
+    sv = _with_parameters(sv, parameters)
     return _jacobian_bands(sv, wrt, forcing, String[]; coefficients = coefficients)
 end
 
@@ -294,7 +310,10 @@ extended_bands(file::EarthSciAST.EsmFile, model_name; kw...) =
     extended_bands(sysview(file, model_name); kw...)
 extended_bands(flat::EarthSciAST.FlattenedSystem; kw...) =
     extended_bands(sysview(flat); kw...)
-function extended_bands(sv::SysView; wrt::Symbol = :states, forcing = nothing, second = nothing)
+function extended_bands(
+        sv::SysView; wrt::Symbol = :states, forcing = nothing, second = nothing, parameters = nothing
+    )
+    sv = _with_parameters(sv, parameters)
     _check_axis(wrt)
     obs = _observed_defs(sv)
     seed = second === nothing || second == wrt ? String[] :

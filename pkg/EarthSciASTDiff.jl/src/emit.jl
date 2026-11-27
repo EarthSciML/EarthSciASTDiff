@@ -143,9 +143,9 @@ source that is not found is a `BandError`.
 """
 function jacobian_document(
         file::EarthSciAST.EsmFile, model_name; wrt = :states, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing, parameters = nothing
     )
-    sv = sysview(file, model_name)
+    sv = _with_parameters(sysview(file, model_name), parameters)
     doc = EarthSciAST.serialize_esm_file(file)
     _attach_jacobians!(
         doc, sv, String(model_name); wrt = wrt, forcing = forcing,
@@ -158,9 +158,9 @@ function jacobian_document(
         flat::EarthSciAST.FlattenedSystem;
         wrt = :states, forcing = nothing, name::AbstractString = "Flattened",
         cse::Bool = false, cse_min_nodes::Int = 12, column_axis = nothing,
-        data_sources = nothing
+        data_sources = nothing, parameters = nothing
     )
-    sv = sysview(flat; data_sources = data_sources)
+    sv = _with_parameters(sysview(flat; data_sources = data_sources), parameters)
     doc = _base_document(sv, String(name))
     _attach_jacobians!(
         doc, sv, String(name); wrt = wrt, forcing = forcing,
@@ -586,9 +586,9 @@ that is not found is a `BandError`.
 """
 function evaluation_document(
         input; wrt::Symbol = :states, model_name = nothing, forcing = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, parameters = nothing
     )
-    sv, _ = _sv_src(input, model_name; data_sources = data_sources)
+    sv, _ = _sv_src(input, model_name; data_sources = data_sources, parameters = parameters)
     entries = jacobian_bands(sv; wrt = wrt, forcing = forcing)
     return _evaluation_document(sv, entries; cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing)
 end
@@ -608,7 +608,8 @@ passed with one. `fields[k]` names `entries[k]`'s field.
 """
 function evaluation_document(
         input, entries::AbstractVector{JacEntry}; model_name = nothing,
-        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, forcing = nothing
+        cse::Bool = false, cse_min_nodes::Int = 12, data_sources = nothing, forcing = nothing,
+        parameters = nothing
     )
     any(en -> en.band.coef === nothing, entries) && throw(
         ArgumentError(
@@ -616,7 +617,7 @@ function evaluation_document(
                 "bands (`jacobian_bands(...; coefficients = false)`)"
         )
     )
-    sv = _bands_sysview(input, model_name, data_sources)
+    sv = _with_parameters(_bands_sysview(input, model_name, data_sources), parameters)
     return _evaluation_document(
         sv, collect(JacEntry, entries); cse = cse, cse_min_nodes = cse_min_nodes, forcing = forcing
     )

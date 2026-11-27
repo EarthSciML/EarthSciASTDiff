@@ -938,6 +938,9 @@ pub fn jacobian_block(
 pub struct BlockOptions<'a> {
     /// The forcing set (`None` infers it).
     pub forcing: Option<&'a [String]>,
+    /// The parameter set (spec §4.3; `None`: every parameter outside the
+    /// forcing set).
+    pub parameters: Option<&'a [String]>,
     /// Template-CSE the coefficients.
     pub cse: bool,
     /// The smallest subtree (in nodes) hoisted into a template.
@@ -953,6 +956,7 @@ impl Default for BlockOptions<'_> {
     fn default() -> Self {
         BlockOptions {
             forcing: None,
+            parameters: None,
             cse: true,
             cse_min_nodes: 12,
             column_axis: None,
@@ -967,7 +971,7 @@ pub fn jacobian_block_with(
     wrt: Wrt,
     opts: &BlockOptions,
 ) -> Result<Value, crate::bands::BandError> {
-    let sv: SysView = crate::system::sysview(file, model_name)?;
+    let sv: SysView = crate::system::sysview(file, model_name)?.with_parameters(opts.parameters);
     let ctx = crate::system::ctx_of(&sv)?;
     let obs = crate::system::observed_defs(&sv)?;
     let mut memo = FirstOrder::default();
@@ -1018,6 +1022,7 @@ pub fn jacobian_blocks<W: Into<BlockWrt> + Copy>(
 ) -> Result<Value, crate::bands::BandError> {
     let opts = BlockOptions {
         forcing,
+        parameters: None,
         cse,
         cse_min_nodes,
         column_axis: None,
@@ -1043,7 +1048,7 @@ pub fn jacobian_blocks_with<W: Into<BlockWrt> + Copy>(
             wrt.iter().map(BlockWrt::label).collect::<Vec<_>>()
         )));
     }
-    let sv = crate::system::sysview(file, model_name)?;
+    let sv = crate::system::sysview(file, model_name)?.with_parameters(opts.parameters);
     let ctx = crate::system::ctx_of(&sv)?;
     let obs = crate::system::observed_defs(&sv)?;
     let mut memo = FirstOrder::default();
@@ -1077,6 +1082,7 @@ pub fn jacobian_block_with_forcing(
 ) -> Result<Value, crate::bands::BandError> {
     let opts = BlockOptions {
         forcing,
+        parameters: None,
         cse,
         cse_min_nodes,
         column_axis: None,

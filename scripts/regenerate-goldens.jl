@@ -168,6 +168,18 @@ let name = "join_regrid"
         println("wrote ", name, tag, ".{bands,block,evaldoc,jvp.evaldoc,vjp.evaldoc}.json")
     end
 end
+# A chosen parameter set (spec §4.3): the forcing fixture's parameters axis
+# over `E` and `k` only.
+let name = "forcing_bracket"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, "Bracket")
+    gold(kind) = joinpath(root, "tests", "goldens", "$name.parameters-subset.$kind.json")
+    entries = jacobian_bands(sv; wrt = :parameters, parameters = ["E", "k"])
+    write(gold("bands"), stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
+    doc = jacobian_document(file, "Bracket"; wrt = :parameters, parameters = ["E", "k"])
+    write(gold("block"), stable_json(doc["jacobians"]["Bracket"]))
+    println("wrote ", name, ".parameters-subset.{bands,block}.json")
+end
 # the other axes: `<name>.<axis>.*` goldens. Time-derivative bands (spec §4.2)
 # for the fixtures whose right-hand side reads `t` explicitly; forcing and
 # parameter bands (spec §4.3, array parameters as real columns) for the

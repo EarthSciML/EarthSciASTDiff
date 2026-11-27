@@ -120,6 +120,26 @@ pub(crate) fn targets(
         Wrt::Forcing => forcing_names(sv, forcing)?,
         Wrt::Parameters => {
             let fset: HashSet<String> = forcing_names(sv, forcing)?.into_iter().collect();
+            if let Some(ps) = &sv.parameters {
+                // the chosen parameter set (§4.3): each a parameter, none forcing
+                for n in ps {
+                    if !sv
+                        .variables
+                        .get(n)
+                        .is_some_and(|v| v.var_type == VariableType::Parameter)
+                    {
+                        return Err(BandError(format!(
+                            "parameter name `{n}` is not a parameter of the system"
+                        )));
+                    }
+                    if fset.contains(n) {
+                        return Err(BandError(format!(
+                            "parameter name `{n}` is in the forcing set: it is a column of the forcing axis"
+                        )));
+                    }
+                }
+                return Ok(ps.clone());
+            }
             let mut t: Vec<String> = sv
                 .variables
                 .iter()
