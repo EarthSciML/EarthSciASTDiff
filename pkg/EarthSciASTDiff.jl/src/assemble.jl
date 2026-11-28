@@ -284,23 +284,63 @@ _sv_src(flat::EarthSciAST.FlattenedSystem, ::Any; data_sources = nothing, parame
     (_with_parameters(sysview(flat; data_sources = data_sources), parameters), flat)
 
 # Build the ordinary RHS evaluator for the SAME model `_sv_src` selected: an
-# `EsmFile` threads `model_name` through `build_evaluator`'s own selection
-# (so multi-model documents work), a `FlattenedSystem` has no model to name.
-_build_eval(src::EarthSciAST.EsmFile, model_name; kw...) =
-    _tree_walk_build(src; model_name = model_name === nothing ? nothing : String(model_name), kw...)
+# `EsmFile`'s selected model (its only one when none is named), whose names
+# the view uses unqualified; a `FlattenedSystem` has no model to name.
+function _build_eval(src::EarthSciAST.EsmFile, model_name; kw...)
+    name = model_name === nothing ? (length(src.models) == 1 ? first(keys(src.models)) : nothing) :
+        String(model_name)
+    return _tree_walk_build(src; model_name = name, kw...)
+end
 _build_eval(src, model_name; kw...) = _tree_walk_build(src; kw...)
 
-# The right-hand side EarthSciAST builds for `input`, as the five values the
-# layout and the tests read: `(f!, u0, p, tspan, var_map)`. EarthSciAST 0.15
-# removed the deprecated `build_evaluator` alias of this build (whose
-# replacement, `esm_problem`, takes a different keyword set and a time span),
-# so the layout keeps the build the alias called: `build_kwargs` mean what
-# they always meant, for a document and for a flattened system alike.
-_tree_walk_build(input; kw...) = EarthSciAST._build_evaluator(input; kw...)
-# A flattened system is built as the single-model document it reconstitutes
-# (its names already scoped), as `build_evaluator` built one before 0.15.
-_tree_walk_build(flat::EarthSciAST.FlattenedSystem; kw...) =
-    EarthSciAST._build_evaluator(EarthSciAST.flattened_to_esm(flat); kw...)
+# The right-hand side EarthSciAST builds for `input` (a document, a native
+# Dict or a flattened system), as the five values the layout and the tests
+# read: `(f!, u0, p, tspan, var_map)`. The build is EarthSciAST's
+# `Internal.build`: it flattens the document whole, applies the run path's
+# shape transforms (an observed declared without a shape takes the union of
+# its operands' index sets, esm-spec §4.3.4) and builds, so every name it
+# takes and gives is qualified (`Box.c[1,1]`). With `model_name`, that
+# model's names are the caller's own: the keys of `param_arrays`,
+# `parameter_overrides`, `initial_conditions` and `const_arrays` that name
+# its variables are qualified on the way in, and `var_map` and `p` are given
+# back unqualified, with the returned `f!` taking `p` by those names. A
+# flattened system is built as it is, its names already scoped.
+const _NAMED_BUILD_KWARGS = (:param_arrays, :parameter_overrides, :initial_conditions, :const_arrays)
+_model_variable_names(input::EarthSciAST.EsmFile, m) = Set{String}(keys(input.models[m].variables))
+function _model_variable_names(input::AbstractDict, m)
+    # a native Dict keys by String, a JSON3 object by Symbol
+    g(d, k) = haskey(d, k) ? d[k] : d[Symbol(k)]
+    return Set{String}(String(k) for k in keys(g(g(g(input, "models"), m), "variables")))
+end
+_model_variable_names(input, m) = Set{String}()
+function _tree_walk_build(input; model_name = nothing, kw...)
+    if input isa EarthSciAST.EsmFile && model_name === nothing && length(input.models) == 1
+        model_name = first(keys(input.models))
+    end
+    if model_name !== nothing
+        declared = _model_variable_names(input, String(model_name))
+        q(k) = String(k) in declared ? String(model_name) * "." * String(k) : k
+        kw = (; (
+            k => (k in _NAMED_BUILD_KWARGS && v isa AbstractDict ? Dict(q(a) => x for (a, x) in v) : v)
+            for (k, v) in pairs(kw)
+        )...)
+    end
+    b = EarthSciAST.Internal.build(input; kw...)
+    model_name === nothing && return (b.f!, b.u0, b.p, b.tspan, b.var_map)
+    pre = String(model_name) * "."
+    local_name(n) = startswith(n, pre) ? n[(ncodeunits(pre) + 1):end] : n
+    vm = Dict{String, Int}(local_name(String(k)) => v for (k, v) in b.var_map)
+    # a model without parameters has none to rename (`b.p === nothing`)
+    b.p isa NamedTuple || return (b.f!, b.u0, b.p, b.tspan, vm)
+    ks = Tuple(Symbol(local_name(String(k))) for k in keys(b.p))
+    p = NamedTuple{ks}(Tuple(values(b.p)))
+    qk = keys(b.p)
+    f0 = b.f!
+    # a parameter NamedTuple by the view's names is read by name (any order,
+    # any element type, e.g. dual numbers) and handed on by the qualified ones
+    f!(du, u, pp, t) = f0(du, u, pp isa NamedTuple ? NamedTuple{qk}(map(k -> getfield(pp, k), ks)) : pp, t)
+    return (f!, b.u0, p, b.tspan, vm)
+end
 
 function _only_model(file::EarthSciAST.EsmFile)
     length(file.models) == 1 ||
