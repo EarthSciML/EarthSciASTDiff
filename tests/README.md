@@ -95,8 +95,12 @@ Cross-language test surface for EarthSciASTDiff (mirrors EarthSciAST's
     loss rate `jr = J0·max(0, cos(ω t))` declared without a shape and read at
     a cell (`index(jr, i, j)`), and a source `src = Ea + Eb` of parameters
     only, with operands of different rank, which the time axis must not
-    follow. Its only golden, `tgrad_data_fixed.time.bands.json`, is checked
-    byte for byte by every binding
+    follow. Its time golden, `tgrad_data_fixed.time.bands.json`, is checked
+    byte for byte by every binding. On the (states, parameters) and (time,
+    parameters) pairs `src` spans the union of its operands' index sets
+    (esm-spec §4.3.4), [x, y]: bands, blocks and hvp documents byte for
+    byte, and values (`*.hvals.json`) minted on EarthSciAST main plus
+    EarthSciAST#819 (the Julia tests need both until #819 is released)
   - `tgrad_named_steps.esm` — time companions (spec §4.2): a scalar
     time-interpolation weight `w`, an array blend `Tb` of two temperature
     records by `w`, a rate `kr` of `Tb`, a state `c` reading `kr` at its

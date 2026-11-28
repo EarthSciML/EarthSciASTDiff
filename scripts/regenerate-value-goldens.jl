@@ -116,6 +116,8 @@ for (name, wrt, t) in (
         ("pre_operator", (:states, :states), 0.7),
         ("recurrence_sweep", (:states, :states), 0.7),
         ("recurrence_sweep", (:states, :parameters), 0.7),
+        ("tgrad_data_fixed", (:states, :parameters), 0.7),
+        ("tgrad_data_fixed", (:time, :parameters), 0.7),
     )
     file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
     bkw = name in INTERPRETED ? (compiler = :interpreter,) : NamedTuple()

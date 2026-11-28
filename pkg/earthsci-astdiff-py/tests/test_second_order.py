@@ -42,6 +42,8 @@ SECOND_ORDER = (
     ("pre_operator", ("states", "states")),
     ("recurrence_sweep", ("states", "states")),
     ("recurrence_sweep", ("states", "parameters")),
+    ("tgrad_data_fixed", ("states", "parameters")),
+    ("tgrad_data_fixed", ("time", "parameters")),
 )
 
 

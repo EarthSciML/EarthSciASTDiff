@@ -22,6 +22,8 @@ const SECOND_ORDER = (
     ("filtered_scan", (:states, :states)),
     ("semiring_reduce", (:states, :states)),
     ("pre_operator", (:states, :states)),
+    ("tgrad_data_fixed", (:states, :parameters)),
+    ("tgrad_data_fixed", (:time, :parameters)),
 )
 _pairtag((a1, a2)) = "$a1-$a2"
 

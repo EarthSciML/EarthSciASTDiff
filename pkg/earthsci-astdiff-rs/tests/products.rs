@@ -45,7 +45,7 @@ const PRODUCT_AXES: [(&str, Wrt); 19] = [
     ("pbl_rank1", Wrt::States),
 ];
 
-const SECOND_ORDER: [(&str, (Wrt, Wrt)); 17] = [
+const SECOND_ORDER: [(&str, (Wrt, Wrt)); 19] = [
     ("bd_chem", SS),
     ("arrhenius_chem", SS),
     ("arrhenius_chem", (Wrt::States, Wrt::Parameters)),
@@ -63,6 +63,8 @@ const SECOND_ORDER: [(&str, (Wrt, Wrt)); 17] = [
     ("pre_operator", SS),
     ("recurrence_sweep", SS),
     ("recurrence_sweep", (Wrt::States, Wrt::Parameters)),
+    ("tgrad_data_fixed", (Wrt::States, Wrt::Parameters)),
+    ("tgrad_data_fixed", (Wrt::Time, Wrt::Parameters)),
 ];
 
 fn axistag(wrt: Wrt) -> String {
