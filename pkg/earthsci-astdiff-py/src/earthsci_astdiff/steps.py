@@ -25,6 +25,7 @@ from .bands import (
     join_key,
     join_names,
     merge_bands,
+    merge_joins,
     normalize_band,
     rename_join,
 )
@@ -563,11 +564,10 @@ def compose(outer: list, inner: list, co: bool) -> list:
                 return x if x is None or not sigma else subst_free(x, sigma)
 
             # a join travels with the band it gates (§3.5): the inner's names
-            # renamed as the composite reads them; two joins are refused
+            # renamed as the composite reads them; a composite through two
+            # joined sums carries both joins' clauses (``merge_joins``)
             jn = o.join
             if b.join is not None:
-                if o.join is not None:
-                    raise BandError("a band through two joined faq nodes is not supported")
                 jm = {}
                 for n in join_names(b):
                     x = sigma.get(n, n)
@@ -576,7 +576,7 @@ def compose(outer: list, inner: list, co: bool) -> list:
                             "a joined band composed at a non-bare index is not supported"
                         )
                     jm[n] = x
-                jn = rename_join(b.join, jm)
+                jn = merge_joins(o.join, rename_join(b.join, jm))
             g = conj(o.guard, sub(b.guard))
             if conds:
                 g = conj(g, conj_list(conds))

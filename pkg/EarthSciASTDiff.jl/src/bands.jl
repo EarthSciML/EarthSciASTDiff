@@ -79,6 +79,26 @@ function _rename_join(j, m::AbstractDict)
     return (Any[walk(c) for c in j[1]], Pair{String, Any}[String(get(m, k, k)) => v for (k, v) in j[2]])
 end
 
+# The joins of a band that passes through two joined sums (§3.5): every
+# clause of both, which one product `faq` carries as a conjunction, and the
+# range of each name either binds (a name both bind must have one range).
+function _merge_joins(a, b)
+    a === nothing && return b
+    b === nothing && return a
+    ranges = Dict{String, Any}()
+    for (k, v) in Iterators.flatten((a[2], b[2]))
+        old = get(ranges, k, nothing)
+        old === nothing || JSON3.write(old) == JSON3.write(v) || throw(
+            BandError("two joins bind the index `$k` over different ranges")
+        )
+        ranges[k] = v
+    end
+    return (
+        vcat(Any[c for c in a[1]], Any[c for c in b[1]]),
+        Pair{String, Any}[k => ranges[k] for k in sort!(collect(keys(ranges)))],
+    )
+end
+
 """
 Differentiation context: index-set sizes, array-variable shapes, parameter
 names, the system's operator-reference layer (`refs`, `nothing` without

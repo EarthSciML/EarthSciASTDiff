@@ -58,6 +58,36 @@ impl BandJoin {
         self.ranges.iter().map(|(n, _)| n.clone()).collect()
     }
 
+    /// The joins of a band through two joined sums (bands.jl
+    /// `_merge_joins`): every clause of both, which one product `faq`
+    /// carries as a conjunction, and the range of each name either binds,
+    /// in name order (a name both bind must have one range).
+    pub fn merged(
+        a: Option<&BandJoin>,
+        b: Option<&BandJoin>,
+    ) -> Result<Option<BandJoin>, BandError> {
+        let (a, b) = match (a, b) {
+            (None, x) | (x, None) => return Ok(x.cloned()),
+            (Some(a), Some(b)) => (a, b),
+        };
+        let mut ranges: std::collections::BTreeMap<String, serde_json::Value> =
+            std::collections::BTreeMap::new();
+        for (k, v) in a.ranges.iter().chain(&b.ranges) {
+            if let Some(old) = ranges.get(k) {
+                if old != v {
+                    return Err(BandError(format!(
+                        "two joins bind the index `{k}` over different ranges"
+                    )));
+                }
+            }
+            ranges.insert(k.clone(), v.clone());
+        }
+        Ok(Some(BandJoin {
+            clauses: a.clauses.iter().chain(&b.clauses).cloned().collect(),
+            ranges: ranges.into_iter().collect(),
+        }))
+    }
+
     /// A key for grouping: equal joins, equal keys.
     pub fn key(&self) -> String {
         let r: serde_json::Map<String, serde_json::Value> = self.ranges.iter().cloned().collect();

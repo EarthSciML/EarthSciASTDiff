@@ -205,6 +205,21 @@ let name = "join_regrid"
         println("wrote ", name, tag, ".{bands,block,evaldoc,jvp.evaldoc,vjp.evaldoc}.json")
     end
 end
+# A derivative through two joined sums (spec §3.5): the band lists of the
+# states and parameters axes, each band through both joins carrying both
+# joins' clauses.
+let name = "join_two_levels"
+    file = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    sv = sysview(file, "Regrid")
+    for (wrt, tag) in ((:states, ""), (:parameters, ".parameters"))
+        entries = jacobian_bands(sv; wrt = wrt)
+        write(
+            joinpath(root, "tests", "goldens", "$name$tag.bands.json"),
+            stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries])
+        )
+    end
+    println("wrote ", name, "{,.parameters}.bands.json")
+end
 # A chosen parameter set (spec §4.3): the forcing fixture's parameters axis
 # over `E` and `k` only.
 let name = "forcing_bracket"

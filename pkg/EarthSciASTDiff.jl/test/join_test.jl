@@ -70,3 +70,60 @@
     g, _ = doc_vjp(file, λ; u = u)
     @test g ≈ J' * λ rtol = 1.0e-12
 end
+
+# A derivative through two joined sums: the coarse field G (a join of cell
+# centres and coarse envelopes) reads B (a join of points and cell
+# envelopes) squared, so z's bands with respect to q and F pass through both
+# joins and carry both joins' clauses (spec §3.5); values against central
+# differences of the source.
+@testset "joins: a derivative through two joined sums carries both joins" begin
+    golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
+    file = fixture("join_two_levels.esm")
+    sv = sysview(file, "Regrid")
+    for (wrt, tag, col) in ((:states, "", "q"), (:parameters, ".parameters", "F"))
+        entries = jacobian_bands(sv; wrt = wrt)
+        @test stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]) ==
+            read(joinpath(golden_dir, "join_two_levels$tag.bands.json"), String)
+        jb = [en for en in entries if en.u == "z" && en.v == col]
+        @test !isempty(jb) && all(en -> en.band.join !== nothing && length(en.band.join[1]) == 2, jb)
+        d = EarthSciASTDiff.serialize_band(first(jb))
+        @test EarthSciASTDiff.serialize_band(EarthSciASTDiff.parse_band(d)) == d
+    end
+    f!, u0, p, _, vm = tw_build(file)
+    u = [0.2 + 0.6 * abs(sin(2.3 * i)) for i in eachindex(u0)]
+    J = Matrix(doc_jacobian(file; u = u).J)
+    h = 1.0e-6
+    Jfd = zeros(length(u), length(u))
+    for j in eachindex(u)
+        up = copy(u); um = copy(u); up[j] += h; um[j] -= h
+        a = similar(u); b = similar(u); f!(a, up, p, 0.0); f!(b, um, p, 0.0)
+        Jfd[:, j] = (a .- b) ./ 2h
+    end
+    @test maximum(abs.(J .- Jfd)) < 1.0e-6 * max(1.0, maximum(abs.(Jfd)))
+    @test any(!iszero, J[[vm["z[1]"], vm["z[2]"]], [vm["q[$r]"] for r in 1:6]])
+    # the F columns: F promoted to a state (a zero derivative)
+    res = doc_jacobian(file; wrt = :parameters, u = u, p = p)
+    dd = EarthSciASTDiff.JSON3.read(read(joinpath(FIXTURES, "join_two_levels.esm"), String), Dict{String, Any})
+    m = dd["models"]["Regrid"]; m["variables"]["F"]["type"] = "unknown"
+    push!(
+        m["equations"], Dict(
+            "lhs" => Dict("op" => "D", "args" => ["F"], "wrt" => "t"),
+            "rhs" => Dict("op" => "makearray", "args" => [], "regions" => [[[1, 6]]], "values" => [0.0])
+        )
+    )
+    g!, x0, pp, _, vm2 = tw_build(EarthSciAST.load_string(EarthSciASTDiff.JSON3.write(dd)))
+    x = copy(x0)
+    for nm in keys(vm)
+        x[vm2[nm]] = u[vm[nm]]
+    end
+    Jp = Matrix(res.J)
+    for (j, cn) in enumerate(res.colnames)
+        startswith(cn, "F[") || continue
+        xp = copy(x); xm = copy(x); xp[vm2[cn]] += h; xm[vm2[cn]] -= h
+        a = similar(x); b = similar(x); g!(a, xp, pp, 0.0); g!(b, xm, pp, 0.0)
+        for (nm, ri) in vm
+            fd = (a[vm2[nm]] - b[vm2[nm]]) / 2h
+            @test abs(Jp[ri, j] - fd) < 1.0e-6 * max(1.0, abs(fd))
+        end
+    end
+end

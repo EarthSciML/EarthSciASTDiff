@@ -1123,10 +1123,10 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
         sub(x) = x === nothing ? nothing : _subst_names(x, sigma)
         # a join travels with the band it gates (§3.5): the inner's names
         # renamed as the composite reads them (a row name must land on a
-        # bare name); two joins in one composite are refused
+        # bare name); a composite through two joined sums carries both
+        # joins' clauses (`_merge_joins`)
         jn = o.join
         if b.join !== nothing
-            o.join === nothing || throw(BandError("a band through two joined faq nodes is not supported"))
             jm = Dict{String, String}()
             for n in _join_names(b)
                 x = get(sigma, n, VarExpr(n))
@@ -1135,7 +1135,7 @@ function _compose(outer::Vector{Band}, inner::Vector{Band}, v::String, ctx::Ctx,
                 )
                 jm[n] = x.name
             end
-            jn = _rename_join(b.join, jm)
+            jn = _merge_joins(o.join, _rename_join(b.join, jm))
         end
         g = _conj(o.guard, sub(b.guard))
         isempty(conds) || (g = _conj(g, _conj(conds)))

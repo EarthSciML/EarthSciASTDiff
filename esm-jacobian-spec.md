@@ -341,15 +341,23 @@ at an index that is not a bare name stays a contracted name of the
 composite, tied to that index by an `==` conjunct of its `where`. A join
 clause naming a definition's parameter takes the name of the variable its
 reference binds there (a parameter bound to anything but a variable is
-refused). A band through two joins, through a recurrence, or read by a time
-companion is refused.
+refused). A band composed through two joined sums (a joined sum that reads
+another joined sum's result, so that the derivative passes through both)
+carries both joins: the concatenation of the two clause lists, each renamed
+as the composite reads it, and the union of their ranges (a name both bind
+must have one range). Its `join` is that combined list, which one product
+`faq` carries as a conjunction of gates, and its `join_ranges` the combined
+ranges; the same holds through any number of joined sums. A band through a
+recurrence, or read by a time companion, is refused.
 
 Patterns, structure classes and scatter plans (§2, §6, §8) treat a joined
 band as its whole box: a structural superset of its joined points. That is
 what the parameters and forcing axes need; a states-axis regrid may later
 want the exact join pattern, which only an evaluator of the join can give.
 Fixture: `join_regrid.esm` (§5), six points binned into four cells by an
-`overlap` join that is the sum's only gate. A faq node's reduction ⊕ is its `semiring`'s when it has one
+`overlap` join that is the sum's only gate. Fixture: `join_two_levels.esm`, those four cells binned
+into two coarse cells by a second `overlap` join, so the coarse field's
+bands with respect to the points' state and parameter carry both joins. A faq node's reduction ⊕ is its `semiring`'s when it has one
 (`sum_product` → `+`, `max_product` and `max_sum` → `max`, `min_sum` →
 `min`; its ⊗ is already written out in the body), otherwise its `reduce`
 (absent → `+`).

@@ -1,0 +1,430 @@
+{
+  "esm": "2.0.0",
+  "metadata": {
+    "name": "JoinTwoLevels",
+    "description": "A derivative through two joined sums (spec \u00a73.5): six points (recs) binned into four cells through an overlap join of the points' (X, Y) and the cells' envelopes (B, as join_regrid), then the four cells binned into two coarse cells through a second overlap join of the cells' centres (XC, YC) and the coarse envelopes (G). The coarse field reads B squared and an array parameter H; a state z integrates it. The bands of z's right-hand side with respect to q and to F pass through both joins and carry both joins' clauses."
+  },
+  "index_sets": {
+    "cells": {
+      "kind": "interval",
+      "size": 4
+    },
+    "recs": {
+      "kind": "interval",
+      "size": 6
+    },
+    "coarse": {
+      "kind": "interval",
+      "size": 2
+    }
+  },
+  "models": {
+    "Regrid": {
+      "variables": {
+        "W": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.0,
+            1.0,
+            0.0,
+            1.0
+          ]
+        },
+        "E": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            1.0,
+            2.0,
+            1.0,
+            2.0
+          ]
+        },
+        "S": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        },
+        "N": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            1.0,
+            1.0,
+            2.0,
+            2.0
+          ]
+        },
+        "X": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            0.5,
+            1.5,
+            1.2,
+            0.3,
+            1.7,
+            0.9
+          ]
+        },
+        "Y": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            0.5,
+            1.5,
+            0.2,
+            1.4,
+            0.6,
+            1.8
+          ]
+        },
+        "F": {
+          "type": "parameter",
+          "shape": [
+            "recs"
+          ],
+          "default": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0
+          ]
+        },
+        "XC": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.5,
+            1.5,
+            0.5,
+            1.5
+          ]
+        },
+        "YC": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            0.5,
+            0.5,
+            1.5,
+            1.5
+          ]
+        },
+        "H": {
+          "type": "parameter",
+          "shape": [
+            "cells"
+          ],
+          "default": [
+            1.0,
+            0.5,
+            2.0,
+            1.5
+          ]
+        },
+        "WW": {
+          "type": "parameter",
+          "shape": [
+            "coarse"
+          ],
+          "default": [
+            0.0,
+            1.0
+          ]
+        },
+        "EE": {
+          "type": "parameter",
+          "shape": [
+            "coarse"
+          ],
+          "default": [
+            1.0,
+            2.0
+          ]
+        },
+        "SS": {
+          "type": "parameter",
+          "shape": [
+            "coarse"
+          ],
+          "default": [
+            0.0,
+            0.0
+          ]
+        },
+        "NN": {
+          "type": "parameter",
+          "shape": [
+            "coarse"
+          ],
+          "default": [
+            2.0,
+            2.0
+          ]
+        },
+        "k": {
+          "type": "parameter",
+          "default": 0.1
+        },
+        "q": {
+          "type": "unknown",
+          "shape": [
+            "recs"
+          ],
+          "default": 0.5
+        },
+        "z": {
+          "type": "unknown",
+          "shape": [
+            "coarse"
+          ],
+          "default": 1.0
+        },
+        "B": {
+          "type": "unknown",
+          "shape": [
+            "cells"
+          ]
+        },
+        "G": {
+          "type": "unknown",
+          "shape": [
+            "coarse"
+          ]
+        }
+      },
+      "equations": [
+        {
+          "lhs": "B",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "c"
+            ],
+            "ranges": {
+              "c": {
+                "from": "cells"
+              },
+              "r": {
+                "from": "recs"
+              }
+            },
+            "reduce": "+",
+            "join": [
+              {
+                "overlap": {
+                  "src_env": [
+                    "X",
+                    "Y"
+                  ],
+                  "tgt_env": [
+                    "W",
+                    "S",
+                    "E",
+                    "N"
+                  ],
+                  "eps": 0.0
+                }
+              }
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "F",
+                    "r"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": "G",
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "g"
+            ],
+            "ranges": {
+              "g": {
+                "from": "coarse"
+              },
+              "c": {
+                "from": "cells"
+              }
+            },
+            "reduce": "+",
+            "join": [
+              {
+                "overlap": {
+                  "src_env": [
+                    "XC",
+                    "YC"
+                  ],
+                  "tgt_env": [
+                    "WW",
+                    "SS",
+                    "EE",
+                    "NN"
+                  ],
+                  "eps": 0.0
+                }
+              }
+            ],
+            "expr": {
+              "op": "*",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "H",
+                    "c"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "B",
+                    "c"
+                  ]
+                },
+                {
+                  "op": "index",
+                  "args": [
+                    "B",
+                    "c"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "z"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "i"
+            ],
+            "ranges": {
+              "i": {
+                "from": "coarse"
+              }
+            },
+            "expr": {
+              "op": "-",
+              "args": [
+                {
+                  "op": "index",
+                  "args": [
+                    "G",
+                    "i"
+                  ]
+                },
+                {
+                  "op": "*",
+                  "args": [
+                    "k",
+                    {
+                      "op": "index",
+                      "args": [
+                        "z",
+                        "i"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "lhs": {
+            "op": "D",
+            "args": [
+              "q"
+            ],
+            "wrt": "t"
+          },
+          "rhs": {
+            "op": "faq",
+            "args": [],
+            "output_idx": [
+              "r"
+            ],
+            "ranges": {
+              "r": {
+                "from": "recs"
+              }
+            },
+            "expr": {
+              "op": "*",
+              "args": [
+                -1,
+                "k",
+                {
+                  "op": "index",
+                  "args": [
+                    "q",
+                    "r"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

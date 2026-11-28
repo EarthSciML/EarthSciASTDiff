@@ -3,6 +3,7 @@ RHS w.r.t. one variable, producing structured bands."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, replace
 
 from earthsci_ast.esm_types import Expr, ExprNode
@@ -333,6 +334,23 @@ def node_join(e: ExprNode):
 def join_names(b: Band) -> list:
     """The index names a band's join reads (none without a join)."""
     return [] if b.join is None else [n for n, _ in b.join[1]]
+
+
+def merge_joins(a, b):
+    """The joins of a band through two joined sums (bands.jl
+    ``_merge_joins``): every clause of both, which one product ``faq``
+    carries as a conjunction, and the range of each name either binds, in
+    name order (a name both bind must have one range)."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    ranges: dict = {}
+    for k, v in list(a[1]) + list(b[1]):
+        if k in ranges and json.dumps(ranges[k], sort_keys=True) != json.dumps(v, sort_keys=True):
+            raise BandError(f"two joins bind the index `{k}` over different ranges")
+        ranges[k] = v
+    return (list(a[0]) + list(b[0]), [(k, ranges[k]) for k in sorted(ranges)])
 
 
 def rename_join(j, m: dict):

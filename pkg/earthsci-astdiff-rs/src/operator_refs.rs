@@ -30,7 +30,7 @@ use serde_json::Value;
 
 use crate::bands::{
     bands_in, merge_bands, normalize_band, placeholder, range_of, region_bounds, subst_free, Band,
-    BandError, Ctx,
+    BandError, BandJoin, Ctx,
 };
 use crate::branches::{canon_lits, simp};
 use crate::clip::RIdx;
@@ -1666,14 +1666,10 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
             }
             let sub = |x: &Expr| subst_names(x, &sigma);
             // a join travels with the band it gates (§3.5): the inner's names
-            // renamed as the composite reads them; two joins are refused
+            // renamed as the composite reads them; a composite through two
+            // joined sums carries both joins' clauses (`BandJoin::merged`)
             let mut jn = o.join.clone();
             if let Some(bj) = &b.join {
-                if o.join.is_some() {
-                    return Err(BandError(
-                        "a band through two joined faq nodes is not supported".into(),
-                    ));
-                }
                 let mut jm = HashMap::new();
                 for n in bj.names() {
                     match sigma.get(&n) {
@@ -1689,7 +1685,7 @@ pub(crate) fn compose(outer: &[Band], inner: &[Band], co: bool) -> R<Vec<Band>> 
                         }
                     }
                 }
-                jn = Some(bj.renamed(&jm));
+                jn = BandJoin::merged(o.join.as_ref(), Some(&bj.renamed(&jm)))?;
             }
             let mut g = conj(o.guard.clone(), b.guard.as_ref().map(sub));
             if !conds.is_empty() {

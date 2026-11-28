@@ -55,3 +55,24 @@ fn join_regrid_goldens() {
         assert_eq!(j.names(), ["i", "r"]);
     }
 }
+
+/// A derivative through two joined sums (spec §3.5): the coarse field's
+/// bands carry both joins' clauses; byte-identical to the reference.
+#[test]
+fn join_two_levels_goldens() {
+    let file = load("join_two_levels");
+    let sv = sysview(&file, Some("Regrid")).unwrap();
+    for (wrt, tag) in [(Wrt::States, ""), (Wrt::Parameters, ".parameters")] {
+        let entries = jacobian_bands_view(&sv, wrt, None).unwrap();
+        let bands: Vec<Value> = entries.iter().map(serialize_band).collect();
+        assert_eq!(
+            stable_json(&Value::Array(bands)),
+            golden(&format!("join_two_levels{tag}.bands.json"))
+        );
+        assert!(entries.iter().filter(|e| e.u == "z").any(|e| e
+            .band
+            .join
+            .as_ref()
+            .is_some_and(|j| j.clauses.len() == 2)));
+    }
+}
