@@ -202,7 +202,72 @@ function _ctx(sv::SysView)
         end
         var.type == EarthSciAST.ParameterVariable && push!(params, String(n))
     end
+    _undeclared_axes!(shapes, axes, sv, isets)
     return Ctx(isets, shapes, params, sv.refs, Dict{String, Vector{Int}}(), axes)
+end
+
+# esm-spec §4.3.4: an observed declared without a shape and defined by a
+# bare elementwise equation spans the UNION of its named operands' index
+# sets, in order of first appearance (`k = a + b` with `a: [lon]`, `b:
+# [lat]` spans `[lon, lat]`). When every array operand on its value path
+# names its index sets, the observed takes them as its axes and extents;
+# otherwise (an anonymous operand: a `faq` over inline intervals, a
+# `makearray`, a literal array, a shape op) it keeps none and is read as
+# before.
+const _NOT_ELEMENTWISE = Set(["faq", "makearray", "const", "reshape", "transpose", "concat", "broadcast"])
+function _undeclared_axes!(shapes, axes, sv::SysView, isets)
+    defs = Dict{String, ASTExpr}()
+    for eq in sv.equations
+        n = lhs_definition(eq)
+        n === nothing && continue
+        var = get(sv.variables, String(n), nothing)
+        (var !== nothing && var.shape === nothing) || continue
+        defs[String(n)] = eq.rhs
+    end
+    isempty(defs) && return
+    memo = Dict{String, Any}()
+    function ax(e, seen)
+        if e isa VarExpr
+            n = e.name
+            haskey(axes, n) && return axes[n]
+            haskey(shapes, n) && return nothing          # shaped, anonymous dimensions
+            haskey(defs, n) || return String[]           # a scalar (or `t`)
+            haskey(memo, n) && return memo[n]
+            n in seen && return nothing
+            push!(seen, n)
+            r = ax(defs[n], seen)
+            delete!(seen, n)
+            memo[n] = r
+            return r
+        elseif e isa OpExpr
+            if e.op == "index"
+                b = e.args[1]
+                b isa VarExpr || return nothing
+                bx = ax(b, seen)
+                bx === nothing && return nothing
+                return length(e.args) - 1 == length(bx) ? String[] : nothing
+            end
+            (e.op in _NOT_ELEMENTWISE || _is_ref(e)) && return nothing
+            out = String[]
+            for a in e.args
+                r = ax(a, seen)
+                r === nothing && return nothing
+                for x in r
+                    x in out || push!(out, x)
+                end
+            end
+            return out
+        end
+        return String[]
+    end
+    for n in sort!(collect(keys(defs)))
+        r = ax(VarExpr(n), Set{String}())
+        (r === nothing || isempty(r)) && continue
+        all(x -> haskey(isets, x), r) || continue
+        axes[n] = r
+        shapes[n] = Int[isets[x] for x in r]
+    end
+    return
 end
 
 """

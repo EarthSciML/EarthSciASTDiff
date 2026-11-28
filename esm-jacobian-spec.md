@@ -803,20 +803,28 @@ equation order, and the single column within each equation.
   the observed's index sets in another order is read in its own order
   (`w[i, j] = c[i, j]·q[j] + k[i] + r[j, i]`). An operand whose index sets
   are not known (a `faq`, a `makearray`, an operator reference, an observed
-  declared without a shape, a variable with a dimension given by an integer
-  extent) MUST have the read's rank and is aligned by position, and an
+  declared without a shape whose index sets are not given by the rule
+  below, a variable with a dimension given by an integer extent) MUST have
+  the read's rank and is aligned by position, and an
   `index` inside the definition MUST select a scalar (its arity is its
   operand's rank). A synthetic index set of the pointwise lift
   (`_liftdim<d>_<extent>`, esm-spec §10.5) names an anonymous dimension of
   known extent, not one shared by name with the rest of the document: a
   variable over one is treated as having unknown index sets and aligns by
-  position. A producer refuses what it cannot read at a cell rather than
+  position. An observed declared without a shape and defined by a bare
+  elementwise equation whose array operands all name their index sets (the
+  operators above, an `index` selecting a scalar, scalars) spans the union
+  of those index sets in order of first appearance (esm-spec §4.3.4:
+  `src = Ea + Eb` with `Ea: [x]`, `Eb: [x, y]` spans `[x, y]`), and has
+  those index sets and their extents wherever it is read. A producer
+  refuses what it cannot read at a cell rather than
   guess: a read whose arity is not the rank of the observed's declared
   shape, an operand over an index set the observed is not shaped over, an
   operand of lower rank whose index sets, or the observed's, are not known,
   an observed declared without a shape whose operands differ in rank
-  anywhere in its definition (its shape, the union of its operands' index
-  sets, is not given by ranks), a partial `index`, an array literal,
+  anywhere in its definition and whose index sets the rule above does not
+  give (its shape is not given by ranks), a partial `index`, an array
+  literal,
   a shape operator, an elementwise application of a definition, a name whose
   rank it does not know (neither declared, an observed, nor `t`), or a name
   of the definition that an index bound around the read would capture.

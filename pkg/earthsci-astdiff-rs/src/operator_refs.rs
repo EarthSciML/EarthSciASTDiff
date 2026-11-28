@@ -1195,9 +1195,10 @@ pub(crate) fn abstract_refs(
     e: &Expr,
     ctx: &Ctx,
     v: Option<&str>,
+    scope: &[(String, Option<RangeSpec>)],
 ) -> R<(Expr, Vec<Placeholder>)> {
     let mut found: Found = IndexMap::new();
-    let out = abstract_walk(l, e, &mut found, &Vec::new(), v)?;
+    let out = abstract_walk(l, e, &mut found, &scope.to_vec(), v)?;
     let mut ps = Vec::new();
     for (_, (r, name, sc)) in found {
         let n = ref_node(&r).unwrap();
@@ -1358,7 +1359,7 @@ pub(crate) fn ref_bands(rhs: &Expr, v: &str, ctx: &Ctx, shape_u: &[i64], co: boo
         return bands_in(rhs, v, ctx, shape_u, co);
     };
     with_layer(&Some(l.clone()), || {
-        let (rhs2, ps) = abstract_refs(&l, rhs, ctx, Some(v))?;
+        let (rhs2, ps) = abstract_refs(&l, rhs, ctx, Some(v), &[])?;
         if ps.is_empty() {
             return bands_in(rhs, v, ctx, shape_u, co);
         }

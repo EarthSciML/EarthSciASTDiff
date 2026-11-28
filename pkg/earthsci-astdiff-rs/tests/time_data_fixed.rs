@@ -126,15 +126,21 @@ fn elementwise_read_at_a_cell_refuses_what_it_cannot_read() {
 
 #[test]
 fn companion_extents_are_read_or_refused() {
-    // operands of different extents: an undeclared shape is their union by
-    // index-set name, which extents alone cannot give
+    // operands over different index sets: an undeclared shape is their
+    // union by index-set name, in order of first appearance (esm-spec
+    // §4.3.4): `jr = Ea·cos(…) + Eb` spans [x, y], and its companion is read
+    // at the row's cell
     let mixed = variant(|m| {
         let cos = jr_t()["args"][1].clone();
         m["equations"][0]["rhs"] =
             json!({"op": "+", "args": [{"op": "*", "args": ["Ea", cos]}, "Eb"]});
     });
-    let err = jacobian_bands(&mixed, Some("Box"), Wrt::Time).unwrap_err();
-    assert!(err.to_string().contains("cannot be read"), "{err}");
+    let es = jacobian_bands(&mixed, Some("Box"), Wrt::Time).unwrap();
+    let reads = es
+        .iter()
+        .map(|en| earthsci_astdiff::serialize_band(en).to_string())
+        .collect::<String>();
+    assert!(reads.contains("_dt_jr\",\"i\",\"j\""), "{reads}");
 }
 
 #[test]

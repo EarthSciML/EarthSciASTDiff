@@ -756,9 +756,9 @@ struct _Pseudo
     scope::Vector{String}     # the scope dimensions' index names
 end
 
-function _abstract_refs(L::RefLayer, e::ASTExpr, ctx::Ctx; v = nothing)
+function _abstract_refs(L::RefLayer, e::ASTExpr, ctx::Ctx; v = nothing, scope = Pair{String, Any}[])
     found = OrderedDict{Any, Tuple{OpExpr, String, Vector{Pair{String, Any}}}}()
-    out = _abstract!(L, e, ctx, found, Pair{String, Any}[], v)
+    out = _abstract!(L, e, ctx, found, collect(Pair{String, Any}, scope), v)
     ps = OrderedDict{String, _Pseudo}()
     for (_, (r, n, sc)) in found
         D = _def!(L, r.name)

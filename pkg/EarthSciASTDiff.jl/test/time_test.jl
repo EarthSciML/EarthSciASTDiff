@@ -214,12 +214,15 @@ end
 
 @testset "time bands: a companion's extents are read or refused, never guessed" begin
     BE = EarthSciASTDiff.BandError
-    # operands of different extents: an undeclared shape is their union by
-    # index-set name, which extents alone cannot give
+    # operands over different index sets: an undeclared shape is their union
+    # by index-set name, in order of first appearance (esm-spec §4.3.4):
+    # `jr = Ea·cos(…) + Eb` spans [x, y], and its companion is read at the
+    # row's cell
     mixed = _data_fixed_variant() do m
         _jrdef!(m, Dict("op" => "+", "args" => Any[Dict("op" => "*", "args" => Any["Ea", _JR_T["args"][2]]), "Eb"]))
     end
-    @test_throws BE jacobian_bands(sysview(mixed, "Box"); wrt = :time)
+    ms = stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sysview(mixed, "Box"); wrt = :time)])
+    @test occursin("\"_dt_jr\",\"i\",\"j\"", ms)
     # a partial index (still an array) inside the definition
     partial = _data_fixed_variant() do m
         _jrdef!(m, Dict("op" => "+", "args" => Any[_JR_T, Dict("op" => "index", "args" => Any["Eb", 1])]))

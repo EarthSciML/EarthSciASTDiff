@@ -21,7 +21,12 @@ def test_the_shared_points(golden_dir, valid_dir):
     file = ea.load_path(str(valid_dir / "guarded_quotient.esm"))
     for pt in g["points"]:
         got = doc_jacobian(
-            file, next(iter(file.models)), wrt="states", states=pt["u"], params=pt["params"], t=g["t"]
+            file,
+            next(iter(file.models)),
+            wrt="states",
+            states=pt["u"],
+            params=pt["params"],
+            t=g["t"],
         ).J
         assert all(math.isfinite(v) for v in got.values()), got
         for r, c, v in pt["entries"]:

@@ -43,12 +43,15 @@ def test_elementwise_aligned_refuses_what_cannot_be_aligned(valid_dir):
     with pytest.raises((BandError, InlineError), match="index set `z`"):
         jacobian_bands(_variant(valid_dir, foreign), "Box")
 
-    # an observed declared without a shape that mixes ranks
+    # an observed declared without a shape spans the union of its named
+    # operands' index sets (esm-spec §4.3.4): `w` spans [x, y], as declared,
+    # and has the same bands
     def undeclared(d):
         del d["models"]["Box"]["variables"]["w"]["shape"]
 
-    with pytest.raises((BandError, InlineError), match="declared without a shape"):
-        jacobian_bands(_variant(valid_dir, undeclared), "Box")
+    bands = [serialize_band(e) for e in jacobian_bands(_variant(valid_dir, undeclared), "Box")]
+    golden = valid_dir.parent / "goldens" / "elementwise_aligned.bands.json"
+    assert stable_json(bands) == golden.read_text()
 
 
 def test_elementwise_aligned_refuses_arity_mixed_ranks_and_whole_arrays(valid_dir):
@@ -74,10 +77,10 @@ def test_elementwise_aligned_refuses_arity_mixed_ranks_and_whole_arrays(valid_di
         )
         m["equations"][0]["rhs"]["args"].append("u")
 
-    # (named steps keep `u` a column: its extents, the union of its operands'
-    # index sets, cannot be read from ranks, and it is refused there)
+    # `u = -(c·p)` spans [x, y, z] (§4.3.4), and `w` over [x, y] is not
+    # shaped over `z`
     with pytest.raises(
-        BandError, match=r"observed `u` \(declared without a shape\) cannot be read"
+        (BandError, InlineError), match=r"reads `u` over \(x, y, z\), whose index set `z`"
     ):
         jacobian_bands(_variant(valid_dir, nested), "Box")
 

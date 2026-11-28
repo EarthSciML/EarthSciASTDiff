@@ -37,20 +37,16 @@ end
         e
     end
     @test err isa EarthSciASTDiff.InlineError && occursin("index set `z`", sprint(showerror, err))
-    # an observed declared without a shape that mixes ranks: its shape (the
-    # union of its operands' index sets) is not known from ranks alone
+    # an observed declared without a shape spans the union of its named
+    # operands' index sets, in order of first appearance (esm-spec §4.3.4):
+    # `w = c·q + k + r` spans [x, y], as declared, and has the same bands
     undeclared = _aligned_variant() do d
         delete!(d["models"]["Box"]["variables"]["w"], "shape")
     end
-    err = try
-        jacobian_bands(sysview(undeclared, "Box")); nothing
-    catch e
-        e
-    end
-    # (named steps keep `w` a column and differentiate its definition on its
-    # own, so the refusal is the extents check's rather than inlining's)
-    @test err isa Union{EarthSciASTDiff.InlineError, EarthSciASTDiff.BandError} &&
-        occursin("declared without a shape", sprint(showerror, err))
+    golden = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens", "elementwise_aligned.bands.json")
+    @test stable_json(
+        Any[EarthSciASTDiff.serialize_band(en) for en in jacobian_bands(sysview(undeclared, "Box"))]
+    ) == read(golden, String)
 end
 
 # what the refusal throws, or `nothing`
@@ -88,10 +84,10 @@ end
         push!(m["equations"][1]["rhs"]["args"], "u")
     end
     err = _refusal(nested)
-    # (named steps keep `u` a column: its extents, the union of its operands'
-    # index sets, cannot be read from ranks, and it is refused there)
-    @test err isa EarthSciASTDiff.BandError &&
-        occursin("observed `u` (declared without a shape) cannot be read", sprint(showerror, err))
+    # `u = -(c·p)` spans [x, y, z] (§4.3.4), and `w` over [x, y] is not
+    # shaped over `z`
+    @test err isa EarthSciASTDiff.InlineError &&
+        occursin("reads `u` over (x, y, z), whose index set `z`", sprint(showerror, err))
     # a whole-array operand over an index set the row is not shaped over
     foreign = _aligned_variant() do d
         d["index_sets"]["z"] = Dict{String, Any}("kind" => "interval", "size" => 2)

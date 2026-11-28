@@ -131,7 +131,31 @@ let name = "ref_array_param"
     write(path, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in entries]))
     evpath = joinpath(root, "tests", "goldens", "$name.evaldoc.json")
     write(evpath, stable_json(first(EarthSciASTDiff._evaluation_document(sv, entries))))
-    println("wrote ", path, ", ", evpath)
+    # second order: a reference in a first-order coefficient whose bindings
+    # read the band's row names
+    p2 = joinpath(root, "tests", "goldens", "$name.states-states.bands.json")
+    src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    e2 = jacobian_bands2(src, "M"; wrt = (:states, :states))
+    write(p2, stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in e2]))
+    println("wrote ", path, ", ", evpath, ", ", p2)
+end
+# An observed declared without a shape spanning the union of its operands'
+# index sets (esm-spec §4.3.4: `src = Ea + Eb` over [x, y]) on the
+# parameters pairs: bands and block only (no evaluator reads it yet).
+let name = "tgrad_data_fixed"
+    src = EarthSciAST.load_path(joinpath(root, "tests", "valid", "$name.esm"))
+    m = first(keys(src.models))
+    for wrt in ((:states, :parameters), (:time, :parameters))
+        tag = "$(wrt[1])-$(wrt[2])"
+        e2 = jacobian_bands2(src, m; wrt = wrt)
+        write(
+            joinpath(root, "tests", "goldens", "$name.$tag.bands.json"),
+            stable_json(Any[EarthSciASTDiff.serialize_band(en) for en in e2])
+        )
+        doc = jacobian_document(src, m; wrt = Pair(wrt...))
+        write(joinpath(root, "tests", "goldens", "$name.$tag.block.json"), stable_json(doc["jacobians"][m]))
+    end
+    println("wrote ", name, ".{states,time}-parameters.{bands,block}.json")
 end
 # Time bands with data held fixed (spec §4.2): the band list only, which
 # every binding must reproduce byte for byte (tests/README.md).

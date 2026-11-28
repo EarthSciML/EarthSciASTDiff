@@ -211,7 +211,75 @@ def ctx_of(sv: SysView) -> Ctx:
                 axes[str(n)] = [str(x) for x in shape]
         if _var_type(var) == "parameter":
             params.add(str(n))
+    _undeclared_axes(shapes, axes, sv, isets)
     return Ctx(isets, shapes, params, axes)
+
+
+_NOT_ELEMENTWISE = {"faq", "makearray", "const", "reshape", "transpose", "concat", "broadcast"}
+_REF_OPS = {"apply_operator", "apply_expression_template"}
+
+
+def _undeclared_axes(shapes: dict, axes: dict, sv, isets: dict) -> None:
+    """esm-spec §4.3.4: an observed declared without a shape and defined by a
+    bare elementwise equation spans the UNION of its named operands' index
+    sets, in order of first appearance. When every array operand on its
+    value path names its index sets, the observed takes them as its axes and
+    extents; otherwise it keeps none (system.jl ``_undeclared_axes!``)."""
+    defs: dict = {}
+    for eq in sv.equations:
+        n = lhs_definition(eq)
+        if n is None:
+            continue
+        var = sv.variables.get(n)
+        if var is not None and getattr(var, "shape", None) is None:
+            defs[n] = eq.rhs
+    if not defs:
+        return
+    memo: dict = {}
+
+    def ax(e, seen):
+        if isinstance(e, str):
+            if e in axes:
+                return axes[e]
+            if e in shapes:
+                return None
+            if e not in defs:
+                return []
+            if e in memo:
+                return memo[e]
+            if e in seen:
+                return None
+            seen.add(e)
+            r = ax(defs[e], seen)
+            seen.discard(e)
+            memo[e] = r
+            return r
+        if isinstance(e, ExprNode):
+            if e.op == "index":
+                b = e.args[0]
+                if not isinstance(b, str):
+                    return None
+                bx = ax(b, seen)
+                if bx is None:
+                    return None
+                return [] if len(e.args) - 1 == len(bx) else None
+            if e.op in _NOT_ELEMENTWISE or e.op in _REF_OPS:
+                return None
+            out: list = []
+            for a in e.args:
+                r = ax(a, seen)
+                if r is None:
+                    return None
+                out += [x for x in r if x not in out]
+            return out
+        return []
+
+    for n in sorted(defs):
+        r = ax(n, set())
+        if not r or not all(x in isets for x in r):
+            continue
+        axes[n] = r
+        shapes[n] = [isets[x] for x in r]
 
 
 def lhs_state(eq) -> str | None:

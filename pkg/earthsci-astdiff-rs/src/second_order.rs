@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use earthsci_ast::extension::types::RangeSpec;
 use earthsci_ast::{free_variables, EsmFile, Expr};
 use serde_json::{json, Value};
 
@@ -357,7 +358,22 @@ pub(crate) fn coef_bands(
     with_layer(&Some(l.clone()), || {
         let mut out = Vec::new();
         for (rows2, body) in clip_regions(&b.coef, &b.ridx, &b.rows) {
-            let (body2, ps) = abstract_refs(&l, &body, ctx, Some(w))?;
+            // a band's row and contracted names index its coefficient as an
+            // enclosing faq's would: a reference reading them is an
+            // intermediate over them (§3.6)
+            let mut scope: Vec<(String, Option<RangeSpec>)> = Vec::new();
+            for (k, r) in b.ridx.iter().enumerate() {
+                if let RIdx::Name(n) = r {
+                    scope.push((
+                        n.clone(),
+                        Some(RangeSpec::Interval([rows2[k].0, rows2[k].1])),
+                    ));
+                }
+            }
+            for (n, lo, hi) in &b.contracted {
+                scope.push((n.clone(), Some(RangeSpec::Interval([*lo, *hi]))));
+            }
+            let (body2, ps) = abstract_refs(&l, &body, ctx, Some(w), &scope)?;
             if ps.is_empty() {
                 out.extend(coef_site_bands(b, vec![(rows2, body)], w, ctx, occ, sm)?);
                 continue;

@@ -387,3 +387,23 @@ fn refusals() {
         .iter()
         .all(|en| en.band.contracted.iter().any(|c| c.0.starts_with("_oh"))));
 }
+
+/// An observed declared without a shape spanning the union of its operands'
+/// index sets (esm-spec §4.3.4) is a column of the parameters pairs:
+/// structural goldens, byte-identical to the reference.
+#[test]
+fn undeclared_observed_over_the_union_of_index_sets() {
+    let file = load("tgrad_data_fixed");
+    for wrt in [(Wrt::States, Wrt::Parameters), (Wrt::Time, Wrt::Parameters)] {
+        let entries = jacobian_bands2(&file, None, wrt).unwrap();
+        assert_eq!(
+            ser(&entries),
+            golden(&format!("tgrad_data_fixed.{}.bands.json", tag(wrt)))
+        );
+        let block = jacobian_block2(&file, None, wrt, None, true, 12).unwrap();
+        assert_eq!(
+            stable_json(&block),
+            golden(&format!("tgrad_data_fixed.{}.block.json", tag(wrt)))
+        );
+    }
+}

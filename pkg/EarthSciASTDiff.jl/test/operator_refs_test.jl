@@ -347,4 +347,16 @@ end
     @test J.pattern == Je.pattern
     @test Matrix(J.J) ≈ Matrix(Je.J) rtol = 1.0e-12
     @test Matrix(J.J) ≈ Matrix(ad_jacobian(f!, u, p, 0.0)) rtol = 1.0e-10 atol = 1.0e-14
+    # second order: a reference in a first-order coefficient whose bindings
+    # read the band's row names is an intermediate over them (§3.6)
+    e2 = jacobian_bands2(sv)
+    e2x = jacobian_bands2(sysview(expanded))
+    triples(es) = sort!(unique([(en.u, en.v, en.w) for en in es]))
+    @test triples(e2) == triples(e2x)
+    n = length(u0)
+    pairs = [(rand(n), rand(n)) for _ in 1:2]
+    g, cols = doc_hvp(flat, pairs; u = u, p = p)
+    gx, colsx = doc_hvp(expanded, pairs; u = u, p = p)
+    @test cols == colsx
+    @test g ≈ gx rtol = 1.0e-12
 end

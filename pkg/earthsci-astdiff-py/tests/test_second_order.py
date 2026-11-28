@@ -236,3 +236,16 @@ def test_value_offset_second_column_is_one_hot():
     )
     e2 = jacobian_bands2(sysview(doc, "B"), wrt=("states", "forcing"), forcing=["F"])
     assert e2 and all(any(c[0].startswith("_oh") for c in en.band.contracted) for en in e2)
+
+
+@pytest.mark.parametrize("wrt", [("states", "parameters"), ("time", "parameters")])
+def test_undeclared_observed_over_the_union_of_index_sets(wrt, valid_dir, golden_dir):
+    # esm-spec §4.3.4: `src = Ea + Eb` (Ea over [x], Eb over [x, y]) spans
+    # [x, y]; it is a column of the parameters pairs
+    file, model = _load(valid_dir, "tgrad_data_fixed")
+    tag = f"{wrt[0]}-{wrt[1]}"
+    entries = jacobian_bands2(file, model, wrt=wrt)
+    bands = stable_json([serialize_band(en) for en in entries])
+    assert bands == (golden_dir / f"tgrad_data_fixed.{tag}.bands.json").read_text()
+    (block,) = jacobian_block(file, model, wrt=[wrt])
+    assert stable_json(block) == (golden_dir / f"tgrad_data_fixed.{tag}.block.json").read_text()

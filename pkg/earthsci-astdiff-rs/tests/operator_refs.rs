@@ -188,3 +188,18 @@ fn scalar_definition_through_array_parameters() {
     assert!(ops.keys().any(|k| k.starts_with("inner.d_w.s1@")));
     assert_eq!(stable_json(&doc), golden(&format!("{name}.evaldoc.json")));
 }
+
+/// Second order through a reference in a first-order coefficient whose
+/// bindings read the band's row names: byte-identical to the reference.
+#[test]
+fn second_order_through_a_reference_over_row_names() {
+    let name = "ref_array_param";
+    let file = load(name);
+    let e2 =
+        earthsci_astdiff::jacobian_bands2(&file, Some("M"), (Wrt::States, Wrt::States)).unwrap();
+    let ser: Vec<Value> = e2.iter().map(earthsci_astdiff::serialize_band2).collect();
+    assert_eq!(
+        stable_json(&Value::Array(ser)),
+        golden(&format!("{name}.states-states.bands.json"))
+    );
+}

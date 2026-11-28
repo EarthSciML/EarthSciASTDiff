@@ -381,8 +381,112 @@ pub fn ctx_of(sv: &SysView) -> Result<Ctx, BandError> {
             ctx.params.insert(n.clone());
         }
     }
+    undeclared_axes(&mut ctx, sv);
     ctx.refs = sv.refs.clone();
     Ok(ctx)
+}
+
+/// esm-spec §4.3.4: an observed declared without a shape and defined by a
+/// bare elementwise equation spans the UNION of its named operands' index
+/// sets, in order of first appearance. When every array operand on its
+/// value path names its index sets, the observed takes them as its axes and
+/// extents; otherwise it keeps none (system.jl `_undeclared_axes!`).
+fn undeclared_axes(ctx: &mut Ctx, sv: &SysView) {
+    let mut defs: HashMap<String, &Expr> = HashMap::new();
+    for eq in sv.equations.iter() {
+        if let Some(n) = lhs_definition(eq) {
+            if sv.variables.get(n).is_some_and(|v| v.shape.is_none()) {
+                defs.insert(n.clone(), &eq.rhs);
+            }
+        }
+    }
+    if defs.is_empty() {
+        return;
+    }
+    const NOT_EW: [&str; 7] = [
+        "faq",
+        "makearray",
+        "const",
+        "reshape",
+        "transpose",
+        "concat",
+        "broadcast",
+    ];
+    fn ax(
+        e: &Expr,
+        ctx: &Ctx,
+        defs: &HashMap<String, &Expr>,
+        memo: &mut HashMap<String, Option<Vec<String>>>,
+        seen: &mut HashSet<String>,
+    ) -> Option<Vec<String>> {
+        match e {
+            Expr::Variable(n) => {
+                if let Some(a) = ctx.axes.get(n) {
+                    return Some(a.clone());
+                }
+                if ctx.shapes.contains_key(n) {
+                    return None;
+                }
+                let Some(d) = defs.get(n) else {
+                    return Some(Vec::new());
+                };
+                if let Some(r) = memo.get(n) {
+                    return r.clone();
+                }
+                if !seen.insert(n.clone()) {
+                    return None;
+                }
+                let r = ax(d, ctx, defs, memo, seen);
+                seen.remove(n);
+                memo.insert(n.clone(), r.clone());
+                r
+            }
+            Expr::Operator(o) => {
+                if o.op == "index" {
+                    let Some(b @ Expr::Variable(_)) = o.args.first() else {
+                        return None;
+                    };
+                    let bx = ax(b, ctx, defs, memo, seen)?;
+                    return (o.args.len() - 1 == bx.len()).then(Vec::new);
+                }
+                if NOT_EW.contains(&o.op.as_str())
+                    || crate::operator_refs::REF_OPS.contains(&o.op.as_str())
+                {
+                    return None;
+                }
+                let mut out: Vec<String> = Vec::new();
+                for a in &o.args {
+                    for x in ax(a, ctx, defs, memo, seen)? {
+                        if !out.contains(&x) {
+                            out.push(x);
+                        }
+                    }
+                }
+                Some(out)
+            }
+            _ => Some(Vec::new()),
+        }
+    }
+    let mut names: Vec<String> = defs.keys().cloned().collect();
+    names.sort();
+    let mut memo = HashMap::new();
+    for n in names {
+        let Some(r) = ax(
+            &Expr::Variable(n.clone()),
+            ctx,
+            &defs,
+            &mut memo,
+            &mut HashSet::new(),
+        ) else {
+            continue;
+        };
+        if r.is_empty() || !r.iter().all(|x| ctx.index_sets.contains_key(x)) {
+            continue;
+        }
+        let ext: Vec<i64> = r.iter().map(|x| ctx.index_sets[x]).collect();
+        ctx.axes.insert(n.clone(), r);
+        ctx.shapes.insert(n, ext);
+    }
 }
 
 /// The state an equation integrates: plain `D(u)` or the pointwise-lifted

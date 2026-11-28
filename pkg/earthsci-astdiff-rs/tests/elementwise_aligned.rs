@@ -64,15 +64,27 @@ fn elementwise_aligned_refuses_what_cannot_be_aligned() {
     });
     let err = jacobian_bands(&foreign, Some("Box"), Wrt::States).unwrap_err();
     assert!(err.0.contains("index set `z`"), "{}", err.0);
-    // an observed declared without a shape that mixes ranks
+    // an observed declared without a shape spans the union of its named
+    // operands' index sets (esm-spec §4.3.4): `w` spans [x, y], as declared,
+    // and has the same bands
     let undeclared = variant(|d| {
         d["models"]["Box"]["variables"]["w"]
             .as_object_mut()
             .unwrap()
             .remove("shape");
     });
-    let err = jacobian_bands(&undeclared, Some("Box"), Wrt::States).unwrap_err();
-    assert!(err.0.contains("declared without a shape"), "{}", err.0);
+    let entries = jacobian_bands(&undeclared, Some("Box"), Wrt::States).unwrap();
+    let text = stable_json(&serde_json::Value::Array(
+        entries
+            .iter()
+            .map(earthsci_astdiff::serialize_band)
+            .collect(),
+    ));
+    assert_eq!(
+        text,
+        std::fs::read_to_string(root().join("tests/goldens/elementwise_aligned.bands.json"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -106,12 +118,12 @@ fn elementwise_aligned_refuses_arity_mixed_ranks_and_whole_arrays() {
             .unwrap()
             .push(json!("u"));
     });
-    // (named steps keep `u` a column: its extents, the union of its operands'
-    // index sets, cannot be read from ranks, and it is refused there)
+    // `u = -(c·p)` spans [x, y, z] (§4.3.4), and `w` over [x, y] is not
+    // shaped over `z`
     let err = jacobian_bands(&nested, Some("Box"), Wrt::States).unwrap_err();
     assert!(
         err.0
-            .contains("observed `u` (declared without a shape) cannot be read"),
+            .contains("reads `u` over (x, y, z), whose index set `z`"),
         "{}",
         err.0
     );

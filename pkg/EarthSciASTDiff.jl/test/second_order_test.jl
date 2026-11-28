@@ -245,3 +245,20 @@ end
     e2 = jacobian_bands2(sysview(doc, "B"); wrt = (:states, :forcing), forcing = ["F"])
     @test !isempty(e2) && all(en -> any(c -> startswith(c[1], "_oh"), en.band.contracted), e2)
 end
+
+# An observed declared without a shape spanning the union of its operands'
+# index sets (esm-spec §4.3.4: `src = Ea + Eb` with `Ea: [x]`, `Eb: [x, y]`
+# spans [x, y]) is a column of the parameters pairs: structural goldens.
+@testset "second order: an undeclared observed over the union of its operands' index sets" begin
+    golden_dir = joinpath(@__DIR__, "..", "..", "..", "tests", "goldens")
+    file = fixture("tgrad_data_fixed.esm")
+    model = first(keys(file.models))
+    @test EarthSciASTDiff._ctx(sysview(file, model)).axes["src"] == ["x", "y"]
+    for wrt in ((:states, :parameters), (:time, :parameters))
+        gold(kind) = joinpath(golden_dir, "tgrad_data_fixed.$(_pairtag(wrt)).$kind.json")
+        entries = jacobian_bands2(file, model; wrt = wrt)
+        @test stable_json(Any[serialize_band(en) for en in entries]) == read(gold("bands"), String)
+        block = jacobian_document(file, model; wrt = Pair(wrt...))["jacobians"][model]
+        @test stable_json(block) == read(gold("block"), String)
+    end
+end

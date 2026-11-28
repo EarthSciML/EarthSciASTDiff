@@ -146,13 +146,15 @@ def test_companions_keep_the_chain_as_named_steps(valid_dir, golden_dir):
 
 
 def test_companion_extents_are_read_or_refused(valid_dir):
-    # operands of different extents: an undeclared shape is their union by
-    # index-set name, which extents alone cannot give
+    # operands over different index sets: an undeclared shape is their union
+    # by index-set name, in order of first appearance (esm-spec §4.3.4):
+    # `jr = Ea·cos(…) + Eb` spans [x, y], and its companion is read at the
+    # row's cell
     def mixed(m):
         m["equations"][0]["rhs"] = {"op": "+", "args": [{"op": "*", "args": ["Ea", _COS_T]}, "Eb"]}
 
-    with pytest.raises(BandError):
-        jacobian_bands(_variant(valid_dir, mixed), "Box", wrt="time")
+    es = jacobian_bands(_variant(valid_dir, mixed), "Box", wrt="time")
+    assert '"_dt_jr","i","j"' in stable_json([serialize_band(e) for e in es])
     # a band whose column index does not read every dimension of the observed
     from earthsci_astdiff.bands import Band
     from earthsci_astdiff.companions import _through_companion

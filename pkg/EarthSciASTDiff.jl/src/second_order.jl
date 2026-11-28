@@ -199,7 +199,17 @@ function _coef_bands(b::Band, w::String, ctx::Ctx)
     return _with_layer(L) do
         out = Band[]
         for (rows2, body) in clip_regions(b.coef, b.ridx, b.rows)
-            body2, ps = _abstract_refs(L, body, ctx; v = w)
+            # a band's row and contracted names index its coefficient as an
+            # enclosing faq's would: a reference reading them is an
+            # intermediate over them (§3.6)
+            scope = Pair{String, Any}[]
+            for (k, r) in enumerate(b.ridx)
+                r isa String && push!(scope, r => Any[rows2[k][1], rows2[k][2]])
+            end
+            for (n, lo, hi) in b.contracted
+                push!(scope, n => Any[lo, hi])
+            end
+            body2, ps = _abstract_refs(L, body, ctx; v = w, scope = scope)
             if isempty(ps)
                 append!(out, _coef_site_bands(b, [(rows2, body)], w, ctx))
                 continue
